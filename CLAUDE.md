@@ -146,6 +146,13 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   wrapper under Git Bash until that changes.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
+- **Detached builds must never be able to prompt.** The first build here hung for
+  two hours at the `node_modules` step: corepack wanted to ask "download
+  yarn@4.11.0?" and waited forever on a stdin that a detached process does not
+  have. Set `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` and redirect stdin from `NUL`,
+  so any future prompt fails fast instead of hanging silently. Judge a detached
+  build by **CPU time deltas**, not by whether the processes still exist — a
+  hung build looks alive.
 
 ---
 
