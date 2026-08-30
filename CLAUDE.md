@@ -1,3 +1,119 @@
+# Clanki
+
+Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
+
+## Lineage
+
+- Base: **https://github.com/JSchoreels/anki/** — we branch from that fork, not
+  from upstream `ankitects/anki`, because it already carries RWKV and FSRS work.
+- Chain: `ankitects/anki` → `JSchoreels/anki` → **Clanki**.
+- Fork point: commit `796f0140a` ("Test portable installer parsing as macOS"),
+  aligned with Anki 26.09b1.
+- `origin` points at the Clanki repo. The JSchoreels fork is the `upstream`
+  remote. Never push to `upstream`.
+
+## Planned direction
+
+1. **RWKV neural network** for scheduling. A **separate Claude session** works on
+   making it more accurate and more efficient. Do not duplicate or rewrite that
+   work here without checking first.
+2. **UI split: Simplified / Advanced**, in the SuperMemo style. **Simplified is
+   the default.** Many settings get hidden. The current deck-options UI is far
+   too complex, even by the standards of Anki power users. Hiding a setting is a
+   UI change, not a behavior change — the underlying setting keeps working.
+3. Many smaller changes and tweaks.
+
+## Changes already made in Clanki
+
+- Removed `+fsrs7` from the version name. `.version` is now `26.09b1`
+  (was `26.09b1+fsrs7`). Note: `qt/tests/test_update.py` still hardcodes
+  `26.09b1+fsrs7` in its own fixtures. That test does not read `.version`, so it
+  still passes. The fork's release tags used the `+fsrs7.build.N` form.
+
+---
+
+# Behavior contract
+
+- **Code is disposable; observable behavior is sacred.** Observable behavior =
+  anything a user, the sync server, an add-on, or the collection DB can detect:
+  card scheduling outcomes, intervals, queue order, DB contents, API responses,
+  file formats. **NOT** behavior: speed, memory, internal structure, log text.
+- Refactor as aggressively as you like, **if the behavior-lock tests pass**. No
+  behavior-lock test covering the area = write one first, then refactor.
+- Never change observable behavior unless the user explicitly asked for that
+  change in this conversation. This includes bug fixes: if the fix changes
+  input→output, say so and wait for approval.
+- **Chesterton's Fence applies to behavior, not code.** If you cannot tell why
+  the system behaves some way — especially anything "obviously wrong" — ask.
+  Users may depend on it (Hyrum's Law).
+
+The load-bearing quirks in Anki specifically are: the collection database
+schema, the sync protocol, the add-on API surface, and scheduling outcomes that
+users' review histories are built on. Treat all four as behavior.
+
+Why the enforcement matters here: Anki is Rust + TypeScript/Svelte + Python, and
+the user reads only the Python. For most of this codebase **the test suite is
+the only reviewer that exists**. A large diff is exactly where a silent behavior
+change hides. The scheduler is deterministic given (collection state, review
+log, clock), so golden tests (simulate N reviews, snapshot the resulting
+intervals and queue) plus property tests are a genuinely strong behavior lock.
+
+# Spec (`spec/` directory)
+
+- `spec/` holds the **current intended behavior** in natural language, organized
+  by **behavior domain**, not by code file (`spec/scheduling.md`, `spec/sync.md`,
+  `spec/deck-options.md`, `spec/import-export.md`, `spec/addon-api.md`,
+  `spec/database.md`). Code files move and get rewritten; behavior domains are
+  stable.
+- **One entry per behavior**, with four parts: a stable ID heading (e.g.
+  `sched.fuzz-interval`), a testable "given X, the system does Y" statement, a
+  **Why:** line, and a **Pinned by:** line naming the tests that lock it. If you
+  cannot write the statement as "given X, the system does Y", the entry is too
+  vague — split it. Example:
+
+  ```markdown
+  ## sched.fuzz-interval
+  When the scheduler computes an interval of 3 days or more, it applies a random
+  fuzz of ±5% (minimum ±1 day), seeded per card. Intervals under 3 days get no fuzz.
+  **Why:** cards introduced together would otherwise stay synchronized forever.
+  **Pinned by:** `test_fuzz_bounds`, `test_no_fuzz_short_intervals`
+  ```
+
+- Entries state **current** behavior only — no history. The git history of
+  `spec/` is the change log: `git diff` of a `behavior:` commit is the
+  before/after description, and `git log --follow spec/scheduling.md` is the
+  full audit trail, generated for free. One artifact, so it cannot drift from
+  itself.
+- **Baseline rule:** any behavior with no entry in `spec/` is expected to match
+  the fork point recorded in `spec/README.md`. Upstream is the implicit spec.
+  `spec/` accumulates only divergences and touched areas — this is what makes
+  the scheme affordable for a fork.
+- Every intentional behavior change edits the relevant spec entry **and** its
+  pinning test **in the same commit**, prefixed `behavior:`. Behavior-preserving
+  work is prefixed `refactor:` and must not touch `spec/`. Deciding which prefix
+  applies, before making the change, is where mistakes get caught.
+- Before refactoring an unspecced area, add the entry for the behavior you are
+  about to preserve. The moment you study old behavior in order to keep it is
+  the cheapest moment to write it down. **Never backfill `spec/` beyond that.**
+- Never write an entry for internals (speed, memory, structure).
+
+# Local overrides for this machine
+
+- The "Testing with the user's collection" section below is inherited from the
+  JSchoreels fork and names a **macOS** path
+  (`/Users/jschoreels/Library/Application Support/Anki2/...`). That path does not
+  exist here. This is Windows; the profile lives under
+  `%APPDATA%\Anki2\`. The safety rule still applies in full: copy a backup to a
+  temp directory, never open or modify the live profile in place, and ask first
+  if a test needs newer state than the backups hold.
+- `just` and `pwsh` are **not** installed on this machine, so the `just` recipes
+  in the section below do not run as written. Build through the `./ninja`
+  wrapper under Git Bash until that changes.
+- The section below ends with a reference to `@.claude/user.md`, which does not
+  exist in this repo.
+
+---
+
 # Claude Code Configuration
 
 > **Note:** Every command you need — building, running, testing, linting,
