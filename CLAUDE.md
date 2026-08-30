@@ -34,7 +34,29 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    https://github.com/JSchoreels/Anki-Search-Stats-Extended — deliberately **not**
    all of them. Ask which ones before porting; picking the subset is a product
    decision, not an implementation detail.
-6. Many smaller changes and tweaks.
+6. **Remove Adaptive Desired Retention (ADR).** In this codebase the feature is
+   named **dynamic desired retention** — it is the same thing; the underlying
+   `fsrs` crate types are `CostAdrPolicy` and `CostAdrNextStates`. Known surface:
+   `rslib/src/scheduler/fsrs/dynamic_desired_retention.rs`,
+   `ts/routes/deck-options/dynamic-desired-retention.ts` and its test, plus
+   references in `ts/routes/deck-options/FsrsOptions.svelte` and
+   `rslib/src/scheduler/fsrs/simulator.rs`. The `fsrs` crate dependency stays;
+   only Anki's use of ADR goes. Removing a user-visible option is a behavior
+   change: it needs a `spec/` entry, and deck presets that already stored ADR
+   settings must still load without error.
+7. **The simulator stays FSRS-only.** Remove or deactivate the RWKV simulator
+   path. Reason: RWKV uses many more input features, and it processes all cards
+   together instead of treating them as independent. A correct RWKV simulator is
+   a very large job and is **out of scope** — do not start one. Known surface:
+   `rwkvWorkload`, `rwkvWorkloadSampleLimit`, `rwkvWorkloadTargetStep`,
+   `rwkvWorkloadStateUpdateInterval` and the FSRS-vs-RWKV comparison mode in
+   `ts/routes/deck-options/SimulatorModal.svelte`, the matching fields on
+   `simulateFsrsRequest` (so `proto/` too), and
+   `ts/routes/deck-options/simulator-workload.ts`. One thing to check rather than
+   assume: `rslib/src/scheduler/fsrs/simulator.rs` imports
+   `scheduler::rwkv::relative_overdueness`. Confirm whether that is RWKV
+   simulation or just a shared helper before deleting it.
+8. Many smaller changes and tweaks.
 
 ## Changes already made in Clanki
 
