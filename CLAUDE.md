@@ -144,6 +144,22 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
 - `just` and `pwsh` are **not** installed on this machine, so the `just` recipes
   in the section below do not run as written. Build through the `./ninja`
   wrapper under Git Bash until that changes.
+- **The build needs a real `rsync`.** `build/runner/src/rsync.rs` calls
+  `Command::new("rsync")` — the runner's `rsync` subcommand is only a thin
+  wrapper around the external tool, not a reimplementation. Without it the
+  `qt:aqt:data:web:sveltekit` and `qt:aqt:data:web:js:vendor:mathjax` steps fail.
+  MSYS2 is installed at `C:\msys64` and provides it (rsync 3.5.0).
+  **Append** `/c/msys64/usr/bin` to `PATH`, never prepend it, so that MSYS2 does
+  not shadow Git Bash's own tools.
+- Working build command, from a Git Bash shell at the repo root:
+
+  ```bash
+  export PATH="$HOME/.cargo/bin:$PATH:/c/msys64/usr/bin"
+  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+  ./ninja pylib qt
+  ```
+
+  The detached wrapper that runs this is `C:\Users\Andrew\clanki-logs\build3.cmd`.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
 - **Detached builds must never be able to prompt.** The first build here hung for
