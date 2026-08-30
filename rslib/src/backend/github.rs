@@ -23,8 +23,8 @@ use crate::updates::updates_dir;
 use crate::updates::user_agent;
 use crate::updates::DownloadUpdateProgress;
 
-const ALL_RELEASES_URL: &str = "https://api.github.com/repos/JSchoreels/anki/releases";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/JSchoreels/anki/releases/latest";
+const ALL_RELEASES_URL: &str = "https://api.github.com/repos/Expertium/Clanki/releases";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Expertium/Clanki/releases/latest";
 
 // NOTE: must match platform suffixes in build_installer.py
 fn get_platform_suffix() -> Option<&'static str> {
@@ -158,5 +158,18 @@ impl BackendGithubService for Backend {
             .or_invalid("non-unicode filename")?
             .to_string();
         Ok(output_path.into())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Pins spec/updates.md#updates.release-source: Clanki must never offer
+    /// another project's releases as an update to itself.
+    #[test]
+    fn release_urls_point_at_clanki() {
+        assert!(ALL_RELEASES_URL.contains("/repos/Expertium/Clanki/"));
+        assert!(LATEST_RELEASE_URL.contains("/repos/Expertium/Clanki/"));
     }
 }
