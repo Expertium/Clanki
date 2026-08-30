@@ -160,6 +160,20 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   ```
 
   The detached wrapper that runs this is `C:\Users\Andrew\clanki-logs\build3.cmd`.
+- **`./run` does not work on Windows.** The `run` shell script calls
+  `${PYENV}/bin/python`, which is a Unix venv layout; here the interpreter is at
+  `out/pyenv/Scripts/python.exe`. Launch the built app like this instead:
+
+  ```bash
+  out/pyenv/Scripts/python tools/run.py -b C:/Users/Andrew/clanki-devbase
+  ```
+
+- **Always pass `-b`.** Every Anki build on this machine shares the default base
+  folder `%APPDATA%\Anki2`, which holds Andrew's real 210 MB collection and his
+  add-ons. A dev build can upgrade the collection schema, after which older
+  builds refuse to open it. `-b` (or the `ANKI_BASE` env var) points the dev
+  build at a throwaway base — `C:\Users\Andrew\clanki-devbase`. The installed
+  JSchoreels build is often running and holding that collection open.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
 - **Detached builds must never be able to prompt.** The first build here hung for
