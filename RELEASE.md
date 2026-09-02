@@ -30,6 +30,7 @@ repeated here unless they materially affect a fork feature.
 ### Fixed
 
 - Advance to the next card when burying an RWKV review card restored by Undo.
+- Preserve pending IME text when closing the editor during a review.
 
 ## 26.09b1+fsrs7 — 2026-08-28
 

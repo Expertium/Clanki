@@ -49,6 +49,31 @@ test("immediately clicking Add while second field is focused includes its latest
     expect(decoded.note?.fields[1]).toBe("Focused Back");
 });
 
+test("saveNow commits an active IME composition before reading the field", async ({ editor: page }) => {
+    const field = editableField(page, 0);
+
+    await field.click();
+    await field.pressSequentially("諦[");
+    await field.evaluate((element) => {
+        window.dispatchEvent(new CompositionEvent("compositionstart"));
+        element.addEventListener(
+            "blur",
+            () => {
+                element.textContent = "諦[あきら]める";
+                window.dispatchEvent(new CompositionEvent("compositionend"));
+            },
+            { once: true },
+        );
+    });
+
+    const savedField = await page.evaluate(async () => {
+        await (window as any).saveNow();
+        return (window as any).getNoteInfo().fields[0];
+    });
+
+    expect(savedField).toBe("諦[あきら]める");
+});
+
 test("typing into fields and clicking Add sends correct addNote payload", async ({ editor: page }) => {
     const field0 = editableField(page, 0);
     const field1 = editableField(page, 1);
