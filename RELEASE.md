@@ -31,6 +31,8 @@ repeated here unless they materially affect a fork feature.
 
 - Advance to the next card when burying an RWKV review card restored by Undo.
 - Preserve pending IME text when closing the editor during a review.
+- Ensure in-app update checks select the normal installer when portable downloads
+  are published alongside it.
 
 ## 26.09b1+fsrs7 — 2026-08-28
 
