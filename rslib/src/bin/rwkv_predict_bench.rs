@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -44,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?,
         None => CollectionWorkload {
             source: "synthetic".into(),
+            warmup_review_ids: vec![],
             warmup_reviews: synthetic_warmup_reviews(args.warmup_reviews, args.queries),
             query_inputs: synthetic_query_inputs(0, args.queries, args.queries),
         },
@@ -52,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let CollectionWorkload {
         source,
+        warmup_review_ids,
         warmup_reviews,
         query_inputs,
     } = workload;
@@ -86,6 +90,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             inference.warm_up_reviews(reviews, true)?,
             &warmup_original_indices,
         );
+        if let Some(output) = &args.prediction_output {
+            write_prediction_output(output, &warmup_review_ids, &predictions)?;
+        }
         Some(RecallMetrics::from_predictions(
             &recall_labels,
             &recall_bins,
@@ -287,6 +294,7 @@ struct Args {
     max_interval_days: u32,
     retrievability_only: bool,
     metrics: bool,
+    prediction_output: Option<PathBuf>,
     deck_id: Option<i64>,
     warmup_mix_window: Option<usize>,
     resident_state: bool,
@@ -355,6 +363,7 @@ impl Args {
         let mut max_interval_days = 36_500_u32;
         let mut retrievability_only = false;
         let mut metrics = false;
+        let mut prediction_output = None;
         let mut deck_id = None;
         let mut warmup_mix_window = None;
         let mut resident_state = false;
@@ -404,6 +413,11 @@ impl Args {
                 }
                 "--metrics" => {
                     metrics = true;
+                }
+                "--prediction-output" => {
+                    prediction_output = Some(PathBuf::from(
+                        args.next().ok_or("--prediction-output requires a path")?,
+                    ));
                 }
                 "--deck-id" => {
                     deck_id = Some(parse_next(&mut args, "--deck-id")?);
@@ -470,6 +484,9 @@ impl Args {
         if checkpoint_restore && checkpoint_recovery_age_days.is_some() {
             return Err("--checkpoint-restore cannot be combined with checkpoint recovery".into());
         }
+        if prediction_output.is_some() && (!metrics || collection.is_none()) {
+            return Err("--prediction-output requires --metrics and --collection".into());
+        }
 
         Ok(Self {
             weights: weights.ok_or("--weights is required")?,
@@ -482,6 +499,7 @@ impl Args {
             max_interval_days,
             retrievability_only,
             metrics,
+            prediction_output,
             deck_id,
             warmup_mix_window,
             resident_state,
@@ -759,7 +777,8 @@ fn usage() -> String {
     "usage: rwkv_predict_bench --weights weights.bin [--collection copy.anki2] \
      [--queries N] [--batch-size N|--batch-sizes N,N] [--warmup-reviews N] [--repeat N] \
      [--target-retention R] [--max-interval-days N] [--retrievability-only] \
-     [--metrics] [--deck-id ID] [--warmup-mix-window N] \
+     [--metrics] [--prediction-output predictions.csv] [--deck-id ID] \
+     [--warmup-mix-window N] \
      [--resident-state] [--checkpoint-mode legacy|delta] \
      [--checkpoint-policy exponential|base] [--checkpoint-max-age-days N] \
      [--checkpoint-restore|--checkpoint-recovery-age-days N]\n\
@@ -1007,6 +1026,7 @@ impl StateSnapshot {
 
 struct CollectionWorkload {
     source: String,
+    warmup_review_ids: Vec<i64>,
     warmup_reviews: Vec<ReviewInput>,
     query_inputs: Vec<ReviewInput>,
 }
@@ -1026,8 +1046,9 @@ impl CollectionWorkload {
         )?;
         let timing = BenchTiming::today();
         let preset_by_deck = deck_config_ids_by_deck(&db)?;
-        let warmup_reviews =
+        let warmup_rows =
             collection_warmup_reviews(&db, warmup_limit, &timing, &preset_by_deck, deck_id)?;
+        let (warmup_review_ids, warmup_reviews) = warmup_rows.into_iter().unzip();
         let query_inputs = collection_query_inputs(
             &db,
             query_limit,
@@ -1038,6 +1059,7 @@ impl CollectionWorkload {
         )?;
         Ok(Self {
             source: "collection".into(),
+            warmup_review_ids,
             warmup_reviews,
             query_inputs,
         })
@@ -1072,7 +1094,7 @@ fn collection_warmup_reviews(
     timing: &BenchTiming,
     preset_by_deck: &HashMap<i64, Option<i64>>,
     deck_id: Option<i64>,
-) -> rusqlite::Result<Vec<ReviewInput>> {
+) -> rusqlite::Result<Vec<(i64, ReviewInput)>> {
     let current_deck_id_sql = current_deck_id_sql(db)?;
     let sql = if limit == 0 {
         historical_review_sql(None, current_deck_id_sql, deck_id)
@@ -1104,24 +1126,44 @@ fn collection_warmup_reviews(
         let elapsed_days = previous_review_id.map_or(-1, |previous| {
             (day_offset - historical_day_offset(previous, timing)).max(0)
         });
-        reviews.push(ReviewInput {
-            card_id: row.card_id,
-            note_id: Some(row.note_id),
-            deck_id: Some(row.deck_id),
-            preset_id: preset_by_deck.get(&row.deck_id).copied().flatten(),
-            is_query: false,
-            ease: Some(row.ease as u8),
-            duration_millis: Some(row.duration_millis),
-            card_type: Some(historical_state(row.review_kind, row.is_learning_start)),
-            day_offset: Some(day_offset),
-            current_elapsed_days: Some(elapsed_days),
-            current_elapsed_seconds: Some(elapsed_seconds),
-            target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
-            enforce_grade_order: true,
-        });
+        reviews.push((
+            row.review_id,
+            ReviewInput {
+                card_id: row.card_id,
+                note_id: Some(row.note_id),
+                deck_id: Some(row.deck_id),
+                preset_id: preset_by_deck.get(&row.deck_id).copied().flatten(),
+                is_query: false,
+                ease: Some(row.ease as u8),
+                duration_millis: Some(row.duration_millis),
+                card_type: Some(historical_state(row.review_kind, row.is_learning_start)),
+                day_offset: Some(day_offset),
+                current_elapsed_days: Some(elapsed_days),
+                current_elapsed_seconds: Some(elapsed_seconds),
+                target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                enforce_grade_order: true,
+            },
+        ));
     }
 
     Ok(reviews)
+}
+
+fn write_prediction_output(
+    path: &Path,
+    review_ids: &[i64],
+    predictions: &[(usize, f32)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = BufWriter::new(fs::File::create(path)?);
+    writeln!(output, "review_id,retrievability")?;
+    for &(index, retrievability) in predictions {
+        let review_id = review_ids
+            .get(index)
+            .ok_or("RWKV prediction index has no matching review id")?;
+        writeln!(output, "{review_id},{retrievability:.9}")?;
+    }
+    output.flush()?;
+    Ok(())
 }
 
 fn historical_review_sql(
@@ -1358,5 +1400,23 @@ fn synthetic_input(index: usize, card_id: i64, is_query: bool, ease: Option<u8>)
         current_elapsed_seconds: None,
         target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
         enforce_grade_order: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prediction_output_maps_original_indices_to_review_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("predictions.csv");
+
+        write_prediction_output(&path, &[101, 202, 303], &[(2, 0.25), (0, 0.75)]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "review_id,retrievability\n303,0.250000000\n101,0.750000000\n"
+        );
     }
 }
