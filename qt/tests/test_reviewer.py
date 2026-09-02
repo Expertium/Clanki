@@ -1823,6 +1823,60 @@ def test_study_queue_refresh_with_rwkv_queue_order_prepares_before_replacing_cur
     assert dirty is False
 
 
+def test_bury_current_rwkv_undo_restored_card_refreshes_queue(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Operation:
+        def success(self, callback: Callable[[object], None]) -> Operation:
+            self.callback = callback
+            return self
+
+        def run_in_background(self) -> None:
+            assert reviewer._rwkv_undo_restored_card_active
+            self.callback(SimpleNamespace(count=1))
+            calls.append("operation-succeeded")
+            changes = OpChanges()
+            changes.study_queues = True
+            reviewer.op_executed(changes, handler=None, focused=True)
+
+    def bury_cards(*, parent: object, card_ids: list[int]) -> Operation:
+        assert parent is reviewer.mw
+        assert card_ids == [123]
+        return Operation()
+
+    def prepare_then_next(*args: object, **kwargs: object) -> None:
+        assert not args
+        assert kwargs == {"fade_after": True, "show_next_card": True}
+        calls.append("prepare")
+
+    monkeypatch.setattr(reviewer_module, "bury_cards", bury_cards)
+    monkeypatch.setattr(reviewer_module, "tooltip", calls.append)
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "studying_cards_buried",
+        lambda *, count: f"buried:{count}",
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=123, load=lambda: None)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._rwkv_undo_restored_card_active = True
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+    reviewer.mw = SimpleNamespace()
+
+    reviewer.bury_current_card()
+
+    assert not reviewer._rwkv_undo_restored_card_active
+    assert calls == ["buried:1", "operation-succeeded", "prepare"]
+    assert reviewer._refresh_needed is None
+
+
 def test_study_queue_refresh_with_rwkv_undo_card_skips_queue_order_prepare(
     monkeypatch,
 ) -> None:

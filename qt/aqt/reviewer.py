@@ -2320,18 +2320,20 @@ timeboxReps = 0;
         bury_notes(
             parent=self.mw,
             note_ids=[self.card.nid],
-        ).success(
-            lambda res: tooltip(tr.studying_cards_buried(count=res.count))
-        ).run_in_background()
+        ).success(self._on_bury_current_succeeded).run_in_background()
 
     def bury_current_card(self) -> None:
         gui_hooks.reviewer_will_bury_card(self.card.id)
         bury_cards(
             parent=self.mw,
             card_ids=[self.card.id],
-        ).success(
-            lambda res: tooltip(tr.studying_cards_buried(count=res.count))
-        ).run_in_background()
+        ).success(self._on_bury_current_succeeded).run_in_background()
+
+    def _on_bury_current_succeeded(self, result: OpChangesWithCount) -> None:
+        # The operation hook runs after this callback. Allow its queue refresh to
+        # advance past a card restored by RWKV-aware undo.
+        self._rwkv_undo_restored_card_active = False
+        tooltip(tr.studying_cards_buried(count=result.count))
 
     def forget_current_card(self) -> None:
         if op := forget_cards(

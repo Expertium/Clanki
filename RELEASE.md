@@ -27,6 +27,10 @@ repeated here unless they materially affect a fork feature.
 - Publish portable editions for macOS, Windows, and Linux alongside the normal
   installers in GitHub releases.
 
+### Fixed
+
+- Advance to the next card when burying an RWKV review card restored by Undo.
+
 ## 26.09b1+fsrs7 — 2026-08-28
 
 Current application version: `26.09b1+fsrs7`
