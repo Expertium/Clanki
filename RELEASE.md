@@ -22,7 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-No user-visible changes yet.
+### Added
+
+- Publish portable editions for macOS, Windows, and Linux alongside the normal
+  installers in GitHub releases.
 
 ## 26.09b1+fsrs7 — 2026-08-28
 

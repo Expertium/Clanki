@@ -276,22 +276,44 @@ def get_output_dir(args: argparse.Namespace) -> Path:
     return portable_out_dir if getattr(args, "portable", False) else out_dir
 
 
+def get_portable_archive_path(output_dir: Path, version: str) -> Path:
+    platform_suffix = get_platform_suffix()
+    if sys.platform == "linux":
+        extension = ".zst"
+    elif sys.platform in ("darwin", "win32"):
+        extension = ".zip"
+    else:  # pragma: no cover
+        raise RuntimeError(f"Unsupported portable platform: {sys.platform}")
+    return output_dir / "dist" / f"anki-{version}-portable{platform_suffix}{extension}"
+
+
 def package_portable_archive(output_dir: Path, version: str) -> Path:
     dist_dir = output_dir / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
     generated_artifacts = list(dist_dir.iterdir())
     staging_dir = output_dir / "portable-package"
     distribution_dir = staging_dir / PORTABLE_FORMAL_NAME
-    archive_path = dist_dir / f"anki-{version}-portable{get_platform_suffix()}.zip"
+    archive_path = get_portable_archive_path(output_dir, version)
 
     shutil.rmtree(staging_dir, ignore_errors=True)
     distribution_dir.mkdir(parents=True)
-    app_bundle = get_briefcase_sources_path(output_dir, portable=True).parents[1]
-    shutil.copytree(
-        app_bundle,
-        distribution_dir / app_bundle.name,
-        copy_function=shutil.copy2,
-        symlinks=True,
-    )
+    sources = get_briefcase_sources_path(output_dir, portable=True)
+    if sys.platform == "darwin":
+        app_bundle = sources.parents[1]
+        shutil.copytree(
+            app_bundle,
+            distribution_dir / app_bundle.name,
+            copy_function=shutil.copy2,
+            symlinks=True,
+        )
+    else:
+        shutil.copytree(
+            sources,
+            distribution_dir,
+            copy_function=shutil.copy2,
+            dirs_exist_ok=True,
+            symlinks=True,
+        )
     (distribution_dir / PORTABLE_DATA_DIR).mkdir()
     shutil.copy2(installer_dir / "portable-readme.txt", distribution_dir / "README.txt")
     shutil.copy2("LICENSE", distribution_dir / "LICENSE.txt")
@@ -303,17 +325,40 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
             artifact.unlink()
 
     try:
-        subprocess.check_call(
-            [
-                "ditto",
-                "-c",
-                "-k",
-                "--sequesterRsrc",
-                "--keepParent",
-                str(distribution_dir),
-                str(archive_path),
-            ]
-        )
+        if sys.platform == "darwin":
+            subprocess.check_call(
+                [
+                    "ditto",
+                    "-c",
+                    "-k",
+                    "--sequesterRsrc",
+                    "--keepParent",
+                    str(distribution_dir),
+                    str(archive_path),
+                ]
+            )
+        elif sys.platform == "win32":
+            shutil.make_archive(
+                str(archive_path.with_suffix("")),
+                "zip",
+                root_dir=staging_dir,
+                base_dir=distribution_dir.name,
+            )
+        elif sys.platform == "linux":
+            subprocess.check_call(
+                [
+                    "tar",
+                    "-I",
+                    "zstd -c --long -T0 -18",
+                    "-cf",
+                    str(archive_path),
+                    "-C",
+                    str(staging_dir),
+                    distribution_dir.name,
+                ]
+            )
+        else:  # pragma: no cover
+            raise RuntimeError(f"Unsupported portable platform: {sys.platform}")
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -325,6 +370,10 @@ def package(args: argparse.Namespace) -> None:
     output_dir = get_output_dir(args)
     config_args = get_briefcase_config_args(args)
     shutil.rmtree(output_dir / "dist", ignore_errors=True)
+    if args.portable and sys.platform != "darwin":
+        package_portable_archive(output_dir, version)
+        return
+
     subprocess.check_call(
         [
             sys.executable,
@@ -356,7 +405,7 @@ def main(args: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--portable",
         action="store_true",
-        help="Build an isolated macOS portable application archive",
+        help="Build an isolated portable application archive",
     )
     subparsers = parser.add_subparsers(help="Briefcase command (build/package)")
     build_parser = subparsers.add_parser("build", help="Compile/build app")
@@ -370,8 +419,6 @@ def main(args: Sequence[str] | None = None) -> argparse.Namespace:
     package_parser.set_defaults(func=package)
 
     parsed = parser.parse_args(args)
-    if parsed.portable and sys.platform != "darwin":
-        parser.error("--portable is currently supported only on macOS")
     get_output_dir(parsed).mkdir(parents=True, exist_ok=True)
     parsed.func(parsed)
 

@@ -36,11 +36,23 @@ macos-installer:
     ./tools/build-installer
     @echo "Installer written under out/installer/dist/"
 
-# Build a local isolated macOS portable app (.zip)
+# Build a local isolated portable app archive for the current platform
+portable:
+    {{ if os() == "windows" { "$env:RELEASE='2'; " } else { "RELEASE=2 " } }}{{ ninja }} portable_package
+    @echo "Portable app written under out/portable/dist/"
+
+# Build the portable app without packaging it (used when signing precedes packaging)
+portable-build:
+    {{ if os() == "windows" { "$env:RELEASE='2'; " } else { "RELEASE=2 " } }}{{ ninja }} portable_build
+
+# Package an existing portable build without rebuilding it and invalidating signatures
+portable-archive version:
+    {{ python }} qt/tools/build_installer.py --version {{ version }} --portable package
+
+# Backwards-compatible name for building a local macOS portable app (.zip)
 macos-portable:
     @if [ "{{ os() }}" != "macos" ]; then echo "macos-portable must be run on macOS" >&2; exit 1; fi
-    RELEASE=2 {{ ninja }} portable_package
-    @echo "Portable app written under out/portable/dist/"
+    just portable
 
 # Build and run all checks (lint + test) - lets ninja handle dependencies
 check:

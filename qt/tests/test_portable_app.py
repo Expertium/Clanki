@@ -5,6 +5,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def load_portable_app_module() -> ModuleType:
     path = Path("qt/installer/app/src/anki/app.py")
@@ -15,16 +17,10 @@ def load_portable_app_module() -> ModuleType:
     return module
 
 
-def portable_module(root: Path) -> Path:
-    return (
-        root
-        / "Anki Portable.app"
-        / "Contents"
-        / "Resources"
-        / "app"
-        / "anki"
-        / "app.pyc"
-    )
+def portable_module(root: Path, layout: str = "macos") -> Path:
+    if layout == "macos":
+        root = root / "Anki Portable.app" / "Contents" / "Resources"
+    return root / "app" / "anki" / "app.pyc"
 
 
 def test_unmarked_app_does_not_change_environment(tmp_path: Path) -> None:
@@ -37,11 +33,12 @@ def test_unmarked_app_does_not_change_environment(tmp_path: Path) -> None:
     assert environ == {"ANKI_BASE": "existing"}
 
 
-def test_portable_app_uses_adjacent_isolated_data(tmp_path: Path) -> None:
+@pytest.mark.parametrize("layout", ["macos", "windows", "linux"])
+def test_portable_app_uses_adjacent_isolated_data(tmp_path: Path, layout: str) -> None:
     module = load_portable_app_module()
-    module_file = portable_module(tmp_path)
+    module_file = portable_module(tmp_path, layout)
     resources = module_file.parents[2]
-    resources.mkdir(parents=True)
+    resources.mkdir(parents=True, exist_ok=True)
     (resources / module.PORTABLE_MARKER).touch()
     environ = {
         "ANKI_BASE": "/main/Anki2",
@@ -58,14 +55,15 @@ def test_portable_app_uses_adjacent_isolated_data(tmp_path: Path) -> None:
     assert environ["ANKI_PORTABLE"] == "1"
     assert environ["ANKI_PORTABLE_ROOT"] == str(tmp_path)
     assert environ["ANKI_SINGLE_INSTANCE_KEY"].startswith("anki-portable-")
-    assert environ["TMPDIR"] == str(data_dir / ".tmp")
+    for variable in ("TMPDIR", "TMP", "TEMP"):
+        assert environ[variable] == str(data_dir / ".tmp")
 
 
 def test_each_portable_folder_gets_a_distinct_instance_key(tmp_path: Path) -> None:
     module = load_portable_app_module()
     keys = []
     for folder in (tmp_path / "one", tmp_path / "two"):
-        module_file = portable_module(folder)
+        module_file = portable_module(folder, "linux")
         resources = module_file.parents[2]
         resources.mkdir(parents=True)
         (resources / module.PORTABLE_MARKER).touch()
