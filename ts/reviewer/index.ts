@@ -25,7 +25,8 @@ import { preloadResources } from "./preload";
 
 declare const MathJax: any;
 
-let mathjaxLoading: Promise<void> | null = null;
+// Preview and card layout windows load MathJax before the reviewer script.
+let mathjaxLoading: Promise<void> | null = typeof MathJax === "undefined" ? null : MathJax.startup?.promise ?? null;
 
 function _lazyLoadMathJax(): Promise<void> {
     return mathjaxLoading || (mathjaxLoading = new Promise((resolve, reject) => {

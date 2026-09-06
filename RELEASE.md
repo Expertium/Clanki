@@ -29,6 +29,7 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Prevent card previews from freezing when MathJax is already loaded.
 - Advance to the next card when burying an RWKV review card restored by Undo.
 - Preserve pending IME text when closing the editor during a review.
 - Ensure in-app update checks select the normal installer when portable downloads
