@@ -3145,9 +3145,13 @@ impl SrsModel {
     ) -> Vec<f32> {
         items
             .par_iter()
-            .map_init(ReviewRetrievabilityScratch::default, |scratch, item| {
-                self.review_retrievability_features(item.features, item.state, scratch)
-            })
+            .map_init(
+                // Keep the large per-worker scratch off Rayon's limited worker stacks.
+                || Box::new(ReviewRetrievabilityScratch::default()),
+                |scratch, item| {
+                    self.review_retrievability_features(item.features, item.state, scratch)
+                },
+            )
             .collect()
     }
 
