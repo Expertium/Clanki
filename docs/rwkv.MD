@@ -312,7 +312,14 @@ review queue. The map is scoped to the selected deck and scheduler day. For
 every review sort order, the RWKV scores determine which scored review cards
 are eligible. Ascending and descending retrievability additionally use the
 RWKV score as their sort key; the other review orders retain their normal
-sorting behavior after RWKV eligibility is applied. This can include review
+sorting behavior after RWKV eligibility is applied. Random order assigns fresh
+random positions across the full candidate pool on each queue build, before
+eligibility filtering and parent/subdeck limits. The retained queue is a random
+sample without replacement; refreshes draw a new sample while preserving an
+already-visible question. Random positions do not depend on card IDs or last
+modification times. Same-day eligibility, repeat guards, learning priority, and
+daily minimum rules still apply, so Random does not prevent eligible repeats.
+This can include review
 cards whose stored due day is still in the future when RWKV considers them
 due. A scored review card is
 considered due when its RWKV retrievability is at or below the card's current

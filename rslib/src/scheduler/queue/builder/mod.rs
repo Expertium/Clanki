@@ -521,6 +521,7 @@ impl Collection {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::collections::HashSet;
 
     use anki_proto::deck_config::deck_config::config::NewCardGatherPriority;
     use anki_proto::deck_config::deck_config::config::NewCardSortOrder;
@@ -1379,6 +1380,59 @@ mod test {
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![first, second, unscored]);
+        Ok(())
+    }
+
+    #[test]
+    fn random_reviews_resample_full_pool_before_parent_limit() -> Result<()> {
+        for rwkv in [false, true] {
+            let mut col = Collection::new();
+            let mut parent = DeckAdder::new("Parent").add(&mut col);
+            let children = [
+                DeckAdder::new("Parent::A").add(&mut col),
+                DeckAdder::new("Parent::B").add(&mut col),
+            ];
+            if rwkv {
+                col.set_deck_rwkv_instant_order(&mut parent, ReviewCardOrder::Random);
+            } else {
+                col.set_deck_review_order(&mut parent, ReviewCardOrder::Random);
+            }
+            col.set_deck_review_limit(parent.id, 1);
+            let today = col.timing_today()?.days_elapsed as i32;
+            let mut eligible = HashSet::new();
+            let mut scores = HashMap::new();
+            for child in &children {
+                for index in 0..4 {
+                    let id = add_memory_state_card(
+                        &mut col,
+                        child.id,
+                        CardQueue::Review,
+                        CardType::Review,
+                        today,
+                        2 * 86_400,
+                        30.0,
+                    )?;
+                    if !rwkv || index != 0 {
+                        eligible.insert(id);
+                    }
+                    scores.insert(id, if index == 0 { 0.99 } else { 0.20 });
+                }
+            }
+            if rwkv {
+                col.set_rwkv_review_queue_scores(parent.id, scores)?;
+            }
+            let mut seen = HashSet::new();
+            // No card data changes between builds: the old hash order always
+            // returned the same card. The generous sample avoids flaky tests
+            // without attempting to certify a statistical distribution.
+            for _ in 0..256 {
+                let ids = col.queue_as_ids(parent.id);
+                assert_eq!(ids.len(), 1);
+                assert!(eligible.contains(&ids[0]));
+                seen.insert(ids[0]);
+            }
+            assert_eq!(seen, eligible, "RWKV enabled: {rwkv}");
+        }
         Ok(())
     }
 

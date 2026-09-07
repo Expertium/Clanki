@@ -29,6 +29,9 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Draw Random reviews with fresh randomness before deck limits, including during
+  RWKV queue refreshes, instead of favouring cards through a stable ID/time order.
+
 - Prevent card previews from freezing when MathJax is already loaded.
 - Advance to the next card when burying an RWKV review card restored by Undo.
 - Preserve pending IME text when closing the editor during a review.
