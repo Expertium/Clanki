@@ -13,3 +13,9 @@ the backend current-state check when answered.
 Reviewer answer-button rendering waits for populated scheduling states. The
 answer path also populates missing states before building the answer, so delayed
 callbacks cannot persist an empty placeholder.
+
+The active backend card queue caches the FSRS enabled and short-term-with-steps
+flags. Queue construction loads them from collection config; changes to either
+key, removal, and undo refresh the cached value without discarding a preserved
+queue. Scheduling-state requests without an active queue read collection config
+directly.

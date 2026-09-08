@@ -434,6 +434,7 @@ fn time_series_split_items(
 
 fn evaluate_with_time_series_splits_for_targets<F>(
     ComputeParametersInput {
+        training_config,
         train_set,
         card_ids,
         enable_short_term,
@@ -473,6 +474,7 @@ where
 
     for (train_items, test_items) in splits {
         let parameters = compute_parameters(ComputeParametersInput {
+            training_config,
             train_set: train_items.items,
             card_ids: train_items.card_ids,
             progress: None,
@@ -512,6 +514,7 @@ where
 
 fn evaluate_from_training_to_external_targets(
     ComputeParametersInput {
+        training_config,
         train_set,
         card_ids,
         enable_short_term,
@@ -526,6 +529,7 @@ fn evaluate_from_training_to_external_targets(
         return Err(fsrs::FSRSError::NotEnoughData.into());
     }
     let parameters = compute_parameters(ComputeParametersInput {
+        training_config,
         train_set,
         card_ids,
         progress: None,
@@ -580,6 +584,7 @@ pub(crate) fn compute_params_from_prepared(
         ComputeParamsProgressPhase::OptimizingFsrsParams,
     );
     let input = ComputeParametersInput {
+        training_config: None,
         train_set: items.clone(),
         card_ids: Some(item_card_ids.clone()),
         progress: progress.clone(),
@@ -626,6 +631,7 @@ pub(crate) fn compute_params_from_prepared(
     let health_check_passed = if health_check && health_check_items.items.len() > 300 {
         evaluate_with_time_series_splits(
             ComputeParametersInput {
+                training_config: None,
                 train_set: health_check_items.items.clone(),
                 card_ids: health_check_items.card_ids.clone(),
                 progress: None,
@@ -1393,6 +1399,7 @@ impl Collection {
         let eval = if uses_external_evaluation(training_search, search) {
             evaluate_from_training_to_external_targets(
                 ComputeParametersInput {
+                    training_config: None,
                     train_set: training_items.items,
                     card_ids: training_items.card_ids,
                     progress: None,
@@ -1406,6 +1413,7 @@ impl Collection {
         } else if include_same_day_reviews == include_same_day_reviews_for_training {
             evaluate_with_time_series_splits(
                 ComputeParametersInput {
+                    training_config: None,
                     train_set: evaluation_items.items,
                     card_ids: evaluation_items.card_ids,
                     progress: None,
@@ -1426,6 +1434,7 @@ impl Collection {
         } else {
             evaluate_with_time_series_splits_for_targets(
                 ComputeParametersInput {
+                    training_config: None,
                     train_set: training_items.items,
                     card_ids: training_items.card_ids,
                     progress: None,
@@ -1757,6 +1766,7 @@ fn fsrs_validation_retrievability_cache_rows(
             continue;
         };
         let parameters = match compute_parameters(ComputeParametersInput {
+            training_config: None,
             train_set: train_items.items,
             card_ids: train_items.card_ids,
             progress: progress.map(|progress| progress.training_progress.clone()),
@@ -2830,6 +2840,7 @@ pub(crate) mod tests {
         assert!(filtered.is_empty());
         let err = evaluate_with_time_series_splits(
             ComputeParametersInput {
+                training_config: None,
                 train_set: filtered,
                 card_ids: None,
                 progress: None,
@@ -3222,6 +3233,7 @@ pub(crate) mod tests {
     fn external_target_evaluation_rejects_empty_sets() {
         let err = super::evaluate_from_training_to_external_targets(
             ComputeParametersInput {
+                training_config: None,
                 train_set: vec![],
                 card_ids: None,
                 progress: None,
@@ -3245,6 +3257,7 @@ pub(crate) mod tests {
     fn external_target_evaluation_rejects_empty_evaluation_set() {
         let err = super::evaluate_from_training_to_external_targets(
             ComputeParametersInput {
+                training_config: None,
                 train_set: vec![FSRSItem {
                     reviews: vec![review(0), review(2)],
                 }],

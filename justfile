@@ -209,6 +209,11 @@ rwkv-history-fingerprint-bench *args:
     {{ ninja }} pylib qt
     {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_history_fingerprint_bench.py {{ args }}
 
+# Compare resident RWKV bridges, prediction memo costs, and history preparation on a collection copy.
+rwkv-review-performance-bench *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_review_performance_bench.py {{ args }}
+
 # Measure RWKV review-type metrics on selected current deck ids in a copied collection.
 rwkv-review-type-metrics collection target-deck-ids:
     {{ if os() == "windows" { "$env:ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "'; $env:ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "'; $env:ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin'; $env:ANKI_RWKV_STATE_COMPRESSION_LIMIT='0'; $env:ANKI_RWKV_STATE_COMPRESSION_CONFIGS='raw'; cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } else { "ANKI_RWKV_STATE_COMPRESSION_COLLECTION='" + collection + "' ANKI_RWKV_STATE_COMPRESSION_TARGET_DECK_IDS='" + target-deck-ids + "' ANKI_RWKV_STATE_COMPRESSION_MODEL='" + justfile_directory() + "/qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin' ANKI_RWKV_STATE_COMPRESSION_LIMIT=0 ANKI_RWKV_STATE_COMPRESSION_CONFIGS=raw cargo test -p anki rwkv_state_compression_metrics --release -- --ignored --nocapture" } }}
@@ -216,6 +221,10 @@ rwkv-review-type-metrics collection target-deck-ids:
 # Build and run the standalone RWKV predictor benchmark.
 rwkv-predict-bench *args:
     cargo run -p anki --release --bin rwkv_predict_bench -- {{ args }}
+
+# Compare original and optimized native query math in alternating order.
+rwkv-query-math-bench:
+    cargo test -p anki --release --lib rwkv_query_math_benchmark -- --ignored --nocapture
 
 # Remove build outputs from out/ (pass keep-env to keep node_modules/pyenv); macOS/Linux
 clean *args:

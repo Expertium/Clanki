@@ -948,6 +948,68 @@ updates no longer stalls behind multi-second replay calls.
 
 ### RWKV Performance Investigation Notes
 
+For review-time overhead, run the following against an extracted collection
+backup, never the live profile database:
+
+```sh
+RELEASE=1 just rwkv-review-performance-bench \
+  --collection-copy /private/tmp/rwkv-bench/collection.anki2 \
+  --weights qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin \
+  --deck-id DECK_ID --queries 8803 --rounds 20 \
+  --output /private/tmp/rwkv-bench/review-performance.json
+```
+
+The benchmark uses canonical collection-wide history, checks its identity
+against the native fingerprint, warms resident state, and alternates tuple and
+packed bridge measurements over the same query inputs. It checks exact
+prediction parity and reports payload creation, native bridge calls, prediction
+object creation, and memo lookup/install/clear costs separately. Use an optimized
+build for native throughput comparisons. `--profile-history PATH` writes a
+separate Python profile; its instrumented timings are not throughput measurements.
+
+For native arithmetic comparisons, use `--prediction-output PATH` on the
+baseline build, then `--prediction-reference PATH` on later builds. The reference
+contains exact query inputs and predictions. Later runs reuse those inputs,
+verify the history hash, and report maximum absolute prediction error and the
+number of changed positions in the prediction ordering. An error above `1e-6`
+fails the benchmark, matching the native scalar/batch parity test tolerance.
+References are local benchmark artifacts and are not scheduler state caches.
+
+`just rwkv-query-math-bench` compares the original and optimized normalization
+and decay kernels in alternating order within one optimized test process. These
+kernel timings do not include the rest of queue scoring or Python overhead.
+
+The macOS batched query path normalizes four independent rows together while
+preserving each row's floating-point reduction order. Decay calculation uses
+`exp(-exp(-0.5) * sigmoid(x))`, an algebraic simplification of the original
+softplus expression. The latter can produce small floating-point differences;
+it is checked against the original transform and the existing `1e-6` prediction
+parity tolerance. Extremely close scores may exchange order. Recurrent state
+updates and serialization retain their original arithmetic and format, so
+existing state caches remain compatible. Other platforms retain their scalar
+query path.
+
+By default, Dynamic DR timing measures only card loading. To include the
+installed provider's rule evaluation, supply `--dynamic-dr-addon PATH` pointing
+to a copied add-on directory containing `dynamic_desired_retention/`, and
+`--dynamic-dr-config PATH` pointing to its copied configuration object as JSON.
+This installs a provider only in the benchmark process, without its GUI hooks,
+and compares cold and warm rule caches. `--profile-dynamic-dr PATH` writes a
+separate profile. The JSON result includes `dynamic_dr_target_hash` for comparing
+all resolved per-card retention targets between provider versions. It does not
+modify or synchronize the installed add-on.
+
+`--uncached-field-maps` runs the original Python field-map construction in the
+benchmark process for a before/after comparison. Normal note loading reuses
+field-map entries per note type, checking field identity, name, ordinal, and
+order before reuse. Returned dictionaries remain independent, so callers can
+mutate their maps without affecting other notes. Note-type cache invalidation
+also clears these entries; unsaved in-place field edits are detected on lookup.
+
+Review history serialization combines optional-field markers and values into
+single writes. The binary layout and history hash remain unchanged, so this
+optimization does not invalidate existing state caches.
+
 This work log captures the 2026-07-02 RWKV warm-up performance investigation.
 Future work should start from these measured facts instead of re-checking the
 same SRS-benchmark and scan assumptions.
@@ -1299,6 +1361,10 @@ the restored card id. The reviewer queues those ids and shows them before
 falling back to the normal review queue, so repeated undo restores answered
 cards in reverse review order. Transient RWKV queue score maps are not cleared
 by undo itself; later queue refreshes can replace them from the restored state.
+Even when no live RWKV rollback frame is available, undo displays Anki's restored
+queue directly without waiting for RWKV queue scoring. Review input stays blocked
+from the undo request through presentation of the restored card, including when
+the reviewer temporarily loses focus. A failed undo releases its input block.
 
 ## Rust/NEON Parity Coverage
 

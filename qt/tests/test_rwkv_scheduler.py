@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
 import sqlite3
+import struct
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -6836,6 +6838,36 @@ def test_rwkv_state_cache_file_replace_retries_windows_lock(
     assert not source.exists()
 
 
+@pytest.mark.parametrize("value", [None, 0, -1, -(2**63), 2**63 - 1])
+def test_rwkv_optional_integer_preserves_cache_bytes(value: int | None) -> None:
+    expected = b"\0" if value is None else b"\1" + struct.pack("<q", value)
+    buffer = bytearray()
+    stream = io.BytesIO()
+    for output in (buffer, stream):
+        rwkv_scheduler._write_optional_i64(output, value)
+    assert bytes(buffer) == stream.getvalue() == expected
+    reader = rwkv_scheduler._RwkvBinaryReader(expected)
+    assert rwkv_scheduler._read_optional_i64(reader) == value
+    reader.expect_end()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, b"\0"), ("", b"\1\0\0\0\0"), ("é", b"\1\2\0\0\0\xc3\xa9")],
+)
+def test_rwkv_optional_string_preserves_cache_bytes(
+    value: str | None, expected: bytes
+) -> None:
+    buffer = bytearray()
+    stream = io.BytesIO()
+    for output in (buffer, stream):
+        rwkv_scheduler._write_optional_string(output, value)
+    assert bytes(buffer) == stream.getvalue() == expected
+    reader = rwkv_scheduler._RwkvBinaryReader(expected)
+    assert rwkv_scheduler._read_optional_string(reader) == value
+    reader.expect_end()
+
+
 def test_rwkv_state_cache_stream_write_matches_binary_encoder(tmp_path: Path) -> None:
     history = _rwkv_checkpoint_test_history(2)
     snapshot = RwkvBackendCacheSnapshot(
@@ -12844,6 +12876,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         new_count=3,
         learn_count=4,
         review_count=5,
+        review_uncapped=5,
         children=[],
     )
     pending_scope = SimpleNamespace(
@@ -12851,6 +12884,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         new_count=1,
         learn_count=2,
         review_count=60,
+        review_uncapped=60,
         children=[child],
     )
     ready_scope = SimpleNamespace(
@@ -12858,6 +12892,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         new_count=6,
         learn_count=7,
         review_count=8,
+        review_uncapped=8,
         children=[],
     )
     tree = SimpleNamespace(children=[pending_scope, ready_scope])

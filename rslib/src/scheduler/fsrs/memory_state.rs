@@ -378,9 +378,13 @@ impl Collection {
                             .expect("We set it before this function is called"),
                         0,
                     );
-                    let min_interval =
-                        minimum_review_fuzz_interval(interval, previous_interval, req.max_interval)
-                            .max(1);
+                    let min_interval = minimum_review_fuzz_interval(
+                        interval,
+                        previous_interval,
+                        req.max_interval,
+                        req.review_fuzz_config,
+                    )
+                    .max(1);
                     card.interval = rescheduler
                         .as_mut()
                         .and_then(|r| {

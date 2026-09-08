@@ -224,15 +224,6 @@ impl ReviewState {
         ctx: &StateContext,
         states: &NextStates,
     ) -> ((u32, i32), (u32, i32), (u32, i32)) {
-        // If the interval is larger than last time, don't allow fuzz to go backwards
-        let greater_than_last = |interval: u32| {
-            if interval > self.scheduled_days {
-                self.scheduled_days + 1
-            } else {
-                // User may have changed their retention factor; don't limit
-                0
-            }
-        };
         let hard = constrain_passing_interval(
             ctx,
             states.hard.interval,
@@ -240,6 +231,7 @@ impl ReviewState {
                 states.hard.interval,
                 self.scheduled_days,
                 ctx.maximum_review_interval,
+                ctx.review_fuzz_config,
             )
             .max(1),
             true,
@@ -247,13 +239,25 @@ impl ReviewState {
         let good = constrain_passing_interval(
             ctx,
             states.good.interval,
-            greater_than_last(states.good.interval.round() as u32).max(hard.0 + 1),
+            minimum_review_fuzz_interval(
+                states.good.interval,
+                self.scheduled_days,
+                ctx.maximum_review_interval,
+                ctx.review_fuzz_config,
+            )
+            .max(hard.0 + 1),
             true,
         );
         let easy = constrain_passing_interval(
             ctx,
             states.easy.interval,
-            greater_than_last(states.easy.interval.round() as u32).max(good.0 + 1),
+            minimum_review_fuzz_interval(
+                states.easy.interval,
+                self.scheduled_days,
+                ctx.maximum_review_interval,
+                ctx.review_fuzz_config,
+            )
+            .max(good.0 + 1),
             true,
         );
         (hard, good, easy)
@@ -576,5 +580,62 @@ mod test {
             state.passing_review_intervals(&ctx),
             ((1, 0), (3, 0), (4, 0))
         );
+    }
+
+    #[test]
+    fn fsrs_good_and_easy_preserve_previous_interval_within_fuzz_range() {
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.fuzz_factor = Some(0.0);
+        let state = ReviewState {
+            scheduled_days: 4,
+            elapsed_days: 4,
+            ..Default::default()
+        };
+        for (good, easy, expected_good, expected_easy) in
+            [(2.7269483, 4.591988, 4, 5), (1.1, 2.7269483, 2, 4)]
+        {
+            ctx.fsrs_next_states = Some(NextStates {
+                again: fsrs_item_state(1.0),
+                hard: fsrs_item_state(1.0),
+                good: fsrs_item_state(good),
+                easy: fsrs_item_state(easy),
+            });
+            let (_, good, easy) = state.passing_review_intervals(&ctx);
+            assert_eq!(good.0, expected_good);
+            assert_eq!(easy.0, expected_easy);
+        }
+    }
+
+    #[test]
+    fn fsrs_interval_protection_uses_collection_fuzz_and_respects_maximum() {
+        use crate::scheduler::states::fuzz::ReviewFuzzConfig;
+
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.fuzz_factor = Some(0.0);
+        ctx.fsrs_next_states = Some(NextStates {
+            again: fsrs_item_state(1.0),
+            hard: fsrs_item_state(1.0),
+            good: fsrs_item_state(3.0),
+            easy: fsrs_item_state(3.0),
+        });
+        let state = ReviewState {
+            scheduled_days: 6,
+            elapsed_days: 6,
+            ..Default::default()
+        };
+        // A genuine decrease outside the default fuzz range is allowed.
+        assert!(state.passing_review_intervals(&ctx).1 .0 < 6);
+        ctx.review_fuzz_config = ReviewFuzzConfig {
+            base: 3.0,
+            ..Default::default()
+        };
+        assert_eq!(state.passing_review_intervals(&ctx).1 .0, 6);
+        ctx.maximum_review_interval = 3;
+        let (_, good, easy) = state.passing_review_intervals(&ctx);
+        assert!(good.0 <= 3);
+        assert!(easy.0 <= 3);
+        ctx.maximum_review_interval = 36500;
+        ctx.review_fuzz_config = ReviewFuzzConfig::none();
+        assert_eq!(state.passing_review_intervals(&ctx).1 .0, 3);
     }
 }

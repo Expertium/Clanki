@@ -24,15 +24,32 @@ repeated here unless they materially affect a fork feature.
 
 ### Added
 
+- Show the total due reviews beside limited deck-list counts, with a tooltip
+  explaining daily review limits.
+
 - Publish portable editions for macOS, Windows, and Linux alongside the normal
   installers in GitHub releases.
 
 ### Fixed
 
+- Correct FSRS-7 Dynamic DR intervals to use the full memory state, including
+  fast stability.
+
 - Draw Random reviews with fresh randomness before deck limits, including during
   RWKV queue refreshes, instead of favouring cards through a stable ID/time order.
 
+- Keep undo responsive when an RWKV rollback frame is unavailable, and block
+  review input until the restored card is displayed.
+
+- Restore FSRS protection against Good/Easy intervals shrinking through review fuzz.
+- Restore cached FSRS scheduling flags during reviews while keeping config changes
+  and undo reflected in the active queue.
+
 - Prevent card previews from freezing when MathJax is already loaded.
+- Speed up macOS RWKV queue-scoring normalization and decay calculations.
+- Reduce note-loading overhead during Dynamic DR preparation by reusing note-type
+  field-map entries while preserving field edits and undo behavior.
+- Reduce Python overhead when validating RWKV review history during cache recovery.
 - Advance to the next card when burying an RWKV review card restored by Undo.
 - Preserve pending IME text when closing the editor during a review.
 - Ensure in-app update checks select the normal installer when portable downloads

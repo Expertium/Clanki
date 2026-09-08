@@ -135,6 +135,7 @@ struct Context {
     seen_note_ids: HashMap<NoteId, BuryMode>,
     deck_map: HashMap<DeckId, Deck>,
     fsrs: bool,
+    fsrs_short_term_with_steps: bool,
     rwkv_review_queue_scores: Option<Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>>,
 }
 
@@ -215,6 +216,8 @@ impl QueueBuilder {
                 seen_note_ids: HashMap::new(),
                 deck_map,
                 fsrs: col.get_config_bool(BoolKey::Fsrs),
+                fsrs_short_term_with_steps: col
+                    .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
                 rwkv_review_queue_scores,
             },
         })
@@ -362,6 +365,8 @@ impl QueueBuilder {
             current_day: self.context.timing.days_elapsed,
             build_time: TimestampMillis::now(),
             load_balancer: self.load_balancer,
+            fsrs_enabled: self.context.fsrs,
+            fsrs_short_term_with_steps: self.context.fsrs_short_term_with_steps,
             current_learning_cutoff: now,
             shown_top_card: None,
             non_news_sorted_by_retrievability: shared_r_sort,

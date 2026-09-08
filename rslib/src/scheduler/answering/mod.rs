@@ -569,6 +569,22 @@ impl Collection {
         )
     }
 
+    fn fsrs_enabled(&self) -> bool {
+        self.state
+            .card_queues
+            .as_ref()
+            .map(|queues| queues.fsrs_enabled)
+            .unwrap_or_else(|| self.get_config_bool(BoolKey::Fsrs))
+    }
+
+    fn fsrs_short_term_with_steps_enabled(&self) -> bool {
+        self.state
+            .card_queues
+            .as_ref()
+            .map(|queues| queues.fsrs_short_term_with_steps)
+            .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled))
+    }
+
     fn card_state_updater(
         &mut self,
         mut card: Card,
@@ -597,7 +613,7 @@ impl Collection {
         let fsrs_preset = self.fsrs_preset_for_card(&card)?;
 
         let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);
-        let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
+        let fsrs_enabled = self.fsrs_enabled();
         let mut elapsed_days_for_log = None;
         let mut fsrs_review_retrievability = None;
         let mut dynamic_desired_retention = None::<DynamicDesiredRetentionStates>;
@@ -715,8 +731,7 @@ impl Collection {
         let desired_retention = fsrs_enabled.then_some(desired_retention);
         let dynamic_desired_retentions =
             dynamic_desired_retention.map(|value| value.desired_retentions);
-        let fsrs_short_term_with_steps =
-            self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled);
+        let fsrs_short_term_with_steps = self.fsrs_short_term_with_steps_enabled();
         let fsrs_learning_queues_disabled =
             fsrs_enabled && self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled);
         let fsrs_allow_short_term = if fsrs_enabled {
@@ -1978,6 +1993,62 @@ pub(crate) mod test {
             "elapsed_secs: {elapsed_secs} != expected_elapsed_secs: {expected_elapsed_secs}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn cached_fsrs_flags_follow_config_changes_removal_and_undo() -> Result<()> {
+        let mut col = Collection::new();
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        // No active queue: scheduling falls back to config.
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
+        assert!(col.fsrs_enabled());
+        assert!(col.fsrs_short_term_with_steps_enabled());
+        col.get_queued_cards(1, false, true)?;
+        assert!(col.state.card_queues.as_ref().unwrap().fsrs_enabled);
+        assert!(
+            col.state
+                .card_queues
+                .as_ref()
+                .unwrap()
+                .fsrs_short_term_with_steps
+        );
+
+        for key in [BoolKey::Fsrs, BoolKey::FsrsShortTermWithStepsEnabled] {
+            col.set_config_bool(key, false, true)?;
+            assert!(
+                col.state.card_queues.is_some(),
+                "config writes preserve the queue"
+            );
+            assert_eq!(col.fsrs_enabled(), col.get_config_bool(BoolKey::Fsrs));
+            assert_eq!(
+                col.fsrs_short_term_with_steps_enabled(),
+                col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled)
+            );
+            col.undo()?;
+            assert!(col.fsrs_enabled());
+            assert!(col.fsrs_short_term_with_steps_enabled());
+            col.redo()?;
+            assert!(!col.get_config_bool(key));
+            assert_eq!(col.fsrs_enabled(), col.get_config_bool(BoolKey::Fsrs));
+            assert_eq!(
+                col.fsrs_short_term_with_steps_enabled(),
+                col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled)
+            );
+            col.undo()?;
+
+            let key_str: &str = key.into();
+            col.remove_config(key_str)?;
+            assert_eq!(col.fsrs_enabled(), col.get_config_bool(BoolKey::Fsrs));
+            assert_eq!(
+                col.fsrs_short_term_with_steps_enabled(),
+                col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled)
+            );
+            col.undo()?;
+            assert!(col.fsrs_enabled());
+            assert!(col.fsrs_short_term_with_steps_enabled());
+        }
         Ok(())
     }
 }

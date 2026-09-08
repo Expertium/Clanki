@@ -44,6 +44,8 @@ pub(crate) struct CardQueues {
     non_news_sorted_by_retrievability: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     pub(crate) load_balancer: Option<LoadBalancer>,
+    pub(crate) fsrs_enabled: bool,
+    pub(crate) fsrs_short_term_with_steps: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

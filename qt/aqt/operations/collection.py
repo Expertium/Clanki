@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from anki.collection import Collection, OpChanges, OpChangesAfterUndo, Preferences
 from anki.errors import UndoEmpty
 from aqt import gui_hooks
@@ -10,25 +13,43 @@ from aqt.operations import CollectionOp
 from aqt.qt import QWidget
 from aqt.utils import showWarning, tooltip, tr
 
+logger = logging.getLogger(__name__)
+
 
 def undo(*, parent: QWidget) -> None:
     "Undo the last operation, and refresh the UI."
 
     reviewer = getattr(parent, "reviewer", None)
+    requested_at = time.monotonic()
     restored_card_ids: list[int] = []
     set_review_actions_blocked = getattr(reviewer, "set_review_actions_blocked", None)
-    if callable(set_review_actions_blocked):
+    begin_undo = getattr(reviewer, "begin_undo", None)
+    finish_undo = getattr(reviewer, "finish_undo", None)
+    if callable(begin_undo):
+        begin_undo()
+    elif callable(set_review_actions_blocked):
         set_review_actions_blocked(True)
 
     def unblock_review_actions() -> None:
-        if callable(set_review_actions_blocked):
+        if callable(finish_undo):
+            finish_undo(None)
+        elif callable(set_review_actions_blocked):
             set_review_actions_blocked(False)
 
     def perform_undo(col: Collection) -> OpChangesAfterUndo:
+        started_at = time.monotonic()
         out = col.undo()
+        collection_finished_at = time.monotonic()
         from aqt import rwkv_scheduler
 
         restored_card_ids.extend(rwkv_scheduler.record_collection_undo(out))
+        logger.debug(
+            "undo completed: wait_ms=%.1f collection_ms=%.1f rwkv_ms=%.1f restored_card_ids=%s",
+            (started_at - requested_at) * 1000,
+            (collection_finished_at - started_at) * 1000,
+            (time.monotonic() - collection_finished_at) * 1000,
+            restored_card_ids,
+        )
         return out
 
     def on_success(out: OpChangesAfterUndo) -> None:
@@ -45,6 +66,9 @@ def undo(*, parent: QWidget) -> None:
             unblock_after_success = not queued_restored_card
             gui_hooks.state_did_undo(out)
             tooltip(tr.undo_action_undone(action=out.operation), parent=parent)
+            if callable(finish_undo):
+                finish_undo(out.changes)
+                unblock_after_success = False
         finally:
             if unblock_after_success:
                 unblock_review_actions()

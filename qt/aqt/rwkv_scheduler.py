@@ -16371,11 +16371,7 @@ def _read_optional_bytes(reader: _RwkvBinaryReader) -> bytes | None:
 
 
 def _write_optional_i64(out: _RwkvBinaryOutput, value: int | None) -> None:
-    if value is None:
-        _write_u8(out, 0)
-    else:
-        _write_u8(out, 1)
-        _write_i64(out, value)
+    _write_raw(out, b"\0" if value is None else struct.pack("<Bq", 1, value))
 
 
 def _read_optional_i64(reader: _RwkvBinaryReader) -> int | None:
@@ -16389,10 +16385,10 @@ def _read_optional_i64(reader: _RwkvBinaryReader) -> int | None:
 
 def _write_optional_string(out: _RwkvBinaryOutput, value: str | None) -> None:
     if value is None:
-        _write_u8(out, 0)
+        _write_raw(out, b"\0")
     else:
-        _write_u8(out, 1)
-        _write_bytes(out, value.encode("utf8"))
+        encoded = value.encode("utf8")
+        _write_raw(out, struct.pack("<BI", 1, len(encoded)) + encoded)
 
 
 def _read_optional_string(reader: _RwkvBinaryReader) -> str | None:

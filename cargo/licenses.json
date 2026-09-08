@@ -2032,6 +2032,22 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
+    "authors": "bluss",
+    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "itertools",
+    "repository": "https://github.com/rust-itertools/itertools"
+  },
+  {
+    "authors": "bluss",
+    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "itertools",
+    "repository": "https://github.com/rust-itertools/itertools"
+  },
+  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -3692,6 +3708,22 @@
     "description": "An ergonomic error handling library",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
+    "name": "snafu",
+    "repository": "https://github.com/shepmaster/snafu"
+  },
+  {
+    "authors": "Jake Goulding <jake.goulding@gmail.com>",
+    "description": "An ergonomic error handling library",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "snafu-derive",
+    "repository": "https://github.com/shepmaster/snafu"
+  },
+  {
+    "authors": "Jake Goulding <jake.goulding@gmail.com>",
+    "description": "An ergonomic error handling library",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
     "name": "snafu-derive",
     "repository": "https://github.com/shepmaster/snafu"
   },
@@ -3789,6 +3821,22 @@
     "license": "MIT",
     "license_file": null,
     "name": "strum",
+    "repository": "https://github.com/Peternator7/strum"
+  },
+  {
+    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "description": "Helpful macros for working with enums and strings",
+    "license": "MIT",
+    "license_file": null,
+    "name": "strum",
+    "repository": "https://github.com/Peternator7/strum"
+  },
+  {
+    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "description": "Helpful macros for working with enums and strings",
+    "license": "MIT",
+    "license_file": null,
+    "name": "strum_macros",
     "repository": "https://github.com/Peternator7/strum"
   },
   {
@@ -4896,14 +4944,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": "Microsoft",
-    "description": "Rust for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-sys",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": null,
     "description": "Rust for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -4921,14 +4961,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import libs for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-targets",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import libs for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -4960,14 +4992,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_aarch64_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -4977,14 +5001,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_aarch64_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5008,23 +5024,7 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_gnu",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5048,14 +5048,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -5065,14 +5057,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_gnu",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5089,14 +5073,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5113,14 +5089,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
