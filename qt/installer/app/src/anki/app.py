@@ -34,7 +34,16 @@ def configure_portable_environment(
 
     data_dir = portable_root / PORTABLE_DATA_DIR
     temp_dir = data_dir / ".tmp"
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise RuntimeError(
+            "Anki Portable cannot create its data folder because the application "
+            "is in a read-only or otherwise unwritable location. Move the entire "
+            "'Anki Portable' folder to a writable location, then open Anki Portable "
+            "again. On macOS, move the folder in Finder before the first launch so "
+            "Gatekeeper does not run the app from a read-only temporary location."
+        ) from error
 
     root_digest = hashlib.sha256(os.fsencode(portable_root)).hexdigest()[:16]
     environ["ANKI_BASE"] = str(data_dir)

@@ -276,6 +276,10 @@ def get_output_dir(args: argparse.Namespace) -> Path:
     return portable_out_dir if getattr(args, "portable", False) else out_dir
 
 
+def get_artifact_version(app_version: str) -> str:
+    return os.environ.get("ANKI_ARTIFACT_VERSION") or app_version
+
+
 def get_portable_archive_path(output_dir: Path, version: str) -> Path:
     platform_suffix = get_platform_suffix()
     if sys.platform == "linux":
@@ -367,11 +371,12 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
 
 def package(args: argparse.Namespace) -> None:
     version = args.version
+    artifact_version = get_artifact_version(version)
     output_dir = get_output_dir(args)
     config_args = get_briefcase_config_args(args)
     shutil.rmtree(output_dir / "dist", ignore_errors=True)
     if args.portable and sys.platform != "darwin":
-        package_portable_archive(output_dir, version)
+        package_portable_archive(output_dir, artifact_version)
         return
 
     subprocess.check_call(
@@ -388,12 +393,12 @@ def package(args: argparse.Namespace) -> None:
         cwd=output_dir,
     )
     if args.portable:
-        package_portable_archive(output_dir, version)
+        package_portable_archive(output_dir, artifact_version)
         return
 
     package_path = next((output_dir / "dist").iterdir())
     package_path.rename(
-        package_path.with_stem(f"anki-{version}{get_platform_suffix()}")
+        package_path.with_stem(f"anki-{artifact_version}{get_platform_suffix()}")
     )
 
 

@@ -1,8 +1,15 @@
 ANKI PORTABLE
 =============
 
-Keep this entire "Anki Portable" folder together. Start Anki with the file for
-your platform:
+Keep this entire "Anki Portable" folder together.
+
+On macOS, before the first launch, use Finder to move the complete extracted
+"Anki Portable" folder from Downloads to a writable location such as your home
+folder. Then open "Anki Portable.app" from the moved folder. If you open the app
+before moving it, macOS Gatekeeper may run it from a read-only temporary
+location where it cannot use the adjacent data folder.
+
+Start Anki with the file for your platform:
 
   macOS:  Anki Portable.app
   Windows: Anki Portable.exe

@@ -72,3 +72,24 @@ def test_each_portable_folder_gets_a_distinct_instance_key(tmp_path: Path) -> No
         keys.append(environ["ANKI_SINGLE_INSTANCE_KEY"])
 
     assert keys[0] != keys[1]
+
+
+def test_unwritable_portable_location_has_actionable_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_portable_app_module()
+    module_file = portable_module(tmp_path)
+    resources = module_file.parents[2]
+    resources.mkdir(parents=True)
+    (resources / module.PORTABLE_MARKER).touch()
+    environ = {"ANKI_BASE": "/main/Anki2"}
+
+    def fail_to_create_temp_dir(*_args: object, **_kwargs: object) -> None:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(Path, "mkdir", fail_to_create_temp_dir)
+
+    with pytest.raises(RuntimeError, match="Move the entire 'Anki Portable' folder"):
+        module.configure_portable_environment(module_file, environ)
+
+    assert environ == {"ANKI_BASE": "/main/Anki2"}

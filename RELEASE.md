@@ -32,6 +32,10 @@ repeated here unless they materially affect a fork feature.
 
 ### Fixed
 
+- Explain how to move the macOS portable folder when Gatekeeper starts it from
+  a read-only temporary location instead of failing with an opaque filesystem
+  error.
+
 - Correct FSRS-7 Dynamic DR intervals to use the full memory state, including
   fast stability.
 
@@ -54,6 +58,7 @@ repeated here unless they materially affect a fork feature.
 - Preserve pending IME text when closing the editor during a review.
 - Ensure in-app update checks select the normal installer when portable downloads
   are published alongside it.
+- Include the release build number in every installer and portable archive filename.
 
 ## 26.09b1+fsrs7 — 2026-08-28
 

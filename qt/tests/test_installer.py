@@ -17,6 +17,7 @@ from tools.build_installer import (
     _find_fcitx_file,
     build,
     bundle_fcitx,
+    get_artifact_version,
     get_briefcase_config_args,
     get_briefcase_output_format,
     get_briefcase_sources_path,
@@ -177,6 +178,16 @@ def test_signing_args(monkeypatch) -> None:
     assert get_signing_args() == ["--adhoc-sign"]
     monkeypatch.setenv("SIGN_IDENTITY", "foo")
     assert get_signing_args() == ["--identity", "foo"]
+
+
+def test_artifact_version_defaults_to_app_version(monkeypatch) -> None:
+    monkeypatch.delenv("ANKI_ARTIFACT_VERSION", raising=False)
+    assert get_artifact_version("26.09b1+fsrs7") == "26.09b1+fsrs7"
+
+
+def test_artifact_version_can_include_release_build(monkeypatch) -> None:
+    monkeypatch.setenv("ANKI_ARTIFACT_VERSION", "26.09b1+fsrs7.build.85")
+    assert get_artifact_version("26.09b1+fsrs7") == "26.09b1+fsrs7.build.85"
 
 
 @pytest.mark.parametrize(
@@ -419,6 +430,41 @@ def test_package_portable_skips_native_installer(
 
     archive.assert_called_once_with(tmp_path, "0.0.1")
     briefcase.assert_not_called()
+
+
+def test_package_portable_uses_artifact_version(
+    monkeypatch, mocker, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("tools.build_installer.portable_out_dir", tmp_path)
+    monkeypatch.setenv("ANKI_ARTIFACT_VERSION", "26.09b1+fsrs7.build.85")
+    archive = mocker.patch("tools.build_installer.package_portable_archive")
+    args = argparse.Namespace(version="26.09b1+fsrs7", portable=True)
+
+    package(args)
+
+    archive.assert_called_once_with(tmp_path, "26.09b1+fsrs7.build.85")
+
+
+def test_package_installer_uses_artifact_version(
+    monkeypatch, mocker, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr("tools.build_installer.out_dir", tmp_path)
+    monkeypatch.setenv("ANKI_ARTIFACT_VERSION", "26.09b1+fsrs7.build.85")
+
+    def create_package(*_args, **_kwargs) -> None:
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "generated.dmg").touch()
+
+    mocker.patch("subprocess.check_call", side_effect=create_package)
+    args = argparse.Namespace(version="26.09b1+fsrs7", portable=False)
+
+    package(args)
+
+    assert (tmp_path / "dist/anki-26.09b1+fsrs7.build.85-mac-apple.dmg").exists()
 
 
 def test_build_and_package(out_dir: Path, cmd_args: argparse.Namespace) -> None:
