@@ -56,7 +56,26 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    assume: `rslib/src/scheduler/fsrs/simulator.rs` imports
    `scheduler::rwkv::relative_overdueness`. Confirm whether that is RWKV
    simulation or just a shared helper before deleting it.
-8. Many smaller changes and tweaks.
+8. **Port upstream PR 4717 (FSRS sync reconciliation) with the 2026-06-20
+   fixes.** https://github.com/ankitects/anki/pull/4717 by JSchoreels, open
+   since 2026-04-18 and stalled: only dae reviews sync code. It reconciles FSRS
+   memory state on the client after a normal sync instead of forcing a full
+   sync. It is wire-transparent (the server path passes an empty map), so
+   AnkiWeb keeps working. A `git apply --check` against Clanki: the sync-layer
+   hunks apply; `rslib/src/scheduler/fsrs/memory_state.rs` and
+   `rslib/src/sync/collection/tests.rs` conflict with the fork's own edits, so
+   those two need a manual merge. Land Andrew's review findings from the PR
+   thread at the same time, as behavior with tests, not as follow-ups:
+   - the reschedule half must respect the "reschedule cards on change" opt-out,
+     must not fire on pure deck moves, and should reuse
+     `LastRevlogInfo.previous_interval` instead of recomputing via
+     `next_interval`;
+   - `reconcile_itemless_cards_after_sync` must not null an agreed
+     `memory_state` on a momentary `last_review_time` difference;
+   - add a forget/reset test so a sync cannot un-forget a card;
+   - build `Rescheduler` once and call `update_due_cnt_per_day` per placement,
+     not once per card (currently O(K·D), should be O(D+K)).
+9. Many smaller changes and tweaks.
 
 ## Changes already made in Clanki
 
@@ -83,8 +102,19 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
   Users may depend on it (Hyrum's Law).
 
 The load-bearing quirks in Anki specifically are: the collection database
-schema, the sync protocol, the add-on API surface, and scheduling outcomes that
-users' review histories are built on. Treat all four as behavior.
+schema, the sync **wire protocol**, the add-on API surface, and scheduling
+outcomes that users' review histories are built on. Treat all four as behavior.
+
+"Sync wire protocol" means exactly three things: the serialized shapes
+(`Chunk`, `UnchunkedChanges`, `SyncMeta`, graves), the protocol version
+constants in `rslib/src/sync/version.rs`, and the collection schema on full
+sync. Those are what AnkiWeb sees. They must not change, or AnkiWeb sync dies.
+**Client-side merge logic is fair game** — what the client does with rows after
+it receives them (`apply_chunk`, `merge_cards`, post-sync reconcile passes).
+The JSchoreels fork already diverges there (observation hooks feeding
+`remote_review_ids` to the RWKV cache), and AnkiWeb cannot tell. Merge logic is
+still observable behavior, because it decides DB contents after a sync, so it
+needs a `spec/sync.md` entry and pinning tests like anything else.
 
 Why the enforcement matters here: Anki is Rust + TypeScript/Svelte + Python, and
 the user reads only the Python. For most of this codebase **the test suite is
