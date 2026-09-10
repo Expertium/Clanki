@@ -8,6 +8,7 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
     await page.goto("/deck-options/1");
 
     const fsrs = page.getByRole("checkbox", { name: /^FSRS\b/ });
+    const advanced = page.locator("details.fsrs-advanced");
     const parameters = page.getByRole("button", { name: "FSRS Parameters", exact: true });
     const input = parameters.locator("textarea");
     await expect(fsrs).not.toBeChecked();
@@ -16,6 +17,12 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
 
     async function setTimeoutMs(ms: number): Promise<void> {
         await page.evaluate((ms) => (window as any).anki.setParameterUnlockClickTimeoutMs(ms), ms);
+    }
+
+    async function enableFsrs(): Promise<void> {
+        await fsrs.check();
+        await page.clock.runFor(1);
+        await advanced.locator("summary").click();
     }
 
     async function clickThreeTimes(interval: number): Promise<void> {
@@ -33,7 +40,7 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
 
     // The host can configure timing before the first mount, and remounts retain it.
     for (let mount = 0; mount < 2; mount++) {
-        await fsrs.check();
+        await enableFsrs();
         await expect(input).toBeDisabled();
         await clickThreeTimes(750);
         await expect(input).toBeEnabled();
@@ -43,11 +50,11 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
 
     // Changing the timeout while the controls are absent applies to their next mount.
     await setTimeoutMs(2000);
-    await fsrs.check();
+    await enableFsrs();
     await clickThreeTimes(1250);
     await expect(input).toBeEnabled();
     await fsrs.uncheck();
-    await fsrs.check();
+    await enableFsrs();
 
     // Changes made after mounting also apply, without changing the three-click gate.
     await setTimeoutMs(defaultMs);
@@ -61,7 +68,7 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
     await setTimeoutMs(2000);
     await page.reload();
     await expect(fsrs).not.toBeChecked();
-    await fsrs.check();
+    await enableFsrs();
     await clickThreeTimes(750);
     await expect(input).toBeDisabled();
 });

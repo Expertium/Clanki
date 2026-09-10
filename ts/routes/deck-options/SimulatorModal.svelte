@@ -971,10 +971,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     onMount(() => {
+        if (!svg) {
+            return;
+        }
         const observer = new ResizeObserver(() => {
             updateFontScale();
         });
-        observer.observe(svg!);
+        observer.observe(svg);
         return () => {
             observer.disconnect();
         };

@@ -494,6 +494,7 @@ def test_package_installer_uses_artifact_version(
     monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.setattr("tools.build_installer.out_dir", tmp_path)
     monkeypatch.setenv("ANKI_ARTIFACT_VERSION", "26.09b1+fsrs7.build.85")
+    mocker.patch("tools.build_installer.get_briefcase_environ", return_value={})
 
     def create_package(*_args, **_kwargs) -> None:
         dist_dir = tmp_path / "dist"
