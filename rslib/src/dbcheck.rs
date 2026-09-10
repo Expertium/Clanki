@@ -320,7 +320,7 @@ impl Collection {
                     )
                 });
                 self.update_note_inner_generating_cards(
-                    ctx, &mut note, &original, false, norm, true,
+                    ctx, &mut note, &original, false, norm, true, None,
                 )?;
             }
         }

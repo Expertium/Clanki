@@ -137,7 +137,7 @@ async function postProtoInner(
         } catch {
             // ignore
         }
-        throw new Error(`${result.status}: ${msg}`);
+        throw new Error(process.env.NODE_ENV === "production" ? `${msg}` : `${result.status}: ${msg}`);
     }
     if (graphRequest) {
         logGraphPostProto("graphs fetch body read started", {

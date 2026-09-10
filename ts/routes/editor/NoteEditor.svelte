@@ -25,6 +25,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         state: Writable<EditorState>;
         lastIOImagePath: Writable<string | null>;
         saveNow: () => Promise<void>;
+        isLegacy: boolean;
     }
 
     interface LoadNoteArgs {
@@ -1379,6 +1380,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let apiPartial: Partial<NoteEditorAPI> = {};
     export { apiPartial as api };
+    export let isLegacy: boolean;
 
     const hoveredField: NoteEditorAPI["hoveredField"] = writable(null);
     const focusedField: NoteEditorAPI["focusedField"] = writable(null);
@@ -1396,6 +1398,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         state: editorState,
         lastIOImagePath,
         saveNow,
+        isLegacy,
     };
 
     setContextProperty(api);
@@ -1407,7 +1410,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let uiResolve: (api: NoteEditorAPI) => void;
     export let mode: EditorMode;
-    export let isLegacy: boolean;
 
     $: if (noteEditor) {
         uiResolve(api as NoteEditorAPI);
@@ -1447,7 +1449,7 @@ components and functionality for general note editing.
         />
     {/if}
 
-    <EditorToolbar noteEditor={api} {size} {wrap} {isLegacy} api={toolbar}>
+    <EditorToolbar {size} {wrap} api={toolbar}>
         <svelte:fragment slot="notetypeButtons">
             {#if mode === "browser"}
                 <ButtonGroupItem>
@@ -1550,14 +1552,13 @@ components and functionality for general note editing.
                             </svelte:fragment>
                             <FieldState>
                                 {#if cols[index] === "dupe"}
-                                    <DuplicateLink {note} {isLegacy} />
+                                    <DuplicateLink {note} />
                                 {/if}
                                 {#if mode === "add"}
                                     <StickyBadge
                                         bind:active={stickies[index]}
                                         {index}
                                         {note}
-                                        {isLegacy}
                                         show={fields[index] === $hoveredField ||
                                             fields[index] === $focusedField}
                                     />
@@ -1590,7 +1591,6 @@ components and functionality for general note editing.
                         >
                             <RichTextInput
                                 {hidden}
-                                {isLegacy}
                                 on:focusout={() => {
                                     saveFieldNow();
                                     $focusedInput = null;

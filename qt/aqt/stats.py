@@ -146,7 +146,7 @@ class NewDeckStats(QDialog):
         return path
 
     def refresh(self) -> None:
-        self.form.web.load_sveltekit_page(self._graphs_page_path())
+        self.form.web.load_sveltekit_page(self._graphs_page_path(), cache_bust=True)
 
 
 class DeckStats(QDialog):

@@ -544,6 +544,14 @@
     "repository": "https://github.com/katharostech/cfg_aliases"
   },
   {
+    "authors": "RustCrypto Developers",
+    "description": "The ChaCha20 stream cipher (RFC 8439) implemented in pure Rust using traits from the RustCrypto `cipher` crate, with optional architecture-specific hardware acceleration (AVX2, SSE2). Additionally provides the ChaCha8, ChaCha12, XChaCha20, XChaCha12 and XChaCha8 stream ciphers, and also optional rand_core-compatible RNGs based on those ciphers.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "chacha20",
+    "repository": "https://github.com/RustCrypto/stream-ciphers"
+  },
+  {
     "authors": null,
     "description": "Date and time library for Rust",
     "license": "Apache-2.0 OR MIT",
@@ -3088,6 +3096,14 @@
     "repository": "https://github.com/rust-random/rand"
   },
   {
+    "authors": "The Rand Project Developers|The Rust Project Developers",
+    "description": "Random number generators and other randomness functionality.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand",
+    "repository": "https://github.com/rust-random/rand"
+  },
+  {
     "authors": "The Rand Project Developers|The Rust Project Developers|The CryptoCorrosion Contributors",
     "description": "ChaCha random number generator",
     "license": "Apache-2.0 OR MIT",
@@ -3121,11 +3137,27 @@
   },
   {
     "authors": "The Rand Project Developers",
+    "description": "Core random number generation traits and tools for implementation.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand_core",
+    "repository": "https://github.com/rust-random/rand_core"
+  },
+  {
+    "authors": "The Rand Project Developers",
     "description": "Sampling from random number distributions",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "rand_distr",
     "repository": "https://github.com/rust-random/rand_distr"
+  },
+  {
+    "authors": "The Rand Project Developers",
+    "description": "Selected PCG random number generators",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand_pcg",
+    "repository": "https://github.com/rust-random/rngs"
   },
   {
     "authors": "the gfx-rs Developers",

@@ -70,6 +70,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
     } from "./help-me-decide-defaults";
     import SimulatorWorkloadGraph from "./SimulatorWorkloadGraph.svelte";
+    import { onMount } from "svelte";
 
     export let state: DeckOptionsState;
     export let simulateFsrsRequest: SimulateFsrsReviewRequest;
@@ -959,6 +960,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             },
         };
     }
+
+    let font_scale = 1;
+    function updateFontScale() {
+        font_scale = bounds.height / (svg?.clientHeight ?? bounds.height);
+    }
+
+    $: if (svg?.clientHeight) {
+        updateFontScale();
+    }
+
+    onMount(() => {
+        const observer = new ResizeObserver(() => {
+            updateFontScale();
+        });
+        observer.observe(svg!);
+        return () => {
+            observer.disconnect();
+        };
+    });
 </script>
 
 <div class="modal" tabindex="-1" use:setupModal>
@@ -1418,6 +1438,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             <svg
                                 bind:this={svg}
                                 viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+                                style:--font-scale={font_scale}
                             >
                                 <CumulativeOverlay />
                                 <HoverColumns />
@@ -1440,7 +1461,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 <thead>
                                     <tr>
                                         <th>R \\ S</th>
-                                        {#each Array.from( { length: reviewTimeMatrix.sBucketCount }, ) as _, sIndex}
+                                        {#each Array.from( { length: reviewTimeMatrix.sBucketCount } ) as _, sIndex}
                                             <th>
                                                 {sBucketLabel(
                                                     sIndex,
@@ -1451,10 +1472,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount } ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
-                                            {#each Array.from( { length: reviewTimeMatrix.sBucketCount }, ) as _, sIndex}
+                                            {#each Array.from( { length: reviewTimeMatrix.sBucketCount } ) as _, sIndex}
                                                 <td>
                                                     <div>
                                                         A {formatSeconds(
@@ -1613,7 +1634,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     {#each Array.from({ length: 4 }) as _, fromGrade}
                                         <tr>
                                             <th>{gradeLabel(fromGrade)}</th>
-                                            {#each Array.from( { length: 4 }, ) as _, toGrade}
+                                            {#each Array.from( { length: 4 } ) as _, toGrade}
                                                 <td>
                                                     <div>
                                                         {(
@@ -1656,7 +1677,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount } ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
                                             <td>
@@ -1701,7 +1722,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount }, ) as _, rIndex}
+                                    {#each Array.from( { length: reviewTimeMatrix.rBucketCount } ) as _, rIndex}
                                         <tr>
                                             <th>{rBucketLabel(rIndex)}</th>
                                             <td>
@@ -1845,7 +1866,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
 </div>
 
-<style>
+<style lang="scss">
     .modal {
         background-color: rgba(0, 0, 0, 0.5);
         --bs-modal-margin: 0;
@@ -2020,5 +2041,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     .review-time-samples.low {
         color: var(--fg-red, #b42318);
+    }
+
+    .svg-container svg {
+        :global(.tick text),
+        :global(.legend) {
+            font-size: calc(1rem * var(--font-scale));
+        }
     }
 </style>
