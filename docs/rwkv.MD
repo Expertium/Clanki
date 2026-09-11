@@ -462,13 +462,11 @@ snapshot; Card Info and review-queue scores cannot change which cards that graph
 selects. Cards without a matching score do not match an explicit RWKV
 property. `prop:r` is always the exact FSRS retrievability.
 
-Browser-initiated searches outside the Stats graph use the shared active cache.
-If more than one consumer has refreshed the same card, the RWKV-Instant
-property prefers the card-specific Card Info score, then the active review-queue
-score, then the latest Stats graph score, and finally a background deck-count
-score. The RWKV-Curve property uses a full Stats prediction or the
-card-specific Card Info prediction, with Card Info taking priority. Cards
-without the applicable current score do not match the explicit RWKV property.
+Browser searches using `prop:rwkv:r` or `prop:rwkv-curve:r` prepare a fresh,
+search-scoped score snapshot before running the final query, so their results do
+not depend on a previously selected deck, Card Info, Stats, or background deck
+count calculation. Cards without an applicable current prediction do not match
+the explicit RWKV property.
 
 Filtered decks support two explicit RWKV due predicates without changing the
 meaning of `is:due`:

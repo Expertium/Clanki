@@ -447,6 +447,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function saveNow() {
         await commitCurrentComposition();
         await tick();
+        await focusEventQueue.run(() => {});
         closeMathjaxEditor?.();
         $commitTagEdits();
         await saveFieldNow();

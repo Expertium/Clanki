@@ -24,9 +24,9 @@
  * addNote RPC, matching the legacy noteCanBeAdded() guard in editor_legacy.py.
  */
 
-import { AddNoteRequest } from "@generated/anki/notes_pb";
+import { AddNoteRequest, AddNoteResponse } from "@generated/anki/notes_pb";
 
-import { expect, test } from "./fixtures";
+import { expect, installBridgeStub, test } from "./fixtures";
 import { bridgeCalls, decodeRequestBody, editableField, isRpc, rpcUrl } from "./helpers";
 
 test("immediately clicking Add while second field is focused includes its latest value", async ({ editor: page }) => {
@@ -72,6 +72,77 @@ test("saveNow commits an active IME composition before reading the field", async
     });
 
     expect(savedField).toBe("諦[あきら]める");
+});
+
+test("saveNow waits for the blur save before reporting completion", async ({ editor: addPage, context }) => {
+    const field = editableField(addPage, 0);
+    await field.click();
+    await field.pressSequentially("original");
+
+    const addRequestPromise = addPage.waitForRequest(isRpc("addNote"));
+    const addResponsePromise = addPage.waitForResponse(
+        (response) => isRpc("addNote")(response.request()),
+    );
+    await addPage.getByRole("button", { name: "Add", exact: true }).click();
+    const addRequest = decodeRequestBody(await addRequestPromise, AddNoteRequest);
+    const addResponse = AddNoteResponse.fromBinary(
+        new Uint8Array(await (await addResponsePromise).body()),
+    );
+
+    const page = await context.newPage();
+    await installBridgeStub(page);
+    await page.goto("/editor/?mode=current", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+        () => typeof (window as any).loadNote === "function",
+        { timeout: 15_000 },
+    );
+    await page.evaluate(
+        ({ nid, notetypeId }) =>
+            (window as any).loadNote({
+                nid: BigInt(nid),
+                notetypeId: BigInt(notetypeId),
+                initial: true,
+            }),
+        {
+            nid: addResponse.noteId.toString(),
+            notetypeId: addRequest.note!.notetypeId.toString(),
+        },
+    );
+    await page.waitForSelector(".field-container", { timeout: 15_000 });
+
+    // Let the initial field-store synchronization finish before isolating the
+    // save caused by focus loss.
+    await page.waitForTimeout(700);
+
+    let releaseBlurSave!: () => void;
+    const blurSaveGate = new Promise<void>((resolve) => {
+        releaseBlurSave = resolve;
+    });
+    let markBlurSaveStarted!: () => void;
+    const blurSaveStarted = new Promise<void>((resolve) => {
+        markBlurSaveStarted = resolve;
+    });
+    await page.route(
+        "**/_anki/updateNotes",
+        async (route) => {
+            markBlurSaveStarted();
+            await blurSaveGate;
+            await route.continue();
+        },
+        { times: 1 },
+    );
+
+    await page.evaluate(() => ((window as any).__bridgeCalls = []));
+    await editableField(page, 0).click();
+    await editableField(page, 0).evaluate((element) => element.blur());
+    const save = page.evaluate(() => (window as any).saveNow());
+
+    await blurSaveStarted;
+    expect(await bridgeCalls(page)).not.toContain("saved");
+
+    releaseBlurSave();
+    await save;
+    expect(await bridgeCalls(page)).toContain("saved");
 });
 
 test("typing into fields and clicking Add sends correct addNote payload", async ({ editor: page }) => {

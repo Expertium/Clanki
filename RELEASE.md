@@ -22,6 +22,15 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+## 26.09b3+fsrs7 — 2026-09-11
+
+Current application version: `26.09b3+fsrs7`
+
+This release aligns the fork with the
+[official Anki 26.09b3 beta](https://github.com/ankitects/anki/releases/tag/26.09b3)
+while retaining the fork's FSRS-7, Dynamic Desired Retention, RWKV scheduling,
+performance, portable-build, and reviewer-editing enhancements.
+
 ### Added
 
 - Show the total due reviews beside limited deck-list counts, with a tooltip
@@ -31,6 +40,9 @@ repeated here unless they materially affect a fork feature.
   installers in GitHub releases.
 
 ### Fixed
+
+- Make Browser `prop:rwkv:r` and `prop:rwkv-curve:r` searches calculate their
+  own current scores instead of depending on scores cached by another screen.
 
 - Explain how to move the macOS portable folder when Gatekeeper starts it from
   a read-only temporary location instead of failing with an opaque filesystem
@@ -65,7 +77,8 @@ repeated here unless they materially affect a fork feature.
   field-map entries while preserving field edits and undo behavior.
 - Reduce Python overhead when validating RWKV review history during cache recovery.
 - Advance to the next card when burying an RWKV review card restored by Undo.
-- Preserve pending IME text when closing the editor during a review.
+- Preserve pending IME text and wait for blur-triggered field saves when closing
+  the editor during a review.
 - Ensure in-app update checks select the normal installer when portable downloads
   are published alongside it.
 - Include the release build number in every installer and portable archive filename.

@@ -5777,6 +5777,25 @@ def _search_uses_rwkv_curve_retrievability(search: str) -> bool:
     return _RWKV_CURVE_R_SEARCH_PATTERN.search(search) is not None
 
 
+def search_uses_rwkv_retrievability(search: str) -> bool:
+    """Return whether a Browser search needs an RWKV score snapshot."""
+
+    return bool(
+        _RWKV_INSTANT_R_SEARCH_PATTERN.search(search)
+        or _RWKV_CURVE_R_SEARCH_PATTERN.search(search)
+    )
+
+
+def prepare_browser_retrievability_scores(
+    mw: object,
+    search: str,
+) -> RwkvStatsPreparationStatus:
+    """Prepare fresh, search-scoped scores before a Browser query runs."""
+
+    reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+    return prepare_stats_retrievability_scores(reviewer, search)
+
+
 def prepare_stats_retrievability_scores(  # noqa: PLR0911
     reviewer: object,
     search: str,
