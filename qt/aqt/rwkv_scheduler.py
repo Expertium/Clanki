@@ -3908,10 +3908,16 @@ def update_reviewer_scheduling_states(
                     interval_override_used=curve_enabled and has_interval_overrides,
                 )
                 if curve_enabled and has_interval_overrides:
+                    fuzzed_overrides, fuzz_deltas = fuzz_review_interval_overrides(
+                        reviewer,
+                        card,
+                        prediction.interval_overrides,
+                    )
                     return apply_review_interval_overrides(
                         states,
-                        prediction.interval_overrides,
+                        fuzzed_overrides,
                         prediction.s90_overrides,
+                        fuzz_deltas,
                     )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
@@ -8177,12 +8183,60 @@ def interval_from_recall_curve(
     return max_interval_days
 
 
+def fuzz_review_interval_overrides(
+    reviewer: object,
+    card: object,
+    overrides: RwkvIntervalOverride,
+) -> tuple[RwkvIntervalOverride, RwkvIntervalOverride]:
+    """Run RWKV-Curve intervals through Anki's review fuzz for this card.
+
+    The backend applies the same fuzz range, load balancer, sibling dispersal
+    and Hard < Good < Easy floors that FSRS intervals go through. Returns the
+    fuzzed intervals and, for each of them, the fuzz delta in days. Without a
+    collection backend (unit tests) the intervals come back unchanged with no
+    deltas.
+    """
+
+    backend = getattr(_collection(reviewer), "_backend", None)
+    fuzz = getattr(backend, "fuzz_review_intervals", None)
+    card_id = _card_id(card)
+    if not callable(fuzz) or card_id is None:
+        logger.debug("RWKV interval fuzz skipped: no collection backend")
+        return overrides, RwkvIntervalOverride()
+
+    request = scheduler_pb2.FuzzReviewIntervalsRequest(card_id=card_id)
+    for rating in _RWKV_RATING_FIELDS:
+        interval = getattr(overrides, rating)
+        if interval is not None:
+            setattr(request, rating, _validated_interval(interval))
+    response = fuzz(request)
+
+    fuzzed: dict[str, int | None] = {}
+    deltas: dict[str, int | None] = {}
+    for rating in _RWKV_RATING_FIELDS:
+        interval = getattr(overrides, rating)
+        if interval is None or not response.HasField(rating):
+            fuzzed[rating] = interval
+            deltas[rating] = None
+            continue
+        fuzzed_interval = getattr(response, rating)
+        fuzzed[rating] = int(fuzzed_interval.scheduled_days)
+        deltas[rating] = int(fuzzed_interval.fuzz_delta_days)
+    return RwkvIntervalOverride(**fuzzed), RwkvIntervalOverride(**deltas)
+
+
 def apply_review_interval_overrides(
     states: SchedulingStates,
     overrides: RwkvIntervalOverride,
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride(),
+    fuzz_deltas: RwkvIntervalOverride = RwkvIntervalOverride(),
 ) -> SchedulingStates:
-    """Apply RWKV day intervals to review answers without mutating input states."""
+    """Apply RWKV day intervals to review answers without mutating input states.
+
+    `fuzz_deltas` carries, per rating, how many days fuzz moved the interval
+    (see `fuzz_review_interval_overrides`); it is shown above the answer
+    buttons when that preference is on. A missing delta is recorded as 0.
+    """
 
     updated_states = SchedulingStates()
     updated_states.CopyFrom(states)
@@ -8198,6 +8252,7 @@ def apply_review_interval_overrides(
         _set_review_interval_if_present(
             getattr(updated_states, rating),
             _validated_interval(interval),
+            getattr(fuzz_deltas, rating) or 0,
         )
         s90 = getattr(s90_overrides, rating)
         if s90 is not None:
@@ -23967,16 +24022,17 @@ def _chunks(items: Sequence[_T], size: int) -> Iterator[Sequence[_T]]:
 def _set_review_interval_if_present(
     state: SchedulingState,
     interval: int,
+    fuzz_delta_days: int = 0,
 ) -> None:
     if state.WhichOneof("kind") != "normal":
         return
     normal_kind = state.normal.WhichOneof("kind")
     if normal_kind == "review":
         state.normal.review.scheduled_days = interval
-        state.normal.review.fuzz_delta_days = 0
+        state.normal.review.fuzz_delta_days = fuzz_delta_days
     elif normal_kind == "relearning":
         state.normal.relearning.review.scheduled_days = interval
-        state.normal.relearning.review.fuzz_delta_days = 0
+        state.normal.relearning.review.fuzz_delta_days = fuzz_delta_days
 
 
 def _set_review_s90_if_present(

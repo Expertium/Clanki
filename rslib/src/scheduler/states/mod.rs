@@ -4,6 +4,7 @@
 pub(crate) mod filtered;
 pub(crate) mod fuzz;
 pub(crate) mod interval_kind;
+pub(crate) mod interval_overrides;
 pub(crate) mod learning;
 pub(crate) mod load_balancer;
 pub(crate) mod new;

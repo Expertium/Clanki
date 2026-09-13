@@ -17,6 +17,11 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
 1. **RWKV neural network** for scheduling. A **separate Claude session** works on
    making it more accurate and more efficient. Do not duplicate or rewrite that
    work here without checking first.
+   Done 2026-09-13: RWKV-Curve intervals now go through the same fuzz, load
+   balancer and sibling dispersal as FSRS intervals (`spec/scheduling.md`,
+   `sched.rwkv-curve-fuzz`). Before that, RWKV-Curve overwrote the fuzzed
+   state and zeroed the delta, so making RWKV the default would have switched
+   fuzz off for everyone.
 2. **UI split: Simplified / Advanced**, in the SuperMemo style. **Simplified is
    the default.** Many settings get hidden. The current deck-options UI is far
    too complex, even by the standards of Anki power users. Hiding a setting is a

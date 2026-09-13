@@ -16,6 +16,9 @@ use rand::rngs::StdRng;
 use revlog::RevlogEntryPartial;
 
 use super::queue::BuryMode;
+use super::states::interval_overrides::fuzz_review_interval_overrides;
+use super::states::interval_overrides::FuzzedIntervalOverrides;
+use super::states::interval_overrides::ReviewIntervalOverrides;
 use super::states::load_balancer::LoadBalancerContext;
 use super::states::steps::LearningSteps;
 use super::states::CardState;
@@ -318,26 +321,7 @@ impl Collection {
         let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
 
-        let load_balancer_ctx = if let Some(load_balancer) = self
-            .state
-            .card_queues
-            .as_ref()
-            .and_then(|card_queues| card_queues.load_balancer.as_ref())
-        {
-            // Only get_deck_config when load balancer is enabled
-            if let Some(deck_config_id) = ctx.original_deck.config_id() {
-                let note_id = self
-                    .get_deck_config(deck_config_id, false)?
-                    .map(|deck_config| deck_config.inner.bury_reviews)
-                    .unwrap_or(false)
-                    .then_some(note_id);
-                Some(load_balancer.review_context(note_id, deck_config_id))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
 
         let state_ctx = ctx.state_context(load_balancer_ctx)?;
         let mut states = current.next_states(&state_ctx);
@@ -345,6 +329,67 @@ impl Collection {
         states.dynamic_desired_retention_enabled =
             ctx.fsrs_preset.dynamic_desired_retention.is_some();
         Ok(states)
+    }
+
+    /// The load balancer context used when fuzzing a review interval for the
+    /// card described by `ctx`. Sibling dispersal is requested only when the
+    /// home preset has "bury review siblings" enabled.
+    fn review_load_balancer_ctx(
+        &self,
+        ctx: &CardStateUpdater,
+        note_id: NoteId,
+    ) -> Result<Option<LoadBalancerContext<'_>>> {
+        let Some(load_balancer) = self
+            .state
+            .card_queues
+            .as_ref()
+            .and_then(|card_queues| card_queues.load_balancer.as_ref())
+        else {
+            return Ok(None);
+        };
+        // Only get_deck_config when load balancer is enabled
+        let Some(deck_config_id) = ctx.original_deck.config_id() else {
+            return Ok(None);
+        };
+        let note_id = self
+            .get_deck_config(deck_config_id, false)?
+            .map(|deck_config| deck_config.inner.bury_reviews)
+            .unwrap_or(false)
+            .then_some(note_id);
+        Ok(Some(load_balancer.review_context(note_id, deck_config_id)))
+    }
+
+    /// Apply the standard review fuzz (fuzz range, load balancer, sibling
+    /// dispersal, Hard < Good < Easy floors) to intervals supplied by an
+    /// external scheduler such as RWKV-Curve, exactly as if FSRS had produced
+    /// them for this card.
+    pub fn fuzz_review_intervals(
+        &mut self,
+        cid: CardId,
+        overrides: ReviewIntervalOverrides,
+    ) -> Result<FuzzedIntervalOverrides> {
+        let card = self.storage.get_card(cid)?.or_not_found(cid)?;
+        let note_id = card.note_id;
+
+        let ctx = self.card_state_updater(card, None)?;
+        let previous_interval = match ctx.current_card_state() {
+            CardState::Normal(NormalState::Review(state)) => state.scheduled_days,
+            CardState::Normal(NormalState::Relearning(state)) => state.review.scheduled_days,
+            CardState::Filtered(FilteredState::Rescheduling(state)) => match state.original_state {
+                NormalState::Review(state) => state.scheduled_days,
+                NormalState::Relearning(state) => state.review.scheduled_days,
+                _ => 0,
+            },
+            _ => 0,
+        };
+
+        let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
+        let state_ctx = ctx.state_context(load_balancer_ctx)?;
+        Ok(fuzz_review_interval_overrides(
+            &state_ctx,
+            previous_interval,
+            overrides,
+        ))
     }
 
     /// Describe the next intervals, to display on the answer buttons.
@@ -1105,6 +1150,50 @@ pub(crate) mod test {
         assert_eq!(revlogs.len(), 1);
         assert_eq!(revlogs[0].review_kind, RevlogReviewKind::Relearning);
         assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
+
+        Ok(())
+    }
+
+    #[test]
+    fn fuzz_review_intervals_uses_review_floors_and_clamps() -> Result<()> {
+        use crate::scheduler::states::interval_overrides::FuzzedInterval;
+        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
+
+        let mut col = Collection::new();
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+
+        // Unit tests have no fuzz seed, so only the floors and clamps apply:
+        // Again is never fuzzed, Hard may not shrink a grown interval below
+        // previous + 1, and Good/Easy sit at least one day above the button
+        // before them.
+        let fuzzed = col.fuzz_review_intervals(
+            cid,
+            ReviewIntervalOverrides {
+                again: Some(1),
+                hard: Some(12),
+                good: Some(12),
+                easy: Some(12),
+            },
+        )?;
+        let expect = |scheduled_days| FuzzedInterval {
+            scheduled_days,
+            fuzz_delta_days: 0,
+        };
+        assert_eq!(fuzzed.again, Some(expect(1)));
+        assert_eq!(fuzzed.hard, Some(expect(12)));
+        assert_eq!(fuzzed.good, Some(expect(13)));
+        assert_eq!(fuzzed.easy, Some(expect(14)));
+
+        // Buttons the external scheduler did not supply stay absent.
+        let fuzzed = col.fuzz_review_intervals(
+            cid,
+            ReviewIntervalOverrides {
+                good: Some(20),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(fuzzed.good, Some(expect(20)));
+        assert!(fuzzed.again.is_none() && fuzzed.hard.is_none() && fuzzed.easy.is_none());
 
         Ok(())
     }

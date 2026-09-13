@@ -574,6 +574,82 @@ mod test {
         );
     }
 
+    /// Pins spec/scheduling.md#sched.rwkv-curve-fuzz: an interval supplied
+    /// by an external scheduler is dispersed away from a sibling's day by the
+    /// same load balancer that FSRS intervals go through, and only when a
+    /// note id is supplied (i.e. "bury review siblings" is on).
+    #[test]
+    fn external_intervals_are_dispersed_away_from_siblings() {
+        use crate::scheduler::states::interval_overrides::fuzz_review_interval_overrides;
+        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
+
+        let dcid = DeckConfigId(1);
+        let nid = NoteId(1);
+        let sibling_day = 7_u32;
+        let mut days: Vec<LoadBalancerDay> = std::iter::repeat_with(LoadBalancerDay::default)
+            .take(20)
+            .collect();
+        // the sibling sits on day 7; its neighbours carry a moderate load so
+        // that, without dispersal, day 7 is the most attractive day
+        days[sibling_day as usize].add(CardId(999), nid);
+        for day in [5_usize, 6, 8, 9] {
+            for n in 0..5 {
+                let other = NoteId(1_000 + (day * 10 + n) as i64);
+                days[day].add(CardId(other.0), other);
+            }
+        }
+        let load_balancer = LoadBalancer {
+            days_by_preset: HashMap::from([(dcid, days)]),
+            easy_days_percentages_by_preset: HashMap::from([(dcid, [EasyDay::Normal; 7])]),
+            review_fuzz_config: ReviewFuzzConfig::default(),
+            next_day_at: TimestampSecs(0),
+        };
+        let overrides = ReviewIntervalOverrides {
+            good: Some(sibling_day),
+            ..Default::default()
+        };
+
+        let mut landed_on_sibling_without_dispersal = false;
+        for seed in 0..100_u64 {
+            // bury review siblings on: the note id is supplied
+            let mut ctx = StateContext::defaults_for_testing();
+            ctx.fuzz_factor = None;
+            ctx.load_balancer_ctx = Some(
+                load_balancer
+                    .review_context(Some(nid), dcid)
+                    .set_fuzz_seed(Some(seed)),
+            );
+            let good = fuzz_review_interval_overrides(&ctx, 0, overrides)
+                .good
+                .unwrap();
+            assert_ne!(
+                good.scheduled_days, sibling_day,
+                "seed {seed} placed the card on its sibling's day"
+            );
+            assert_eq!(
+                good.fuzz_delta_days,
+                good.scheduled_days as i32 - sibling_day as i32
+            );
+
+            // bury review siblings off: no note id, so no dispersal
+            let mut ctx = StateContext::defaults_for_testing();
+            ctx.fuzz_factor = None;
+            ctx.load_balancer_ctx = Some(
+                load_balancer
+                    .review_context(None, dcid)
+                    .set_fuzz_seed(Some(seed)),
+            );
+            let good = fuzz_review_interval_overrides(&ctx, 0, overrides)
+                .good
+                .unwrap();
+            landed_on_sibling_without_dispersal |= good.scheduled_days == sibling_day;
+        }
+        assert!(
+            landed_on_sibling_without_dispersal,
+            "without a note id the sibling's day must remain reachable"
+        );
+    }
+
     #[test]
     fn state_context_reports_load_balanced_fuzz_delta() {
         let dcid = DeckConfigId(1);

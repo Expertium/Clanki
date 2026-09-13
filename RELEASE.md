@@ -22,7 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-No user-visible changes yet.
+- RWKV-Curve answer intervals now get the same fuzz as FSRS intervals: the
+  same fuzz range, load balancing, and sibling dispersal (when "Bury review
+  siblings" is on). Previously RWKV-Curve intervals were applied exactly, so
+  siblings could land on the same day and the load balancer was bypassed. The
+  fuzz delta is now shown above the answer buttons for RWKV-Curve too, when
+  that preference is enabled.
 
 ## 26.09b1+fsrs7 — 2026-08-28
 

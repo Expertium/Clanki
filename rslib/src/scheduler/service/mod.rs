@@ -30,6 +30,8 @@ use anki_proto::scheduler::FsrsPresetForCardResponse;
 use anki_proto::scheduler::FsrsPresetIdsForCardsResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
+use anki_proto::scheduler::FuzzReviewIntervalsRequest;
+use anki_proto::scheduler::FuzzReviewIntervalsResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
@@ -732,6 +734,37 @@ impl crate::services::SchedulerService for Collection {
     fn fuzz_delta(&mut self, input: FuzzDeltaRequest) -> Result<FuzzDeltaResponse> {
         Ok(FuzzDeltaResponse {
             delta_days: self.get_fuzz_delta(input.card_id.into(), input.interval)?,
+        })
+    }
+
+    fn fuzz_review_intervals(
+        &mut self,
+        input: FuzzReviewIntervalsRequest,
+    ) -> Result<FuzzReviewIntervalsResponse> {
+        use crate::scheduler::states::interval_overrides::FuzzedInterval;
+        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
+        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
+
+        let fuzzed = self.fuzz_review_intervals(
+            CardId(input.card_id),
+            ReviewIntervalOverrides {
+                again: input.again,
+                hard: input.hard,
+                good: input.good,
+                easy: input.easy,
+            },
+        )?;
+        let convert = |interval: Option<FuzzedInterval>| {
+            interval.map(|interval| Interval {
+                scheduled_days: interval.scheduled_days,
+                fuzz_delta_days: interval.fuzz_delta_days,
+            })
+        };
+        Ok(FuzzReviewIntervalsResponse {
+            again: convert(fuzzed.again),
+            hard: convert(fuzzed.hard),
+            good: convert(fuzzed.good),
+            easy: convert(fuzzed.easy),
         })
     }
 

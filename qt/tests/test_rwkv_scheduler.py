@@ -42,6 +42,7 @@ from aqt.rwkv_scheduler import (
     configure_reviewer_backend_from_environment,
     current_reviewer_diagnostics,
     current_reviewer_retrievability,
+    fuzz_review_interval_overrides,
     interval_from_recall_curve,
     prepare_filtered_deck_retrievability_scores,
     prepare_reviewer_queue_order,
@@ -3735,6 +3736,196 @@ def test_apply_review_interval_overrides_rejects_invalid_interval() -> None:
             SchedulingStates(),
             RwkvIntervalOverride(good=0),
         )
+
+
+def test_apply_review_interval_overrides_records_fuzz_deltas() -> None:
+    states = SchedulingStates()
+    states.hard.CopyFrom(_relearning_state())
+    states.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+    states.easy.CopyFrom(_normal_review_state(interval=4, fuzz_delta=4))
+
+    updated = apply_review_interval_overrides(
+        states,
+        RwkvIntervalOverride(hard=20, good=32, easy=41),
+        fuzz_deltas=RwkvIntervalOverride(hard=-1, good=2),
+    )
+
+    assert updated.hard.normal.relearning.review.scheduled_days == 20
+    assert updated.hard.normal.relearning.review.fuzz_delta_days == -1
+    assert updated.good.normal.review.scheduled_days == 32
+    assert updated.good.normal.review.fuzz_delta_days == 2
+    # a rating without a delta is recorded as unfuzzed
+    assert updated.easy.normal.review.scheduled_days == 41
+    assert updated.easy.normal.review.fuzz_delta_days == 0
+
+
+def test_fuzz_review_interval_overrides_uses_backend_review_fuzz() -> None:
+    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
+
+    def fuzz_review_intervals(
+        request: scheduler_pb2.FuzzReviewIntervalsRequest,
+    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
+        requests.append(request)
+        response = scheduler_pb2.FuzzReviewIntervalsResponse()
+        response.again.scheduled_days = 1
+        response.again.fuzz_delta_days = 0
+        response.hard.scheduled_days = 9
+        response.hard.fuzz_delta_days = -1
+        response.good.scheduled_days = 22
+        response.good.fuzz_delta_days = 2
+        response.easy.scheduled_days = 40
+        response.easy.fuzz_delta_days = 0
+        return response
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=SimpleNamespace(fuzz_review_intervals=fuzz_review_intervals)
+            )
+        )
+    )
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+
+    fuzzed, deltas = fuzz_review_interval_overrides(
+        reviewer,
+        card,
+        RwkvIntervalOverride(again=1, hard=10, good=20, easy=40),
+    )
+
+    assert len(requests) == 1
+    assert requests[0].card_id == 7
+    assert (
+        requests[0].again,
+        requests[0].hard,
+        requests[0].good,
+        requests[0].easy,
+    ) == (
+        1,
+        10,
+        20,
+        40,
+    )
+    assert fuzzed == RwkvIntervalOverride(again=1, hard=9, good=22, easy=40)
+    assert deltas == RwkvIntervalOverride(again=0, hard=-1, good=2, easy=0)
+
+
+def test_fuzz_review_interval_overrides_only_sends_supplied_ratings() -> None:
+    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
+
+    def fuzz_review_intervals(
+        request: scheduler_pb2.FuzzReviewIntervalsRequest,
+    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
+        requests.append(request)
+        response = scheduler_pb2.FuzzReviewIntervalsResponse()
+        response.good.scheduled_days = 12
+        response.good.fuzz_delta_days = 2
+        return response
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                _backend=SimpleNamespace(fuzz_review_intervals=fuzz_review_intervals)
+            )
+        )
+    )
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+
+    fuzzed, deltas = fuzz_review_interval_overrides(
+        reviewer,
+        card,
+        RwkvIntervalOverride(good=10),
+    )
+
+    assert not requests[0].HasField("hard")
+    assert fuzzed == RwkvIntervalOverride(good=12)
+    assert deltas == RwkvIntervalOverride(good=2)
+
+
+def test_fuzz_review_interval_overrides_without_backend_returns_input() -> None:
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=None))
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+    overrides = RwkvIntervalOverride(again=1, hard=10, good=20, easy=40)
+
+    fuzzed, deltas = fuzz_review_interval_overrides(reviewer, card, overrides)
+
+    assert fuzzed == overrides
+    assert deltas == RwkvIntervalOverride()
+
+
+def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-fuzz end to end in the reviewer."""
+
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=0.62,
+                interval_overrides=RwkvIntervalOverride(
+                    again=1,
+                    hard=4,
+                    good=9,
+                    easy=18,
+                ),
+            )
+
+    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
+
+    def fuzz_review_intervals(
+        request: scheduler_pb2.FuzzReviewIntervalsRequest,
+    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
+        requests.append(request)
+        response = scheduler_pb2.FuzzReviewIntervalsResponse()
+        response.again.scheduled_days = 1
+        response.again.fuzz_delta_days = 0
+        response.hard.scheduled_days = 5
+        response.hard.fuzz_delta_days = 1
+        response.good.scheduled_days = 8
+        response.good.fuzz_delta_days = -1
+        response.easy.scheduled_days = 20
+        response.easy.fuzz_delta_days = 2
+        return response
+
+    set_reviewer_backend(Backend())
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col._backend = SimpleNamespace(
+        fuzz_review_intervals=fuzz_review_intervals
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.again.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+    states.hard.CopyFrom(_normal_review_state(interval=6, fuzz_delta=6))
+    states.good.CopyFrom(_normal_review_state(interval=12, fuzz_delta=12))
+    states.easy.CopyFrom(_normal_review_state(interval=24, fuzz_delta=24))
+
+    updated = update_reviewer_scheduling_states(states, reviewer, card)
+
+    # the RWKV-Curve targets were sent to the backend fuzz for this card...
+    assert len(requests) == 1
+    assert requests[0].card_id == 1
+    assert (
+        requests[0].again,
+        requests[0].hard,
+        requests[0].good,
+        requests[0].easy,
+    ) == (
+        1,
+        4,
+        9,
+        18,
+    )
+    # ...and the fuzzed intervals and their deltas are what the reviewer applies
+    assert updated.again.normal.review.scheduled_days == 1
+    assert updated.again.normal.review.fuzz_delta_days == 0
+    assert updated.hard.normal.review.scheduled_days == 5
+    assert updated.hard.normal.review.fuzz_delta_days == 1
+    assert updated.good.normal.review.scheduled_days == 8
+    assert updated.good.normal.review.fuzz_delta_days == -1
+    assert updated.easy.normal.review.scheduled_days == 20
+    assert updated.easy.normal.review.fuzz_delta_days == 2
 
 
 def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
