@@ -3,23 +3,22 @@
 ## deck-options.scheduler-choice
 
 Given the deck-options screen, the scheduler for a preset is chosen from one
-dropdown with the values FSRS, RWKV-Curve and RWKV-Instant (plus SM-2 when
-advanced options are shown, or when it is already the current value). The
-value maps onto the stored flags as follows, and nothing else:
+dropdown with the values FSRS, RWKV-Curve and RWKV-Instant. SM-2 is not
+selectable: the collection `fsrs` switch is on for every value. The value
+maps onto the stored flags as follows, and nothing else:
 
 | Value        | collection `fsrs` | preset `rwkv_review_enabled` | preset `rwkv_review_instant_order_enabled` |
 | ------------ | ----------------- | ---------------------------- | ------------------------------------------ |
 | FSRS         | on                | off                          | off                                        |
 | RWKV-Curve   | on                | on                           | off                                        |
 | RWKV-Instant | on                | off                          | on                                         |
-| SM-2         | off               | off                          | off                                        |
 
 Two stored states cannot be represented and are normalized when the preset is
 shown, so that saving writes the represented state: a preset with both RWKV
 flags on reads as RWKV-Curve and `rwkv_review_instant_order_enabled` is
-cleared; a preset with an RWKV flag on while the collection `fsrs` switch is
-off reads as that RWKV mode and `fsrs` is turned on. Presets that are not
-opened are not touched, and nothing is written until the user saves. The underlying flags, their storage in the
+cleared; a collection whose `fsrs` switch is off has it turned on, whatever
+the preset's RWKV flags. Presets that are not opened are not touched, and
+nothing is written until the user saves. The underlying flags, their storage in the
 `jschoreels.rwkv` bag, and the scheduler behavior behind each one are
 unchanged; only the way the screen sets them is.
 

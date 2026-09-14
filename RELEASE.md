@@ -24,8 +24,8 @@ repeated here unless they materially affect a fork feature.
 
 - Deck options: one **Scheduler** dropdown (FSRS, RWKV-Curve, RWKV-Instant)
   replaces the FSRS switch and the two RWKV switches, so only one scheduler
-  is active at a time. Desired retention is now editable for every choice.
-  SM-2 remains available under advanced options.
+  is active at a time, and FSRS is always on: SM-2 can no longer be selected
+  from deck options. Desired retention is now editable for every choice.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.
