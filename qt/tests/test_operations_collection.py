@@ -282,3 +282,92 @@ def test_undo_unblocks_reviewer_actions_without_restored_card(
     collection_ops.undo(parent=parent)
 
     assert reviewer.block_calls == [True, False]
+
+
+def test_undo_without_rwkv_frame_redraws_before_unblocking(monkeypatch) -> None:
+    """Exercise the operation callbacks and reviewer input routing together."""
+    from aqt.reviewer import Reviewer
+
+    out = SimpleNamespace(changes=OpChanges(study_queues=True), operation="Answer Card")
+    callbacks = {}
+    scripts = []
+    reviewer = Reviewer.__new__(Reviewer)
+    parent = SimpleNamespace(
+        reviewer=reviewer, state="review", fade_in_webview=lambda: None
+    )
+    reviewer.mw = parent
+    reviewer.state = "question"
+    reviewer.card = SimpleNamespace(id=456)
+    reviewer._clear_auto_advance_timers = lambda: None
+    reviewer.web = SimpleNamespace(eval=scripts.append, update=lambda: None)
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=scripts.append))
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("undo must not score the queue or accept an answer")
+
+    reviewer.web.evalWithCallback = unexpected
+    reviewer.bottom.web.evalWithCallback = unexpected
+    reviewer._prepare_rwkv_queue_order_then_next_card = unexpected
+    monkeypatch.setattr(aqt.rwkv_scheduler, "prepare_reviewer_queue_order", unexpected)
+
+    class CollectionOp:
+        def __init__(self, parent, op):
+            callbacks["op"] = op
+
+        def success(self, callback):
+            callbacks["success"] = callback
+            return self
+
+        def failure(self, callback):
+            callbacks["failure"] = callback
+            return self
+
+        def run_in_background(self):
+            pass
+
+    monkeypatch.setattr(collection_ops, "CollectionOp", CollectionOp)
+    monkeypatch.setattr(aqt.rwkv_scheduler, "record_collection_undo", lambda out: [])
+    monkeypatch.setattr(collection_ops.gui_hooks, "state_did_undo", lambda out: None)
+    monkeypatch.setattr(
+        collection_ops.tr, "undo_action_undone", lambda **kwargs: "Undo"
+    )
+    monkeypatch.setattr(collection_ops, "tooltip", lambda *args, **kwargs: None)
+
+    collection_ops.undo(parent=parent)
+    assert "_setQAInteractionEnabled(false);" in scripts
+    # A completion from the previous card must not release the undo's block.
+    reviewer.set_review_actions_blocked(False)
+    reviewer.onEnterKey()
+    reviewer._linkHandler("ans")
+    assert reviewer._review_actions_are_blocked()
+    result = callbacks["op"](SimpleNamespace(undo=lambda: out))
+    callbacks["success"](result)
+    reviewer.onEnterKey()
+    reviewer._linkHandler("ans")
+    reviewer.state = "answer"
+    reviewer._linkHandler("ease3")
+    assert reviewer._review_actions_are_blocked()
+
+    def next_card():
+        assert reviewer._review_actions_are_blocked()
+        reviewer.card = SimpleNamespace(id=123)
+        reviewer.set_review_actions_blocked(False)
+
+    reviewer.nextCard = next_card
+    assert not reviewer.op_executed(out.changes, None, focused=False)
+    assert reviewer.card.id == 123
+    # Input remains blocked until the webview presents the restored question.
+    assert reviewer._review_actions_are_blocked()
+    reviewer._finish_qa_transition()
+    assert not reviewer._review_actions_are_blocked()
+
+
+def test_failed_undo_releases_its_input_block() -> None:
+    from aqt.reviewer import Reviewer
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer._clear_auto_advance_timers = lambda: None
+    reviewer.begin_undo()
+    assert reviewer._review_actions_are_blocked()
+    reviewer.finish_undo(None)
+    assert not reviewer._review_actions_are_blocked()

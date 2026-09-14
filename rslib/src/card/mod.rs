@@ -742,6 +742,50 @@ mod test {
         Ok(())
     }
 
+    // A card that already lives in the target deck and has a memory state must
+    // not be touched when another card is moved into that deck.
+    #[test]
+    fn set_deck_does_not_touch_existing_card_in_target_deck() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+
+        let target = DeckAdder::new("target").add(&mut col);
+
+        let mut target_note = nt.new_note();
+        col.add_note(&mut target_note, target.id)?;
+        let target_card_id = col.storage.card_ids_of_notes(&[target_note.id]).unwrap()[0];
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![target_card_id.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Easy as i32,
+            card_options: vec![],
+        })?;
+
+        let mut source_note = nt.new_note();
+        col.add_note(&mut source_note, DeckId(1))?;
+        let source_card_id = col.storage.card_ids_of_notes(&[source_note.id]).unwrap()[0];
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![source_card_id.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Easy as i32,
+            card_options: vec![],
+        })?;
+
+        // Fake a sync after the cards exist, before moving anything.
+        col.before_upload()?;
+
+        col.set_deck(&[source_card_id], target.id)?;
+
+        let before = col.storage.get_card(source_card_id)?.unwrap();
+        assert!(before.memory_state.is_some());
+
+        let after = col.storage.get_card(target_card_id)?.unwrap();
+
+        assert_eq!(before.usn.0, -1);
+        assert_ne!(after.usn.0, -1);
+        Ok(())
+    }
+
     // Moving a deck recomputes the memory state but must not reschedule the
     // card (reschedule: false): due date and interval stay unchanged.
     #[test]

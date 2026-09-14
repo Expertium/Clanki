@@ -544,6 +544,14 @@
     "repository": "https://github.com/katharostech/cfg_aliases"
   },
   {
+    "authors": "RustCrypto Developers",
+    "description": "The ChaCha20 stream cipher (RFC 8439) implemented in pure Rust using traits from the RustCrypto `cipher` crate, with optional architecture-specific hardware acceleration (AVX2, SSE2). Additionally provides the ChaCha8, ChaCha12, XChaCha20, XChaCha12 and XChaCha8 stream ciphers, and also optional rand_core-compatible RNGs based on those ciphers.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "chacha20",
+    "repository": "https://github.com/RustCrypto/stream-ciphers"
+  },
+  {
     "authors": null,
     "description": "Date and time library for Rust",
     "license": "Apache-2.0 OR MIT",
@@ -2032,6 +2040,22 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
+    "authors": "bluss",
+    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "itertools",
+    "repository": "https://github.com/rust-itertools/itertools"
+  },
+  {
+    "authors": "bluss",
+    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "itertools",
+    "repository": "https://github.com/rust-itertools/itertools"
+  },
+  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -3072,6 +3096,14 @@
     "repository": "https://github.com/rust-random/rand"
   },
   {
+    "authors": "The Rand Project Developers|The Rust Project Developers",
+    "description": "Random number generators and other randomness functionality.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand",
+    "repository": "https://github.com/rust-random/rand"
+  },
+  {
     "authors": "The Rand Project Developers|The Rust Project Developers|The CryptoCorrosion Contributors",
     "description": "ChaCha random number generator",
     "license": "Apache-2.0 OR MIT",
@@ -3105,11 +3137,27 @@
   },
   {
     "authors": "The Rand Project Developers",
+    "description": "Core random number generation traits and tools for implementation.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand_core",
+    "repository": "https://github.com/rust-random/rand_core"
+  },
+  {
+    "authors": "The Rand Project Developers",
     "description": "Sampling from random number distributions",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "rand_distr",
     "repository": "https://github.com/rust-random/rand_distr"
+  },
+  {
+    "authors": "The Rand Project Developers",
+    "description": "Selected PCG random number generators",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "rand_pcg",
+    "repository": "https://github.com/rust-random/rngs"
   },
   {
     "authors": "the gfx-rs Developers",
@@ -3692,6 +3740,22 @@
     "description": "An ergonomic error handling library",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
+    "name": "snafu",
+    "repository": "https://github.com/shepmaster/snafu"
+  },
+  {
+    "authors": "Jake Goulding <jake.goulding@gmail.com>",
+    "description": "An ergonomic error handling library",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "snafu-derive",
+    "repository": "https://github.com/shepmaster/snafu"
+  },
+  {
+    "authors": "Jake Goulding <jake.goulding@gmail.com>",
+    "description": "An ergonomic error handling library",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
     "name": "snafu-derive",
     "repository": "https://github.com/shepmaster/snafu"
   },
@@ -3789,6 +3853,22 @@
     "license": "MIT",
     "license_file": null,
     "name": "strum",
+    "repository": "https://github.com/Peternator7/strum"
+  },
+  {
+    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "description": "Helpful macros for working with enums and strings",
+    "license": "MIT",
+    "license_file": null,
+    "name": "strum",
+    "repository": "https://github.com/Peternator7/strum"
+  },
+  {
+    "authors": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "description": "Helpful macros for working with enums and strings",
+    "license": "MIT",
+    "license_file": null,
+    "name": "strum_macros",
     "repository": "https://github.com/Peternator7/strum"
   },
   {
@@ -4896,14 +4976,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": "Microsoft",
-    "description": "Rust for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-sys",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": null,
     "description": "Rust for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -4921,14 +4993,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import libs for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-targets",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import libs for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -4960,14 +5024,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_aarch64_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -4977,14 +5033,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_aarch64_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5008,23 +5056,7 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_gnu",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5048,14 +5080,6 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_i686_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
@@ -5065,14 +5089,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_gnu",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5089,14 +5105,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_gnullvm",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5113,14 +5121,6 @@
   },
   {
     "authors": "Microsoft",
-    "description": "Import lib for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows_x86_64_msvc",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Import lib for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,

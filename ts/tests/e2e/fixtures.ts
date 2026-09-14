@@ -53,7 +53,7 @@ async function waitForCollectionReady(baseURL: string | undefined): Promise<void
     );
 }
 
-async function installBridgeStub(page: Page): Promise<void> {
+export async function installBridgeStub(page: Page): Promise<void> {
     await page.addInitScript(() => {
         (window as any).__bridgeCalls = [];
         (window as any).bridgeCommand = (

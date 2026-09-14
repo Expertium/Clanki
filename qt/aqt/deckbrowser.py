@@ -64,6 +64,7 @@ class DeckBrowserContent:
 @dataclass
 class RenderDeckNodeContext:
     current_deck_id: DeckId
+    review_limit_labels: dict[int, tuple[str, str]]
 
 
 class DeckBrowser:
@@ -286,6 +287,29 @@ class DeckBrowser:
             self._rwkv_pending_deck_ids.clear()
         self._render_rwkv_deck_counts()
 
+    def _review_limit_labels(self, tree: DeckTreeNode) -> dict[int, tuple[str, str]]:
+        labels: dict[int, tuple[str, str]] = {}
+
+        def collect(node: DeckTreeNode) -> int:
+            total = node.review_uncapped + sum(
+                collect(child) for child in node.children
+            )
+            if (
+                node.deck_id not in self._rwkv_pending_deck_ids
+                and total > node.review_count
+            ):
+                labels[node.deck_id] = (
+                    f" (/{total})",
+                    tr.decks_review_limit_tooltip(total=total, count=node.review_count),
+                )
+            else:
+                labels[node.deck_id] = ("", "")
+            return total
+
+        for child in tree.children:
+            collect(child)
+        return labels
+
     def _render_rwkv_deck_counts(self) -> None:
         rows: list[tuple[int, int, int, int | None]] = []
 
@@ -312,6 +336,7 @@ class DeckBrowser:
             """
             (() => {
                 const rows = %s;
+                const limitLabels = %s;
                 const kinds = ["new", "learn", "review"];
                 for (const [deckId, ...counts] of rows) {
                     kinds.forEach((kind, index) => {
@@ -325,10 +350,19 @@ class DeckBrowser:
                             ? `${kind}-count`
                             : "zero-count";
                     });
+                    const limit = document.getElementById(`deck-${deckId}-review-limit`);
+                    if (limit) {
+                        const [text, title] = limitLabels[deckId];
+                        limit.textContent = text;
+                        limit.title = title;
+                    }
                 }
             })();
             """
-            % json.dumps(rows)
+            % (
+                json.dumps(rows),
+                json.dumps(self._review_limit_labels(self._render_data.tree)),
+            )
         )
 
     def _scrollToOffset(self, offset: int) -> None:
@@ -353,7 +387,10 @@ class DeckBrowser:
         )
         buf += self._topLevelDragRow()
 
-        ctx = RenderDeckNodeContext(current_deck_id=self._render_data.current_deck_id)
+        ctx = RenderDeckNodeContext(
+            current_deck_id=self._render_data.current_deck_id,
+            review_limit_labels=self._review_limit_labels(top),
+        )
 
         for child in top.children:
             buf += self._render_deck_node(child, ctx)
@@ -422,6 +459,11 @@ class DeckBrowser:
                 "review-count",
                 f"deck-{node.deck_id}-review-count",
             )
+        limit_text, limit_title = ctx.review_limit_labels[node.deck_id]
+        review += (
+            f'<span id="deck-{node.deck_id}-review-limit" class="review-limit" '
+            f'title="{html.escape(limit_title, quote=True)}">{html.escape(limit_text)}</span>'
+        )
         learn = nonzeroColour(
             node.learn_count,
             "learn-count",

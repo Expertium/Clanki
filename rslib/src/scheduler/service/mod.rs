@@ -1228,6 +1228,7 @@ impl crate::services::BackendSchedulerService for Backend {
     ) -> Result<scheduler::ComputeFsrsParamsResponse> {
         let fsrs_items = req.items.len() as u32;
         let params = compute_parameters(ComputeParametersInput {
+            training_config: None,
             train_set: req.items.into_iter().map(fsrs_item_proto_to_fsrs).collect(),
             card_ids: None,
             progress: None,
@@ -1262,6 +1263,7 @@ impl crate::services::BackendSchedulerService for Backend {
             .map(fsrs_item_proto_to_fsrs)
             .collect();
         let params = benchmark(ComputeParametersInput {
+            training_config: None,
             train_set,
             card_ids: None,
             progress: None,
@@ -1418,3 +1420,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod upstream_tests;

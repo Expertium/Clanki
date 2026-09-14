@@ -29,6 +29,67 @@ repeated here unless they materially affect a fork feature.
   fuzz delta is now shown above the answer buttons for RWKV-Curve too, when
   that preference is enabled.
 
+## 26.09b3+fsrs7 — 2026-09-11
+
+Current application version: `26.09b3+fsrs7`
+
+This release aligns the fork with the
+[official Anki 26.09b3 beta](https://github.com/ankitects/anki/releases/tag/26.09b3)
+while retaining the fork's FSRS-7, Dynamic Desired Retention, RWKV scheduling,
+performance, portable-build, and reviewer-editing enhancements.
+
+### Added
+
+- Show the total due reviews beside limited deck-list counts, with a tooltip
+  explaining daily review limits.
+
+- Publish portable editions for macOS, Windows, and Linux alongside the normal
+  installers in GitHub releases.
+
+### Fixed
+
+- Make Browser `prop:rwkv:r` and `prop:rwkv-curve:r` searches calculate their
+  own current scores instead of depending on scores cached by another screen.
+
+- Explain how to move the macOS portable folder when Gatekeeper starts it from
+  a read-only temporary location instead of failing with an opaque filesystem
+  error.
+
+- Compute built-in FSRS-7 retrievability and Relative Overdueness from the full
+  dual-trace memory state and selected preset, including Browser/search,
+  filtered decks, review queues, Card Info, and deterministic queue ties.
+
+- Apply both ascending and descending retrievability order globally across due
+  review, interday-learning, and due-now intraday cards before review limits.
+
+- Restore aggregate progress, ETA, active preset bars, and completion/skip
+  details while **Optimize All Presets** runs concurrently.
+
+- Correct FSRS-7 Dynamic DR intervals to use the full memory state, including
+  fast stability.
+
+- Draw Random reviews with fresh randomness before deck limits, including during
+  RWKV queue refreshes, instead of favouring cards through a stable ID/time order.
+
+- Keep undo responsive when an RWKV rollback frame is unavailable, and block
+  review input until the restored card is displayed.
+
+- Restore FSRS protection against Good/Easy intervals shrinking through review fuzz.
+- Restore cached FSRS scheduling flags during reviews while keeping config changes
+  and undo reflected in the active queue.
+
+- Prevent card previews from freezing when MathJax is already loaded.
+- Speed up macOS RWKV queue-scoring normalization and decay calculations.
+- Reduce note-loading overhead during Dynamic DR preparation by reusing note-type
+  field-map entries while preserving field edits and undo behavior.
+- Reduce Python overhead when validating RWKV review history during cache recovery.
+- Advance to the next card when burying an RWKV review card restored by Undo.
+- Preserve pending IME text and wait for blur-triggered field saves when closing
+  the editor during a review.
+- Ensure in-app update checks select the normal installer when portable downloads
+  are published alongside it.
+- Include the release build number in every installer and portable archive filename.
+
 ## 26.09b1+fsrs7 — 2026-08-28
 
 Current application version: `26.09b1+fsrs7`

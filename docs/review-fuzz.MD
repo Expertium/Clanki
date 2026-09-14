@@ -17,3 +17,8 @@ balancing, and FSRS rescheduling all read the collection-level value.
 Changing collection-level review fuzz only causes existing cards to be
 rescheduled when the deck-options update requests FSRS rescheduling. Otherwise,
 the new value applies to future scheduling decisions.
+
+FSRS passing intervals and rescheduling preserve the previous interval when it
+still lies within the current collection-configured fuzz range. Hard, Good, and
+Easy use the same safeguard; a genuinely smaller interval outside that range
+remains allowed.

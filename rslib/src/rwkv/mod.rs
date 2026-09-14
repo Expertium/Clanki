@@ -27,6 +27,8 @@ mod bulk;
 mod collection_benchmark;
 #[cfg(target_os = "macos")]
 mod matmul;
+#[cfg(test)]
+mod query_math_bench;
 
 const D_MODEL: usize = 128;
 const CARD_FEATURES: usize = 92;
@@ -3145,9 +3147,13 @@ impl SrsModel {
     ) -> Vec<f32> {
         items
             .par_iter()
-            .map_init(ReviewRetrievabilityScratch::default, |scratch, item| {
-                self.review_retrievability_features(item.features, item.state, scratch)
-            })
+            .map_init(
+                // Keep the large per-worker scratch off Rayon's limited worker stacks.
+                || Box::new(ReviewRetrievabilityScratch::default()),
+                |scratch, item| {
+                    self.review_retrievability_features(item.features, item.state, scratch)
+                },
+            )
             .collect()
     }
 
@@ -5514,8 +5520,7 @@ impl TimeMixer {
             &mut scratch.w,
         );
         scratch.w.iter_mut().for_each(|value| {
-            let decay = -0.5 - softplus(-*value);
-            *value = (-decay.exp()).exp();
+            *value = query_decay(*value);
         });
 
         scratch
@@ -6805,8 +6810,49 @@ impl Norm {
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
         debug_assert_eq!(input.len(), rows * self.dim);
         out.resize(rows * self.dim, 0.0);
-        out.chunks_mut(self.dim)
-            .zip(input.chunks(self.dim))
+        // Accumulate independent rows together, keeping each row's reduction
+        // order unchanged so SIMD does not change normalization results.
+        const LANES: usize = 4;
+        let group_size = self.dim / self.groups;
+        let mut inputs = input.chunks_exact(self.dim * LANES);
+        let mut outputs = out.chunks_exact_mut(self.dim * LANES);
+        for (input, output) in inputs.by_ref().zip(outputs.by_ref()) {
+            for group in 0..self.groups {
+                let start = group * group_size;
+                let end = start + group_size;
+                let mut means = [-0.0; LANES];
+                for channel in start..end {
+                    for lane in 0..LANES {
+                        means[lane] += input[lane * self.dim + channel];
+                    }
+                }
+                for mean in &mut means {
+                    *mean /= group_size as f32;
+                }
+                let mut scales = [-0.0; LANES];
+                for channel in start..end {
+                    for lane in 0..LANES {
+                        let diff = input[lane * self.dim + channel] - means[lane];
+                        scales[lane] += diff * diff;
+                    }
+                }
+                for scale in &mut scales {
+                    *scale = (*scale / group_size as f32 + self.eps).sqrt().recip();
+                }
+                for lane in 0..LANES {
+                    for channel in start..end {
+                        let index = lane * self.dim + channel;
+                        output[index] =
+                            (input[index] - means[lane]) * scales[lane] * self.weight[channel]
+                                + self.bias[channel];
+                    }
+                }
+            }
+        }
+        outputs
+            .into_remainder()
+            .chunks_mut(self.dim)
+            .zip(inputs.remainder().chunks(self.dim))
             .for_each(|(output, input)| self.apply_into(input, output));
     }
 }
@@ -7152,6 +7198,14 @@ fn sigmoid(value: f32) -> f32 {
         let exp = value.exp();
         exp / (1.0 + exp)
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn query_decay(value: f32) -> f32 {
+    // exp(-exp(-0.5 - softplus(-x))) = exp(-exp(-0.5) * sigmoid(x)).
+    // Query-only: recurrent state updates keep their original arithmetic.
+    const SCALE: f32 = 0.606_530_67; // exp(-0.5), rounded to f32
+    (-SCALE * sigmoid(value)).exp()
 }
 
 fn softplus(value: f32) -> f32 {
@@ -9394,6 +9448,60 @@ order by e.id, e.cid
             .fold(0.0_f32, f32::max);
 
         assert!(max_delta <= 1e-6, "max batch prediction delta: {max_delta}");
+    }
+
+    #[test]
+    fn batched_normalization_preserves_scalar_bits() {
+        for (dim, groups) in [(16, 1), (128, 1), (128, 4), (128, 8), (256, 1), (512, 1)] {
+            let norm = Norm {
+                dim,
+                groups,
+                eps: 1e-5,
+                weight: (0..dim).map(|i| (i as f32 * 0.17).sin()).collect(),
+                bias: (0..dim).map(|i| (i as f32 * 0.03).cos()).collect(),
+            };
+            for rows in [0, 1, 3, 4, 5, 127, 128, 129] {
+                for magnitude in [0.0, 1e-8, 1.0, 1e4] {
+                    let input = (0..rows * dim)
+                        .map(|i| (i as f32 * 0.37).sin() * magnitude)
+                        .collect::<Vec<_>>();
+                    let expected = input
+                        .chunks(dim)
+                        .flat_map(|row| norm.apply(row))
+                        .map(f32::to_bits)
+                        .collect::<Vec<_>>();
+                    let mut actual = Vec::new();
+                    norm.apply_batch(&input, rows, &mut actual);
+                    assert_eq!(
+                        actual.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
+                        expected,
+                        "dim={dim} groups={groups} rows={rows} magnitude={magnitude}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_decay_matches_original_transform() {
+        let mut max_delta = 0.0_f32;
+        let values = (-100_000..=100_000).map(|i| i as f32 / 1_000.0).chain([
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            -f32::MAX,
+            f32::MAX,
+            -0.0,
+            f32::MIN_POSITIVE,
+        ]);
+        for value in values {
+            let decay = -0.5 - softplus(-value);
+            let expected = (-decay.exp()).exp();
+            let actual = query_decay(value);
+            assert!(actual.is_finite() && (0.0..=1.0).contains(&actual));
+            max_delta = max_delta.max((actual - expected).abs());
+        }
+        assert!(max_delta <= 1.2e-7, "maximum decay delta: {max_delta}");
+        assert!(query_decay(f32::NAN).is_nan());
     }
 
     #[test]

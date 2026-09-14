@@ -26,17 +26,28 @@ use crate::updates::DownloadUpdateProgress;
 const ALL_RELEASES_URL: &str = "https://api.github.com/repos/Expertium/Clanki/releases";
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Expertium/Clanki/releases/latest";
 
-// NOTE: must match platform suffixes in build_installer.py
-fn get_platform_suffix() -> Option<&'static str> {
+// NOTE: must match installer filenames produced by build_installer.py
+fn get_platform_installer_suffix() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some("-win-x64"),
-        ("windows", "aarch64") => Some("-win-arm64"),
-        ("macos", "x86_64") => Some("-mac-intel"),
-        ("macos", "aarch64") => Some("-mac-apple"),
-        ("linux", "x86_64") => Some("-linux-x86_64"),
-        ("linux", "aarch64") => Some("-linux-aarch64"),
+        ("windows", "x86_64") => Some("-win-x64.msi"),
+        ("windows", "aarch64") => Some("-win-arm64.msi"),
+        ("macos", "x86_64") => Some("-mac-intel.dmg"),
+        ("macos", "aarch64") => Some("-mac-apple.dmg"),
+        ("linux", "x86_64") => Some("-linux-x86_64.tar.zst"),
+        ("linux", "aarch64") => Some("-linux-aarch64.tar.zst"),
         _ => None,
     }
+}
+
+fn find_platform_installer_asset<'a>(
+    assets: &'a [Value],
+    installer_suffix: &str,
+) -> Option<&'a Value> {
+    assets.iter().find(|asset| {
+        asset["name"].as_str().is_some_and(|filename| {
+            !filename.contains("-portable-") && filename.ends_with(installer_suffix)
+        })
+    })
 }
 
 fn release_is_downloaded(filename: &str, checksum: &str) -> Result<bool> {
@@ -64,7 +75,8 @@ fn release_is_downloaded(filename: &str, checksum: &str) -> Result<bool> {
 impl BackendGithubService for Backend {
     fn get_latest_release(&self, input: LatestReleaseRequest) -> Result<GithubRelease> {
         let no_updates_msg = self.tr.errors_no_updates_available();
-        let platform_suffix = get_platform_suffix().or_invalid(no_updates_msg.clone())?;
+        let installer_suffix =
+            get_platform_installer_suffix().or_invalid(no_updates_msg.clone())?;
         let url = if input.include_prerelease {
             ALL_RELEASES_URL
         } else {
@@ -98,32 +110,27 @@ impl BackendGithubService for Backend {
             let assets = release_info["assets"]
                 .as_array()
                 .or_invalid("assets should be an array")?;
-            let mut release: Option<GithubRelease> = None;
-            for asset in assets {
-                let filename = asset["name"]
-                    .as_str()
-                    .or_invalid("release name not found")?;
-                let url = asset["browser_download_url"]
-                    .as_str()
-                    .or_invalid("download URL not found")?;
-                let checksum = asset["digest"]
-                    .as_str()
-                    .or_invalid("release digest not found")?
-                    .split_once("sha256:")
-                    .or_invalid("sha256 suffix not found")?
-                    .1;
-                if filename.contains(platform_suffix) {
-                    release = Some(GithubRelease {
-                        tag_name: tag_name.into(),
-                        filename: filename.into(),
-                        url: url.into(),
-                        checksum: checksum.into(),
-                        target_commitish: target_commitish.into(),
-                    });
-                    break;
-                }
-            }
-            release.or_invalid(no_updates_msg)
+            let asset = find_platform_installer_asset(assets, installer_suffix)
+                .or_invalid(no_updates_msg)?;
+            let filename = asset["name"]
+                .as_str()
+                .or_invalid("release name not found")?;
+            let url = asset["browser_download_url"]
+                .as_str()
+                .or_invalid("download URL not found")?;
+            let checksum = asset["digest"]
+                .as_str()
+                .or_invalid("release digest not found")?
+                .split_once("sha256:")
+                .or_invalid("sha256 suffix not found")?
+                .1;
+            Ok(GithubRelease {
+                tag_name: tag_name.into(),
+                filename: filename.into(),
+                url: url.into(),
+                checksum: checksum.into(),
+                target_commitish: target_commitish.into(),
+            })
         })
     }
 
@@ -162,7 +169,9 @@ impl BackendGithubService for Backend {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+    use serde_json::json;
+
     use super::*;
 
     /// Pins spec/updates.md#updates.release-source: Clanki must never offer
@@ -171,5 +180,63 @@ mod test {
     fn release_urls_point_at_clanki() {
         assert!(ALL_RELEASES_URL.contains("/repos/Expertium/Clanki/"));
         assert!(LATEST_RELEASE_URL.contains("/repos/Expertium/Clanki/"));
+    }
+
+    #[test]
+    fn update_asset_selection_ignores_portable_downloads() {
+        for (installer_suffix, installer, portable) in [
+            (
+                "-win-x64.msi",
+                "anki-1.2.3-win-x64.msi",
+                "anki-1.2.3-portable-win-x64.zip",
+            ),
+            (
+                "-win-arm64.msi",
+                "anki-1.2.3-win-arm64.msi",
+                "anki-1.2.3-portable-win-arm64.zip",
+            ),
+            (
+                "-mac-apple.dmg",
+                "anki-1.2.3-mac-apple.dmg",
+                "anki-1.2.3-portable-mac-apple.zip",
+            ),
+            (
+                "-mac-intel.dmg",
+                "anki-1.2.3-mac-intel.dmg",
+                "anki-1.2.3-portable-mac-intel.zip",
+            ),
+            (
+                "-linux-x86_64.tar.zst",
+                "anki-1.2.3-linux-x86_64.tar.zst",
+                "anki-1.2.3-portable-linux-x86_64.tar.zst",
+            ),
+            (
+                "-linux-aarch64.tar.zst",
+                "anki-1.2.3-linux-aarch64.tar.zst",
+                "anki-1.2.3-portable-linux-aarch64.tar.zst",
+            ),
+        ] {
+            let release_assets = json!([
+                { "name": portable },
+                { "name": installer },
+            ]);
+            let selected =
+                find_platform_installer_asset(release_assets.as_array().unwrap(), installer_suffix)
+                    .unwrap();
+
+            assert_eq!(selected["name"].as_str(), Some(installer));
+        }
+    }
+
+    #[test]
+    fn portable_download_is_not_an_installer_fallback() {
+        let release_assets = json!([
+            { "name": "anki-1.2.3-portable-win-x64.msi" },
+        ]);
+
+        assert!(
+            find_platform_installer_asset(release_assets.as_array().unwrap(), "-win-x64.msi",)
+                .is_none()
+        );
     }
 }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -12,6 +13,17 @@ from typing import Any
 import pytest
 
 from aqt import rwkv_srs_benchmark
+
+
+def test_review_performance_benchmark_starts_in_fresh_interpreter() -> None:
+    script = Path(__file__).parents[1] / "tools" / "rwkv_review_performance_bench.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--collection-copy" in result.stdout
 
 
 def test_srs_benchmark_loader_enables_eval_mode(

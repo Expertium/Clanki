@@ -19,9 +19,11 @@ class DeckChooser:
 class Web:
     def __init__(self) -> None:
         self.loaded_paths: list[str] = []
+        self.cache_busts: list[bool] = []
 
-    def load_sveltekit_page(self, path: str) -> None:
+    def load_sveltekit_page(self, path: str, *, cache_bust: bool = False) -> None:
         self.loaded_paths.append(path)
+        self.cache_busts.append(cache_bust)
 
 
 class Form:
@@ -42,3 +44,4 @@ def test_new_stats_refresh_url_changes_with_selected_deck() -> None:
         "graphs?currentDeckId=123",
         "graphs?currentDeckId=456",
     ]
+    assert stats.form.web.cache_busts == [True, True]

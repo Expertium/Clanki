@@ -24,9 +24,10 @@ enabled, the interval RWKV-Curve supplies for each button is treated as the
 unfuzzed target and passed through the same review fuzz as an FSRS interval
 for the same card: the same fuzz range, the same load balancer, the same
 sibling dispersal (`sched.sibling-dispersal-gate`), the same 90-day
-load-balance limit, and the same floors — Again is clamped but not fuzzed,
-Hard may not let fuzz shrink an interval that grew below previous + 1, and
-Good/Easy sit at least one day above the fuzzed button before them. The
+load-balance limit, and the same floors — Again is clamped but not fuzzed;
+Hard, Good and Easy each keep the previous interval when it still lies within
+the configured fuzz range; and Good/Easy sit at least one day above the fuzzed
+button before them. The
 resulting fuzz delta is recorded on the state and shown above the answer
 buttons when that preference is on.
 

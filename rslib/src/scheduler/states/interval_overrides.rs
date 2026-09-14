@@ -44,9 +44,10 @@ pub struct FuzzedIntervalOverrides {
 ///
 /// This mirrors `ReviewState::failing_review_interval` and
 /// `ReviewState::passing_fsrs_review_intervals`: Again is clamped but never
-/// fuzzed (FSRS applies fuzz when the card leaves relearning), Hard may not
-/// let fuzz shrink an interval that grew, and Good/Easy are floored one day
-/// above the fuzzed button before them.
+/// fuzzed (FSRS applies fuzz when the card leaves relearning); Hard, Good and
+/// Easy each keep the previous interval when it still lies within the
+/// configured fuzz range (`minimum_review_fuzz_interval`), and Good/Easy are
+/// floored one day above the fuzzed button before them.
 pub(crate) fn fuzz_review_interval_overrides(
     ctx: &StateContext,
     previous_interval: u32,
@@ -60,14 +61,13 @@ pub(crate) fn fuzz_review_interval_overrides(
         }
     });
 
-    // If the interval is larger than last time, don't allow fuzz to go backwards
-    let greater_than_last = |interval: u32| {
-        if interval > previous_interval {
-            previous_interval + 1
-        } else {
-            // User may have changed their retention factor; don't limit
-            0
-        }
+    let floor_for = |interval: u32| {
+        minimum_review_fuzz_interval(
+            interval as f32,
+            previous_interval,
+            ctx.maximum_review_interval,
+            ctx.review_fuzz_config,
+        )
     };
     let fuzz = |interval: u32, minimum: u32| {
         let (minimum, maximum) = ctx.min_and_max_review_intervals(minimum);
@@ -81,26 +81,18 @@ pub(crate) fn fuzz_review_interval_overrides(
 
     let mut floor = 0;
     let hard = overrides.hard.map(|interval| {
-        let fuzzed = fuzz(
-            interval,
-            minimum_review_fuzz_interval(
-                interval as f32,
-                previous_interval,
-                ctx.maximum_review_interval,
-            )
-            .max(1),
-        );
+        let fuzzed = fuzz(interval, floor_for(interval).max(1));
         floor = fuzzed.scheduled_days + 1;
         fuzzed
     });
     let good = overrides.good.map(|interval| {
-        let fuzzed = fuzz(interval, greater_than_last(interval).max(floor));
+        let fuzzed = fuzz(interval, floor_for(interval).max(floor));
         floor = fuzzed.scheduled_days + 1;
         fuzzed
     });
     let easy = overrides
         .easy
-        .map(|interval| fuzz(interval, greater_than_last(interval).max(floor)));
+        .map(|interval| fuzz(interval, floor_for(interval).max(floor)));
 
     FuzzedIntervalOverrides {
         again,
@@ -156,6 +148,22 @@ mod test {
         let fuzzed = fuzz_review_interval_overrides(&ctx, 10, all(1, 12, 12, 12));
         assert_eq!(days(fuzzed), [1, 12, 13, 14]);
         assert_eq!(fuzzed.good.unwrap().fuzz_delta_days, 0);
+    }
+
+    #[test]
+    fn previous_interval_is_kept_when_target_lies_within_its_fuzz_range() {
+        // mirrors review::test::fsrs_good_and_easy_preserve_previous_interval_within_fuzz_range
+        let mut ctx = StateContext::defaults_for_testing();
+        ctx.fuzz_factor = None;
+        let fuzzed = fuzz_review_interval_overrides(
+            &ctx,
+            4,
+            ReviewIntervalOverrides {
+                good: Some(3),
+                ..Default::default()
+            },
+        );
+        assert_eq!(fuzzed.good.unwrap().scheduled_days, 4);
     }
 
     #[test]

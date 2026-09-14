@@ -1,5 +1,5 @@
 name: Setup Anki Build Environment
-description: Install system dependencies, Rust toolchain, uv, and n2
+description: Install system dependencies, Rust toolchain, uv, just, and n2
 
 runs:
   using: composite
@@ -99,6 +99,9 @@ runs:
     - name: Add CARGO_HOME/bin to PATH
       shell: bash
       run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+    - name: Install just
+      uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 #v4
 
     - name: Install n2
       shell: bash

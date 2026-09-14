@@ -16,6 +16,8 @@ decks-filter-2 = Filter 2
 decks-deck = Deck
 decks-learn-header = Learn
 decks-review-header = Due
+# Shown beside a review count reduced by daily limits, including subdeck limits.
+decks-review-limit-tooltip = { $total } review cards are due. Daily review limits allow { $count } to be shown.
 decks-rwkv = RWKV
 decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
 decks-rwkv-reschedule-all-decks = Reschedule All Decks
