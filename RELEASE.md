@@ -22,6 +22,19 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Deck options in Simple mode are one section: New cards/day, Maximum
+  reviews/day, Algorithm (with desired retention, the First intervals table
+  for FSRS-7 and the RWKV-Curve reschedule button), one **Bury siblings**
+  switch, Don't play audio automatically, Skip question when replaying
+  answer, one **On-screen timer** switch, and Easy Days. Bury siblings sets
+  all three bury settings; On-screen timer shows the timer and stops it on
+  answer. Advanced mode keeps the full page with the separate switches;
+  hidden settings keep working.
+- New presets (and "Restore defaults") have no learning or relearning steps
+  and run **RWKV-Curve**; a new collection starts on RWKV-Curve and allows
+  same-day reviews for (re)learning steps. Existing presets are unchanged.
+- **Historical retention** is fixed at 0.9 and its control is gone; a stored
+  value is ignored.
 - A **Simple | Advanced** UI mode switch in the top-right corner of the main
   window (also View > Advanced UI, Ctrl+Shift+U). Simple is the default. In
   Simple mode the deck list hides the Get Shared / Create Deck / Import File

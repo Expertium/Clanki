@@ -121,10 +121,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </Item>
 
         {#if $fsrs}
+            <!-- The default is on (spec deck-options.new-preset-defaults);
+                 the stored collection value is what the switch shows. -->
             <Item>
                 <SwitchRow
                     bind:value={$fsrsShortTermWithStepsEnabled}
-                    defaultValue={false}
+                    defaultValue={true}
                 >
                     <SettingTitle>
                         <GlobalLabel

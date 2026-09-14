@@ -433,9 +433,19 @@ impl Default for DeckConfSchema11 {
             wait_for_audio: true,
             replayq: true,
             dynamic: false,
-            new: Default::default(),
+            // New presets have no steps and run RWKV-Curve (spec
+            // deck-options.new-preset-defaults). `NewConfSchema11::default`
+            // keeps the upstream steps: it is the fallback for an invalid
+            // stored `new` section, and existing presets must not change.
+            new: NewConfSchema11 {
+                delays: vec![],
+                ..Default::default()
+            },
             rev: Default::default(),
-            lapse: Default::default(),
+            lapse: LapseConfSchema11 {
+                delays: vec![],
+                ..Default::default()
+            },
             other: Default::default(),
             new_mix: 0,
             new_per_day_minimum: 0,
@@ -454,7 +464,7 @@ impl Default for DeckConfSchema11 {
             sm2_retention: 0.9,
             param_search: "".to_string(),
             ignore_revlogs_before_date: "".to_string(),
-            rwkv_review_enabled: false,
+            rwkv_review_enabled: true,
             rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
             rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
             rwkv_review_refresh_on_exit: false,
@@ -807,7 +817,9 @@ mod test {
 
         config.inner.other = serde_json::to_vec(&key_source)?;
         let s11 = DeckConfSchema11::from(config);
-        assert_eq!(&s11.other.keys().collect_vec(), empty);
+        // The only key left is the fork's own RWKV bag, which carries the
+        // RWKV-Curve flag a new preset has (spec deck-options.new-preset-defaults).
+        assert_eq!(&s11.other.keys().collect_vec(), &["jschoreels.rwkv"]);
         assert_eq!(&s11.new.other.keys().collect_vec(), empty);
         assert_eq!(&s11.rev.other.keys().collect_vec(), empty);
         assert_eq!(&s11.lapse.other.keys().collect_vec(), empty);

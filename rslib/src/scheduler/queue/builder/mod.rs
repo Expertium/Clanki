@@ -590,6 +590,9 @@ mod test {
         fn set_deck_review_order(&mut self, deck: &mut Deck, order: ReviewCardOrder) {
             let mut conf = DeckConfig::default();
             conf.inner.review_order = order as i32;
+            // These tests describe FSRS ordering; a new preset runs RWKV-Curve
+            // (spec deck-options.new-preset-defaults), which gathers by day.
+            conf.inner.rwkv_review_enabled = false;
             self.add_or_update_deck_config(&mut conf).unwrap();
             deck.normal_mut().unwrap().config_id = conf.id.0;
             self.add_or_update_deck(deck).unwrap();

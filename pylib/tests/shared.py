@@ -44,12 +44,30 @@ def getEmptyCol():
         os.close(fd)
         os.unlink(path)
         col = aopen(path)
+        _restore_upstream_preset_defaults(col)
         col.close(downgrade=False)
         _emptyCol = path
     (fd, path) = tempfile.mkstemp(suffix=".anki2")
     shutil.copy(_emptyCol, path)
     col = aopen(path)
     return col
+
+
+def _restore_upstream_preset_defaults(col) -> None:
+    """Give the default preset the upstream SM-2 defaults.
+
+    A fresh collection now starts with no learning steps and RWKV-Curve
+    (spec/deck-options.md, deck-options.new-preset-defaults). The tests built
+    on getEmptyCol() were written against the upstream values (learning steps
+    1m 10m, relearning step 10m, no RWKV), so they are restated here.
+    """
+    conf = col.decks.get_config(1)
+    conf["new"]["delays"] = [1, 10]
+    conf["lapse"]["delays"] = [10]
+    conf["rwkvReviewEnabled"] = False
+    # the stored RWKV flag lives in this bag and wins over the top-level key
+    conf.pop("jschoreels.rwkv", None)
+    col.decks.update_config(conf)
 
 
 # Fallback for when the DB needs options passed in.
