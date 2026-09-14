@@ -702,6 +702,7 @@ def _on_update_deck_configs_success(
     if rwkv_snapshot is not None:
         # RWKV-Curve presets are excluded from the FSRS reschedule above;
         # they get their own one (spec deck-options.reschedule-on-change).
+        aqt.rwkv_scheduler.refresh_rwkv_instant_after_save(aqt.mw, rwkv_snapshot, input)
         aqt.rwkv_scheduler.reschedule_rwkv_curve_after_save(
             aqt.mw, rwkv_snapshot, input
         )

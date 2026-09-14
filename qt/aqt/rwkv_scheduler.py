@@ -13608,6 +13608,7 @@ class RwkvCurveRescheduleSnapshot:
     preset_desired_retention: dict[int, float]
     preset_curve_enabled: dict[int, bool]
     deck_desired_retention: float | None
+    preset_instant_enabled: dict[int, bool] = field(default_factory=dict)
 
 
 def _same_retention(before: float | None, after: float | None) -> bool:
@@ -13640,6 +13641,7 @@ def rwkv_curve_reschedule_snapshot(
 
     preset_desired_retention: dict[int, float] = {}
     preset_curve_enabled: dict[int, bool] = {}
+    preset_instant_enabled: dict[int, bool] = {}
     for config in getattr(request, "configs", ()):
         config_id = int(getattr(config, "id", 0))
         stored: object = None
@@ -13655,6 +13657,7 @@ def rwkv_curve_reschedule_snapshot(
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             preset_desired_retention[config_id] = float(value)
         preset_curve_enabled[config_id] = _rwkv_review_config_enabled(stored)
+        preset_instant_enabled[config_id] = _rwkv_review_instant_order_enabled(stored)
 
     deck: object = None
     if callable(get_deck):
@@ -13668,6 +13671,7 @@ def rwkv_curve_reschedule_snapshot(
         preset_desired_retention=preset_desired_retention,
         preset_curve_enabled=preset_curve_enabled,
         deck_desired_retention=_legacy_deck_desired_retention(deck),
+        preset_instant_enabled=preset_instant_enabled,
     )
 
 
@@ -13685,18 +13689,19 @@ def _request_deck_desired_retention(request: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def rwkv_curve_reschedule_needed(
+def _rwkv_retention_change_needs_refresh(
     snapshot: RwkvCurveRescheduleSnapshot,
     request: object,
+    *,
+    flag: str,
+    previously_enabled: dict[int, bool],
 ) -> bool:
-    """Whether a save must run the RWKV-Curve reschedule.
+    """Shared rule for both RWKV modes (spec deck-options.reschedule-on-change).
 
-    True when "Reschedule cards on change" is on and either an RWKV-Curve
-    preset in the request changed its desired retention or became RWKV-Curve,
-    or the target deck keeps an RWKV-Curve preset and its own desired-retention
-    override changed (spec deck-options.reschedule-on-change). The Rust save
-    never writes FSRS intervals onto RWKV-Curve presets, so this is the only
-    reschedule those cards get.
+    True when "Reschedule cards on change" is on and either a preset in the
+    request with `flag` set changed its desired retention or newly has the
+    flag, or the target deck keeps such a preset and its own desired-retention
+    override changed.
     """
 
     if not getattr(request, "fsrs_reschedule", False):
@@ -13704,10 +13709,10 @@ def rwkv_curve_reschedule_needed(
     configs = list(getattr(request, "configs", ()))
     for config in configs:
         inner = getattr(config, "config", None)
-        if not getattr(inner, "rwkv_review_enabled", False):
+        if not getattr(inner, flag, False):
             continue
         config_id = int(getattr(config, "id", 0))
-        if not snapshot.preset_curve_enabled.get(config_id, False):
+        if not previously_enabled.get(config_id, False):
             return True
         if not _same_retention(
             snapshot.preset_desired_retention.get(config_id),
@@ -13715,13 +13720,78 @@ def rwkv_curve_reschedule_needed(
         ):
             return True
     # The deck is assigned the last preset in the request.
-    if configs and getattr(configs[-1].config, "rwkv_review_enabled", False):
+    if configs and getattr(configs[-1].config, flag, False):
         if not _same_retention(
             snapshot.deck_desired_retention,
             _request_deck_desired_retention(request),
         ):
             return True
     return False
+
+
+def rwkv_curve_reschedule_needed(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Whether a save must run the RWKV-Curve reschedule.
+
+    The Rust save never writes FSRS intervals onto RWKV-Curve presets, so
+    this is the only reschedule those cards get.
+    """
+
+    return _rwkv_retention_change_needs_refresh(
+        snapshot,
+        request,
+        flag="rwkv_review_enabled",
+        previously_enabled=snapshot.preset_curve_enabled,
+    )
+
+
+def rwkv_instant_refresh_needed(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Whether a save must recompute RWKV-Instant dueness.
+
+    Under RWKV-Instant a card is due when its RWKV retrievability is at or
+    below its target retention. The installed queue scores and deck counts
+    carry the old target, so they are discarded after the save and the
+    screens refresh with the new desired retention.
+    """
+
+    return _rwkv_retention_change_needs_refresh(
+        snapshot,
+        request,
+        flag="rwkv_review_instant_order_enabled",
+        previously_enabled=snapshot.preset_instant_enabled,
+    )
+
+
+def rwkv_instant_retention_did_change(mw: object) -> None:
+    """Drop RWKV targets and queue scores, then refresh the study screens."""
+
+    generation = _invalidate_rwkv_review_input_caches(mw)
+    reset = getattr(mw, "reset", None)
+    if callable(reset):
+        reset()
+    logger.debug(
+        "RWKV-Instant targets invalidated after desired retention change: "
+        "generation=%s",
+        generation,
+    )
+
+
+def refresh_rwkv_instant_after_save(
+    mw: object,
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Recompute RWKV-Instant dueness after a deck-options save when needed."""
+
+    if not rwkv_instant_refresh_needed(snapshot, request):
+        return False
+    rwkv_instant_retention_did_change(mw)
+    return True
 
 
 def reschedule_rwkv_curve_after_save(

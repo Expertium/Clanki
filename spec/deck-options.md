@@ -82,6 +82,12 @@ every algorithm, and a deck-options save with it on:
 
 - presets running FSRS-7 or RWKV-Instant reschedule with FSRS intervals as
   before, when their parameters or desired retention changed;
+- for RWKV-Instant, dueness is also recomputed with the new desired
+  retention at once: when such a preset's desired retention changed, when a
+  preset became RWKV-Instant, or when the target deck's own override changed
+  while the deck keeps an RWKV-Instant preset, the installed RWKV queue
+  scores and deck-browser counts are discarded and the study screens
+  refresh, so the due counts and the review queue use the new threshold;
 - presets running RWKV-Curve are never rescheduled with FSRS intervals (their
   FSRS memory states are still recomputed). Instead, when such a preset's
   desired retention changed, when a preset became RWKV-Curve, or when the
@@ -94,8 +100,10 @@ any algorithm. Writing FSRS intervals onto RWKV-Curve cards would undo RWKV's
 intervals, so those presets get the RWKV reschedule instead.
 
 **Pinned by:** `fsrs_reschedule_skips_rwkv_curve_presets`
-(`rslib/src/deckconfig/update.rs`); `test_rwkv_curve_reschedule_*` and
-`test_reschedule_rwkv_curve_after_save_runs_only_when_needed`
+(`rslib/src/deckconfig/update.rs`); `test_rwkv_curve_reschedule_*`,
+`test_reschedule_rwkv_curve_after_save_runs_only_when_needed`,
+`test_rwkv_instant_refresh_needed_*` and
+`test_refresh_rwkv_instant_after_save_invalidates_and_resets`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 ## deck-options.advanced-view
@@ -116,8 +124,10 @@ minimum other reviews and minimum seconds before a same-day repeat; predict R
 for new cards from creation time; dynamic preset add-on support; the Rebuild
 RWKV State and Recompute Calibration actions.
 
-Always visible while an RWKV mode is selected: the same-day repeat switch
-(RWKV-Instant) and the Reschedule cards action (RWKV-Curve).
+The "Reschedule Cards with RWKV-Curve Intervals" action sits in the
+Algorithm section while RWKV-Curve is selected. The RWKV section itself is
+shown only while RWKV-Instant is selected (the same-day repeat switch) or
+while advanced options are on under either RWKV mode.
 
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
 knobs have defaults that suit nearly everyone.

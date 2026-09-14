@@ -68,3 +68,20 @@ Retention from Clanki (Andrew, 2026-09-14).
 (`rslib/src/deckconfig/schema11.rs`),
 `legacy_dynamic_desired_retention_preset_schedules_with_fixed_desired_retention`
 (`rslib/src/scheduler/answering/mod.rs`).
+
+## sched.fuzz-always-on
+
+Given any collection, review fuzz and the load balancer are always active.
+The stored "review fuzz enabled" flag and the collection `loadBalancerEnabled`
+flag are ignored when read, so a `false` written by an earlier build has no
+effect; the fuzz factors (base and the three interval-band factors) keep their
+stored values but have no controls, and the deck-options Easy Days section
+shows only the Easy Days controls. Sibling dispersal and the fuzz applied to
+RWKV-Curve intervals (`sched.rwkv-curve-fuzz`) are unchanged.
+
+**Why:** Andrew, 2026-09-14: fuzz and load balancing should always be
+enabled; only Easy Days is the user's choice.
+
+**Pinned by:** `collection_review_fuzz_ignores_the_disabled_flag`
+(`rslib/src/scheduler/states/fuzz.rs`), `load_balancer_is_always_on`
+(`rslib/src/config/bool.rs`).

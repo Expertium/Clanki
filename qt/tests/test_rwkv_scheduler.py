@@ -122,9 +122,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_review_queue_score_config_keys
     )
     previous_queue_collection_key = rwkv_scheduler._rwkv_review_queue_collection_key
-    previous_review_input_generation = (
-        rwkv_scheduler._rwkv_review_input_generation
-    )
+    previous_review_input_generation = rwkv_scheduler._rwkv_review_input_generation
     previous_study_queue_generation = rwkv_scheduler._rwkv_study_queue_generation
     previous_input_batch_cache = (
         rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
@@ -204,9 +202,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
             previous_queue_score_config_keys
         )
         rwkv_scheduler._rwkv_review_queue_collection_key = previous_queue_collection_key
-        rwkv_scheduler._rwkv_review_input_generation = (
-            previous_review_input_generation
-        )
+        rwkv_scheduler._rwkv_review_input_generation = previous_review_input_generation
         rwkv_scheduler._rwkv_study_queue_generation = previous_study_queue_generation
         rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
         rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
@@ -352,8 +348,6 @@ def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
         1: pytest.approx(0.25)
     }
     assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(second, 100) is None
-
-
 
 
 def test_study_queue_change_invalidates_cached_and_async_rwkv_work() -> None:
@@ -4314,8 +4308,6 @@ def test_rwkv_review_input_falls_back_to_deck_desired_retention() -> None:
     assert review_input.target_retentions == pytest.approx((0.82, 0.82, 0.82, 0.82))
 
 
-
-
 def test_rwkv_review_input_encodes_filtered_state_like_training_data() -> None:
     reviewer = _rwkv_reviewer()
     reviewer._v3.states.current.Clear()
@@ -4429,8 +4421,6 @@ def test_live_review_after_explicit_filtered_answer_respects_scheduler_state() -
     )
 
     assert review_state == int(RwkvReviewState.REVIEW)
-
-
 
 
 def test_rwkv_review_input_uses_exact_elapsed_for_review_cards(
@@ -13357,8 +13347,6 @@ def test_rwkv_due_search_detection(
     assert rwkv_scheduler._search_uses_rwkv_curve_due(search) is curve_due
 
 
-
-
 @pytest.mark.parametrize(
     (
         "search",
@@ -18610,30 +18598,36 @@ def _filtered_preview_state() -> SchedulingState:
 def _reschedule_request(
     *,
     fsrs_reschedule: bool = True,
-    configs: Sequence[tuple[int, float, bool]] = (),
+    configs: Sequence[tuple[int, float, bool] | tuple[int, float, bool, bool]] = (),
     deck_desired_retention: float | None = None,
 ) -> deck_config_pb2.UpdateDeckConfigsRequest:
     request = deck_config_pb2.UpdateDeckConfigsRequest()
     request.target_deck_id = 1
     request.fsrs_reschedule = fsrs_reschedule
-    for config_id, desired_retention, curve in configs:
+    for entry in configs:
+        config_id, desired_retention, curve = entry[:3]
+        instant = bool(entry[3]) if len(entry) > 3 else False
         config = request.configs.add()
         config.id = config_id
         config.config.desired_retention = desired_retention
         config.config.rwkv_review_enabled = curve
+        config.config.rwkv_review_instant_order_enabled = instant
     if deck_desired_retention is not None:
         request.limits.desired_retention = deck_desired_retention
     return request
 
 
 def _reschedule_snapshot(
-    presets: dict[int, tuple[float, bool]],
+    presets: dict[int, tuple[float, bool] | tuple[float, bool, bool]],
     deck_desired_retention: float | None = None,
 ) -> rwkv_scheduler.RwkvCurveRescheduleSnapshot:
     return rwkv_scheduler.RwkvCurveRescheduleSnapshot(
         preset_desired_retention={k: v[0] for k, v in presets.items()},
         preset_curve_enabled={k: v[1] for k, v in presets.items()},
         deck_desired_retention=deck_desired_retention,
+        preset_instant_enabled={
+            k: bool(v[2]) if len(v) > 2 else False for k, v in presets.items()
+        },
     )
 
 
@@ -18709,10 +18703,14 @@ def test_rwkv_curve_reschedule_snapshot_reads_legacy_dicts() -> None:
 
     mw = SimpleNamespace(col=SimpleNamespace(decks=Decks()))
     snapshot = rwkv_scheduler.rwkv_curve_reschedule_snapshot(
-        mw, _reschedule_request(configs=[(10, 0.9, True), (11, 0.85, False), (12, 0.9, False)])
+        mw,
+        _reschedule_request(
+            configs=[(10, 0.9, True), (11, 0.85, False), (12, 0.9, False)]
+        ),
     )
     assert snapshot.preset_desired_retention == {10: 0.9, 11: 0.85}
     assert snapshot.preset_curve_enabled == {10: True, 11: False}
+    assert snapshot.preset_instant_enabled == {10: False, 11: False}
     assert snapshot.deck_desired_retention == pytest.approx(0.8)
 
 
@@ -18735,3 +18733,51 @@ def test_reschedule_rwkv_curve_after_save_runs_only_when_needed(
         mw, snapshot, _reschedule_request(configs=[(10, 0.85, True)])
     )
     assert calls == [None]
+
+
+def test_rwkv_instant_refresh_needed_when_instant_retention_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False, True)})
+    assert rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.85, False, True)])
+    )
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot,
+        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, False, True)]),
+    )
+    # An RWKV-Curve change is not an RWKV-Instant change.
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        _reschedule_snapshot({10: (0.9, True)}),
+        _reschedule_request(configs=[(10, 0.85, True)]),
+    )
+
+
+def test_rwkv_instant_refresh_needed_when_preset_becomes_instant() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False, False)})
+    assert rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+
+
+def test_refresh_rwkv_instant_after_save_invalidates_and_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidated: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_invalidate_rwkv_review_input_caches",
+        lambda mw: invalidated.append(mw) or 7,
+    )
+    resets: list[int] = []
+    mw = SimpleNamespace(reset=lambda: resets.append(1))
+    snapshot = _reschedule_snapshot({10: (0.9, False, True)})
+    assert not rwkv_scheduler.refresh_rwkv_instant_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+    assert invalidated == [] and resets == []
+    assert rwkv_scheduler.refresh_rwkv_instant_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.8, False, True)])
+    )
+    assert invalidated == [mw] and resets == [1]

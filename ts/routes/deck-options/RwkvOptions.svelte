@@ -3,7 +3,6 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
-    import { DeckId } from "@generated/anki/decks_pb";
     import { UpdateDeckConfigsMode } from "@generated/anki/deck_config_pb";
     import { Empty } from "@generated/anki/generic_pb";
     import * as tr from "@generated/ftl";
@@ -30,11 +29,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
-    let reschedulingRwkvReviewCards = false;
     $: rwkvActionInProgress =
-        forceBuildingRwkvStateCache ||
-        recomputingRwkvCalibrationData ||
-        reschedulingRwkvReviewCards;
+        forceBuildingRwkvStateCache || recomputingRwkvCalibrationData;
 
     const settings = {
         rwkvReview: {
@@ -121,27 +117,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    async function rescheduleRwkvReviewCards(): Promise<void> {
-        reschedulingRwkvReviewCards = true;
-        try {
-            await saveRwkvDeckOptions();
-            await postProto(
-                "rescheduleRwkvReviewCards",
-                new DeckId({ did: state.getTargetDeckId() }),
-                Empty,
-            );
-        } finally {
-            reschedulingRwkvReviewCards = false;
-        }
-    }
-
     async function saveRwkvDeckOptions(): Promise<void> {
         await commitEditing();
         await state.save(UpdateDeckConfigsMode.NORMAL);
     }
 </script>
 
-{#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
+<!-- The RWKV-Curve reschedule action lives under Algorithm; this container
+     only has content for RWKV-Instant or under advanced options
+     (spec deck-options.advanced-view). -->
+{#if $config.rwkvReviewInstantOrderEnabled || ($advanced && $config.rwkvReviewEnabled)}
     <TitledContainer title={"RWKV"}>
         <HelpModal
             title={"RWKV"}
@@ -155,20 +140,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         />
         <DynamicallySlottable slotHost={Item} api={{}}>
             {#if $config.rwkvReviewEnabled}
-                <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
-
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => rescheduleRwkvReviewCards()}
-                >
-                    {#if reschedulingRwkvReviewCards}
-                        Rescheduling Cards with RWKV-Curve Intervals...
-                    {:else}
-                        Reschedule Cards with RWKV-Curve Intervals
-                    {/if}
-                </button>
-
                 {#if $advanced}
                     <Item>
                         <SwitchRow

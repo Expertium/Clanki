@@ -45,8 +45,14 @@ repeated here unless they materially affect a fork feature.
   the two switches are gone.
 - Deck options: **Reschedule cards on change** is shown for every
   algorithm. With it on, saving a changed desired retention reschedules
-  RWKV-Curve presets with RWKV-Curve intervals (after the save), while
-  FSRS-7 and RWKV-Instant presets reschedule with FSRS as before.
+  RWKV-Curve presets with RWKV-Curve intervals (after the save), and
+  recomputes RWKV-Instant dueness with the new desired retention at once.
+- Deck options: the "Reschedule Cards with RWKV-Curve Intervals" button
+  moved under **Algorithm**; the RWKV section shows only for RWKV-Instant or
+  under advanced options.
+- Review fuzz and the load balancer are always on. Their switches, the
+  fuzz factors and the fuzz preview are gone from the Easy Days section;
+  only Easy Days remains.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.

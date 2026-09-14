@@ -399,6 +399,9 @@ deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at yo
 ## Easy Days section.
 
 deck-config-easy-days-title = Easy Days
+deck-config-easy-days-tooltip =
+    Reduce the number of reviews on the days you choose. Reviews due on a
+    reduced day are moved to a nearby normal day when the interval allows it.
 deck-config-easy-days-monday = Mon
 deck-config-easy-days-tuesday = Tue
 deck-config-easy-days-wednesday = Wed

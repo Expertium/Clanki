@@ -3,7 +3,13 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
-    import type { DeckConfig_Config } from "@generated/anki/deck_config_pb";
+    import {
+        type DeckConfig_Config,
+        UpdateDeckConfigsMode,
+    } from "@generated/anki/deck_config_pb";
+    import { DeckId } from "@generated/anki/decks_pb";
+    import { Empty } from "@generated/anki/generic_pb";
+    import { postProto } from "@generated/post";
     import * as tr from "@generated/ftl";
     import { HelpPage } from "@tslib/help-page";
     import type Carousel from "bootstrap/js/dist/carousel";
@@ -20,7 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
-    import type { DeckOptionsState } from "./lib";
+    import { commitEditing, type DeckOptionsState } from "./lib";
     import {
         flagsFromSchedulerChoice,
         SchedulerChoice,
@@ -95,6 +101,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const schedulerChoiceList = schedulerChoices();
     $: if (!$fsrs) {
         newlyEnabled = true;
+    }
+
+    // The RWKV-Curve reschedule action: saves, then asks the desktop to
+    // rewrite review intervals with the current RWKV-Curve predictions.
+    let reschedulingRwkvReviewCards = false;
+    async function rescheduleRwkvReviewCards(): Promise<void> {
+        reschedulingRwkvReviewCards = true;
+        try {
+            await commitEditing();
+            await state.save(UpdateDeckConfigsMode.NORMAL);
+            await postProto(
+                "rescheduleRwkvReviewCards",
+                new DeckId({ did: state.getTargetDeckId() }),
+                Empty,
+            );
+        } finally {
+            reschedulingRwkvReviewCards = false;
+        }
     }
 
     const settings = {
@@ -176,6 +200,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SettingTitle>
             </EnumSelectorRow>
         </Item>
+
+        {#if $config.rwkvReviewEnabled}
+            <Item>
+                <button
+                    class="btn btn-outline-primary"
+                    disabled={reschedulingRwkvReviewCards}
+                    on:click={() => rescheduleRwkvReviewCards()}
+                >
+                    {#if reschedulingRwkvReviewCards}
+                        Rescheduling Cards with RWKV-Curve Intervals...
+                    {:else}
+                        Reschedule Cards with RWKV-Curve Intervals
+                    {/if}
+                </button>
+            </Item>
+        {/if}
 
         {#if $fsrs}
             <FsrsOptions
