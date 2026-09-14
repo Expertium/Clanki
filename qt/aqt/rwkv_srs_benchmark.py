@@ -153,8 +153,8 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         return RwkvReviewPrediction(
             retrievability=_probability_as_float(probability),
             curve_retrievability=self._curve_retrievability(review_input),
-            current_interval=intervals.good,
-            current_s90=s90s.good,
+            current_interval=_whole_interval(intervals.good),
+            current_s90=_whole_interval(s90s.good),
             interval_overrides=intervals,
             s90_overrides=s90s,
         )
@@ -218,8 +218,8 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             predictions[index] = RwkvReviewPrediction(
                 retrievability=_probability_as_float(probability),
                 curve_retrievability=self._curve_retrievability(review_input),
-                current_interval=intervals.good,
-                current_s90=s90s.good,
+                current_interval=_whole_interval(intervals.good),
+                current_s90=_whole_interval(s90s.good),
                 interval_overrides=intervals,
                 s90_overrides=s90s,
             )
@@ -1460,6 +1460,13 @@ def _state_bytes(state: object | None) -> bytes | None:
     if isinstance(state, bytes):
         return state
     raise TypeError("RWKV Rust state must be bytes")
+
+
+def _whole_interval(value: float | None) -> int | None:
+    """A (possibly unrounded) interval in whole days, rounded up, at least 1;
+    the current interval and S90 stay whole days."""
+
+    return None if value is None else max(1, math.ceil(value))
 
 
 def _unrounded_interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
