@@ -13,7 +13,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { AlgorithmHelpKey } from "./algorithm-help";
     import { algorithmHelpSettings } from "./algorithm-help";
     import FsrsOptions from "./FsrsOptions.svelte";
-    import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import {
         flagsFromSchedulerChoice,
@@ -103,7 +102,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <!-- The dropdown is Advanced-only; in Simple mode the preset keeps its
      stored algorithm (new presets: RWKV-Curve). The manual RWKV-Curve
      reschedule action is gone: the "Reschedule cards when desired retention
-     changes" switch in FsrsOptions covers every algorithm
+     changes" Preferences setting covers every algorithm
      (spec deck-options.reschedule-on-change). -->
 {#if $advancedUi}
     <Item>
@@ -113,7 +112,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             choices={schedulerChoiceList}
         >
             <SettingTitle on:click={() => openHelp("fsrs")}>
-                <GlobalLabel title={settings.fsrs.title} />
+                {settings.fsrs.title}
             </SettingTitle>
         </EnumSelectorRow>
     </Item>

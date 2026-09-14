@@ -15,6 +15,7 @@ import anki.lang
 anki.lang.set_lang("en")
 
 from aqt.deckbrowser import DeckBrowser  # noqa: E402
+from aqt.main import AnkiQt  # noqa: E402
 from aqt.toolbar import Toolbar  # noqa: E402
 
 
@@ -86,3 +87,45 @@ def test_deck_browser_bottom_row_is_hidden_in_simple_mode() -> None:
     browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     DeckBrowser._drawButtons(browser)
     assert "<button" in drawn[1]
+
+
+def test_deck_menu_rwkv_submenu_is_advanced_only() -> None:
+    def browser(advanced: bool) -> Any:
+        return cast(
+            Any,
+            SimpleNamespace(
+                mw=SimpleNamespace(advanced_ui=lambda: advanced),
+                _reschedule_with_rwkv_curve=lambda _did: None,
+                _reschedule_all_decks_with_rwkv_curve=lambda: None,
+            ),
+        )
+
+    menu = MagicMock()
+    DeckBrowser._add_rwkv_menu(browser(False), menu, "1")
+    menu.addMenu.assert_not_called()
+
+    menu = MagicMock()
+    DeckBrowser._add_rwkv_menu(browser(True), menu, "1")
+    menu.addMenu.assert_called_once()
+    assert menu.addMenu.return_value.addAction.call_count == 2
+
+
+def test_addons_menu_entry_follows_the_mode_unless_addons_are_installed() -> None:
+    def shown(advanced: bool, addons: list[str]) -> bool:
+        action = MagicMock()
+        mw = cast(
+            Any,
+            SimpleNamespace(
+                advanced_ui=lambda: advanced,
+                addonManager=SimpleNamespace(allAddons=lambda: addons),
+                form=SimpleNamespace(actionAdd_ons=action),
+            ),
+        )
+        AnkiQt._sync_addons_action(mw)
+        action.setVisible.assert_called_once()
+        return bool(action.setVisible.call_args.args[0])
+
+    assert shown(True, [])
+    assert shown(True, ["some_addon"])
+    assert not shown(False, [])
+    assert shown(False, ["some_addon"])

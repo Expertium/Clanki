@@ -8,8 +8,6 @@
 
     import Row from "./Row.svelte";
     import type { HelpItem } from "./types";
-    import { mdiWeb } from "./icons";
-    import Icon from "./Icon.svelte";
 
     export let item: HelpItem;
 </script>
@@ -23,11 +21,6 @@
         {/if}
     </h2>
     {#if item.help}
-        {#if item.global}
-            <div class="icon">
-                <Icon icon={mdiWeb} />
-            </div>
-        {/if}
         {@html renderMarkdown(item.help)}
     {:else}
         {@html renderMarkdown(
@@ -60,13 +53,5 @@
         width: 100%;
         color: var(--fg-subtle);
         font-size: small;
-    }
-
-    .icon {
-        display: inline-block;
-        width: 1em;
-        fill: var(--fg-link);
-        margin-right: 0.25em;
-        margin-bottom: 1.25em;
     }
 </style>

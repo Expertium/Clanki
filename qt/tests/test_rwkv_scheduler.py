@@ -18012,13 +18012,11 @@ def _filtered_preview_state() -> SchedulingState:
 
 def _reschedule_request(
     *,
-    fsrs_reschedule: bool = True,
     configs: Sequence[tuple[int, float, bool] | tuple[int, float, bool, bool]] = (),
     deck_desired_retention: float | None = None,
 ) -> deck_config_pb2.UpdateDeckConfigsRequest:
     request = deck_config_pb2.UpdateDeckConfigsRequest()
     request.target_deck_id = 1
-    request.fsrs_reschedule = fsrs_reschedule
     for entry in configs:
         config_id, desired_retention, curve = entry[:3]
         instant = bool(entry[3]) if len(entry) > 3 else False
@@ -18035,6 +18033,8 @@ def _reschedule_request(
 def _reschedule_snapshot(
     presets: dict[int, tuple[float, bool] | tuple[float, bool, bool]],
     deck_desired_retention: float | None = None,
+    *,
+    reschedule_on_change: bool = True,
 ) -> rwkv_scheduler.RwkvCurveRescheduleSnapshot:
     return rwkv_scheduler.RwkvCurveRescheduleSnapshot(
         preset_desired_retention={k: v[0] for k, v in presets.items()},
@@ -18043,7 +18043,33 @@ def _reschedule_snapshot(
         preset_instant_enabled={
             k: bool(v[2]) if len(v) > 2 else False for k, v in presets.items()
         },
+        reschedule_on_change=reschedule_on_change,
     )
+
+
+def test_reschedule_snapshot_reads_the_stored_reschedule_choice() -> None:
+    """Pins spec/deck-options.md#deck-options.collection-wide-in-preferences."""
+
+    def make_mw(stored: bool) -> SimpleNamespace:
+        def get_config(key: str, default: object = None) -> object:
+            assert key == "fsrsReschedule"
+            return stored
+
+        return SimpleNamespace(
+            col=SimpleNamespace(decks=SimpleNamespace(), get_config=get_config)
+        )
+
+    request = _reschedule_request(configs=[(10, 0.85, True)])
+    assert rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+        make_mw(True), request
+    ).reschedule_on_change
+    assert not rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+        make_mw(False), request
+    ).reschedule_on_change
+    # no collection at all: the choice reads as off
+    assert not rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+        SimpleNamespace(col=None), request
+    ).reschedule_on_change
 
 
 def test_rwkv_curve_reschedule_needed_when_curve_preset_retention_changes() -> None:
@@ -18057,10 +18083,10 @@ def test_rwkv_curve_reschedule_needed_when_curve_preset_retention_changes() -> N
 
 
 def test_rwkv_curve_reschedule_not_needed_without_the_switch() -> None:
-    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    snapshot = _reschedule_snapshot({10: (0.9, True)}, reschedule_on_change=False)
     assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
         snapshot,
-        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, True)]),
+        _reschedule_request(configs=[(10, 0.85, True)]),
     )
 
 
@@ -18159,8 +18185,8 @@ def test_rwkv_instant_refresh_needed_when_instant_retention_changes() -> None:
         snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
     )
     assert not rwkv_scheduler.rwkv_instant_refresh_needed(
-        snapshot,
-        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, False, True)]),
+        _reschedule_snapshot({10: (0.9, False, True)}, reschedule_on_change=False),
+        _reschedule_request(configs=[(10, 0.85, False, True)]),
     )
     # An RWKV-Curve change is not an RWKV-Instant change.
     assert not rwkv_scheduler.rwkv_instant_refresh_needed(

@@ -19,7 +19,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     import { leechChoices } from "./choices";
-    import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
@@ -31,7 +30,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
-    const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
 
     let stepsExceedMinimumInterval: string;
     let stepsTooLargeForFsrs: string;
@@ -119,22 +117,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <Warning warning={stepsTooLargeForFsrs} />
         </Item>
 
-        {#if $fsrs}
-            <!-- Same-day reviews for (re)learning steps are always allowed
-                 (spec sched.same-day-steps-always-on); there is no switch. -->
-            <Item>
-                <SwitchRow
-                    bind:value={$fsrsLearningQueuesDisabled}
-                    defaultValue={false}
-                >
-                    <SettingTitle>
-                        <GlobalLabel
-                            title={"Skip learning/relearning queues with FSRS/RWKV"}
-                        />
-                    </SettingTitle>
-                </SwitchRow>
-            </Item>
-        {/if}
+        <!-- Same-day reviews for (re)learning steps are always allowed
+             (spec sched.same-day-steps-always-on); there is no switch.
+             "Skip learning/relearning queues" is a Preferences setting
+             (spec deck-options.collection-wide-in-preferences). -->
 
         {#if !$fsrs}
             <Item>

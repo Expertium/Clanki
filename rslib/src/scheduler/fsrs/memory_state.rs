@@ -1449,16 +1449,11 @@ mod tests {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: String::new(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
-            apply_all_parent_limits: false,
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         match version {
@@ -1493,16 +1488,11 @@ mod tests {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: String::new(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
-            apply_all_parent_limits: false,
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         let mut new_config = input.configs[0].clone();
@@ -1713,6 +1703,9 @@ mod tests {
         let rows_before = col.storage.get_revlog_entries_for_card(cid)?.len();
         let due_before = col.storage.get_card(cid)?.unwrap().due;
 
+        // the reschedule choice is a stored Preferences setting
+        // (spec deck-options.collection-wide-in-preferences)
+        col.set_config_bool(BoolKey::FsrsReschedule, true, false)?;
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         let mut input = UpdateDeckConfigsRequest {
             target_deck_id: DeckId(1),
@@ -1723,16 +1716,11 @@ mod tests {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: String::new(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
-            apply_all_parent_limits: false,
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            fsrs_reschedule: true,
-            fsrs_health_check: false,
             review_fuzz_config: Default::default(),
         };
         input.configs[0].inner.desired_retention = 0.7;

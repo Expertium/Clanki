@@ -54,36 +54,44 @@ to RWKV-Instant.
 
 ## deck-options.fsrs-only-controls
 
-Given the deck-options screen in Advanced mode (`deck-options.simple-view`),
-these controls appear only while FSRS-7 is the selected algorithm: the FSRS
-parameters, the Optimize buttons, and the FSRS advanced section (Help Me
-Decide, the FSRS version selector, the search filter, Check Health, and the
-FSRS simulator). Under RWKV-Curve and RWKV-Instant none of them is shown, in
-Simple mode none of them is shown under any algorithm, and the "Compare RWKV
-with FSRS" action is gone. One search filter serves both optimization and evaluation; the
-separate evaluation filter no longer exists, and a stored
-`fsrsEvaluationSearch` value is ignored. FSRS-7 optimization always includes
-same-day reviews, always uses scheduling penalties and always weights the
-training items by recency (the fsrs crate applies recency weighting
-unconditionally): the two switches and "Same-day reviews: Help Me Decide"
-are gone, and the stored `fsrs7IncludeSameDayOptimize` /
-`fsrs7EnableSchedulingPenalties` values are ignored, also by "Optimize all
-presets".
+Given the deck-options screen, these controls appear only while FSRS-7 is
+the selected algorithm: the "Optimize All Presets" button (in Simple mode
+and in Advanced mode) and, in Advanced mode only (`deck-options.simple-view`),
+the FSRS parameters and the FSRS advanced section (Help Me Decide, the FSRS
+version selector, the search filter, Check Health, Evaluate where enabled,
+and the FSRS simulator). Under RWKV-Curve and RWKV-Instant none of them is
+shown, and the "Compare RWKV with FSRS" action is gone. "Optimize All
+Presets" is the one optimize action: "Optimize Current Preset", its
+optimization-result comparison, the custom decay table and the "Check
+health when optimizing" switch no longer exist (Check Health stays; a stored
+`fsrsHealthCheck` value is ignored). One search filter serves both
+optimization and evaluation; the separate evaluation filter no longer
+exists, and a stored `fsrsEvaluationSearch` value is ignored. FSRS-7
+optimization always includes same-day reviews, always uses scheduling
+penalties and always weights the training items by recency (the fsrs crate
+applies recency weighting unconditionally): the two switches and "Same-day
+reviews: Help Me Decide" are gone, and the stored
+`fsrs7IncludeSameDayOptimize` / `fsrs7EnableSchedulingPenalties` values are
+ignored.
 
 **Why:** Andrew, 2026-09-14: RWKV's parameters are frozen; a proper
 RWKV-Instant simulator is out of scope; FSRS-7 must always be optimized
-with same-day reviews, recency and scheduling penalties, with no choice.
+with same-day reviews, recency and scheduling penalties, with no choice;
+one optimize action is simpler than two, and a user who reached FSRS-7 in
+Simple mode must still be able to optimize.
 
 **Pinned by:** `fsrs7_optimize_always_includes_same_day_reviews`,
 `fsrs7_scheduling_penalties_are_always_enabled`
-(`rslib/src/deckconfig/update.rs`). The visibility is markup.
+(`rslib/src/deckconfig/update.rs`); `ts/tests/e2e/deck-options.test.ts`
+("Optimize All Presets" visible in Simple mode, no "Optimize Current
+Preset" in either mode). The rest of the visibility is markup.
 
 ## deck-options.reschedule-on-change
 
-Given the collection-wide "Reschedule cards when desired
-retention changes" switch (stored as `fsrsReschedule`), shown for every algorithm in
-Advanced mode only (`deck-options.simple-view`), and a deck-options save
-with it on:
+Given the collection-wide "Reschedule cards when desired retention changes"
+setting (Preferences > Review > Scheduler, stored as `fsrsReschedule`;
+`deck-options.collection-wide-in-preferences`), which applies to every
+algorithm, and a deck-options save while it is on:
 
 - presets running FSRS-7 or RWKV-Instant reschedule with FSRS intervals as
   before, when their parameters or desired retention changed;
@@ -101,10 +109,12 @@ with it on:
   after the save, with its own progress dialog.
 
 There is no separate manual "Reschedule Cards with RWKV-Curve Intervals"
-action any more; this switch is the one rescheduling control.
+action any more; this setting is the one rescheduling control. The save
+reads the stored value; the `fsrs_reschedule` field of the save request is
+ignored.
 
 **Why:** Andrew, 2026-09-14: changing desired retention affects dueness for
-any algorithm, so one switch, named for that, serves all three algorithms.
+any algorithm, so one setting, named for that, serves all three algorithms.
 Writing FSRS intervals onto RWKV-Curve cards would undo RWKV's intervals, so
 those presets get the RWKV reschedule instead.
 
@@ -136,21 +146,24 @@ scope.
 
 ## deck-options.reschedule-choice-remembered
 
-Given a deck-options save, the collection stores the value of the
-"Reschedule cards when desired retention changes" switch at that save under the collection flag
-`fsrsReschedule` (absent or off until the first save with the switch on).
-The switch itself still opens off every time, and the save-time rescheduling
-it triggers is unchanged (`deck-options.reschedule-on-change`). The stored
-value is read by one thing only: the schedule half of the post-sync FSRS
-reconcile pass (`sync.post-sync-reschedule-gate`), which runs only while it
-is on.
+Given the "Reschedule cards when desired retention changes" setting
+(Preferences > Review > Scheduler; `deck-options.collection-wide-in-preferences`),
+its value is the collection flag `fsrsReschedule` (absent or off until the
+user turns it on), and the dialog shows the stored value. Two things read
+it: the deck-options save, for the rescheduling it triggers
+(`deck-options.reschedule-on-change`), and the schedule half of the
+post-sync FSRS reconcile pass (`sync.post-sync-reschedule-gate`), which runs
+only while it is on. A deck-options save never writes it.
 
 **Why:** the post-sync reconcile must respect the user's rescheduling
-opt-out (Andrew's review of upstream PR 4717, 2026-06-20), and the switch is
-sent with each save rather than stored, so the last saved choice is the only
-record of it.
+opt-out (Andrew's review of upstream PR 4717, 2026-06-20). Until 2026-09-14
+the switch sat on the deck-options page, was sent with each save and opened
+off every time, so the last saved choice was the only record of it; as a
+Preferences setting it is simply stored.
 
-**Pinned by:** `deck_options_save_remembers_reschedule_on_change_choice`
+**Pinned by:** `scheduling_preferences_carry_the_collection_wide_settings`
+(`rslib/src/preferences.rs`),
+`deck_options_save_leaves_the_collection_wide_settings_alone`
 (`rslib/src/deckconfig/update.rs`).
 
 ## deck-options.advanced-view
@@ -192,18 +205,22 @@ Given the collection flag `advancedUi` off (Simple mode, the default;
 `spec/ui.md`, `ui.mode-switch`), the deck-options screen is one section,
 titled "Deck Options", with exactly these controls in this order:
 
-1. New cards/day and Maximum reviews/day, each with the preset / deck /
-   today tabs;
-2. Desired retention and, as in Advanced mode, the First intervals table
-   for FSRS-7 and the RWKV-Instant information box
-   (`deck-options.first-intervals`) — without the Algorithm dropdown, which
-   is Advanced-only;
+1. New cards/day and Maximum reviews/day, without the preset / This deck /
+   Today only tabs: each box edits the level that is in effect (a deck or
+   today override when one is set, else the preset), and the page neither
+   writes nor clears an override;
+2. Desired retention, likewise without its preset / This deck tabs, and, as
+   in Advanced mode, the First intervals table and the "Optimize All
+   Presets" button for FSRS-7 and the RWKV-Instant information box
+   (`deck-options.first-intervals`, `deck-options.fsrs-only-controls`) —
+   without the Algorithm dropdown, which is Advanced-only;
 3. Bury siblings — one switch;
 4. Don't play audio automatically;
-5. Skip question when replaying answer;
-6. On-screen timer — one switch;
-7. the Easy Days sliders, collapsed behind an "Easy Days" expander that
-   the user opens by clicking it (collapsed in Advanced mode too).
+5. On-screen timer — one switch;
+6. the Easy Days sliders, collapsed behind an "Easy Days" expander (plain,
+   not bold) that the user opens by clicking its name; a small "?" next to
+   the name opens the Easy Days help without toggling the expander
+   (collapsed in Advanced mode too, with the same "?").
 
 Add-on components render after the section, in both modes.
 
@@ -220,15 +237,17 @@ Given the flag on (Advanced mode), the screen has the per-topic sections
 (Daily limits, New cards, Lapses, Display order, Algorithm, RWKV, Burying,
 Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
 bury switches and the two separate timer settings, and it alone shows: the
-Algorithm dropdown, Limits start from top, Learning steps, Insertion order,
-Relearning steps, Skip learning/relearning queues, Leech threshold, Leech
-action, the whole Display order section, Reschedule cards when changing
-desired retention, the FSRS Optimize buttons and the
-FSRS advanced section (`deck-options.fsrs-only-controls`), Maximum answer
-seconds, the whole Auto advance section, Maximum interval, Minimum interval,
-Ignore cards reviewed before, Custom scheduling, and the RWKV settings of
-`deck-options.advanced-view`. Hidden settings keep their stored values and
-keep taking effect.
+preset / This deck / Today only tabs of the daily limits and the preset /
+This deck tabs of desired retention, the
+Algorithm dropdown, Learning steps, Insertion order, Relearning steps, Leech
+threshold, Leech action, the whole Display order section, the FSRS advanced
+section (`deck-options.fsrs-only-controls`), Skip question when replaying
+answer (off by default), Maximum answer seconds, the
+whole Auto advance section, Maximum interval, Minimum interval, Ignore cards
+reviewed before, and the RWKV settings of `deck-options.advanced-view`.
+Hidden settings keep their stored values and keep taking effect. Neither
+mode shows a collection-wide setting
+(`deck-options.collection-wide-in-preferences`).
 
 **Why:** Andrew, 2026-09-14, plan item 2: Simple mode is one short list of
 the settings a new user needs; everything else belongs to Advanced mode.
@@ -237,9 +256,44 @@ settings only matter to power users.
 
 **Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts`,
 `ts/routes/deck-options/timer-switch.test.ts` (the combined switches);
-`ts/tests/e2e/deck-options.test.ts` (the FSRS parameters and the Algorithm
-dropdown exist only in Advanced mode; Desired retention and Bury siblings
-are visible in Simple mode). The section layout itself is markup.
+`ts/tests/e2e/deck-options.test.ts` (the FSRS parameters, the Algorithm
+dropdown, the limit tabs and Skip question when replaying answer exist only
+in Advanced mode; Desired retention and Bury siblings are visible in Simple
+mode). The section layout itself is markup.
+
+## deck-options.collection-wide-in-preferences
+
+Given the deck-options screen, every setting on it belongs to one preset
+(or, for the limit tabs, to the current deck). The four settings that apply
+to the whole collection live in Preferences > Review, in the Scheduler group
+and a "Custom scheduling" group, and nowhere else: Limits start from top
+(`applyAllParentLimits`), Skip learning/relearning queues with FSRS/RWKV
+(`fsrsLearningQueuesDisabled`), Reschedule cards when desired retention
+changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
+and Custom scheduling (`cardStateCustomizer`). They are read and written
+through the `Preferences.Scheduling` message; the matching fields of the
+deck-options save request are ignored, so a deck-options save never
+overwrites a Preferences change. The deck-options page still reads two of
+them: Skip learning/relearning queues for the First intervals preview and
+the reschedule choice for the Easy Days warning. With no collection-wide
+setting left on the page, the globe marker and the "affects the entire
+collection" help icon are gone.
+
+**Why:** Andrew, 2026-09-14: a setting that affects all decks and presets
+should not be in deck options to begin with; moving them beats marking them.
+
+**Pinned by:** `scheduling_preferences_carry_the_collection_wide_settings`
+(`rslib/src/preferences.rs`),
+`deck_options_save_leaves_the_collection_wide_settings_alone` and
+`fsrs_short_term_with_steps_flag_roundtrip` (`rslib/src/deckconfig/update.rs`);
+`test_update_collection_writes_the_collection_wide_scheduling_settings`
+(`qt/tests/test_preferences.py`);
+`test_reschedule_snapshot_reads_the_stored_reschedule_choice` and
+`test_rwkv_curve_reschedule_not_needed_without_the_switch`
+(`qt/tests/test_rwkv_scheduler.py`, the after-save RWKV refresh reads the
+stored choice); "collection-wide settings are not on the deck-options page"
+(`ts/tests/e2e/deck-options.test.ts`); "dataForSaving" in
+`ts/routes/deck-options/lib.test.ts` (the save does not carry them).
 
 ## deck-options.new-preset-defaults
 

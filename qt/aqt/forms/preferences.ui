@@ -372,6 +372,33 @@
             </item>
            </layout>
           </item>
+          <item>
+           <widget class="QCheckBox" name="applyAllParentLimits">
+            <property name="toolTip">
+             <string>deck_config_apply_all_parent_limits_tooltip</string>
+            </property>
+            <property name="text">
+             <string>deck_config_apply_all_parent_limits</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="fsrsLearningQueuesDisabled">
+            <property name="text">
+             <string>preferences_skip_learning_queues</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="fsrsReschedule">
+            <property name="toolTip">
+             <string>deck_config_reschedule_cards_on_change_tooltip</string>
+            </property>
+            <property name="text">
+             <string>deck_config_reschedule_cards_on_change</string>
+            </property>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>
@@ -518,6 +545,28 @@
           </widget>
          </item>
         </layout>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="customSchedulingGroup">
+         <property name="title">
+          <string>deck_config_custom_scheduling</string>
+         </property>
+         <layout class="QVBoxLayout" name="customSchedulingLayout">
+          <item>
+           <widget class="QPlainTextEdit" name="customScheduling">
+            <property name="toolTip">
+             <string>deck_config_custom_scheduling_tooltip</string>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>16777215</width>
+              <height>120</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
        </item>
        <item>
         <spacer name="verticalSpacer_12">

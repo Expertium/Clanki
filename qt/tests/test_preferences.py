@@ -14,6 +14,10 @@ def make_prefs() -> PreferencesProto:
     prefs = PreferencesProto()
     prefs.scheduling.learn_ahead_secs = 20 * 60
     prefs.scheduling.rollover = 4
+    prefs.scheduling.apply_all_parent_limits = True
+    prefs.scheduling.fsrs_learning_queues_disabled = False
+    prefs.scheduling.fsrs_reschedule = True
+    prefs.scheduling.card_state_customizer = "// custom"
     prefs.reviewing.show_remaining_due_counts = True
     prefs.reviewing.show_intervals_on_buttons = True
     prefs.reviewing.time_limit_secs = 0
@@ -39,6 +43,16 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
     form = MagicMock()
     form.lrnCutoff.value.return_value = int(prefs.scheduling.learn_ahead_secs / 60)
     form.dayOffset.value.return_value = prefs.scheduling.rollover
+    form.applyAllParentLimits.isChecked.return_value = (
+        prefs.scheduling.apply_all_parent_limits
+    )
+    form.fsrsLearningQueuesDisabled.isChecked.return_value = (
+        prefs.scheduling.fsrs_learning_queues_disabled
+    )
+    form.fsrsReschedule.isChecked.return_value = prefs.scheduling.fsrs_reschedule
+    form.customScheduling.toPlainText.return_value = (
+        prefs.scheduling.card_state_customizer
+    )
     form.showProgress.isChecked.return_value = prefs.reviewing.show_remaining_due_counts
     form.showEstimates.isChecked.return_value = (
         prefs.reviewing.show_intervals_on_buttons
@@ -128,3 +142,28 @@ def test_update_collection_calls_backend_when_changed(
     success_callback()
     dialog.mw.apply_collection_options.assert_called_once()
     on_done.assert_called_once()
+
+
+# Pins spec/deck-options.md#deck-options.collection-wide-in-preferences
+@patch("aqt.preferences.set_preferences")
+def test_update_collection_writes_the_collection_wide_scheduling_settings(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()
+    form = make_form(prefs)
+    form.applyAllParentLimits.isChecked.return_value = False
+    form.fsrsLearningQueuesDisabled.isChecked.return_value = True
+    form.fsrsReschedule.isChecked.return_value = False
+    form.customScheduling.toPlainText.return_value = "// changed"
+    dialog = make_dialog(prefs, form)
+
+    dialog.update_collection(MagicMock())
+
+    scheduling = dialog.prefs.scheduling
+    assert scheduling.apply_all_parent_limits is False
+    assert scheduling.fsrs_learning_queues_disabled is True
+    assert scheduling.fsrs_reschedule is False
+    assert scheduling.card_state_customizer == "// changed"
+    mock_set_preferences.assert_called_once_with(
+        parent=dialog, preferences=dialog.prefs
+    )

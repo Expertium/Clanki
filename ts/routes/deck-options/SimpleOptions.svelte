@@ -88,6 +88,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         burySiblings: {
             title: tr.deckConfigBurySiblings(),
             help:
+                tr.deckConfigBurySiblingsSimpleTooltip() +
+                "\n\n" +
                 tr.deckConfigBuryNewTooltip() +
                 "\n\n" +
                 tr.deckConfigBuryReviewTooltip() +
@@ -100,11 +102,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         disableAutoplay: {
             title: tr.deckConfigDisableAutoplay(),
             help: tr.deckConfigDisableAutoplayTooltip(),
-            url: HelpPage.DeckOptions.audio,
-        },
-        skipQuestionWhenReplaying: {
-            title: tr.deckConfigSkipQuestionWhenReplaying(),
-            help: tr.deckConfigAlwaysIncludeQuestionAudioTooltip(),
             url: HelpPage.DeckOptions.audio,
         },
         onScreenTimer: {
@@ -178,16 +175,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </SwitchRow>
         </Item>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.skipQuestionWhenReplayingAnswer}
-                defaultValue={defaults.skipQuestionWhenReplayingAnswer}
-            >
-                <SettingTitle on:click={() => openHelp("skipQuestionWhenReplaying")}>
-                    {settings.skipQuestionWhenReplaying.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+        <!-- "Skip question when replaying answer" is Advanced-only
+             (spec deck-options.simple-view). -->
 
         <Item>
             <!-- AnkiMobile hides this -->
@@ -203,6 +192,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </div>
         </Item>
 
-        <EasyDaysRows {state} />
+        <EasyDaysRows {state} openHelp={() => openHelp("easyDays")} />
     </DynamicallySlottable>
 </TitledContainer>

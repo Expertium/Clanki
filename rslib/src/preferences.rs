@@ -57,6 +57,13 @@ impl Collection {
             } as i32,
             new_timezone: self.get_creation_utc_offset().is_some(),
             day_learn_first: self.get_config_bool(BoolKey::ShowDayLearningCardsFirst),
+            // collection-wide settings that used to sit in deck options
+            // (spec deck-options.collection-wide-in-preferences)
+            apply_all_parent_limits: self.get_config_bool(BoolKey::ApplyAllParentLimits),
+            fsrs_learning_queues_disabled: self
+                .get_config_bool(BoolKey::FsrsLearningQueuesDisabled),
+            fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
+            card_state_customizer: self.get_config_string(StringKey::CardStateCustomizer),
         })
     }
 
@@ -65,6 +72,13 @@ impl Collection {
 
         self.set_config_bool_inner(BoolKey::ShowDayLearningCardsFirst, s.day_learn_first)?;
         self.set_learn_ahead_secs(s.learn_ahead_secs)?;
+        self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, s.apply_all_parent_limits)?;
+        self.set_config_bool_inner(
+            BoolKey::FsrsLearningQueuesDisabled,
+            s.fsrs_learning_queues_disabled,
+        )?;
+        self.set_config_bool_inner(BoolKey::FsrsReschedule, s.fsrs_reschedule)?;
+        self.set_config_string_inner(StringKey::CardStateCustomizer, &s.card_state_customizer)?;
 
         self.set_new_review_mix(match s.new_review_mix() {
             NewRevMixPB::Distribute => crate::config::NewReviewMix::Mix,
@@ -169,6 +183,37 @@ impl Collection {
 mod test {
     use super::*;
     use crate::config::BoolKey;
+
+    // Pins spec/deck-options.md#deck-options.collection-wide-in-preferences
+    #[test]
+    fn scheduling_preferences_carry_the_collection_wide_settings() -> Result<()> {
+        let mut col = Collection::new();
+        let mut scheduling = col.get_scheduling_preferences()?;
+        assert!(!scheduling.apply_all_parent_limits);
+        assert!(!scheduling.fsrs_learning_queues_disabled);
+        assert!(!scheduling.fsrs_reschedule);
+        assert_eq!(scheduling.card_state_customizer, "");
+
+        scheduling.apply_all_parent_limits = true;
+        scheduling.fsrs_learning_queues_disabled = true;
+        scheduling.fsrs_reschedule = true;
+        scheduling.card_state_customizer = "// custom".into();
+        col.set_scheduling_preferences(scheduling)?;
+
+        assert!(col.get_config_bool(BoolKey::ApplyAllParentLimits));
+        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        assert!(col.get_config_bool(BoolKey::FsrsReschedule));
+        assert_eq!(
+            col.get_config_string(StringKey::CardStateCustomizer),
+            "// custom"
+        );
+        let scheduling = col.get_scheduling_preferences()?;
+        assert!(scheduling.apply_all_parent_limits);
+        assert!(scheduling.fsrs_learning_queues_disabled);
+        assert!(scheduling.fsrs_reschedule);
+        assert_eq!(scheduling.card_state_customizer, "// custom");
+        Ok(())
+    }
 
     #[test]
     fn reviewing_preferences_include_fuzz_delta_toggle() -> Result<()> {

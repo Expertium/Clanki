@@ -12208,6 +12208,9 @@ class RwkvCurveRescheduleSnapshot:
     preset_curve_enabled: dict[int, bool]
     deck_desired_retention: float | None
     preset_instant_enabled: dict[int, bool] = field(default_factory=dict)
+    # The stored "Reschedule cards when desired retention changes" choice, a
+    # Preferences setting (spec deck-options.collection-wide-in-preferences).
+    reschedule_on_change: bool = False
 
 
 def _same_retention(before: float | None, after: float | None) -> bool:
@@ -12237,6 +12240,15 @@ def rwkv_curve_reschedule_snapshot(
     decks = getattr(col, "decks", None)
     get_config = getattr(decks, "get_config", None)
     get_deck = getattr(decks, "get", None)
+
+    reschedule_on_change = False
+    get_collection_config = getattr(col, "get_config", None)
+    if callable(get_collection_config):
+        try:
+            reschedule_on_change = bool(get_collection_config("fsrsReschedule", False))
+        except Exception:
+            logger.debug("failed to read the reschedule choice before save")
+            reschedule_on_change = False
 
     preset_desired_retention: dict[int, float] = {}
     preset_curve_enabled: dict[int, bool] = {}
@@ -12271,6 +12283,7 @@ def rwkv_curve_reschedule_snapshot(
         preset_curve_enabled=preset_curve_enabled,
         deck_desired_retention=_legacy_deck_desired_retention(deck),
         preset_instant_enabled=preset_instant_enabled,
+        reschedule_on_change=reschedule_on_change,
     )
 
 
@@ -12297,13 +12310,13 @@ def _rwkv_retention_change_needs_refresh(
 ) -> bool:
     """Shared rule for both RWKV modes (spec deck-options.reschedule-on-change).
 
-    True when "Reschedule cards on change" is on and either a preset in the
-    request with `flag` set changed its desired retention or newly has the
-    flag, or the target deck keeps such a preset and its own desired-retention
-    override changed.
+    True when the stored "Reschedule cards when desired retention changes"
+    choice is on and either a preset in the request with `flag` set changed
+    its desired retention or newly has the flag, or the target deck keeps
+    such a preset and its own desired-retention override changed.
     """
 
-    if not getattr(request, "fsrs_reschedule", False):
+    if not snapshot.reschedule_on_change:
         return False
     configs = list(getattr(request, "configs", ()))
     for config in configs:

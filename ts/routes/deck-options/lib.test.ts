@@ -242,13 +242,15 @@ test("saving", () => {
     expect(out.configs![0].name).toBe("another one");
     expect(out.mode).toBe(UpdateDeckConfigsMode.NORMAL);
     expect(out.fsrsShortTermWithStepsEnabled).toBe(false);
-    expect(out.fsrsLearningQueuesDisabled).toBe(false);
+    // a Preferences setting; the save does not carry it
+    // (spec deck-options.collection-wide-in-preferences)
+    expect(out.fsrsLearningQueuesDisabled).toBeUndefined();
 
     state.fsrsShortTermWithStepsEnabled.set(true);
     state.fsrsLearningQueuesDisabled.set(true);
     out = state.dataForSaving(UpdateDeckConfigsMode.NORMAL);
     expect(out.fsrsShortTermWithStepsEnabled).toBe(true);
-    expect(out.fsrsLearningQueuesDisabled).toBe(true);
+    expect(out.fsrsLearningQueuesDisabled).toBeUndefined();
 
     // rename, then change current deck
     state.setCurrentName("zzz");

@@ -20,6 +20,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
      * (spec sched.fuzz-always-on).
      */
     export let state: DeckOptionsState;
+    /** Opens the Easy Days help entry of the hosting section's help modal. */
+    export let openHelp: () => void;
 
     const fsrsEnabled = state.fsrs;
     const reschedule = state.fsrsReschedule;
@@ -49,8 +51,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <option>0.5</option>
 </datalist>
 
+<!-- The name toggles the expander; the "?" next to it opens the help
+     without toggling (spec deck-options.simple-view). -->
 <details class="easy-days m-1">
-    <summary>{tr.deckConfigEasyDaysTitle()}</summary>
+    <summary>
+        {tr.deckConfigEasyDaysTitle()}
+        <button
+            type="button"
+            class="easy-days-help"
+            title={tr.deckConfigEasyDaysTitle()}
+            on:click|preventDefault|stopPropagation={openHelp}
+        >
+            ?
+        </button>
+    </summary>
 
     <EasyDaysInput bind:values={$config.easyDaysPercentages} />
     <Item>
@@ -64,7 +78,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <style>
     .easy-days summary {
         cursor: pointer;
-        font-weight: 700;
         margin-bottom: 0.75rem;
+    }
+
+    .easy-days-help {
+        cursor: help;
+        margin-left: 0.25rem;
+        padding: 0 0.4rem;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        background: transparent;
+        color: var(--fg-subtle);
+        font-size: smaller;
+        line-height: 1.4;
+    }
+
+    .easy-days-help:hover {
+        color: var(--fg);
     }
 </style>

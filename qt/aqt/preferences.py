@@ -142,6 +142,14 @@ class Preferences(QDialog):
 
         form.lrnCutoff.setValue(int(scheduling.learn_ahead_secs / 60.0))
         form.dayOffset.setValue(scheduling.rollover)
+        # collection-wide settings that used to sit in deck options
+        # (spec deck-options.collection-wide-in-preferences)
+        form.applyAllParentLimits.setChecked(scheduling.apply_all_parent_limits)
+        form.fsrsLearningQueuesDisabled.setChecked(
+            scheduling.fsrs_learning_queues_disabled
+        )
+        form.fsrsReschedule.setChecked(scheduling.fsrs_reschedule)
+        form.customScheduling.setPlainText(scheduling.card_state_customizer)
 
         reviewing = self.prefs.reviewing
         form.timeLimit.setValue(int(reviewing.time_limit_secs / 60.0))
@@ -180,6 +188,12 @@ class Preferences(QDialog):
         scheduling = self.prefs.scheduling
         scheduling.learn_ahead_secs = form.lrnCutoff.value() * 60
         scheduling.rollover = form.dayOffset.value()
+        scheduling.apply_all_parent_limits = form.applyAllParentLimits.isChecked()
+        scheduling.fsrs_learning_queues_disabled = (
+            form.fsrsLearningQueuesDisabled.isChecked()
+        )
+        scheduling.fsrs_reschedule = form.fsrsReschedule.isChecked()
+        scheduling.card_state_customizer = form.customScheduling.toPlainText()
 
         reviewing = self.prefs.reviewing
         reviewing.show_remaining_due_counts = form.showProgress.isChecked()

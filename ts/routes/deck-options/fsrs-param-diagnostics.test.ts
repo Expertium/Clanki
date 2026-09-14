@@ -6,7 +6,6 @@ import { expect, test } from "vitest";
 import {
     fsrsParamDiagnostics,
     fsrsParamsSupportSameDayEvaluation,
-    fsrsSameDayEvaluationOverrideForComparison,
     OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
 } from "./fsrs-param-diagnostics";
 
@@ -54,22 +53,4 @@ test("same-day evaluation is only supported for FSRS-7 parameter sets", () => {
     for (const count of [0, 17, 19, 21]) {
         expect(fsrsParamsSupportSameDayEvaluation(Array(count).fill(1))).toBe(false);
     }
-});
-
-test("comparison excludes same-day targets unless both parameter sets support them", () => {
-    const fsrs6Params = Array(21).fill(1);
-    const fsrs7Params = Array(34).fill(1);
-
-    expect(
-        fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, true),
-    ).toBe(false);
-    expect(
-        fsrsSameDayEvaluationOverrideForComparison(fsrs7Params, fsrs7Params, true),
-    ).toBe(true);
-    expect(
-        fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, false),
-    ).toBe(false);
-    expect(
-        fsrsSameDayEvaluationOverrideForComparison(fsrs6Params, fsrs7Params, undefined),
-    ).toBeUndefined();
 });

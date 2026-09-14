@@ -787,6 +787,7 @@ class AnkiQt(QMainWindow):
             # the toolbar was first drawn without a collection, so the
             # Simple | Advanced switch (spec ui.mode-switch) was not in it
             self.toolbar.draw()
+            self._sync_addons_action()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
         except Exception:
@@ -1707,6 +1708,7 @@ title="{}" {}>{}</button>""".format(
             return
         self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
+        self._sync_addons_action()
         self.toolbar.draw()
         self.reset()
 
@@ -1715,6 +1717,13 @@ title="{}" {}>{}</button>""".format(
         action.blockSignals(True)
         action.setChecked(self.advanced_ui())
         action.blockSignals(False)
+
+    def _sync_addons_action(self) -> None:
+        """Tools > Add-ons shows in Advanced mode, and in Simple mode only while
+        at least one add-on is installed (spec ui.mode-switch)."""
+        self.form.actionAdd_ons.setVisible(
+            self.advanced_ui() or bool(self.addonManager.allAddons())
+        )
 
     def updateTitleBar(self) -> None:
         self.setWindowTitle(aqt.application_name())

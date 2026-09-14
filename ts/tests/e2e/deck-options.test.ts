@@ -23,10 +23,12 @@ async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
     expect(response.ok()).toBeTruthy();
 }
 
-// Pins spec/deck-options.md#deck-options.scheduler-choice and
-// #deck-options.simple-view: there is no FSRS switch any more, the Algorithm
-// dropdown exists only in Advanced mode, and so do the FSRS parameters
-// (inside the FSRS advanced section) and the reschedule switch.
+// Pins spec/deck-options.md#deck-options.scheduler-choice,
+// #deck-options.simple-view and #deck-options.fsrs-only-controls: there is
+// no FSRS switch any more, the Algorithm dropdown exists only in Advanced
+// mode, and so do the FSRS parameters (inside the FSRS advanced section);
+// "Optimize All Presets" is the one optimize action and shows in Simple
+// mode too.
 test("Simple mode shows desired retention but no Algorithm dropdown", async ({ page }) => {
     await setAdvancedUi(page, false);
     await page.goto("/deck-options/1");
@@ -38,9 +40,38 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     await expect(
         page.locator('[role="button"][aria-label="FSRS Parameters"]'),
     ).toHaveCount(0);
-    await expect(
-        page.getByText("Reschedule cards when desired retention changes", { exact: true }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
+    // the preset / deck / today tabs are Advanced-only
+    await expect(page.getByRole("button", { name: "This deck" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Today only" })).toHaveCount(0);
+    await expect(page.getByText("Skip question when replaying answer", { exact: true })).toHaveCount(0);
+});
+
+// Pins spec/deck-options.md#deck-options.collection-wide-in-preferences: the
+// collection-wide settings are not on the deck-options page in either mode.
+test("collection-wide settings are not on the deck-options page", async ({ page }) => {
+    const collectionWide = [
+        "Limits start from top",
+        "Skip learning/relearning queues with FSRS/RWKV",
+        "Reschedule cards when desired retention changes",
+        "Custom scheduling",
+    ];
+    await setAdvancedUi(page, true);
+    try {
+        await page.goto("/deck-options/1");
+        await expect(page.getByText("Algorithm", { exact: true }).first()).toBeVisible();
+        await expect(page.getByRole("button", { name: "This deck" }).first()).toBeVisible();
+        await expect(page.getByRole("button", { name: "Today only" }).first()).toBeVisible();
+        for (const title of collectionWide) {
+            await expect(page.getByText(title, { exact: true })).toHaveCount(0);
+        }
+        await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
+        await expect(page.getByText("Check health when optimizing", { exact: false })).toHaveCount(0);
+    } finally {
+        // Simple mode is the collection default; leave it for the other tests.
+        await setAdvancedUi(page, false);
+    }
 });
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {

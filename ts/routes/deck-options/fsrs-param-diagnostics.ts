@@ -34,18 +34,3 @@ export function fsrsParamDiagnostics(params: readonly number[]): FsrsParamDiagno
 export function fsrsParamsSupportSameDayEvaluation(params: readonly number[]): boolean {
     return params.length === 34;
 }
-
-export function fsrsSameDayEvaluationOverrideForComparison(
-    currentParams: readonly number[],
-    optimizedParams: readonly number[],
-    requestedOverride: boolean | undefined,
-): boolean | undefined {
-    if (requestedOverride !== true) {
-        return requestedOverride;
-    }
-
-    return fsrsParamsSupportSameDayEvaluation(currentParams)
-            && fsrsParamsSupportSameDayEvaluation(optimizedParams)
-        ? true
-        : false;
-}

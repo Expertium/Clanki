@@ -6,12 +6,7 @@ import { HelpPage } from "@tslib/help-page";
 
 import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
-export type AlgorithmHelpKey =
-    | "fsrs"
-    | "desiredRetention"
-    | "modelParams"
-    | "rescheduleCardsOnChange"
-    | "healthCheck";
+export type AlgorithmHelpKey = "fsrs" | "desiredRetention" | "modelParams";
 
 /**
  * Help entries for the Algorithm block. The Advanced-mode section and the
@@ -24,13 +19,10 @@ export function algorithmHelpSettings(): Record<AlgorithmHelpKey, HelpItem> {
             title: tr.deckConfigScheduler(),
             help: tr.deckConfigSchedulerTooltip(),
             url: HelpPage.DeckOptions.fsrs,
-            global: true,
         },
         desiredRetention: {
             title: tr.deckConfigDesiredRetention(),
-            help: tr.deckConfigDesiredRetentionTooltip()
-                + "\n\n"
-                + tr.deckConfigDesiredRetentionTooltip2(),
+            help: tr.deckConfigDesiredRetentionTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
         modelParams: {
@@ -39,22 +31,6 @@ export function algorithmHelpSettings(): Record<AlgorithmHelpKey, HelpItem> {
                 + "\n\n"
                 + tr.deckConfigComputeOptimalWeightsTooltip2(),
             sched: HelpItemScheduler.FSRS,
-        },
-        rescheduleCardsOnChange: {
-            title: tr.deckConfigRescheduleCardsOnChange(),
-            help: tr.deckConfigRescheduleCardsOnChangeTooltip(),
-            sched: HelpItemScheduler.FSRS,
-            global: true,
-        },
-        healthCheck: {
-            title: tr.deckConfigHealthCheck(),
-            help: tr.deckConfigAffectsEntireCollection()
-                + "\n\n"
-                + tr.deckConfigHealthCheckTooltip1()
-                + "\n\n"
-                + tr.deckConfigHealthCheckTooltip2(),
-            sched: HelpItemScheduler.FSRS,
-            global: true,
         },
     };
 }

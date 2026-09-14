@@ -492,7 +492,7 @@ deck-config-updating-cards = Updating cards: { $current_cards_count }/{ $total_c
 deck-config-invalid-parameters = The provided FSRS parameters are invalid. Leave them blank to use the default values.
 deck-config-placeholder-parameters =
     Default parameters
-    (Press "{deck-config-optimize-button}" periodically to allow FSRS to better adjust to your memory)
+    (Press "{deck-config-save-and-optimize}" periodically to allow FSRS to better adjust to your memory)
 deck-config-manual-parameter-edit-warning = The parameters should only be modified using the optimize button. Manually editing them is heavily advised against.
 deck-config-not-enough-history = Insufficient review history to perform this operation.
 deck-config-must-have-400-reviews =
@@ -504,7 +504,6 @@ deck-config-must-have-400-reviews =
 deck-config-weights = FSRS parameters
 deck-config-fsrs-version = FSRS version
 deck-config-compute-optimal-weights = Optimize FSRS parameters
-deck-config-optimize-button = Optimize Current Preset
 # Indicates that a given function or label, provided via the "text" variable, operates slowly.
 deck-config-slow-suffix = { $text } (slow)
 deck-config-compute-button = Compute
@@ -542,8 +541,6 @@ deck-config-desired-retention-tooltip =
     less frequently, and you will forget more of them. Be conservative when adjusting this - higher
     values will greatly increase your workload, and lower values can be demoralizing when you forget
     a lot of material.
-deck-config-desired-retention-tooltip2 = 
-    The workload values provided by the info box are a rough approximation. For a greater level of accuracy, use the simulator.
 deck-config-historical-retention-tooltip =
     When some of your review history is missing, FSRS needs to fill in the gaps. By default, it will
     assume that when you did those old reviews, you remembered 90% of the material. If your old retention
@@ -561,7 +558,7 @@ deck-config-weights-tooltip2 =
     FSRS parameters affect how cards are scheduled. Clanki will start with default parameters. You can use 
     the option below to optimize the parameters to best match your performance in decks using this preset.
 deck-config-reschedule-cards-on-change-tooltip =
-    Affects the entire collection, and is not saved.
+    Affects the entire collection.
 
     This option controls whether the due dates of cards will be changed when you enable FSRS, or optimize
     the parameters. The default is not to reschedule cards: future reviews will use the new scheduling, but
@@ -646,7 +643,6 @@ deck-config-fsrs-simulator-weighted-ratio-tooltip = { $time } net R*f(S) per hou
 ## Messages related to the FSRS scheduler’s health check. The health check determines whether the correlation between FSRS predictions and your memory is good or bad. It can be optionally triggered as part of the "Optimize" function.
 
 # Checkbox
-deck-config-health-check = Check health when optimizing
 # Button
 deck-config-health-check-button = Check Health
 # Message box showing the result of the health check
@@ -689,6 +685,14 @@ deck-config-fsrs-simulator-y-axis-title-time = Review Time/Day
 deck-config-fsrs-simulator-y-axis-title-count = Review Count/Day
 deck-config-fsrs-simulator-y-axis-title-memorized = Memorized Total
 deck-config-bury-siblings = Bury siblings
+# Help text of the Simple-mode "Bury siblings" switch, shown before the
+# three per-type explanations.
+deck-config-bury-siblings-simple-tooltip =
+    Siblings are the other cards made from the same note: for example the reverse card of a "Basic (and reversed card)" note, or the other cloze deletions of one cloze note.
+
+    Burying a card hides it until the next day. So when you have just answered one card of a note, its siblings wait until tomorrow, and the card you just saw cannot give away the answer to the next one.
+
+    In Simple mode this one switch stands for the three burying settings of Advanced mode (Bury new siblings, Bury review siblings, Bury interday learning siblings). Turning it on turns all three on; turning it off turns all three off. The three settings are explained below.
 deck-config-do-not-bury = Do not bury siblings
 deck-config-bury-if-new = Bury if new
 deck-config-bury-if-new-or-review = Bury if new or review
@@ -716,9 +720,6 @@ deck-config-compute-optimal-retention-tooltip =
     if it significantly differs from 0.9, it's a sign that the time you've allocated each day is either too low
     or too high for the amount of cards you're trying to learn. This number can be useful as a reference, but it
     is not recommended to copy it into the desired retention field.
-deck-config-health-check-tooltip1 = This will show a warning if FSRS struggles to adapt to your memory.
-deck-config-health-check-tooltip2 = Health check is performed only when using Optimize Current Preset.
-
 deck-config-compute-optimal-retention = Compute minimum recommended retention
 deck-config-predicted-optimal-retention = Minimum recommended retention: { $num }
 deck-config-weights-tooltip =

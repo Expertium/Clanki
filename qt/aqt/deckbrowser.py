@@ -504,6 +504,20 @@ class DeckBrowser:
         a = m.addAction(tr.actions_options())
         assert a is not None
         qconnect(a.triggered, lambda b, did=did: self._options(DeckId(int(did))))
+        self._add_rwkv_menu(m, did)
+        a = m.addAction(tr.actions_export())
+        assert a is not None
+        qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
+        a = m.addAction(tr.actions_delete())
+        assert a is not None
+        qconnect(a.triggered, lambda b, did=did: self._delete(DeckId(int(did))))
+        gui_hooks.deck_browser_will_show_options_menu(m, int(did))
+        m.popup(QCursor.pos())
+
+    def _add_rwkv_menu(self, m: QMenu, did: str) -> None:
+        """The RWKV submenu of the deck menu; Advanced mode only (spec ui.mode-switch)."""
+        if not self.mw.advanced_ui():
+            return
         rwkv_menu = m.addMenu(tr.decks_rwkv())
         assert rwkv_menu is not None
         a = rwkv_menu.addAction(tr.decks_reschedule_with_rwkv_curve())
@@ -515,14 +529,6 @@ class DeckBrowser:
         a = rwkv_menu.addAction(tr.decks_rwkv_reschedule_all_decks())
         assert a is not None
         qconnect(a.triggered, self._reschedule_all_decks_with_rwkv_curve)
-        a = m.addAction(tr.actions_export())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
-        a = m.addAction(tr.actions_delete())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._delete(DeckId(int(did))))
-        gui_hooks.deck_browser_will_show_options_menu(m, int(did))
-        m.popup(QCursor.pos())
 
     def _export(self, did: DeckId) -> None:
         self.mw.onExport(did=did)
