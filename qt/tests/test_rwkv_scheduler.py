@@ -218,7 +218,7 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
                 "reviewOrder": 7,
                 "other": {
                     "jschoreels.rwkv": {
-                        "rwkv_review_enabled": True,
+                        "rwkv_review_enabled": False,
                         "rwkv_review_instant_order_enabled": True,
                         "rwkv_review_refresh_interval": 3,
                     }
@@ -2841,7 +2841,7 @@ def test_rwkv_queue_refresh_on_exit_uses_nested_config() -> None:
                 "reviewOrder": 7,
                 "other": {
                     "jschoreels.rwkv": {
-                        "rwkv_review_enabled": True,
+                        "rwkv_review_enabled": False,
                         "rwkv_review_instant_order_enabled": True,
                         "rwkv_review_refresh_on_exit": True,
                     }
@@ -2865,7 +2865,7 @@ def test_rwkv_queue_exit_refresh_skips_current_queue_scores() -> None:
                 "reviewOrder": 7,
                 "other": {
                     "jschoreels.rwkv": {
-                        "rwkv_review_enabled": True,
+                        "rwkv_review_enabled": False,
                         "rwkv_review_instant_order_enabled": True,
                         "rwkv_review_refresh_on_exit": True,
                     }
@@ -2889,7 +2889,7 @@ def test_rwkv_queue_refresh_due_uses_direct_refresh_interval() -> None:
             assert deck_id == 100
             return {
                 "reviewOrder": 7,
-                "rwkvReviewEnabled": True,
+                "rwkvReviewEnabled": False,
                 "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewRefreshInterval": 2,
             }
@@ -2916,7 +2916,7 @@ def test_rwkv_queue_refresh_on_exit_uses_direct_config() -> None:
             assert deck_id == 100
             return {
                 "reviewOrder": 7,
-                "rwkvReviewEnabled": True,
+                "rwkvReviewEnabled": False,
                 "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewRefreshOnExit": True,
             }
@@ -9919,6 +9919,25 @@ def test_reviewer_rwkv_curve_only_uses_curve_prediction_for_grade_intervals() ->
     assert diagnostics.retrievability_source == "RWKV"
 
 
+@pytest.mark.parametrize(
+    ("curve", "instant", "instant_active"),
+    [(False, False, False), (True, False, False), (False, True, True), (True, True, False)],
+)
+def test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve(
+    curve: bool, instant: bool, instant_active: bool
+) -> None:
+    """Pins spec/deck-options.md#deck-options.scheduler-choice (one algorithm)
+    and spec/scheduling.md#sched.rwkv-instant-no-intervals"""
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=curve, rwkv_review_instant_order_enabled=instant
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    config = reviewer.mw.col.decks.config_dict_for_deck_id(100)
+
+    assert rwkv_scheduler._rwkv_review_instant_order_enabled(config) is instant_active
+    assert rwkv_scheduler.answer_intervals_hidden(reviewer, card) is instant_active
+
+
 def test_reviewer_rwkv_instant_only_keeps_fsrs_intervals() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -10084,7 +10103,7 @@ def test_prepare_reviewer_queue_order_uses_backend_deck_review_rows(
             assert deck_id == 100
             return {
                 "id": 1000,
-                "rwkvReviewEnabled": True,
+                "rwkvReviewEnabled": False,
                 "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewBatchSize": 64,
                 "reviewOrder": 7,
@@ -10320,7 +10339,7 @@ def test_prepare_reviewer_queue_order_reuses_backend_deck_review_inputs(
             assert deck_id == 100
             return {
                 "id": 1000,
-                "rwkvReviewEnabled": True,
+                "rwkvReviewEnabled": False,
                 "rwkvReviewInstantOrderEnabled": True,
                 "rwkvReviewBatchSize": 64,
                 "reviewOrder": 7,
@@ -12050,7 +12069,7 @@ def test_prewarm_reviewer_queue_score_cache_scores_parent_scope() -> None:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
             return {
                 "id": deck_id * 10,
-                "rwkvReviewEnabled": True,
+                "rwkvReviewEnabled": False,
                 "rwkvReviewInstantOrderEnabled": True,
                 "reviewOrder": 7,
             }
@@ -12178,7 +12197,7 @@ def test_deck_browser_count_scopes_are_disjoint_and_prioritize_current(
         rwkv_scheduler,
         "_deck_config_for_deck_id",
         lambda reviewer, deck_id: {
-            "rwkvReviewEnabled": deck_id in enabled_decks,
+            "rwkvReviewEnabled": False,
             "rwkvReviewInstantOrderEnabled": deck_id in enabled_decks,
             "reviewOrder": 0,
         },
@@ -15102,7 +15121,7 @@ def test_card_info_uses_shared_card_row_context_for_rwkv_query() -> None:
     ) == [
         ("RWKV computed R", "61%"),
         ("Retrievability source", "RWKV"),
-        *NEXT_S90_UNAVAILABLE_ROWS,
+        # an RWKV-Instant preset has no RWKV-Curve rows (one algorithm)
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
     assert backend.review_inputs[0].current_normal_state_kind == "review"
@@ -16763,7 +16782,7 @@ def _rwkv_queue_reviewer(
     batch_size: int | None = None,
     card_count: int = 2,
     rwkv_config_in_other: bool = False,
-    rwkv_curve_enabled: bool = True,
+    rwkv_curve_enabled: bool = False,
     rwkv_instant_order_enabled: bool = True,
     rwkv_candidate_refresh_enabled: bool = False,
     rwkv_min_intervening_reviews: int = 0,

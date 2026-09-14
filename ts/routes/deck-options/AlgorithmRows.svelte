@@ -94,6 +94,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     $: applySchedulerChoice(schedulerChoice);
     const schedulerChoiceList = schedulerChoices();
+    // The revert button restores the new-preset algorithm (RWKV-Curve,
+    // spec deck-options.new-preset-defaults).
+    const defaultSchedulerChoice = schedulerChoiceFromFlags({
+        fsrs: true,
+        rwkvCurve: state.defaults.rwkvReviewEnabled,
+        rwkvInstant: state.defaults.rwkvReviewInstantOrderEnabled,
+    });
     $: if (!$fsrs) {
         newlyEnabled = true;
     }
@@ -108,7 +115,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <Item>
         <EnumSelectorRow
             bind:value={schedulerChoice}
-            defaultValue={SchedulerChoice.FSRS}
+            defaultValue={defaultSchedulerChoice}
             choices={schedulerChoiceList}
         >
             <SettingTitle on:click={() => openHelp("fsrs")}>

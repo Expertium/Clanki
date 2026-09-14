@@ -32,16 +32,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let selected: number | undefined = undefined;
     let initialSelected: number;
     export let list: E[];
-    export let parser: (item: E) => { content: C; value?: T; disabled?: boolean } = (
-        item,
-    ) => {
+    export let parser: (item: E) => {
+        content: C;
+        value?: T;
+        disabled?: boolean;
+        /** A second, smaller line under the content in the open list. */
+        description?: string;
+    } = (item) => {
         return {
             content: item as unknown as C,
         };
     };
     $: parsed = list
         .map(parser)
-        .map(({ content, value: initialValue, disabled = false }, i) => {
+        .map(({ content, value: initialValue, disabled = false, description }, i) => {
             if ((initialValue === undefined && i === value) || initialValue === value) {
                 initialSelected = i;
             }
@@ -50,8 +54,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 content,
                 parsedValue: initialValue === undefined ? (i as T) : initialValue,
                 disabled,
+                description,
             };
         });
+    // Options with a description need more room than the closed select.
+    $: withDescriptions = parsed.some(({ description }) => description);
+    $: popoverWidth = withDescriptions
+        ? `max(${clientWidth}px, min(26rem, 85vw))`
+        : `${clientWidth}px`;
     const buttons: HTMLButtonElement[] = Array(list.length);
     const last = list.length - 1;
     const ids = {
@@ -102,9 +112,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 event.code === "End")
         ) {
             showFloating = true;
-            if (selected === undefined) {
-                selected = initialSelected;
-            }
+            // start from the current value, not from where the list was last
+            selected = initialSelected;
             return;
         }
         if (selected === undefined) {
@@ -162,8 +171,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             num = last;
         }
 
-        if (selected !== undefined && 0 <= selected && selected <= last) {
-            buttons[selected].classList.remove("focus");
+        // a value picked with the mouse does not move `selected`, so clear
+        // every option rather than only the last focused one
+        for (const button of buttons) {
+            button?.classList.remove("focus");
         }
 
         if (num >= 0) {
@@ -211,9 +222,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         on:mouseenter={() => (hover = true)}
         on:mouseleave={() => (hover = false)}
         on:click={() => {
-            if (selected === undefined) {
-                selected = initialSelected;
-            }
+            // the highlight opens on the current value
+            selected = initialSelected;
             showFloating = !showFloating;
         }}
         bind:this={element}
@@ -231,11 +241,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <Popover
         slot="floating"
         scrollable
-        --popover-width="{clientWidth}px"
+        --popover-width={popoverWidth}
         id={ids.popover}
         on:revealed={revealed}
     >
-        {#each parsed as { content, parsedValue, disabled }, idx (idx)}
+        {#each parsed as { content, parsedValue, disabled, description }, idx (idx)}
             <SelectOption
                 value={parsedValue}
                 bind:element={buttons[idx]}
@@ -243,7 +253,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 selected={idx === selected}
                 id={ids.focused}
             >
-                {content}
+                {#if description}
+                    <span class="option-with-description">
+                        <span class="option-label">{content}</span>
+                        <span class="option-description">{description}</span>
+                    </span>
+                {:else}
+                    {content}
+                {/if}
             </SelectOption>
         {/each}
     </Popover>
@@ -282,6 +299,27 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .disabled {
         pointer-events: none;
         opacity: 0.5;
+    }
+
+    .option-with-description {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.15rem;
+        padding-block: 0.3rem;
+        max-width: min(24rem, 80vw);
+        text-align: start;
+        white-space: normal;
+    }
+
+    .option-label {
+        font-weight: 600;
+    }
+
+    .option-description {
+        font-size: 0.92em;
+        line-height: 1.35;
+        opacity: 0.8;
     }
 
     .chevron {

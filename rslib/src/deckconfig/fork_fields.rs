@@ -256,6 +256,11 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     if config.rwkv_review_refresh_interval == 0 {
         config.rwkv_review_refresh_interval = DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
     }
+    // One algorithm per preset (spec deck-options.scheduler-choice): a preset
+    // stored with both RWKV modes on is RWKV-Curve.
+    if config.rwkv_review_enabled && config.rwkv_review_instant_order_enabled {
+        config.rwkv_review_instant_order_enabled = false;
+    }
 }
 
 pub(crate) fn deck_config_inner_for_storage(config: &DeckConfigInner) -> DeckConfigInner {
@@ -372,7 +377,7 @@ mod tests {
             rwkv_review_allow_same_day_review: false,
             rwkv_review_min_intervening_reviews: 3,
             rwkv_review_min_elapsed_secs: 300,
-            rwkv_review_instant_order_enabled: true,
+            rwkv_review_instant_order_enabled: false,
             rwkv_review_dynamic_preset_replay: true,
             rwkv_review_candidate_refresh_enabled: true,
             rwkv_review_first_review_elapsed_from_card_creation: false,
@@ -441,7 +446,6 @@ mod tests {
                 "rwkv_review_allow_same_day_review": false,
                 "rwkv_review_min_intervening_reviews": 3,
                 "rwkv_review_min_elapsed_secs": 300,
-                "rwkv_review_instant_order_enabled": true,
                 "rwkv_review_dynamic_preset_replay": true,
                 "rwkv_review_candidate_refresh_enabled": true,
                 "rwkv_review_first_review_elapsed_from_card_creation": false,
@@ -648,7 +652,8 @@ mod tests {
         assert!(config.rwkv_review_allow_same_day_review);
         assert_eq!(config.rwkv_review_min_intervening_reviews, 3);
         assert_eq!(config.rwkv_review_min_elapsed_secs, 300);
-        assert!(config.rwkv_review_instant_order_enabled);
+        // both RWKV modes were on: the preset reads as RWKV-Curve
+        assert!(!config.rwkv_review_instant_order_enabled);
         assert!(config.rwkv_review_dynamic_preset_replay);
         assert!(config.rwkv_review_candidate_refresh_enabled);
         assert!(config.rwkv_review_first_review_elapsed_from_card_creation);
@@ -708,5 +713,27 @@ mod tests {
         assert!(!config.rwkv_review_candidate_refresh_enabled);
         assert!(!config.rwkv_review_first_review_elapsed_from_card_creation);
         assert!(!config.rwkv_review_enforce_grade_order);
+    }
+
+    // Pins spec/deck-options.md#deck-options.scheduler-choice (one algorithm)
+    #[test]
+    fn a_preset_stored_with_both_rwkv_modes_reads_as_rwkv_curve() {
+        for (curve, instant) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mut config = DeckConfigInner {
+                other: serde_json::to_vec(&json!({
+                    RWKV_FORK_FIELDS_KEY: {
+                        "rwkv_review_enabled": curve,
+                        "rwkv_review_instant_order_enabled": instant,
+                    },
+                }))
+                .unwrap(),
+                ..Default::default()
+            };
+
+            restore_fork_fields_from_other(&mut config);
+
+            assert_eq!(config.rwkv_review_enabled, curve);
+            assert_eq!(config.rwkv_review_instant_order_enabled, instant && !curve);
+        }
     }
 }

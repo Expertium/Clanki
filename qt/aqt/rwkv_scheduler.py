@@ -5623,6 +5623,17 @@ def reviewer_queue_order_enabled(reviewer: object) -> bool:
     )
 
 
+def answer_intervals_hidden(reviewer: object, card: object) -> bool:
+    """True when the card's preset runs RWKV-Instant: it has no intervals, so
+    the answer buttons show none, whatever the "Show next review time"
+    preference says (spec sched.rwkv-instant-no-intervals). The FSRS states
+    stored on answer are unchanged."""
+    deck_config = _deck_config_for_deck_id(reviewer, _deck_id(card))
+    return isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
+        deck_config
+    )
+
+
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     card = getattr(reviewer, "card", None)
     deck_config = _rwkv_review_active_deck_config(reviewer, card)
@@ -17103,6 +17114,14 @@ def _rwkv_review_refresh_on_exit(deck_config: dict[str, object]) -> bool:
 
 
 def _rwkv_review_instant_order_enabled(deck_config: dict[str, object]) -> bool:
+    # One algorithm per preset (spec deck-options.scheduler-choice): a preset
+    # stored with both RWKV modes on is RWKV-Curve.
+    if _rwkv_review_config_enabled(deck_config):
+        return False
+    return _rwkv_review_instant_order_flag(deck_config)
+
+
+def _rwkv_review_instant_order_flag(deck_config: dict[str, object]) -> bool:
     nested = _rwkv_other_config(deck_config)
     if nested is not None:
         value = nested.get("rwkv_review_instant_order_enabled")
