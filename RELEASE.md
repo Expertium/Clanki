@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- FSRS-7 and RWKV-Curve can schedule intervals under a day for any card and
+  any answer button: such an answer goes to the intraday queue with its exact
+  interval. Answers of a day or more stay in whole days, and each day button
+  is at least one day longer than the one before it (Hard ≥ Again + 1, Good
+  ≥ Hard + 1, Easy ≥ Good + 1). Before, only learning answers under half a
+  day went intraday, and RWKV-Curve always rounded up to whole days.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".

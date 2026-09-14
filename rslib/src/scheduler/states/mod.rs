@@ -1,10 +1,10 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+pub(crate) mod button_intervals;
 pub(crate) mod filtered;
 pub(crate) mod fuzz;
 pub(crate) mod interval_kind;
-pub(crate) mod interval_overrides;
 pub(crate) mod learning;
 pub(crate) mod load_balancer;
 pub(crate) mod new;

@@ -16,9 +16,6 @@ use rand::rngs::StdRng;
 use revlog::RevlogEntryPartial;
 
 use super::queue::BuryMode;
-use super::states::interval_overrides::fuzz_review_interval_overrides;
-use super::states::interval_overrides::FuzzedIntervalOverrides;
-use super::states::interval_overrides::ReviewIntervalOverrides;
 use super::states::load_balancer::LoadBalancerContext;
 use super::states::steps::LearningSteps;
 use super::states::CardState;
@@ -33,6 +30,7 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
+use crate::deckconfig::FsrsVersion as PresetFsrsVersion;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
@@ -342,37 +340,41 @@ impl Collection {
         Ok(Some(load_balancer.review_context(note_id, deck_config_id)))
     }
 
-    /// Apply the standard review fuzz (fuzz range, load balancer, sibling
-    /// dispersal, Hard < Good < Easy floors) to intervals supplied by an
-    /// external scheduler such as RWKV-Curve, exactly as if FSRS had produced
-    /// them for this card.
-    pub fn fuzz_review_intervals(
+    /// The answer states of a card when an external scheduler (RWKV-Curve)
+    /// supplies the unrounded interval, in days, of some buttons. Each given
+    /// interval replaces FSRS's before the usual rules run, so it gets the
+    /// same treatment: a sub-day interval goes to the intraday queue, a day
+    /// or more gets review fuzz, the load balancer and sibling dispersal, and
+    /// the day buttons stay in order (spec sched.sub-day-intervals,
+    /// sched.rwkv-curve-fuzz). The intraday queue does not depend on the
+    /// preset's FSRS parameters here.
+    pub fn scheduling_states_with_intervals(
         &mut self,
         cid: CardId,
-        overrides: ReviewIntervalOverrides,
-    ) -> Result<FuzzedIntervalOverrides> {
+        intervals: [Option<f32>; 4],
+    ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
         let note_id = card.note_id;
 
         let ctx = self.card_state_updater(card, None)?;
-        let previous_interval = match ctx.current_card_state() {
-            CardState::Normal(NormalState::Review(state)) => state.scheduled_days,
-            CardState::Normal(NormalState::Relearning(state)) => state.review.scheduled_days,
-            CardState::Filtered(FilteredState::Rescheduling(state)) => match state.original_state {
-                NormalState::Review(state) => state.scheduled_days,
-                NormalState::Relearning(state) => state.review.scheduled_days,
-                _ => 0,
-            },
-            _ => 0,
-        };
-
+        let current = ctx.current_card_state();
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
-        let state_ctx = ctx.state_context(load_balancer_ctx)?;
-        Ok(fuzz_review_interval_overrides(
-            &state_ctx,
-            previous_interval,
-            overrides,
-        ))
+        let mut state_ctx = ctx.state_context(load_balancer_ctx)?;
+        if let Some(states) = state_ctx.fsrs_next_states.as_mut() {
+            let items = [
+                &mut states.again,
+                &mut states.hard,
+                &mut states.good,
+                &mut states.easy,
+            ];
+            for (item, interval) in items.into_iter().zip(intervals) {
+                if let Some(interval) = interval.filter(|days| days.is_finite() && *days > 0.0) {
+                    item.interval = interval;
+                }
+            }
+            state_ctx.fsrs_allow_short_term = true;
+        }
+        Ok(current.next_states(&state_ctx))
     }
 
     /// Describe the next intervals, to display on the answer buttons.
@@ -720,9 +722,14 @@ impl Collection {
         let fsrs_short_term_with_steps = self.fsrs_short_term_with_steps_enabled();
         let fsrs_learning_queues_disabled =
             fsrs_enabled && self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled);
+        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals);
+        // for older versions, parameters fitted without the short-term terms
+        // (w17 or w18 zero) keep sub-day intervals off.
         let fsrs_allow_short_term = if fsrs_enabled {
             let params = &fsrs_preset.params;
-            if params.len() >= 19 {
+            if fsrs_preset.fsrs_version == PresetFsrsVersion::Seven {
+                true
+            } else if params.len() >= 19 {
                 params[17] > 0.0 && params[18] > 0.0
             } else if params.is_empty() {
                 // fallback to true when using default params
@@ -1110,45 +1117,61 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn fuzz_review_intervals_uses_review_floors_and_clamps() -> Result<()> {
-        use crate::scheduler::states::interval_overrides::FuzzedInterval;
-        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
-
+    fn scheduling_states_with_intervals_apply_the_fsrs_rules() -> Result<()> {
         let mut col = Collection::new();
-        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_default_relearn_steps(vec![]);
+        let cid = add_due_review_card(
+            &mut col,
+            10,
+            0,
+            Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            }),
+        )?;
+        let review_days = |state: CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days,
+            other => panic!("expected a review state, got {other:?}"),
+        };
 
         // Unit tests have no fuzz seed, so only the floors and clamps apply:
-        // Again is never fuzzed, Hard may not shrink a grown interval below
-        // previous + 1, and Good/Easy sit at least one day above the button
-        // before them.
-        let fuzzed = col.fuzz_review_intervals(
+        // Again is never fuzzed, and each day button sits at least one day
+        // above the one before it (spec sched.sub-day-intervals).
+        let states = col.scheduling_states_with_intervals(
             cid,
-            ReviewIntervalOverrides {
-                again: Some(1),
-                hard: Some(12),
-                good: Some(12),
-                easy: Some(12),
-            },
+            [Some(1.0), Some(12.0), Some(12.0), Some(12.0)],
         )?;
-        let expect = |scheduled_days| FuzzedInterval {
-            scheduled_days,
-            fuzz_delta_days: 0,
-        };
-        assert_eq!(fuzzed.again, Some(expect(1)));
-        assert_eq!(fuzzed.hard, Some(expect(12)));
-        assert_eq!(fuzzed.good, Some(expect(13)));
-        assert_eq!(fuzzed.easy, Some(expect(14)));
+        assert_eq!(review_days(states.again), 1);
+        assert_eq!(review_days(states.hard), 12);
+        assert_eq!(review_days(states.good), 13);
+        assert_eq!(review_days(states.easy), 14);
 
-        // Buttons the external scheduler did not supply stay absent.
-        let fuzzed = col.fuzz_review_intervals(
-            cid,
-            ReviewIntervalOverrides {
-                good: Some(20),
-                ..Default::default()
-            },
-        )?;
-        assert_eq!(fuzzed.good, Some(expect(20)));
-        assert!(fuzzed.again.is_none() && fuzzed.hard.is_none() && fuzzed.easy.is_none());
+        // a sub-day interval goes to the intraday queue, in seconds, and the
+        // passing answer keeps the card's lapse count
+        let states = col
+            .scheduling_states_with_intervals(cid, [Some(0.25), Some(0.5), Some(2.0), Some(3.0)])?;
+        let CardState::Normal(NormalState::Relearning(again)) = states.again else {
+            panic!("a sub-day Again should relearn");
+        };
+        assert_eq!(again.learning.scheduled_secs, 21_600);
+        let CardState::Normal(NormalState::Relearning(hard)) = states.hard else {
+            panic!("a sub-day Hard should use the intraday queue");
+        };
+        assert_eq!(hard.learning.scheduled_secs, 43_200);
+        assert_eq!(hard.review.lapses, 0);
+        assert_eq!(review_days(states.good), 2);
+        assert_eq!(review_days(states.easy), 3);
+
+        // without any supplied interval the outcome is FSRS's own
+        let supplied = col.scheduling_states_with_intervals(cid, [None; 4])?;
+        let fsrs = col.get_scheduling_states(cid)?;
+        assert_eq!(
+            [supplied.again, supplied.hard, supplied.good, supplied.easy],
+            [fsrs.again, fsrs.hard, fsrs.good, fsrs.easy]
+        );
 
         Ok(())
     }
