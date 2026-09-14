@@ -34,31 +34,52 @@ reset),
 
 ## ui.review-heatmap
 
-Given the collection flag `reviewHeatmapEnabled` (on by default; the "Show
-the review heatmap on the deck list and the deck overview" checkbox in
-Preferences > Review, carried by `Preferences.Reviewing`), the deck list
-shows a review heatmap under the deck tree (whole collection) and the deck
-overview shows one under its counts table (the current deck and its
-subdecks): a yearly calendar of reviews per day (manual reschedules, ease
-0, are not reviews) with the due forecast in a second colour, previous /
-today / next navigation, and four figures below it: daily average on active
-days, share of days with activity since the first review, longest streak,
-current streak (which counts only while the last active day is today or
-yesterday). Clicking a past day opens the browser on `prop:rated=-N` (with
-`deck:current` prefixed in the overview); clicking a future day searches
-`prop:due=N`. With the flag off, nothing is drawn and nothing is computed.
-Days are grouped in local time with the "next day starts at" hour applied.
+Given the collection flag `reviewHeatmapEnabled` on (the default), Clanki
+draws a review heatmap — the Review Heatmap add-on (Glutanimate, AGPLv3)
+made native: a calendar of reviews per day with the due forecast in a
+second colour, previous / today / next navigation, and four figures
+(daily average on active days, share of days with activity since the first
+review, longest streak, current streak, which counts only while the last
+active day is today or yesterday). It shows under the deck list (the whole
+collection, minus the excluded decks), on the deck overview (the current
+deck and its subdecks) and above the legacy stats report (Shift+click
+Stats; the chosen deck or the collection, over the last month, year or the
+whole history). Days are grouped in local time with the "next day starts
+at" hour applied. Clicking a past day opens the browser on
+`prop:rated=-N` (with `deck:current` prefixed where the heatmap covers one
+deck); a future day, `prop:due=N`.
 
-This is the Review Heatmap add-on (Glutanimate, AGPLv3) made native with
-the add-on's magenta colours and yearly overview; the add-on's options
-dialog, colour and mode switches, stats-screen injection and contribution
-links are not ported, so the one setting is the Preferences checkbox.
+Its settings are in Preferences > Review Heatmap, a tab of its own: the
+on/off switch; the color scheme (lime, olive, ice, magenta, flame; magenta
+by default) and the calendar mode (yearly overview or a continuous
+nine-month timeline); where the calendar shows (main screen, deck screen,
+stats screen) and whether the four figures show even where it is hidden;
+a history limit and a forecast limit in days, and a date before which
+reviews are ignored (these three apply to the main and deck screens); to
+exclude deleted cards and manual reschedules (ease 0) from the history (the
+latter on by default); and decks left out of the main-screen heatmap, with
+their subdecks. The settings are stored in the collection config under
+`reviewHeatmap` and sync. Until they are first saved, the add-on's stored
+settings are used (its `heatmap` collection config and profile entries),
+except a color scheme left at the add-on's own default. The heatmap's gear
+opens the tab; Shift+click on the gear cycles the color scheme and
+Shift+click on "today" cycles the calendar mode. With the switch off, or
+where neither the calendar nor the figures show, nothing is computed.
 
-**Why:** Andrew, 2026-09-15: integrate the add-on natively, with an option
-to disable it in Preferences, in magenta.
+Given the Review Heatmap add-on installed and enabled at start-up, Clanki
+disables it before add-ons load (both would draw a heatmap) and, the first
+time only, tells the user so once the profile is open; the notice is never
+shown again (a flag in the profile manager's global meta).
+
+**Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
+settings, in a Preferences tab of their own, magenta by default, and retire
+the add-on with a one-time notice.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
-day map, the disabled flag, the render cache, the browser search);
+day map, settings parsing and defaults, the carry-over from the add-on,
+colors, modes and visibility, the stats-screen period and scope, the
+render cache, the browser search, the Shift+click cycling, the settings
+link, disabling the add-on, the one-time notice);
 `test_update_collection_writes_the_review_heatmap_preference`
 (`qt/tests/test_preferences.py`);
 `review_heatmap_is_on_by_default_and_a_reviewing_preference`

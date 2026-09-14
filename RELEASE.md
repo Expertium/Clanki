@@ -22,10 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- The Review Heatmap add-on is part of Clanki now: a review calendar with
-  streak figures under the deck list and on the deck overview. Preferences >
-  Review has a checkbox to hide it. Users who still have the add-on
-  installed should remove it.
+- The Review Heatmap add-on is part of Clanki now, with all its settings,
+  in Preferences > Review Heatmap: a review calendar with streak figures
+  under the deck list, on the deck overview and in the legacy stats. An
+  installed copy of the add-on is disabled at start-up, with a one-time
+  notice; its settings carry over.
 - Tools > Add-ons is shown in both modes again.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list

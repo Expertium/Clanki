@@ -789,6 +789,7 @@ class AnkiQt(QMainWindow):
             self.toolbar.draw()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
+            self._show_review_heatmap_addon_notice()
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
@@ -800,6 +801,18 @@ class AnkiQt(QMainWindow):
         self.col = Collection(cpath, backend=self.backend)
         self._outdated_fsrs7_preview_warning_shown = False
         self.setEnabled(True)
+
+    def _show_review_heatmap_addon_notice(self) -> None:
+        """Once ever: the Review Heatmap add-on was disabled at start-up."""
+
+        if not getattr(self, "_review_heatmap_addon_notice_pending", False):
+            return
+        from aqt.review_heatmap import ADDON_NOTICE_SHOWN_KEY
+
+        self._review_heatmap_addon_notice_pending = False
+        self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
+        self.pm.save()
+        showInfo(tr.preferences_heatmap_addon_disabled(), parent=self)
 
     def _warn_if_outdated_fsrs7_preview_params(self) -> None:
         if getattr(self, "_outdated_fsrs7_preview_warning_shown", False):
@@ -1182,6 +1195,16 @@ title="{}" {}>{}</button>""".format(
         import aqt.addons
 
         self.addonManager = aqt.addons.AddonManager(self)
+
+        # Clanki draws the review heatmap itself (spec ui.review-heatmap)
+        from aqt.review_heatmap import (
+            ADDON_NOTICE_SHOWN_KEY,
+            disable_review_heatmap_addon,
+        )
+
+        self._review_heatmap_addon_notice_pending = bool(
+            disable_review_heatmap_addon(self.addonManager)
+        ) and not self.pm.meta.get(ADDON_NOTICE_SHOWN_KEY, False)
 
         if args and args[0] and self._isAddon(args[0]):
             self.installAddon(args[0], startup=True)

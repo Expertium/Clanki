@@ -13,5 +13,5 @@ The JS bundle contains:
   https://github.com/glutanimate/cal-heatmap
 - d3.js v3.5.17 by Mike Bostock, BSD licence, https://d3js.org/
 
-The navigation icons are from the add-on's `web/assets/` (see its
+The navigation and settings icons are from the add-on's `web/assets/` (see its
 `LICENSE.md`: CC BY 4.0 icons by the add-on author).

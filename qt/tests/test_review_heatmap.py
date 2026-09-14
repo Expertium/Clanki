@@ -12,10 +12,15 @@ from unittest.mock import MagicMock, patch
 from anki.collection import Config
 from aqt import review_heatmap
 from aqt.review_heatmap import (
+    ADDON_NOTICE_SHOWN_KEY,
+    HeatmapSettings,
     HeatmapView,
     ReviewHeatmap,
     compute_activity,
+    disable_review_heatmap_addon,
+    load_settings,
     render_report,
+    settings_from_addon,
 )
 
 DAY = 86400
@@ -74,12 +79,15 @@ def test_render_report_marks_view_and_falls_back_without_data() -> None:
     assert "/_anki/js/vendor/anki-review-heatmap.js" in html
 
 
-def _heatmap(enabled: bool) -> ReviewHeatmap:
+def _heatmap(enabled: bool, stored: object = None) -> ReviewHeatmap:
     col = MagicMock()
     col.get_config_bool.side_effect = lambda key: (
         enabled if key == Config.Bool.REVIEW_HEATMAP_ENABLED else False
     )
-    return ReviewHeatmap(cast(Any, SimpleNamespace(col=col)))
+    col.get_config.side_effect = lambda key, default=None: (
+        stored if key == "reviewHeatmap" and stored is not None else default
+    )
+    return ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
 
 
 def test_nothing_is_drawn_while_the_preference_is_off() -> None:
@@ -121,3 +129,158 @@ def test_clicking_a_day_opens_the_browser_with_the_search() -> None:
         assert heatmap.on_webview_did_receive_js_message(
             (False, None), "study", None
         ) == (False, None)
+
+
+def test_settings_keep_defaults_for_missing_or_invalid_values() -> None:
+    assert HeatmapSettings.from_config(None) == HeatmapSettings()
+    settings = HeatmapSettings.from_config(
+        {
+            "colors": "ice",
+            "mode": "months",
+            "history_limit_days": 90,
+            "forecast_limit_days": -3,
+            "exclude_deleted_cards": "yes",
+            "excluded_decks": [5, "x", True, 7],
+            "show_on_stats": False,
+        }
+    )
+    assert settings.colors == "ice" and settings.mode == "months"
+    assert settings.history_limit_days == 90
+    assert settings.forecast_limit_days == 0  # negative is invalid
+    assert settings.exclude_deleted_cards is False  # not a bool
+    assert settings.excluded_decks == (5, 7)
+    assert settings.show_on_stats is False
+    assert HeatmapSettings.from_config({"colors": "rainbow"}).colors == "magenta"
+    # a round trip through the stored form changes nothing
+    assert HeatmapSettings.from_config(settings.to_config()) == settings
+
+
+def test_the_addons_settings_are_carried_over_except_its_default_colour() -> None:
+    synced = {
+        "colors": "lime",
+        "mode": "months",
+        "limhist": 30,
+        "limdate": 1_600_000_000,
+        "limfcst": 10,
+        "limcdel": True,
+        "limresched": False,
+        "limdecks": [3],
+    }
+    profile = {
+        "display": {"deckbrowser": True, "overview": False, "stats": True},
+        "statsvis": False,
+    }
+    settings = settings_from_addon(synced, profile)
+    assert settings == HeatmapSettings(
+        colors="magenta",
+        mode="months",
+        history_limit_days=30,
+        ignore_before=1_600_000_000,
+        forecast_limit_days=10,
+        exclude_deleted_cards=True,
+        exclude_manual_reschedules=False,
+        excluded_decks=(3,),
+        show_on_deck_list=True,
+        show_on_overview=False,
+        show_on_stats=True,
+        streak_stats_always=False,
+    )
+    assert settings_from_addon({"colors": "flame"}, None).colors == "flame"
+
+
+def test_clanki_settings_win_over_the_addons_once_saved() -> None:
+    col = MagicMock()
+    stored = {"reviewHeatmap": {"colors": "olive"}, "heatmap": {"colors": "flame"}}
+    col.get_config.side_effect = lambda key, default=None: stored.get(key, default)
+    assert load_settings(col).colors == "olive"
+    del stored["reviewHeatmap"]
+    assert load_settings(col).colors == "flame"
+    del stored["heatmap"]
+    assert load_settings(col) == HeatmapSettings()
+
+
+def test_render_follows_colour_mode_and_visibility_settings() -> None:
+    today = 100 * DAY
+    report = compute_activity([(today, 12)], [], today, offset=4)
+    settings = HeatmapSettings(colors="flame", mode="months", show_on_overview=False)
+    html = render_report(report, HeatmapView.deckbrowser, False, settings)
+    assert "rh-theme-flame" in html and "rh-mode-months" in html
+    assert '"domain": "month"' in html and '"range": 9' in html
+    # hidden on the overview: no calendar, the streak figures stay
+    html = render_report(report, HeatmapView.overview, True, settings)
+    assert 'id="cal-heatmap"' not in html and "Current streak" in html
+    assert "rh-disable-heatmap" in html
+
+
+def test_nothing_is_computed_where_heatmap_and_figures_are_hidden() -> None:
+    heatmap = _heatmap(
+        enabled=True,
+        stored={"show_on_overview": False, "streak_stats_always": False},
+    )
+    with patch.object(review_heatmap, "ActivityReporter") as reporter:
+        assert heatmap.render(HeatmapView.overview, current_deck_only=True) == ""
+        reporter.assert_not_called()
+
+
+def test_stats_screen_uses_its_period_and_scope() -> None:
+    heatmap = _heatmap(enabled=True)
+    heatmap.mw.col.mod = 1
+    heatmap.mw.col.decks.get_current_id.return_value = 7
+    with patch.object(review_heatmap, "ActivityReporter") as reporter:
+        reporter.return_value.get_report.return_value = None
+        heatmap.render_for_stats(period=1, whole_collection=True)
+        reporter.return_value.get_report.assert_called_with(False, 365, 365)
+        heatmap.render_for_stats(period=2, whole_collection=False)
+        reporter.return_value.get_report.assert_called_with(True, None, None)
+
+
+def test_shift_clicks_cycle_the_mode_and_the_colours() -> None:
+    heatmap = _heatmap(enabled=True, stored={"colors": "flame", "mode": "months"})
+    screen = MagicMock()
+    heatmap.on_webview_did_receive_js_message(
+        (False, None), "revhm_themeswitch", screen
+    )
+    saved = heatmap.mw.col.set_config.call_args.args
+    assert saved[0] == "reviewHeatmap" and saved[1]["colors"] == "lime"
+    heatmap.on_webview_did_receive_js_message((False, None), "revhm_modeswitch", screen)
+    assert heatmap.mw.col.set_config.call_args.args[1]["mode"] == "year"
+    assert screen.refresh.call_count == 2
+
+
+def test_the_settings_link_opens_the_heatmap_tab_of_preferences() -> None:
+    heatmap = _heatmap(enabled=True)
+    with patch("aqt.dialogs.open") as open_dialog:
+        heatmap.on_webview_did_receive_js_message((False, None), "revhm_opts", None)
+        open_dialog.assert_called_once_with("Preferences", heatmap.mw)
+        open_dialog.return_value.show_review_heatmap_tab.assert_called_once()
+
+
+def test_an_enabled_review_heatmap_addon_is_disabled() -> None:
+    enabled = {"1771074083": True, "723520343": False, "other_addon": True}
+    toggled: list[tuple[str, bool]] = []
+    manager = SimpleNamespace(
+        allAddons=lambda: list(enabled),
+        isEnabled=lambda folder: enabled[folder],
+        toggleEnabled=lambda folder, enable: toggled.append((folder, enable)),
+    )
+    assert disable_review_heatmap_addon(manager) == ["1771074083"]
+    assert toggled == [("1771074083", False)]
+
+
+def test_the_addon_notice_is_shown_only_once() -> None:
+    from aqt.main import AnkiQt
+
+    shown: list[str] = []
+    mw = cast(
+        Any,
+        SimpleNamespace(
+            _review_heatmap_addon_notice_pending=True,
+            pm=SimpleNamespace(meta={}, save=MagicMock()),
+        ),
+    )
+    with patch("aqt.main.showInfo", side_effect=lambda text, **_: shown.append(text)):
+        AnkiQt._show_review_heatmap_addon_notice(mw)
+        AnkiQt._show_review_heatmap_addon_notice(mw)
+    assert len(shown) == 1
+    assert mw.pm.meta[ADDON_NOTICE_SHOWN_KEY] is True
+    mw.pm.save.assert_called_once()

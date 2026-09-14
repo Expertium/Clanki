@@ -65,7 +65,6 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
         prefs.reviewing.show_colored_buttons
     )
     form.twoButtonMode.isChecked.return_value = prefs.reviewing.two_button_mode
-    form.reviewHeatmap.isChecked.return_value = prefs.reviewing.review_heatmap_enabled
     form.timeLimit.value.return_value = int(prefs.reviewing.time_limit_secs / 60)
     form.showPlayButtons.isChecked.return_value = (
         not prefs.reviewing.hide_audio_play_buttons
@@ -100,6 +99,9 @@ def make_dialog(prefs: PreferencesProto, form: MagicMock) -> Preferences:
     dialog.form = form
     dialog.prefs = prefs
     dialog.old_prefs = deepcopy(prefs)
+    dialog.heatmap_tab = MagicMock()
+    dialog.heatmap_tab.is_enabled.return_value = prefs.reviewing.review_heatmap_enabled
+    dialog.heatmap_tab.save.return_value = False
     return dialog
 
 
@@ -178,8 +180,8 @@ def test_update_collection_writes_the_review_heatmap_preference(
 ) -> None:
     prefs = make_prefs()
     form = make_form(prefs)
-    form.reviewHeatmap.isChecked.return_value = False
     dialog = make_dialog(prefs, form)
+    dialog.heatmap_tab.is_enabled.return_value = False
 
     dialog.update_collection(MagicMock())
 

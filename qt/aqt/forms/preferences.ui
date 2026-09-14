@@ -502,13 +502,6 @@
              </widget>
             </item>
             <item>
-             <widget class="QCheckBox" name="reviewHeatmap">
-              <property name="text">
-               <string>preferences_show_review_heatmap</string>
-              </property>
-             </widget>
-            </item>
-            <item>
              <widget class="QCheckBox" name="spacebar_rates_card">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
