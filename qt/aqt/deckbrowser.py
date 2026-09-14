@@ -617,6 +617,8 @@ class DeckBrowser:
 <button class='deck-button' title='%s' onclick='pycmd(\"%s\");'>%s</button>""" % tuple(
                 b
             )
+        # one grid so that every button takes the width of the widest label
+        buf = f'<span class="deck-buttons">{buf}</span>'
         self.bottom.draw(
             buf=buf,
             link_handler=self._linkHandler,

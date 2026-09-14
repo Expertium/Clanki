@@ -11,8 +11,17 @@ body {
     padding: 9px;
 }
 
-/* The deck-list buttons share one width, whatever their label
- * (spec ui.mode-switch). */
+/* The deck-list buttons share one width, whatever their label (spec
+ * ui.mode-switch): equal grid tracks size to the widest label, and every
+ * button fills its track. */
+.deck-buttons {
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    column-gap: 8px;
+}
+
 .deck-button {
-    min-width: 11em;
+    width: 100%;
+    margin: 0;
 }
