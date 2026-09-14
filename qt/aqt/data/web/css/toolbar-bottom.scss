@@ -22,6 +22,8 @@ body {
 }
 
 .deck-button {
-    width: 100%;
+    /* stretch to the track; border-box so padding stays inside it */
+    box-sizing: border-box;
+    justify-self: stretch;
     margin: 0;
 }
