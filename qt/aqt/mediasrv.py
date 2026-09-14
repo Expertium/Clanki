@@ -1306,30 +1306,6 @@ def reschedule_rwkv_review_cards() -> bytes:
     return b""
 
 
-def simulate_rwkv_workload() -> bytes:
-    return aqt.rwkv_scheduler.simulate_rwkv_workload_bytes(request.data)
-
-
-def start_rwkv_workload() -> bytes:
-    return aqt.rwkv_scheduler.start_rwkv_workload_bytes(request.data)
-
-
-def rwkv_workload_result() -> Response | bytes:
-    result = aqt.rwkv_scheduler.rwkv_workload_result_bytes()
-    if result is None:
-        return _text_response(HTTPStatus.ACCEPTED, "")
-    return result
-
-
-def cancel_rwkv_workload() -> bytes:
-    aqt.rwkv_scheduler.cancel_rwkv_workload()
-    return b""
-
-
-def rwkv_workload_progress() -> bytes:
-    return aqt.rwkv_scheduler.rwkv_workload_progress_bytes()
-
-
 def save_custom_colours() -> bytes:
     colors = [
         QColorDialog.customColor(i).name(QColor.NameFormat.HexRgb)
@@ -1451,11 +1427,6 @@ post_handler_list = [
     force_build_rwkv_state_cache,
     recompute_rwkv_calibration_data,
     reschedule_rwkv_review_cards,
-    simulate_rwkv_workload,
-    start_rwkv_workload,
-    rwkv_workload_result,
-    cancel_rwkv_workload,
-    rwkv_workload_progress,
     get_profile_config_json,
     set_profile_config_json,
     get_meta_json,

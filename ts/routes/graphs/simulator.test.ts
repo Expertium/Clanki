@@ -8,7 +8,6 @@ import type { GraphBounds } from "./graph-helpers";
 import {
     centeredMovingAverage,
     renderWorkloadChart,
-    rwkvRelativePerformance,
     SimulateWorkloadSubgraph,
     smoothPointsByLabel,
     type WorkloadPoint,
@@ -36,25 +35,6 @@ const bounds: GraphBounds = {
     marginTop: 20,
     marginBottom: 25,
 };
-
-function workloadPoint(
-    labelName: string,
-    memorized: number,
-    timeCost: number,
-): WorkloadPoint {
-    return {
-        x: memorized,
-        timeCost,
-        count: 10,
-        memorized,
-        weightedMemorized: memorized,
-        reviewless_end_memorized: 0,
-        reviewless_end_weighted_memorized: 0,
-        label: 1,
-        labelName,
-        learnSpan: 365,
-    };
-}
 
 test("renderWorkloadChart handles empty memorized data without throwing", () => {
     const svg = makeSvg();
@@ -137,44 +117,6 @@ test("renderWorkloadChart handles weighted workload metrics", () => {
             SimulateWorkloadSubgraph.weightedRatio,
         )
     ).not.toThrow();
-});
-
-test("renderWorkloadChart uses stable colors for FSRS and RWKV", () => {
-    const svg = makeSvg();
-    const points: WorkloadPoint[] = [
-        {
-            ...workloadPoint("Vocabulary (Fixed DR)", 50, 100),
-            label: 1002,
-            comparisonEngine: "fsrs",
-            comparisonKey: "1:0:0",
-            comparisonLabel: "Vocabulary",
-        },
-        {
-            ...workloadPoint("Vocabulary (RWKV)", 60, 90),
-            label: 1003,
-            comparisonEngine: "rwkv",
-            comparisonKey: "1:0:0",
-            comparisonLabel: "Vocabulary",
-        },
-    ];
-
-    renderWorkloadChart(svg, bounds, points, SimulateWorkloadSubgraph.memorized);
-
-    expect(
-        Array.from(svg.querySelectorAll(".lines path"), (path) => path.getAttribute("stroke")),
-    ).toStrictEqual(["#1f77b4", "#ff7f0e"]);
-});
-
-test("rwkvRelativePerformance handles benefit direction by metric", () => {
-    expect(rwkvRelativePerformance(100, 120, true)).toStrictEqual({
-        multiplier: 1.2,
-        change: 0.2,
-    });
-    expect(rwkvRelativePerformance(100, 80, false)).toStrictEqual({
-        multiplier: 1.25,
-        change: 0.2,
-    });
-    expect(rwkvRelativePerformance(0, 80, false)).toBeUndefined();
 });
 
 test("centeredMovingAverage smooths without lagging the series", () => {

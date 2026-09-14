@@ -106,6 +106,25 @@ intervals, so those presets get the RWKV reschedule instead.
 `test_refresh_rwkv_instant_after_save_invalidates_and_resets`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## deck-options.simulator-fsrs-only
+
+Given the deck-options simulator ("FSRS Simulator" and "Help Me Decide"), it
+simulates with FSRS only. The RWKV run mode and the FSRS/RWKV comparison no
+longer exist, and neither do the RWKV sample cap, DR step and state stride
+settings. `SimulateFsrsReviewRequest` carries no `rwkv_workload_*` fields
+(numbers 36-38 are reserved), and the desktop no longer serves the
+`simulateRwkvWorkload`, `startRwkvWorkload`, `rwkvWorkloadResult`,
+`cancelRwkvWorkload` and `rwkvWorkloadProgress` endpoints. RWKV presets
+simulate with their FSRS parameters.
+
+**Why:** plan item 6 — RWKV uses many more input features and processes all
+cards together instead of independently, so a correct RWKV simulator is out of
+scope.
+
+**Pinned by:** `test_post_handler_list_has_no_rwkv_workload_handlers`
+(`qt/tests/test_mediasrv.py`); "simulate request carries no RWKV fields"
+(`ts/routes/deck-options/simulate-fsrs-request.test.ts`).
+
 ## deck-options.advanced-view
 
 Given the collection flag `deckOptionsAdvanced` (default off), the deck-options

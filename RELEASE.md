@@ -60,6 +60,10 @@ repeated here unless they materially affect a fork feature.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.
+- The simulator ("FSRS Simulator" and "Help Me Decide") is FSRS-only. The
+  RWKV workload simulation, the FSRS/RWKV comparison and the RWKV sample
+  cap, DR step and state stride settings are gone, together with their
+  desktop endpoints. RWKV presets simulate with their FSRS parameters.
 - "Reschedule cards with RWKV-Curve" is much faster. It now runs one forward
   pass per card against the resident RWKV state instead of five, no longer
   copies each card's state between Python and Rust, and no longer freezes the
