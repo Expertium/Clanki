@@ -4,7 +4,7 @@
 import { expect, test, vi } from "vitest";
 
 vi.mock("@generated/ftl", () => ({
-    deckConfigSchedulerChoiceFsrs: () => "FSRS",
+    deckConfigSchedulerChoiceFsrs: () => "FSRS-7",
     deckConfigSchedulerChoiceRwkvCurve: () => "RWKV-Curve",
     deckConfigSchedulerChoiceRwkvInstant: () => "RWKV-Instant",
 }));

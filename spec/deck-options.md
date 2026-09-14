@@ -2,14 +2,15 @@
 
 ## deck-options.scheduler-choice
 
-Given the deck-options screen, the scheduler for a preset is chosen from one
-dropdown with the values FSRS, RWKV-Curve and RWKV-Instant. SM-2 is not
-selectable: the collection `fsrs` switch is on for every value. The value
-maps onto the stored flags as follows, and nothing else:
+Given the deck-options screen, the algorithm for a preset is chosen from one
+dropdown labelled **Algorithm** with the values FSRS-7, RWKV-Curve and
+RWKV-Instant. SM-2 is not selectable: the collection `fsrs` switch is on for
+every value. The value maps onto the stored flags as follows, and nothing
+else:
 
 | Value        | collection `fsrs` | preset `rwkv_review_enabled` | preset `rwkv_review_instant_order_enabled` |
 | ------------ | ----------------- | ---------------------------- | ------------------------------------------ |
-| FSRS         | on                | off                          | off                                        |
+| FSRS-7       | on                | off                          | off                                        |
 | RWKV-Curve   | on                | on                           | off                                        |
 | RWKV-Instant | on                | off                          | on                                         |
 
@@ -27,7 +28,29 @@ the user did not mean; desired retention was also only editable inside the
 FSRS block even though RWKV reads it, which the dropdown resolves by keeping
 FSRS on for every RWKV mode.
 
-**Pinned by:** `ts/routes/deck-options/scheduler-choice.test.ts`.
+**Pinned by:** `ts/routes/deck-options/scheduler-choice.test.ts`;
+`ts/tests/e2e/deck-options.test.ts` checks that no FSRS switch remains.
+
+## deck-options.first-intervals
+
+Given the deck-options screen with FSRS-7 selected, a **First intervals**
+table shows the intervals a new card gets after its first answer (Again,
+Hard, Good, Easy) at the current and the selected desired retention. The
+follow-up rows of the old "New card intervals at graduation" table are no
+longer shown. With RWKV-Curve or RWKV-Instant selected the table is hidden:
+RWKV uses more than the first grade, so the table does not describe it.
+
+Given RWKV-Instant selected, the desired-retention information box explains
+that RWKV-Instant has no intervals, that desired retention still controls
+the workload, and that the number of due cards changes after every review.
+The interval-based "desired retention is very low/high" warning is not
+shown for RWKV-Instant.
+
+**Why:** Andrew, 2026-09-14: the table only makes sense for FSRS, since it
+only uses grades for the first review; the interval warnings do not apply
+to RWKV-Instant.
+
+**Pinned by:** markup only; no unit test.
 
 ## deck-options.advanced-view
 
@@ -36,6 +59,12 @@ screen hides the RWKV settings listed below and shows them only while the flag
 is on. The flag is a collection-wide view preference, written immediately when
 the switch at the top of the page changes, and is not part of the deck-options
 save. Hidden settings keep their stored values and keep taking effect.
+
+Hidden under either RWKV mode: the **Optimize Current Preset** and **Save
+and Optimize All Presets** buttons (RWKV's parameters are frozen; the FSRS
+parameters only feed the intervals RWKV-Instant stores and the fallback for
+cards without an RWKV score). Hidden under every algorithm: the FSRS
+version selector, so that the FSRS-7 label stays true.
 
 Hidden: keep RWKV intervals in answer order; minimum reviews per day; faster
 approximate queue updates; queue update interval; update queue after reviewing;

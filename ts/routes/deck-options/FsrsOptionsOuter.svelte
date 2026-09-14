@@ -149,9 +149,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<TitledContainer title={"Scheduler"}>
+<TitledContainer title={tr.deckConfigScheduler()}>
     <HelpModal
-        title={"Scheduler"}
+        title={tr.deckConfigScheduler()}
         url={HelpPage.DeckOptions.fsrs}
         slot="tooltip"
         fsrs={$fsrs}

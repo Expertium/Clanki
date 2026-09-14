@@ -22,10 +22,16 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- Deck options: one **Scheduler** dropdown (FSRS, RWKV-Curve, RWKV-Instant)
+- Deck options: one **Algorithm** dropdown (FSRS-7, RWKV-Curve, RWKV-Instant)
   replaces the FSRS switch and the two RWKV switches, so only one scheduler
   is active at a time, and FSRS is always on: SM-2 can no longer be selected
   from deck options. Desired retention is now editable for every choice.
+- Deck options: the "New card intervals at graduation" table is now **First
+  intervals**, shows only the four first-answer rows, and appears only for
+  FSRS-7. Under RWKV-Instant the desired-retention box explains that there
+  are no intervals and that the due count changes after every review. The
+  optimize buttons and the FSRS version selector are hidden under RWKV
+  unless advanced options are on.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.

@@ -752,16 +752,22 @@ deck-config-optimize-all-tip = You can optimize all presets at once by using the
 
 ## Scheduler choice (Clanki)
 
-deck-config-scheduler = Scheduler
+deck-config-scheduler = Algorithm
 deck-config-scheduler-tooltip =
-    Which algorithm schedules this preset. FSRS computes intervals from your
-    review history. RWKV-Curve uses the RWKV neural network for the answer
-    button intervals. RWKV-Instant keeps FSRS intervals but lets RWKV decide
-    which cards are ready to review. Only one is active at a time, and FSRS
-    stays on for the whole collection whichever you choose.
-deck-config-scheduler-choice-fsrs = FSRS
+    Which algorithm schedules this preset. FSRS-7 computes intervals from
+    your review history. RWKV-Curve uses the RWKV neural network for the
+    answer button intervals. RWKV-Instant has no intervals: after every
+    review, RWKV decides which cards are due. Only one is active at a time,
+    and FSRS stays on for the whole collection whichever you choose.
+deck-config-scheduler-choice-fsrs = FSRS-7
 deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
 deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
+deck-config-first-intervals = First intervals
+deck-config-rwkv-instant-retention-info =
+    RWKV-Instant does not use intervals. Desired retention still controls
+    your workload: a card becomes due when RWKV predicts that its retention
+    has dropped to this value. The number of due cards changes after every
+    review. If it does not, RWKV-Instant is not working as expected.
 deck-config-show-advanced-options = Show advanced options
 deck-config-show-advanced-options-tooltip =
     Show the settings that are hidden by default. The defaults work for almost

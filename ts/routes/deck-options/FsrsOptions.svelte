@@ -120,6 +120,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const auxData = state.currentAuxData;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
+    const advanced = state.deckOptionsAdvanced;
+
+    // Which value the Algorithm dropdown holds for this preset (spec
+    // deck-options.scheduler-choice). The interval preview and the interval
+    // warnings only describe FSRS; the optimize buttons and the FSRS version
+    // selector are hidden under either RWKV mode unless advanced options are
+    // on (spec deck-options.advanced-view).
+    $: rwkvCurve = $config.rwkvReviewEnabled;
+    $: rwkvInstant = $config.rwkvReviewInstantOrderEnabled && !rwkvCurve;
+    $: rwkvMode = rwkvCurve || rwkvInstant;
 
     $: lastOptimizationWarning =
         $daysSinceLastOptimization > 30 ? tr.deckConfigTimeToOptimize() : "";
@@ -476,6 +486,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         tr.deckConfigGoodThenAgain(),
         tr.deckConfigGoodThenGood(),
     ];
+    // Only the first answer's intervals are shown (spec
+    // deck-options.first-intervals); the follow-up rows stay in the RPC.
+    const firstIntervalColumns = intervalColumns.slice(0, 4);
     const intervalRowClasses = [
         "interval-again",
         "interval-hard",
@@ -1492,13 +1505,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </SpinBoxFloatRow>
     </Item>
 </DynamicallySlottable>
-<Warning warning={desiredRetentionChangeInfo} className={desiredRetentionChangeClass} />
-<Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
+{#if rwkvInstant}
+    <Warning
+        warning={tr.deckConfigRwkvInstantRetentionInfo()}
+        className="alert-info two-line"
+    />
+{:else}
+    <Warning
+        warning={desiredRetentionChangeInfo}
+        className={desiredRetentionChangeClass}
+    />
+    <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
+{/if}
 
-{#if newCardIntervals}
+{#if !rwkvMode && newCardIntervals}
     <div class="interval-preview ms-1 me-1">
         <div class="interval-preview-title">
-            {tr.deckConfigNewCardIntervals()}
+            {tr.deckConfigFirstIntervals()}
         </div>
         <table class="interval-preview-table">
             <thead>
@@ -1515,7 +1538,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </tr>
             </thead>
             <tbody>
-                {#each intervalColumns as column, index}
+                {#each firstIntervalColumns as column, index}
                     <tr class={intervalRowClasses[index]}>
                         <th>{column}</th>
                         <td>{newCardIntervals[0][index]}</td>
@@ -1527,46 +1550,50 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
 {/if}
 
-<Warning warning={newCardIntervalsError} className={"alert-warning"} />
+{#if !rwkvMode}
+    <Warning warning={newCardIntervalsError} className={"alert-warning"} />
+{/if}
 <Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
 
-<div class="ms-1 me-1">
-    <button
-        class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
-        disabled={!computingParams && computing}
-        on:click={() => computeParams()}
-    >
-        {#if computingParams}
-            {tr.actionsCancel()}
-        {:else}
-            {tr.deckConfigOptimizeButton()}
-        {/if}
-    </button>
-    <button class="btn btn-primary" on:click={() => computeAllParams()}>
-        {tr.deckConfigSaveAndOptimize()}
-    </button>
-    <div>
-        {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
-            {computeParamsProgressString}
-            {#if computeParamsProgressPct !== undefined}
-                <div
-                    class="progress fsrs-progress"
-                    role="progressbar"
-                    aria-valuenow={computeParamsProgressPct}
-                    aria-valuemin="0"
-                    aria-valuemax="100"
-                >
-                    <div
-                        class="progress-bar"
-                        style={`width: ${computeParamsProgressPct}%`}
-                    ></div>
-                </div>
+{#if !rwkvMode || $advanced}
+    <div class="ms-1 me-1">
+        <button
+            class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
+            disabled={!computingParams && computing}
+            on:click={() => computeParams()}
+        >
+            {#if computingParams}
+                {tr.actionsCancel()}
+            {:else}
+                {tr.deckConfigOptimizeButton()}
             {/if}
-        {:else if totalReviews !== undefined}
-            {tr.statisticsReviews({ reviews: totalReviews })}
-        {/if}
+        </button>
+        <button class="btn btn-primary" on:click={() => computeAllParams()}>
+            {tr.deckConfigSaveAndOptimize()}
+        </button>
+        <div>
+            {#if computingParams || checkingParams || checkingHealth || checkingSameDayDecision}
+                {computeParamsProgressString}
+                {#if computeParamsProgressPct !== undefined}
+                    <div
+                        class="progress fsrs-progress"
+                        role="progressbar"
+                        aria-valuenow={computeParamsProgressPct}
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                    >
+                        <div
+                            class="progress-bar"
+                            style={`width: ${computeParamsProgressPct}%`}
+                        ></div>
+                    </div>
+                {/if}
+            {:else if totalReviews !== undefined}
+                {tr.statisticsReviews({ reviews: totalReviews })}
+            {/if}
+        </div>
     </div>
-</div>
+{/if}
 
 <details class="fsrs-advanced m-1">
     <summary>{tr.deckConfigAdvancedSettings()}</summary>
@@ -1607,14 +1634,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </button>
     {/if}
 
-    <div class="mb-3">
-        <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
-        <select bind:value={$config.fsrsVersion} class="form-select">
-            {#each fsrsVersionChoices as choice}
-                <option value={choice.value}>{choice.label}</option>
-            {/each}
-        </select>
-    </div>
+    {#if $advanced}
+        <div class="mb-3">
+            <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
+            <select bind:value={$config.fsrsVersion} class="form-select">
+                {#each fsrsVersionChoices as choice}
+                    <option value={choice.value}>{choice.label}</option>
+                {/each}
+            </select>
+        </div>
+    {/if}
 
     {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
         <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
