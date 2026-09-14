@@ -13,7 +13,7 @@ full main-window reset (which would rebuild the RWKV counts, slowly and
 with "…" placeholders meanwhile) is not done. In
 Simple mode the deck list's bottom row shows Find Decks Online (the button
 formerly named "Get Shared") and Create Deck but not Import File (Import
-stays under File), the
+stays under File); these buttons share one width in both modes, the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown only while at
 least one add-on is installed (in Advanced mode it is always shown; the
