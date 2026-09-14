@@ -22,6 +22,13 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Deck options: one **Scheduler** dropdown (FSRS, RWKV-Curve, RWKV-Instant)
+  replaces the FSRS switch and the two RWKV switches, so only one scheduler
+  is active at a time. Desired retention is now editable for every choice.
+  SM-2 remains available under advanced options.
+- Deck options: a **Show advanced options** switch at the top of the page.
+  Off by default; it hides the RWKV tuning settings and maintenance actions,
+  which keep their values and keep working.
 - RWKV-Curve answer intervals now get the same fuzz as FSRS intervals: the
   same fuzz range, load balancing, and sibling dispersal (when "Bury review
   siblings" is on). Previously RWKV-Curve intervals were applied exactly, so

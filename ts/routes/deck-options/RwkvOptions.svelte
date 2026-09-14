@@ -29,6 +29,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
+    const advanced = state.deckOptionsAdvanced;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const reviewFuzzEnabled = state.reviewFuzzEnabled;
     const reviewFuzzBase = state.reviewFuzzBase;
@@ -167,228 +168,222 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<TitledContainer title={"RWKV"}>
-    <HelpModal
-        title={"RWKV"}
-        url=""
-        slot="tooltip"
-        {helpSections}
-        on:mount={(e) => {
-            modal = e.detail.modal;
-            carousel = e.detail.carousel;
-        }}
-    />
-    <DynamicallySlottable slotHost={Item} api={{}}>
-        <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
+{#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
+    <TitledContainer title={"RWKV"}>
+        <HelpModal
+            title={"RWKV"}
+            url=""
+            slot="tooltip"
+            {helpSections}
+            on:mount={(e) => {
+                modal = e.detail.modal;
+                carousel = e.detail.carousel;
+            }}
+        />
+        <DynamicallySlottable slotHost={Item} api={{}}>
+            {#if $config.rwkvReviewEnabled}
+                <h2 class="rwkv-subheading">Answer Button Intervals — RWKV-Curve</h2>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.rwkvReviewEnabled}
-                defaultValue={defaults.rwkvReviewEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvReview")}>
-                    {tr.deckConfigRwkvReviewEnabled()}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                <button
+                    class="btn btn-outline-primary"
+                    disabled={rwkvActionInProgress}
+                    on:click={() => rescheduleRwkvReviewCards()}
+                >
+                    {#if reschedulingRwkvReviewCards}
+                        Rescheduling Cards with RWKV-Curve Intervals...
+                    {:else}
+                        Reschedule Cards with RWKV-Curve Intervals
+                    {/if}
+                </button>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.rwkvReviewEnforceGradeOrder}
-                defaultValue={defaults.rwkvReviewEnforceGradeOrder}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvEnforceGradeOrder")}>
-                    {tr.deckConfigRwkvReviewEnforceGradeOrder()}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        {#if $config.rwkvReviewEnabled}
-            <button
-                class="btn btn-outline-primary"
-                disabled={rwkvActionInProgress}
-                on:click={() => rescheduleRwkvReviewCards()}
-            >
-                {#if reschedulingRwkvReviewCards}
-                    Rescheduling Cards with RWKV-Curve Intervals...
-                {:else}
-                    Reschedule Cards with RWKV-Curve Intervals
+                {#if $advanced}
+                    <Item>
+                        <SwitchRow
+                            bind:value={$config.rwkvReviewEnforceGradeOrder}
+                            defaultValue={defaults.rwkvReviewEnforceGradeOrder}
+                        >
+                            <SettingTitle
+                                on:click={() =>
+                                    openSettingHelp("rwkvEnforceGradeOrder")}
+                            >
+                                {tr.deckConfigRwkvReviewEnforceGradeOrder()}
+                            </SettingTitle>
+                        </SwitchRow>
+                    </Item>
                 {/if}
-            </button>
-        {/if}
-
-        <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
-
-        <SwitchRow
-            bind:value={$config.rwkvReviewInstantOrderEnabled}
-            defaultValue={defaults.rwkvReviewInstantOrderEnabled}
-        >
-            <SettingTitle on:click={() => openSettingHelp("rwkvInstantOrder")}>
-                {tr.deckConfigRwkvReviewInstantOrder()}
-            </SettingTitle>
-            <span class="rwkv-recommendation">
-                {tr.deckConfigRwkvReviewInstantOrderRecommended()}
-            </span>
-        </SwitchRow>
-
-        {#if $config.rwkvReviewInstantOrderEnabled}
-            <SpinBoxFloatRow
-                bind:value={$config.rwkvReviewMinimumReviewsPerDay}
-                defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
-                min={0}
-                max={9999}
-                step={1}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
-                >
-                    {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewCandidateRefreshEnabled}
-                defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvCandidateRefresh")}>
-                    {tr.deckConfigRwkvReviewCandidateRefresh()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <SpinBoxFloatRow
-                bind:value={$config.rwkvReviewRefreshInterval}
-                defaultValue={defaults.rwkvReviewRefreshInterval}
-                min={1}
-                max={10000}
-                step={1}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvRefreshInterval")}>
-                    {tr.deckConfigRwkvReviewRefreshInterval()}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewRefreshOnExit}
-                defaultValue={defaults.rwkvReviewRefreshOnExit}
-            >
-                <SettingTitle on:click={() => openSettingHelp("rwkvRefreshOnExit")}>
-                    {tr.deckConfigRwkvReviewRefreshOnExit()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <h2 class="rwkv-subheading">Same-Day Repeats</h2>
-
-            <SwitchRow
-                bind:value={$config.rwkvReviewAllowSameDayReview}
-                defaultValue={defaults.rwkvReviewAllowSameDayReview}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
-                >
-                    {tr.deckConfigRwkvReviewAllowSameDayReview()}
-                </SettingTitle>
-            </SwitchRow>
-
-            {#if $config.rwkvReviewAllowSameDayReview}
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinInterveningReviews}
-                    defaultValue={defaults.rwkvReviewMinInterveningReviews}
-                    min={0}
-                    max={10000}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinInterveningReviews")}
-                    >
-                        {tr.deckConfigRwkvReviewMinInterveningReviews()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-
-                <SpinBoxFloatRow
-                    bind:value={$config.rwkvReviewMinElapsedSecs}
-                    defaultValue={defaults.rwkvReviewMinElapsedSecs}
-                    min={0}
-                    max={86400}
-                    step={1}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvMinElapsedSecs")}
-                    >
-                        {tr.deckConfigRwkvReviewMinElapsedSecs()}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
             {/if}
-        {/if}
 
-        {#if $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled}
-            <h2 class="rwkv-subheading">New Cards</h2>
+            {#if $config.rwkvReviewInstantOrderEnabled}
+                <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
+                <span class="rwkv-recommendation">
+                    {tr.deckConfigRwkvReviewInstantOrderRecommended()}
+                </span>
 
-            <SwitchRow
-                bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
-                defaultValue={defaults.rwkvReviewFirstReviewElapsedFromCardCreation}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvFirstReviewElapsed")}
+                <SwitchRow
+                    bind:value={$config.rwkvReviewAllowSameDayReview}
+                    defaultValue={defaults.rwkvReviewAllowSameDayReview}
                 >
-                    {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
-                </SettingTitle>
-            </SwitchRow>
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
+                    >
+                        {tr.deckConfigRwkvReviewAllowSameDayReview()}
+                    </SettingTitle>
+                </SwitchRow>
 
-            <h2 class="rwkv-subheading">Card History</h2>
+                {#if $advanced}
+                    {#if $config.rwkvReviewAllowSameDayReview}
+                        <SpinBoxFloatRow
+                            bind:value={$config.rwkvReviewMinInterveningReviews}
+                            defaultValue={defaults.rwkvReviewMinInterveningReviews}
+                            min={0}
+                            max={10000}
+                            step={1}
+                        >
+                            <SettingTitle
+                                on:click={() =>
+                                    openSettingHelp("rwkvMinInterveningReviews")}
+                            >
+                                {tr.deckConfigRwkvReviewMinInterveningReviews()}
+                            </SettingTitle>
+                        </SpinBoxFloatRow>
 
-            <SwitchRow
-                bind:value={$config.rwkvReviewDynamicPresetReplay}
-                defaultValue={defaults.rwkvReviewDynamicPresetReplay}
-            >
-                <SettingTitle
-                    on:click={() => openSettingHelp("rwkvDynamicPresetReplay")}
-                >
-                    {tr.deckConfigRwkvReviewDynamicPresetReplay()}
-                </SettingTitle>
-            </SwitchRow>
-
-            <h2 class="rwkv-subheading">Maintenance</h2>
-
-            <div class="d-flex flex-wrap gap-2">
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => forceBuildRwkvStateCache()}
-                >
-                    {#if forceBuildingRwkvStateCache}
-                        Rebuilding RWKV State...
-                    {:else}
-                        Rebuild RWKV State
+                        <SpinBoxFloatRow
+                            bind:value={$config.rwkvReviewMinElapsedSecs}
+                            defaultValue={defaults.rwkvReviewMinElapsedSecs}
+                            min={0}
+                            max={86400}
+                            step={1}
+                        >
+                            <SettingTitle
+                                on:click={() => openSettingHelp("rwkvMinElapsedSecs")}
+                            >
+                                {tr.deckConfigRwkvReviewMinElapsedSecs()}
+                            </SettingTitle>
+                        </SpinBoxFloatRow>
                     {/if}
-                </button>
 
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => recomputeRwkvCalibrationData()}
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                        defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                        min={0}
+                        max={9999}
+                        step={1}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
+                        >
+                            {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewCandidateRefreshEnabled}
+                        defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvCandidateRefresh")}
+                        >
+                            {tr.deckConfigRwkvReviewCandidateRefresh()}
+                        </SettingTitle>
+                    </SwitchRow>
+
+                    <SpinBoxFloatRow
+                        bind:value={$config.rwkvReviewRefreshInterval}
+                        defaultValue={defaults.rwkvReviewRefreshInterval}
+                        min={1}
+                        max={10000}
+                        step={1}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvRefreshInterval")}
+                        >
+                            {tr.deckConfigRwkvReviewRefreshInterval()}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewRefreshOnExit}
+                        defaultValue={defaults.rwkvReviewRefreshOnExit}
+                    >
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvRefreshOnExit")}
+                        >
+                            {tr.deckConfigRwkvReviewRefreshOnExit()}
+                        </SettingTitle>
+                    </SwitchRow>
+                {/if}
+            {/if}
+
+            {#if $advanced}
+                <h2 class="rwkv-subheading">New Cards</h2>
+
+                <SwitchRow
+                    bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
+                    defaultValue={defaults.rwkvReviewFirstReviewElapsedFromCardCreation}
                 >
-                    {#if recomputingRwkvCalibrationData}
-                        Calculating Calibration Graph Data...
-                    {:else}
-                        Calculate Calibration Graph Data
-                    {/if}
-                </button>
-            </div>
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvFirstReviewElapsed")}
+                    >
+                        {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
+                    </SettingTitle>
+                </SwitchRow>
 
-            <h2 class="rwkv-subheading">Compare</h2>
+                <h2 class="rwkv-subheading">Card History</h2>
 
-            <div class="d-flex flex-wrap gap-2">
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={rwkvActionInProgress}
-                    on:click={() => showRwkvWorkloadModal()}
+                <SwitchRow
+                    bind:value={$config.rwkvReviewDynamicPresetReplay}
+                    defaultValue={defaults.rwkvReviewDynamicPresetReplay}
                 >
-                    Compare RWKV with FSRS
-                </button>
-            </div>
-        {/if}
-    </DynamicallySlottable>
-</TitledContainer>
+                    <SettingTitle
+                        on:click={() => openSettingHelp("rwkvDynamicPresetReplay")}
+                    >
+                        {tr.deckConfigRwkvReviewDynamicPresetReplay()}
+                    </SettingTitle>
+                </SwitchRow>
+
+                <h2 class="rwkv-subheading">Maintenance</h2>
+
+                <div class="d-flex flex-wrap gap-2">
+                    <button
+                        class="btn btn-outline-primary"
+                        disabled={rwkvActionInProgress}
+                        on:click={() => forceBuildRwkvStateCache()}
+                    >
+                        {#if forceBuildingRwkvStateCache}
+                            Rebuilding RWKV State...
+                        {:else}
+                            Rebuild RWKV State
+                        {/if}
+                    </button>
+
+                    <button
+                        class="btn btn-outline-primary"
+                        disabled={rwkvActionInProgress}
+                        on:click={() => recomputeRwkvCalibrationData()}
+                    >
+                        {#if recomputingRwkvCalibrationData}
+                            Calculating Calibration Graph Data...
+                        {:else}
+                            Calculate Calibration Graph Data
+                        {/if}
+                    </button>
+                </div>
+
+                <h2 class="rwkv-subheading">Compare</h2>
+
+                <div class="d-flex flex-wrap gap-2">
+                    <button
+                        class="btn btn-outline-primary"
+                        disabled={rwkvActionInProgress}
+                        on:click={() => showRwkvWorkloadModal()}
+                    >
+                        Compare RWKV with FSRS
+                    </button>
+                </div>
+            {/if}
+        </DynamicallySlottable>
+    </TitledContainer>
+{/if}
 
 <SimulatorModal
     bind:modal={rwkvWorkloadModal}

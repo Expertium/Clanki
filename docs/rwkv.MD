@@ -10,6 +10,11 @@ second disabled. To use FSRS intervals with RWKV-Instant queue selection, leave
 the first option disabled and enable the second. Mobile clients do not load the
 RWKV backend and continue to schedule with FSRS/SM2.
 
+In Clanki's deck options the two switches are replaced by one **Scheduler**
+dropdown (FSRS / RWKV-Curve / RWKV-Instant), so only one of them is on per
+preset, and most of the settings below are visible only while **Show
+advanced options** is on. See `spec/deck-options.md`.
+
 ## Settings And Storage
 
 Desktop-only RWKV review settings are stored in deck config `other` under the

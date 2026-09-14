@@ -749,3 +749,24 @@ deck-config-fsrs-on-all-clients =
     Please ensure all of your Anki clients are Anki(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
     not work correctly if one of your clients is older.
 deck-config-optimize-all-tip = You can optimize all presets at once by using the dropdown button next to "Save".
+
+## Scheduler choice (Clanki)
+
+deck-config-scheduler = Scheduler
+deck-config-scheduler-tooltip =
+    Which algorithm schedules this preset. FSRS computes intervals from your
+    review history. RWKV-Curve uses the RWKV neural network for the answer
+    button intervals. RWKV-Instant keeps FSRS intervals but lets RWKV decide
+    which cards are ready to review. Only one is active at a time. Choosing any
+    of the three turns FSRS on for the whole collection; SM-2, Anki's classic
+    scheduler, is available under advanced options and turns FSRS off for the
+    whole collection.
+deck-config-scheduler-choice-fsrs = FSRS
+deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
+deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
+deck-config-scheduler-choice-sm2 = SM-2 (legacy)
+deck-config-show-advanced-options = Show advanced options
+deck-config-show-advanced-options-tooltip =
+    Show the settings that are hidden by default. The defaults work for almost
+    everyone; change them only if you know what they do. This applies to the
+    whole collection.

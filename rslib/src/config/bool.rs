@@ -44,6 +44,7 @@ pub enum BoolKey {
     FsrsShortTermWithStepsEnabled,
     FsrsLearningQueuesDisabled,
     ShowFuzzDeltaAboveAnswerButtons,
+    DeckOptionsAdvanced,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,
     #[strum(to_string = "dayLearnFirst")]
