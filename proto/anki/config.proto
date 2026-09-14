@@ -62,6 +62,10 @@ message ConfigKey {
     // Advanced UI mode (Simple is the default): every screen that has a
     // simplified view reads this collection-wide flag.
     ADVANCED_UI = 31;
+    // Answer buttons: coloured borders (upstream PR 4371) and the
+    // two-button Again/Good mode; both on by default (spec review.answer-buttons).
+    SHOW_COLORED_BUTTONS = 32;
+    TWO_BUTTON_MODE = 33;
   }
   enum String {
     SET_DUE_BROWSER = 0;
@@ -132,6 +136,8 @@ message Preferences {
     bool load_balancer_enabled = 6;
     bool fsrs_short_term_with_steps_enabled = 7;
     bool show_fuzz_delta_on_buttons = 8;
+    bool show_colored_buttons = 9;
+    bool two_button_mode = 10;
   }
   message Editing {
     bool adding_defaults_to_current_deck = 1;

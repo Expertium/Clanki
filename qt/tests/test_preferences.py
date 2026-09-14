@@ -19,6 +19,8 @@ def make_prefs() -> PreferencesProto:
     prefs.reviewing.time_limit_secs = 0
     prefs.reviewing.hide_audio_play_buttons = False
     prefs.reviewing.interrupt_audio_when_answering = False
+    prefs.reviewing.show_colored_buttons = True
+    prefs.reviewing.two_button_mode = True
     prefs.editing.adding_defaults_to_current_deck = True
     prefs.editing.paste_images_as_png = False
     prefs.editing.paste_strips_formatting = True
@@ -44,6 +46,10 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
     form.showFuzzDelta.isChecked.return_value = (
         prefs.reviewing.show_fuzz_delta_on_buttons
     )
+    form.showColoredButtons.isChecked.return_value = (
+        prefs.reviewing.show_colored_buttons
+    )
+    form.twoButtonMode.isChecked.return_value = prefs.reviewing.two_button_mode
     form.timeLimit.value.return_value = int(prefs.reviewing.time_limit_secs / 60)
     form.showPlayButtons.isChecked.return_value = (
         not prefs.reviewing.hide_audio_play_buttons
