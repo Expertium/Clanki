@@ -173,6 +173,10 @@ jobs:
 
       - name: Upload SARIF results for complexipy
         if: steps.complexipy.outcome == 'failure'
+        # Code scanning is unavailable on a private repository, so the upload
+        # is rejected ("Resource not accessible by integration"). The
+        # complexipy report itself is still in the step log above.
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@a6fd1787519fd23e68309fad43738e41a6ff2a9d #v4
         with:
             sarif_file: out/complexipy/complexipy-results.sarif
