@@ -1339,6 +1339,7 @@ mod tests {
     use anki_proto::deck_config::UpdateDeckConfigsMode;
     use fsrs::MemoryState;
     use fsrs::DEFAULT_PARAMETERS;
+    use fsrs::FSRS6_DEFAULT_PARAMETERS;
 
     use super::*;
     use crate::deckconfig::FsrsVersion;
@@ -1362,6 +1363,52 @@ mod tests {
         let expected = expected.unwrap();
         assert_eq!(actual.stability.round(), expected.stability.round());
         assert_eq!(actual.difficulty.round(), expected.difficulty.round());
+    }
+
+    // Pins spec/deck-options.md#deck-options.historical-retention-fixed: a
+    // preset that stores 0.7 computes the same memory states as one that
+    // stores 0.9, because 0.9 is always used. FSRS-6 parameters, because
+    // FSRS-7 never reads the SM-2 retention.
+    #[test]
+    fn stored_historical_retention_is_ignored() -> Result<()> {
+        fn inferred_memory_state(stored_historical_retention: f32) -> Result<FsrsMemoryState> {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_version = FsrsVersion::Six as i32;
+                config.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.to_vec();
+                config.historical_retention = stored_historical_retention;
+            });
+            NoteAdder::basic(&mut col).add(&mut col);
+            // A review card without a revlog: its memory state is inferred
+            // from the SM-2 interval and ease, which uses historical retention.
+            let mut card = col.get_first_card();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 100;
+            card.ease_factor = 2500;
+            card.due = col.timing_today()?.days_elapsed as i32;
+            col.recompute_fsrs_data_for_card(&mut card)?;
+            card.memory_state.or_invalid("no memory state")
+        }
+
+        let with_stored_0_7 = inferred_memory_state(0.7)?;
+        let with_stored_0_9 = inferred_memory_state(0.9)?;
+        assert_eq!(with_stored_0_7, with_stored_0_9);
+
+        // The stored value would have mattered: the inference itself does
+        // depend on the retention it is given, and the cards got the 0.9 one.
+        let fsrs = FSRS::new(&FSRS6_DEFAULT_PARAMETERS)?;
+        let at_0_7 =
+            memory_state_from_sm2_with_params(&fsrs, &FSRS6_DEFAULT_PARAMETERS, 2.5, 100.0, 0.7)?;
+        let at_0_9 =
+            memory_state_from_sm2_with_params(&fsrs, &FSRS6_DEFAULT_PARAMETERS, 2.5, 100.0, 0.9)?;
+        assert_ne!(at_0_7.stability, at_0_9.stability);
+        assert_int_eq(
+            Some(with_stored_0_7),
+            Some(fsrs_memory_state_for_fsrs(&fsrs, at_0_9)),
+        );
+        Ok(())
     }
 
     fn make_review_card(col: &mut Collection, note_id: NoteId, stability: f32) -> Result<CardId> {

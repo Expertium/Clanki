@@ -17,6 +17,7 @@ use crate::deckconfig::FsrsVersion;
 use crate::decks::Deck;
 use crate::prelude::*;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
+use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::search::FieldSearchMode;
 use crate::search::Node;
 use crate::search::PropertyKind;
@@ -132,7 +133,7 @@ impl FsrsPreset {
             fsrs_version,
             params: config.fsrs_params().to_vec(),
             desired_retention: deck.effective_desired_retention(config),
-            historical_retention: config.inner.historical_retention,
+            historical_retention: HISTORICAL_RETENTION,
             ignore_revlogs_before_date: config.inner.ignore_revlogs_before_date.clone(),
         })
     }
@@ -182,7 +183,7 @@ impl AddonFsrsPreset {
             fsrs_version,
             params,
             desired_retention: self.desired_retention,
-            historical_retention: self.historical_retention,
+            historical_retention: HISTORICAL_RETENTION,
             ignore_revlogs_before_date: self.ignore_revlogs_before_date,
         })
     }
@@ -674,7 +675,8 @@ mod test {
         assert_eq!(preset.fsrs_version, FsrsVersion::Six);
         assert_eq!(preset.params, params);
         assert_eq!(preset.desired_retention, 0.82);
-        assert_eq!(preset.historical_retention, 0.73);
+        // Pins spec/deck-options.md#deck-options.historical-retention-fixed
+        assert_eq!(preset.historical_retention, HISTORICAL_RETENTION);
         assert_eq!(preset.ignore_revlogs_before_date, "2024-01-02");
         Ok(())
     }
@@ -845,7 +847,7 @@ mod test {
         assert_eq!(preset.fsrs_version, FsrsVersion::Six);
         assert_eq!(preset.params, vec![1.0; 21]);
         assert_eq!(preset.desired_retention, 0.81);
-        assert_eq!(preset.historical_retention, 0.71);
+        assert_eq!(preset.historical_retention, HISTORICAL_RETENTION);
         Ok(())
     }
 

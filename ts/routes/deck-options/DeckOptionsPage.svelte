@@ -26,12 +26,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { DeckOptionsState } from "./lib";
     import NewOptions from "./NewOptions.svelte";
     import RwkvOptions from "./RwkvOptions.svelte";
+    import SimpleOptions from "./SimpleOptions.svelte";
     import TimerOptions from "./TimerOptions.svelte";
     import EasyDays from "./EasyDays.svelte";
 
     export let state: DeckOptionsState;
     const dispatch = createEventDispatcher<{ close: void }>();
     const addons = state.addonComponents;
+    // Simple mode is one section; Advanced mode is the per-topic sections
+    // (spec deck-options.simple-view). The mode is the collection flag set
+    // from the main window; this page has no switch of its own.
+    const advancedUi = state.advancedUi;
 
     export function auxData(): Writable<Record<string, unknown>> {
         return state.currentAuxData;
@@ -65,6 +70,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let dailyLimitsComponent: DailyLimits | undefined;
     let fsrsOptionsOuterComponent: FsrsOptionsOuter | undefined;
+    let simpleOptionsComponent: SimpleOptions | undefined;
 
     function onPresetChange() {
         if (dailyLimitsComponent) {
@@ -72,6 +78,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         if (fsrsOptionsOuterComponent) {
             fsrsOptionsOuterComponent.onPresetChange();
+        }
+        if (simpleOptionsComponent) {
+            simpleOptionsComponent.onPresetChange();
         }
     }
 </script>
@@ -82,78 +91,96 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     on:close={() => dispatch("close")}
 />
 
-<div class="deck-options-page">
+<div class="deck-options-page" class:simple={!$advancedUi}>
     <Container
         breakpoint="sm"
         --gutter-inline="0.25rem"
         --gutter-block="0.75rem"
         class="container-columns"
     >
-        <div>
-            <Row class="row-columns">
-                <DailyLimits
-                    {state}
-                    api={dailyLimits}
-                    bind:this={dailyLimitsComponent}
-                />
-            </Row>
-
-            <Row class="row-columns">
-                <NewOptions {state} api={newOptions} />
-            </Row>
-
-            <Row class="row-columns">
-                <LapseOptions {state} api={lapseOptions} />
-            </Row>
-
-            <Row class="row-columns">
-                <DisplayOrder {state} api={displayOrder} />
-            </Row>
-
-            <Row class="row-columns">
-                <FsrsOptionsOuter
-                    {state}
-                    api={{}}
-                    bind:this={fsrsOptionsOuterComponent}
-                />
-            </Row>
-
-            <Row class="row-columns">
-                <RwkvOptions {state} />
-            </Row>
-        </div>
-
-        <div>
-            <Row class="row-columns">
-                <BuryOptions {state} api={buryOptions} />
-            </Row>
-
-            <Row class="row-columns">
-                <AudioOptions {state} api={audioOptions} />
-            </Row>
-
-            <Row class="row-columns">
-                <TimerOptions {state} api={timerOptions} />
-            </Row>
-
-            <Row class="row-columns">
-                <AutoAdvance {state} api={timerOptions} />
-            </Row>
-
-            {#if $addons.length}
+        {#if $advancedUi}
+            <div>
                 <Row class="row-columns">
-                    <Addons {state} />
+                    <DailyLimits
+                        {state}
+                        api={dailyLimits}
+                        bind:this={dailyLimitsComponent}
+                    />
                 </Row>
-            {/if}
 
-            <Row class="row-columns">
-                <EasyDays {state} api={easyDays} />
-            </Row>
+                <Row class="row-columns">
+                    <NewOptions {state} api={newOptions} />
+                </Row>
 
-            <Row class="row-columns">
-                <AdvancedOptions {state} api={advancedOptions} />
-            </Row>
-        </div>
+                <Row class="row-columns">
+                    <LapseOptions {state} api={lapseOptions} />
+                </Row>
+
+                <Row class="row-columns">
+                    <DisplayOrder {state} api={displayOrder} />
+                </Row>
+
+                <Row class="row-columns">
+                    <FsrsOptionsOuter
+                        {state}
+                        api={{}}
+                        bind:this={fsrsOptionsOuterComponent}
+                    />
+                </Row>
+
+                <Row class="row-columns">
+                    <RwkvOptions {state} />
+                </Row>
+            </div>
+
+            <div>
+                <Row class="row-columns">
+                    <BuryOptions {state} api={buryOptions} />
+                </Row>
+
+                <Row class="row-columns">
+                    <AudioOptions {state} api={audioOptions} />
+                </Row>
+
+                <Row class="row-columns">
+                    <TimerOptions {state} api={timerOptions} />
+                </Row>
+
+                <Row class="row-columns">
+                    <AutoAdvance {state} api={timerOptions} />
+                </Row>
+
+                {#if $addons.length}
+                    <Row class="row-columns">
+                        <Addons {state} />
+                    </Row>
+                {/if}
+
+                <Row class="row-columns">
+                    <EasyDays {state} api={easyDays} />
+                </Row>
+
+                <Row class="row-columns">
+                    <AdvancedOptions {state} api={advancedOptions} />
+                </Row>
+            </div>
+        {:else}
+            <div>
+                <Row class="row-columns">
+                    <SimpleOptions
+                        {state}
+                        api={options}
+                        bind:this={simpleOptionsComponent}
+                    />
+                </Row>
+
+                {#if $addons.length}
+                    <Row class="row-columns">
+                        <Addons {state} />
+                    </Row>
+                {/if}
+            </div>
+        {/if}
     </Container>
 </div>
 
@@ -173,6 +200,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             :global(.container-columns) {
                 grid-template-columns: repeat(2, 1fr);
                 gap: 20px;
+            }
+
+            &.simple :global(.container-columns) {
+                grid-template-columns: minmax(0, 1fr);
+                max-width: 52rem;
+                margin-inline: auto;
             }
         }
     }

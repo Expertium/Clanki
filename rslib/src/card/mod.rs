@@ -28,6 +28,7 @@ use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
+use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::search::Negated;
 use crate::timestamp::TimestampSecs;
 use crate::types::Usn;
@@ -414,7 +415,7 @@ impl Collection {
                     req: Some(UpdateMemoryStateRequest {
                         params: config.fsrs_params().to_vec(),
                         preset_desired_retention: config.inner.desired_retention,
-                        historical_retention: config.inner.historical_retention,
+                        historical_retention: HISTORICAL_RETENTION,
                         max_interval: config.inner.maximum_review_interval,
                         review_fuzz_config: col.review_fuzz_config(),
                         reschedule: false,
@@ -577,7 +578,7 @@ mod test {
     fn should_increase_remaining_learning_steps_if_new_deck_has_more_unpassed_ones() {
         let mut col = open_test_collection_with_learning_card();
         let deck = DeckAdder::new("target")
-            .with_config(|config| config.inner.learn_steps.push(100.))
+            .with_config(|config| config.inner.learn_steps = vec![1., 10., 100.])
             .add(&mut col);
         let card_id = col.get_first_card().id;
         col.set_deck(&[card_id], deck.id).unwrap();
@@ -588,7 +589,7 @@ mod test {
     fn should_increase_remaining_relearning_steps_if_new_deck_has_more_unpassed_ones() {
         let mut col = open_test_collection_with_relearning_card();
         let deck = DeckAdder::new("target")
-            .with_config(|config| config.inner.relearn_steps.push(100.))
+            .with_config(|config| config.inner.relearn_steps = vec![10., 100.])
             .add(&mut col);
         let card_id = col.get_first_card().id;
         col.set_deck(&[card_id], deck.id).unwrap();

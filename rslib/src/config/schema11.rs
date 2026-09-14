@@ -25,6 +25,10 @@ pub(crate) fn schema11_config_as_string(creation_offset: Option<i32>) -> String 
         "schedVer": 2,
         "creationOffset": creation_offset,
         "sched2021": true,
+        // New collections allow same-day reviews for (re)learning steps
+        // (spec deck-options.new-preset-defaults); existing collections keep
+        // their stored value, or the off default when never set.
+        "fsrsShortTermWithStepsEnabled": true,
     });
     serde_json::to_string(&obj).unwrap()
 }

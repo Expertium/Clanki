@@ -26,6 +26,19 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    the default.** Many settings get hidden. The current deck-options UI is far
    too complex, even by the standards of Anki power users. Hiding a setting is a
    UI change, not a behavior change — the underlying setting keeps working.
+   Done 2026-09-14: the deck-options page in Simple mode is one section
+   (`ts/routes/deck-options/SimpleOptions.svelte`; `spec/deck-options.md`,
+   `deck-options.simple-view`): New cards/day, Maximum reviews/day, Algorithm
+   with desired retention (plus the FSRS-7 First intervals table, the
+   RWKV-Instant box and the RWKV-Curve reschedule button), one Bury siblings
+   switch (all three bury settings), Don't play audio automatically, Skip
+   question when replaying answer, one On-screen timer switch (show + stop on
+   answer), Easy Days. Advanced mode keeps the per-topic sections. Alongside:
+   new presets have empty steps and run RWKV-Curve
+   (`deck-options.new-preset-defaults`; the Rust and Python test fixtures
+   `Collection::new()` / `getEmptyCol()` restate the upstream SM-2 preset so
+   the upstream tests keep their assumptions), and historical retention is
+   fixed at 0.9 (`deck-options.historical-retention-fixed`).
 3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
    the FSRS "reschedule cards on change" path no longer logs a `Rescheduled`
    review-log row (the RWKV-Curve reschedule never did). See
@@ -223,6 +236,17 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   so any future prompt fails fast instead of hanging silently. Judge a detached
   build by **CPU time deltas**, not by whether the processes still exist — a
   hung build looks alive.
+- **Never run `./ninja` from the Claude Code Bash or PowerShell tool.** Inside
+  the tool sandbox n2 cannot spawn `out/rust/release/runner.exe` by its
+  forward-slash relative path and every build dies at `build:configure` with
+  "CreateProcessA: The system cannot find the file specified". Run builds and
+  `./ninja check:*` targets only through a detached `.cmd` wrapper
+  (`C:\Users\Andrew\clanki-logs\buildNN.cmd`, one new number per run,
+  launched with `rwkv-anki-autoresearch\scratchpad\detach.ps1`) and wait for
+  the `DONE_EXIT_` line in its log. `cargo test`/`clippy`/`fmt`, `pytest`,
+  `ruff` and `mypy` run fine from the tool directly. Run `format:prettier` in
+  its own wrapper before `check:format:prettier`: in one ninja run the check
+  races the formatter and fails on files it is about to rewrite.
 
 ---
 

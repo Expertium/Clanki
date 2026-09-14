@@ -99,9 +99,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     // Which value the Algorithm dropdown holds for this preset (spec
     // deck-options.scheduler-choice). The interval preview and the interval
-    // warnings only describe FSRS; the optimize buttons and the FSRS version
-    // selector are hidden under either RWKV mode unless advanced options are
-    // on (spec deck-options.advanced-view).
+    // warnings only describe FSRS. The reschedule switch, the optimize
+    // buttons and the FSRS advanced section (parameters, version selector,
+    // search filter, health check, simulator) are Advanced-only (spec
+    // deck-options.simple-view) and hidden under either RWKV mode (spec
+    // deck-options.fsrs-only-controls).
     $: rwkvCurve = $config.rwkvReviewEnabled;
     $: rwkvInstant = $config.rwkvReviewInstantOrderEnabled && !rwkvCurve;
     $: rwkvMode = rwkvCurve || rwkvInstant;
@@ -1112,18 +1114,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
 
 <!-- Changing desired retention moves due dates under every algorithm, so
-     the switch is not FSRS-only (spec deck-options.reschedule-on-change). -->
-<SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
-    <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>
-        <GlobalLabel title={tr.deckConfigRescheduleCardsOnChange()} />
-    </SettingTitle>
-</SwitchRow>
+     the switch is not FSRS-only (spec deck-options.reschedule-on-change).
+     It is Advanced-only, like the optimize buttons and the FSRS advanced
+     section below (spec deck-options.simple-view). -->
+{#if $advanced}
+    <SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
+        <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>
+            <GlobalLabel title={tr.deckConfigRescheduleCardsOnChange()} />
+        </SettingTitle>
+    </SwitchRow>
 
-{#if $fsrsReschedule}
-    <Warning warning={tr.deckConfigRescheduleCardsWarning()} />
+    {#if $fsrsReschedule}
+        <Warning warning={tr.deckConfigRescheduleCardsWarning()} />
+    {/if}
 {/if}
 
-{#if !rwkvMode}
+{#if !rwkvMode && $advanced}
     <div class="ms-1 me-1">
         <button
             class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
@@ -1163,7 +1169,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
 {/if}
 
-{#if !rwkvMode}
+{#if !rwkvMode && $advanced}
     <details class="fsrs-advanced m-1">
         <summary>{tr.deckConfigAdvancedSettings()}</summary>
 
@@ -1181,16 +1187,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         <Warning warning={lastOptimizationWarning} className="alert-warning" />
 
-        {#if $advanced}
-            <div class="mb-3">
-                <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
-                <select bind:value={$config.fsrsVersion} class="form-select">
-                    {#each fsrsVersionChoices as choice}
-                        <option value={choice.value}>{choice.label}</option>
-                    {/each}
-                </select>
-            </div>
-        {/if}
+        <div class="mb-3">
+            <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
+            <select bind:value={$config.fsrsVersion} class="form-select">
+                {#each fsrsVersionChoices as choice}
+                    <option value={choice.value}>{choice.label}</option>
+                {/each}
+            </select>
+        </div>
 
         {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
             <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>

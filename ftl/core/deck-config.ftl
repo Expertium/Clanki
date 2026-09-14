@@ -272,6 +272,8 @@ deck-config-stop-timer-on-answer = Stop on-screen timer on answer
 deck-config-stop-timer-on-answer-tooltip =
     Whether to stop the on-screen timer when the answer is revealed.
     This doesn't affect statistics.
+# The Simple-mode switch that shows the timer and stops it on answer together
+deck-config-on-screen-timer = On-screen timer
 
 ## Auto Advance section
 

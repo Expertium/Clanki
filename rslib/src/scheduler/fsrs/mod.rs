@@ -12,6 +12,12 @@ pub(crate) mod review_time_model;
 pub mod simulator;
 pub mod try_collect;
 
+/// Historical retention is fixed (spec
+/// deck-options.historical-retention-fixed). The stored `historical_retention`
+/// of a preset, and the value an add-on preset or a simulator request carries,
+/// are ignored in favour of this.
+pub(crate) const HISTORICAL_RETENTION: f32 = 0.9;
+
 pub(crate) fn params_fingerprint(params: &[f32]) -> u64 {
     params.iter().fold(0xcbf29ce484222325, |hash, param| {
         let hash = hash ^ u64::from(param.to_bits());
