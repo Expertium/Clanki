@@ -30,7 +30,7 @@ decks-create-deck = Create Deck
 decks-custom-steps-in-minutes = Custom steps (in minutes)
 decks-delete-deck = Delete Deck
 # a button that links to AnkiWeb for browsing shared decks
-decks-get-shared = Get Shared
+decks-get-shared = Find Decks Online
 # import deck from file
 decks-import-file = Import File
 decks-minutes = minutes

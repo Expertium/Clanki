@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import anki.lang
+from anki.config import Config
 
 # aqt.deckbrowser reads translated strings at import time
 anki.lang.set_lang("en")
@@ -66,7 +67,7 @@ def test_no_toggle_without_a_collection() -> None:
     assert Toolbar(cast(Any, mw), MagicMock())._create_ui_mode_toggle() == ""
 
 
-def test_deck_browser_bottom_row_is_hidden_in_simple_mode() -> None:
+def test_deck_browser_bottom_row_has_no_import_in_simple_mode() -> None:
     drawn: list[str] = []
 
     def draw(buf: str = "", **_kwargs: object) -> None:
@@ -82,11 +83,13 @@ def test_deck_browser_bottom_row_is_hidden_in_simple_mode() -> None:
         ),
     )
     DeckBrowser._drawButtons(browser)
-    assert drawn == [""]
+    assert drawn[0].count("<button") == 2
+    assert 'pycmd("shared")' in drawn[0] and 'pycmd("create")' in drawn[0]
+    assert "import" not in drawn[0]
 
     browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     DeckBrowser._drawButtons(browser)
-    assert "<button" in drawn[1]
+    assert drawn[1].count("<button") == 3
 
 
 def test_deck_menu_rwkv_submenu_is_advanced_only() -> None:
@@ -129,3 +132,51 @@ def test_addons_menu_entry_follows_the_mode_unless_addons_are_installed() -> Non
     assert shown(True, ["some_addon"])
     assert not shown(False, [])
     assert shown(False, ["some_addon"])
+
+
+def test_switching_the_mode_redraws_without_a_full_reset() -> None:
+    def switch(state: str) -> Any:
+        mw = cast(
+            Any,
+            SimpleNamespace(
+                col=MagicMock(),
+                state=state,
+                advanced_ui=lambda: False,
+                _sync_advanced_ui_action=lambda: None,
+                _sync_addons_action=lambda: None,
+                toolbar=MagicMock(),
+                deckBrowser=MagicMock(),
+                reset=MagicMock(),
+            ),
+        )
+        AnkiQt.set_advanced_ui(mw, True)
+        mw.col.set_config_bool.assert_called_once_with(Config.Bool.ADVANCED_UI, True)
+        mw.toolbar.draw.assert_called_once()
+        # a full reset would recompute the RWKV due counts
+        mw.reset.assert_not_called()
+        return mw
+
+    mw = switch("deckBrowser")
+    mw.deckBrowser.redraw_for_ui_mode.assert_called_once()
+    mw = switch("review")
+    mw.deckBrowser.redraw_for_ui_mode.assert_not_called()
+
+
+def test_deck_browser_mode_redraw_reuses_the_tree_on_screen() -> None:
+    browser = cast(
+        Any,
+        SimpleNamespace(
+            _render_data=object(),
+            _renderPage=MagicMock(),
+            refresh=MagicMock(),
+        ),
+    )
+    DeckBrowser.redraw_for_ui_mode(browser)
+    browser._renderPage.assert_called_once_with(reuse=True)
+    browser.refresh.assert_not_called()
+
+    # nothing rendered yet: a normal refresh
+    browser = cast(Any, SimpleNamespace(_renderPage=MagicMock(), refresh=MagicMock()))
+    DeckBrowser.redraw_for_ui_mode(browser)
+    browser._renderPage.assert_not_called()
+    browser.refresh.assert_called_once()

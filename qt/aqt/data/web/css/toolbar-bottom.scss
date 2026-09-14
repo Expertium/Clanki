@@ -10,3 +10,9 @@ body {
     margin-top: 0;
     padding: 9px;
 }
+
+/* The deck-list buttons share one width, whatever their label
+ * (spec ui.mode-switch). */
+.deck-button {
+    min-width: 11em;
+}

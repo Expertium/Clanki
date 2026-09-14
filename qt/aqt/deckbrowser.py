@@ -94,6 +94,14 @@ class DeckBrowser:
         if self._refresh_needed:
             self.refresh()
 
+    def redraw_for_ui_mode(self) -> None:
+        """Redraw after a Simple/Advanced switch without touching the due
+        counts (spec ui.mode-switch): the tree already on screen is reused."""
+        if hasattr(self, "_render_data"):
+            self._renderPage(reuse=True)
+        else:
+            self.refresh()
+
     def cancel_rwkv_count_refresh(self) -> None:
         self._rwkv_count_generation += 1
 
@@ -597,14 +605,18 @@ class DeckBrowser:
 
     def _drawButtons(self) -> None:
         buf = ""
-        # Simple mode hides this row (spec ui.mode-switch); Import stays in
-        # the File menu and a deck can be created from the Add window.
-        drawLinks = deepcopy(self.drawLinks) if self.mw.advanced_ui() else []
+        # Simple mode keeps Find Decks Online and Create Deck (spec
+        # ui.mode-switch); Import stays in the File menu.
+        drawLinks = deepcopy(self.drawLinks)
+        if not self.mw.advanced_ui():
+            drawLinks = [b for b in drawLinks if b[1] != "import"]
         for b in drawLinks:
             if b[0]:
                 b[0] = tr.actions_shortcut_key(val=shortcut(b[0]))
             buf += """
-<button title='%s' onclick='pycmd(\"%s\");'>%s</button>""" % tuple(b)
+<button class='deck-button' title='%s' onclick='pycmd(\"%s\");'>%s</button>""" % tuple(
+                b
+            )
         self.bottom.draw(
             buf=buf,
             link_handler=self._linkHandler,
