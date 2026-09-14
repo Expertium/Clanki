@@ -383,13 +383,6 @@
            </widget>
           </item>
           <item>
-           <widget class="QCheckBox" name="fsrsLearningQueuesDisabled">
-            <property name="text">
-             <string>preferences_skip_learning_queues</string>
-            </property>
-           </widget>
-          </item>
-          <item>
            <widget class="QCheckBox" name="fsrsReschedule">
             <property name="toolTip">
              <string>deck_config_reschedule_cards_on_change_tooltip</string>
