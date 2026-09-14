@@ -23,6 +23,13 @@ async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
     expect(response.ok()).toBeTruthy();
 }
 
+/** How many elements with exactly this text are rendered (help modals hold hidden copies). */
+async function visibleCount(page: Page, text: string): Promise<number> {
+    return page
+        .getByText(text, { exact: true })
+        .evaluateAll((elements) => elements.filter((e) => (e as HTMLElement).offsetParent !== null).length);
+}
+
 // Pins spec/deck-options.md#deck-options.scheduler-choice,
 // #deck-options.simple-view and #deck-options.fsrs-only-controls: there is
 // no FSRS switch any more, the Algorithm dropdown exists only in Advanced
@@ -42,7 +49,9 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     ).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
-    // the preset / deck / today tabs are Advanced-only
+    // Maximum reviews/day and the preset / deck / today tabs are Advanced-only
+    expect(await visibleCount(page, "New cards/day")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Maximum reviews/day")).toBe(0);
     await expect(page.getByRole("button", { name: "This deck" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Today only" })).toHaveCount(0);
     await expect(page.getByText("Skip question when replaying answer", { exact: true })).toHaveCount(0);
@@ -62,6 +71,7 @@ test("collection-wide settings are not on the deck-options page", async ({ page 
         await page.goto("/deck-options/1");
         await expect(page.getByText("Algorithm", { exact: true }).first()).toBeVisible();
         await expect(page.getByRole("button", { name: "This deck" }).first()).toBeVisible();
+        expect(await visibleCount(page, "Maximum reviews/day")).toBeGreaterThan(0);
         await expect(page.getByRole("button", { name: "Today only" }).first()).toBeVisible();
         for (const title of collectionWide) {
             await expect(page.getByText(title, { exact: true })).toHaveCount(0);
