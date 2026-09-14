@@ -2068,7 +2068,8 @@ timeboxReps = 0;
         if self._two_button_mode():
             # keys 1 and 2 follow the two buttons on screen; 3 is Good too;
             # 4 (Easy) is not available
-            return {1: 1, 2: 3, 3: 3}.get(ease)
+            key_to_ease: dict[int, Literal[1, 2, 3, 4]] = {1: 1, 2: 3, 3: 3}
+            return key_to_ease.get(ease)
         return cast(Literal[1, 2, 3, 4], ease)
 
     def _answerButtonList(self) -> tuple[tuple[int, str], ...]:
