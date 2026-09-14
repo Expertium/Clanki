@@ -22,9 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- "Skip learning/relearning queues with FSRS/RWKV" is gone. Instead, each preset has "Max number of same-day reviews"
-  (Advanced mode, under Learning steps): once a card has come back that many
-  times on the day you studied it, every answer sends it to another day.
+- "Skip learning/relearning queues with FSRS/RWKV" is gone. Instead, each
+  preset has "Max number of same-day reviews" (Advanced mode, under Learning
+  steps): once a card has come back that many times on the day you studied
+  it, every answer sends it to another day.
   0 means cards never come back on the same day; the default is no limit
   (shown as 9999). A collection that had the switch on gets 0 on every
   preset.

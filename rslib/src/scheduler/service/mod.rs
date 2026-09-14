@@ -60,7 +60,6 @@ use fsrs::FSRS;
 use crate::backend::Backend;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::collection::RwkvStatsGraphScoreEntry;
-use crate::config::BoolKey;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
