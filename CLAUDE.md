@@ -60,6 +60,22 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    all of them. Ask which ones before porting; picking the subset is a product
    decision, not an implementation detail.
 6. Many smaller changes and tweaks.
+7. **A big speed overhaul of Clanki** (Andrew, 2026-09-14). Every claimed
+   speedup of any part of the code must follow this measurement protocol:
+   1. Isolate the part under test. Never benchmark it inside a running Anki
+      copy; drive the isolated function or module directly.
+   2. Run "before" and "after" **in parallel**, each on one CPU thread with
+      the worker pinned to its own core, so that any outside disturbance
+      (another process, thermal or power events) hits both runs alike
+      instead of one of them. Lock the CPU frequency first with a PowerShell
+      command (`powercfg` min/max processor state to the same value; restore
+      it afterwards).
+   3. Collect at least 100 independent measurements for "before" and 100 for
+      "after".
+   4. Decide with the Wilcoxon signed-rank test on the paired measurements.
+      Accept a speedup only when the p-value is below 0.01 **and** the
+      median speedup is at least 2.5%. Anything else is "no change", however
+      promising it looks.
 
 ## Changes already made in Clanki
 
@@ -67,8 +83,9 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
   Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the
   client rebuilds the FSRS data of conflicting cards from the merged review
   log (`spec/sync.md`). The schedule half is gated by the remembered
-  "Reschedule cards when desired retention changes" choice (`BoolKey::FsrsReschedule`, written on
-  deck-options save — the switch itself was never persisted), never fires on
+  "Reschedule cards when desired retention changes" choice (`BoolKey::FsrsReschedule`; a
+  Preferences setting since 2026-09-14, before that written on deck-options
+  save while the switch itself was never persisted), never fires on
   a pure deck move, and restores the last real review's interval instead of
   recomputing with `next_interval`, so it needs no `Rescheduler` at all;
   agreed memory state survives an itemless reconcile; a forgotten card stays
