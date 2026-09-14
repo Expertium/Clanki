@@ -247,8 +247,9 @@ Given a new preset — added on the deck-options screen, created by
 `col.decks.add_config()` without a source, or reset with "Restore
 defaults" — its learning steps and relearning steps are empty and its
 algorithm is RWKV-Curve (`rwkv_review_enabled` on,
-`rwkv_review_instant_order_enabled` off); the revert buttons for the steps
-restore empty. Given a new collection, its default preset has these values,
+`rwkv_review_instant_order_enabled` off), and its leech action is Tag Only;
+the revert buttons for the steps restore empty and the one for the leech
+action restores Tag Only. Given a new collection, its default preset has these values,
 so the collection starts on RWKV-Curve. Existing presets keep their stored
 values: a stored preset without the RWKV flag still reads as FSRS-7, and
 scheduling outcomes for existing presets do not change. (Same-day reviews for

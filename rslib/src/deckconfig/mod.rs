@@ -439,6 +439,15 @@ mod tests {
         assert!(config.inner.relearn_steps.is_empty());
         assert!(config.inner.rwkv_review_enabled);
         assert!(!config.inner.rwkv_review_instant_order_enabled);
+        assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
+        // the legacy JSON default (Python add_config / restore_to_default)
+        // agrees
+        assert_eq!(
+            DeckConfig::from(DeckConfSchema11::default())
+                .inner
+                .leech_action,
+            LeechAction::TagOnly as i32
+        );
     }
 
     // Pins spec/deck-options.md#deck-options.new-preset-defaults: a fresh
@@ -450,6 +459,7 @@ mod tests {
         assert!(config.inner.learn_steps.is_empty());
         assert!(config.inner.relearn_steps.is_empty());
         assert!(config.inner.rwkv_review_enabled);
+        assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
         Ok(())
     }
 
