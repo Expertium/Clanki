@@ -63,24 +63,27 @@ Simple mode none of them is shown under any algorithm, and the "Compare RWKV
 with FSRS" action is gone. One search filter serves both optimization and evaluation; the
 separate evaluation filter no longer exists, and a stored
 `fsrsEvaluationSearch` value is ignored. FSRS-7 optimization always includes
-same-day reviews and never uses scheduling penalties: the two switches and
-"Same-day reviews: Help Me Decide" are gone, and the stored
-`fsrs7IncludeSameDayOptimize` / `fsrs7EnableSchedulingPenalties` values are
-ignored, also by "Optimize all presets".
+same-day reviews, always uses scheduling penalties and always weights the
+training items by recency (the fsrs crate applies recency weighting
+unconditionally): the two switches and "Same-day reviews: Help Me Decide"
+are gone, and the stored `fsrs7IncludeSameDayOptimize` /
+`fsrs7EnableSchedulingPenalties` values are ignored, also by "Optimize all
+presets".
 
 **Why:** Andrew, 2026-09-14: RWKV's parameters are frozen; a proper
-RWKV-Instant simulator is out of scope; the same-day and penalty settings
-should be the defaults and never shown.
+RWKV-Instant simulator is out of scope; FSRS-7 must always be optimized
+with same-day reviews, recency and scheduling penalties, with no choice.
 
 **Pinned by:** `fsrs7_optimize_always_includes_same_day_reviews`,
-`fsrs7_scheduling_penalties_are_never_enabled`
+`fsrs7_scheduling_penalties_are_always_enabled`
 (`rslib/src/deckconfig/update.rs`). The visibility is markup.
 
 ## deck-options.reschedule-on-change
 
-Given the collection-wide "Reschedule cards on change" switch, shown for
-every algorithm in Advanced mode (`deck-options.simple-view`), and a
-deck-options save with it on:
+Given the collection-wide "Reschedule cards when desired
+retention changes" switch (stored as `fsrsReschedule`), shown for every algorithm in
+Advanced mode only (`deck-options.simple-view`), and a deck-options save
+with it on:
 
 - presets running FSRS-7 or RWKV-Instant reschedule with FSRS intervals as
   before, when their parameters or desired retention changed;
@@ -97,9 +100,13 @@ deck-options save with it on:
   RWKV-Curve preset, the RWKV-Curve reschedule runs over the whole collection
   after the save, with its own progress dialog.
 
+There is no separate manual "Reschedule Cards with RWKV-Curve Intervals"
+action any more; this switch is the one rescheduling control.
+
 **Why:** Andrew, 2026-09-14: changing desired retention affects dueness for
-any algorithm. Writing FSRS intervals onto RWKV-Curve cards would undo RWKV's
-intervals, so those presets get the RWKV reschedule instead.
+any algorithm, so one switch, named for that, serves all three algorithms.
+Writing FSRS intervals onto RWKV-Curve cards would undo RWKV's intervals, so
+those presets get the RWKV reschedule instead.
 
 **Pinned by:** `fsrs_reschedule_skips_rwkv_curve_presets`
 (`rslib/src/deckconfig/update.rs`); `test_rwkv_curve_reschedule_*`,
@@ -130,7 +137,7 @@ scope.
 ## deck-options.reschedule-choice-remembered
 
 Given a deck-options save, the collection stores the value of the
-"Reschedule cards on change" switch at that save under the collection flag
+"Reschedule cards when desired retention changes" switch at that save under the collection flag
 `fsrsReschedule` (absent or off until the first save with the switch on).
 The switch itself still opens off every time, and the save-time rescheduling
 it triggers is unchanged (`deck-options.reschedule-on-change`). The stored
@@ -166,9 +173,10 @@ minimum other reviews and minimum seconds before a same-day repeat; predict R
 for new cards from creation time; dynamic preset add-on support; the Rebuild
 RWKV State and Recompute Calibration actions.
 
-The "Reschedule Cards with RWKV-Curve Intervals" action sits in the
-Algorithm block while RWKV-Curve is selected, in both modes. The RWKV
-section itself exists only in Advanced mode, under either RWKV mode; the
+The Algorithm dropdown itself exists only in Advanced mode
+(`deck-options.simple-view`); in Simple mode a preset keeps its stored
+algorithm (new presets: RWKV-Curve, `deck-options.new-preset-defaults`). The
+RWKV section exists only in Advanced mode, under either RWKV mode; the
 same-day repeat switch in it shows while RWKV-Instant is selected.
 
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
@@ -186,15 +194,16 @@ titled "Deck Options", with exactly these controls in this order:
 
 1. New cards/day and Maximum reviews/day, each with the preset / deck /
    today tabs;
-2. Algorithm, then Desired retention and, as in Advanced mode, the First
-   intervals table for FSRS-7, the RWKV-Instant information box and the
-   "Reschedule Cards with RWKV-Curve Intervals" action
-   (`deck-options.first-intervals`);
+2. Desired retention and, as in Advanced mode, the First intervals table
+   for FSRS-7 and the RWKV-Instant information box
+   (`deck-options.first-intervals`) — without the Algorithm dropdown, which
+   is Advanced-only;
 3. Bury siblings — one switch;
 4. Don't play audio automatically;
 5. Skip question when replaying answer;
 6. On-screen timer — one switch;
-7. the Easy Days sliders.
+7. the Easy Days sliders, collapsed behind an "Easy Days" expander that
+   the user opens by clicking it (collapsed in Advanced mode too).
 
 Add-on components render after the section, in both modes.
 
@@ -210,11 +219,11 @@ is toggled. The revert button of each combined switch restores off.
 Given the flag on (Advanced mode), the screen has the per-topic sections
 (Daily limits, New cards, Lapses, Display order, Algorithm, RWKV, Burying,
 Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
-bury switches and the two separate timer settings, and it alone shows: New
-cards ignore review limit, Limits start from top, Learning steps, Insertion
-order, Relearning steps, Allow same-day review for (re)learning steps, Skip
-learning/relearning queues, Leech threshold, Leech action, the whole Display
-order section, Reschedule cards on change, the FSRS Optimize buttons and the
+bury switches and the two separate timer settings, and it alone shows: the
+Algorithm dropdown, Limits start from top, Learning steps, Insertion order,
+Relearning steps, Skip learning/relearning queues, Leech threshold, Leech
+action, the whole Display order section, Reschedule cards when changing
+desired retention, the FSRS Optimize buttons and the
 FSRS advanced section (`deck-options.fsrs-only-controls`), Maximum answer
 seconds, the whole Auto advance section, Maximum interval, Minimum interval,
 Ignore cards reviewed before, Custom scheduling, and the RWKV settings of
@@ -228,9 +237,9 @@ settings only matter to power users.
 
 **Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts`,
 `ts/routes/deck-options/timer-switch.test.ts` (the combined switches);
-`ts/tests/e2e/deck-options.test.ts` (the FSRS parameters exist only in
-Advanced mode; the Algorithm dropdown and Bury siblings are visible in
-Simple mode). The section layout itself is markup.
+`ts/tests/e2e/deck-options.test.ts` (the FSRS parameters and the Algorithm
+dropdown exist only in Advanced mode; Desired retention and Bury siblings
+are visible in Simple mode). The section layout itself is markup.
 
 ## deck-options.new-preset-defaults
 
@@ -240,16 +249,13 @@ defaults" — its learning steps and relearning steps are empty and its
 algorithm is RWKV-Curve (`rwkv_review_enabled` on,
 `rwkv_review_instant_order_enabled` off); the revert buttons for the steps
 restore empty. Given a new collection, its default preset has these values,
-so the collection starts on RWKV-Curve, and the collection-wide "Allow
-same-day review for (re)learning steps" switch starts on; its revert button
-restores on. Existing presets and collections keep their stored values: a
-stored preset without the RWKV flag still reads as FSRS-7, a collection that
-never stored the same-day switch keeps it off, and scheduling outcomes for
-existing presets do not change.
+so the collection starts on RWKV-Curve. Existing presets keep their stored
+values: a stored preset without the RWKV flag still reads as FSRS-7, and
+scheduling outcomes for existing presets do not change. (Same-day reviews for
+(re)learning steps are always allowed: `sched.same-day-steps-always-on`.)
 
 **Why:** Andrew, 2026-09-14: RWKV-Curve is the algorithm new users should
-get, and it needs no learning steps; the same-day switch on is the setting
-that goes with steps when a user adds them. Existing presets must keep the
+get, and it needs no learning steps. Existing presets must keep the
 assumptions their review histories were built on.
 
 **Pinned by:** `new_preset_has_no_steps_and_runs_rwkv_curve`,

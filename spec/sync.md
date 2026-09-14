@@ -63,7 +63,7 @@ row merge decided.
 
 **Why:** Andrew's review of PR 4717 (2026-06-20): the PR recomputed a fresh
 interval with fuzz for every schedule conflict, so the due date matched
-neither device, it ignored the "Reschedule cards on change" opt-out, and it
+neither device, it ignored the "Reschedule cards when desired retention changes" opt-out, and it
 fired on pure deck moves. Restoring the last real review's interval makes the
 two devices agree and needs no whole-collection load-balancer scan per card.
 

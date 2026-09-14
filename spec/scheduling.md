@@ -86,9 +86,42 @@ enabled; only Easy Days is the user's choice.
 (`rslib/src/scheduler/states/fuzz.rs`), `load_balancer_is_always_on`
 (`rslib/src/config/bool.rs`).
 
+
+## sched.same-day-steps-always-on
+
+Given any collection, same-day reviews for (re)learning steps are always
+allowed under FSRS: the collection flag `fsrsShortTermWithStepsEnabled` reads
+as on whatever value is stored, so a `false` written by an earlier build or
+by an add-on has no effect, and the "Allow same-day review for (re)learning
+steps" switch is gone from the deck-options screen. The new-card interval
+preview also always assumes it on. The separate "Skip learning/relearning
+queues" switch is unchanged.
+
+**Why:** Andrew, 2026-09-14: the setting should be on for everyone and not
+be a choice.
+
+**Pinned by:** `same_day_steps_are_always_allowed`
+(`rslib/src/config/bool.rs`); `fsrs_short_term_with_steps_flag_roundtrip`
+(`rslib/src/deckconfig/update.rs`, a save that writes off still reads on).
+
+## sched.new-cards-never-ignore-review-limit
+
+Given any collection, new cards always count against the review limit: the
+collection flag `newCardsIgnoreReviewLimit` reads as off whatever value is
+stored, so a `true` written by an earlier build has no effect, the "New cards
+ignore review limit" switch is gone from the deck-options screen and from the
+FSRS simulator, and the simulator ignores the matching request field.
+
+**Why:** Andrew, 2026-09-14: the new-card limit and the review limit are
+enough; the extra switch is not needed.
+
+**Pinned by:** `new_cards_never_ignore_the_review_limit`
+(`rslib/src/config/bool.rs`); `new_cards_never_ignore_review_limit`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.reschedule-no-revlog
 
-Given "Reschedule cards on change" applying new FSRS intervals on a
+Given "Reschedule cards when desired retention changes" applying new FSRS intervals on a
 deck-options save, or the RWKV-Curve reschedule, the affected cards get a new
 interval, due date, memory state and desired retention, and no row is added
 to the review log. Rows of kind `Rescheduled` that older builds wrote are

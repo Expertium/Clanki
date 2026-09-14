@@ -24,21 +24,23 @@ async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
 }
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice and
-// #deck-options.simple-view: there is no FSRS switch any more, the algorithm
-// comes from one dropdown in both modes, and the FSRS parameters (inside the
-// FSRS advanced section) exist only in Advanced mode.
-test("Algorithm dropdown replaces the FSRS switch, in Simple mode", async ({ page }) => {
+// #deck-options.simple-view: there is no FSRS switch any more, the Algorithm
+// dropdown exists only in Advanced mode, and so do the FSRS parameters
+// (inside the FSRS advanced section) and the reschedule switch.
+test("Simple mode shows desired retention but no Algorithm dropdown", async ({ page }) => {
     await setAdvancedUi(page, false);
     await page.goto("/deck-options/1");
 
     await expect(page.getByRole("checkbox", { name: /^FSRS\b/ })).toHaveCount(0);
-    await expect(page.getByText("Algorithm", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("FSRS-7", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Algorithm", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Desired retention", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Bury siblings", { exact: true }).first()).toBeVisible();
     await expect(
         page.locator('[role="button"][aria-label="FSRS Parameters"]'),
     ).toHaveCount(0);
-    await expect(page.getByText("Reschedule cards on change", { exact: true })).toHaveCount(0);
+    await expect(
+        page.getByText("Reschedule cards when desired retention changes", { exact: true }),
+    ).toHaveCount(0);
 });
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {

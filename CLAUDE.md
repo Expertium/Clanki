@@ -38,7 +38,15 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    (`deck-options.new-preset-defaults`; the Rust and Python test fixtures
    `Collection::new()` / `getEmptyCol()` restate the upstream SM-2 preset so
    the upstream tests keep their assumptions), and historical retention is
-   fixed at 0.9 (`deck-options.historical-retention-fixed`).
+   fixed at 0.9 (`deck-options.historical-retention-fixed`). Later the same
+   day: "Allow same-day review for (re)learning steps" is always on and
+   "New cards ignore review limit" is always off, both controls removed
+   (`spec/scheduling.md`, `sched.same-day-steps-always-on`,
+   `sched.new-cards-never-ignore-review-limit`); the Algorithm dropdown is
+   Advanced-only, the Easy Days sliders sit behind a collapsed expander, and
+   the one rescheduling control is the "Reschedule cards when changing
+   desired retention" switch (Advanced, every algorithm; the manual
+   RWKV-Curve reschedule button is gone).
 3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
    the FSRS "reschedule cards on change" path no longer logs a `Rescheduled`
    review-log row (the RWKV-Curve reschedule never did). See
@@ -59,7 +67,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
   Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the
   client rebuilds the FSRS data of conflicting cards from the merged review
   log (`spec/sync.md`). The schedule half is gated by the remembered
-  "Reschedule cards on change" choice (`BoolKey::FsrsReschedule`, written on
+  "Reschedule cards when desired retention changes" choice (`BoolKey::FsrsReschedule`, written on
   deck-options save — the switch itself was never persisted), never fires on
   a pure deck move, and restores the last real review's interval instead of
   recomputing with `next_interval`, so it needs no `Rescheduler` at all;

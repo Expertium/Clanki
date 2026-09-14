@@ -618,7 +618,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return optimizeSearchFilter();
     }
 
-    // FSRS-7 always trains on same-day reviews and never uses scheduling
+    // FSRS-7 always trains on same-day reviews and always uses scheduling
     // penalties; neither is a user setting (spec
     // deck-options.fsrs-only-controls).
     function includeSameDayOverride(): boolean | undefined {
@@ -629,7 +629,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function enableSchedulingPenaltiesOverride(): boolean {
-        return false;
+        return true;
     }
 
     function includeSameDayOverrideForParams(params: number[]): boolean | undefined {

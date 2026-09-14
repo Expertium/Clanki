@@ -81,6 +81,15 @@ impl Collection {
             // build is ignored (spec sched.fuzz-always-on).
             BoolKey::LoadBalancerEnabled => true,
 
+            // Same-day reviews for (re)learning steps are always allowed; a
+            // stored `false` is ignored (spec sched.same-day-steps-always-on).
+            BoolKey::FsrsShortTermWithStepsEnabled => true,
+
+            // New cards always count against the review limit; a stored `true`
+            // from an earlier build is ignored
+            // (spec sched.new-cards-never-ignore-review-limit).
+            BoolKey::NewCardsIgnoreReviewLimit => false,
+
             // other options default to false
             other => self.get_config_default(other),
         }
@@ -120,6 +129,24 @@ mod tests {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::LoadBalancerEnabled, false, false)?;
         assert!(col.get_config_bool(BoolKey::LoadBalancerEnabled));
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.same-day-steps-always-on
+    #[test]
+    fn same_day_steps_are_always_allowed() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, false, false)?;
+        assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.new-cards-never-ignore-review-limit
+    #[test]
+    fn new_cards_never_ignore_the_review_limit() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::NewCardsIgnoreReviewLimit, true, false)?;
+        assert!(!col.get_config_bool(BoolKey::NewCardsIgnoreReviewLimit));
         Ok(())
     }
 

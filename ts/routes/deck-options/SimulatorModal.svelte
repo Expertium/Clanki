@@ -41,7 +41,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         type DeckConfig,
     } from "@generated/anki/deck_config_pb";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
-    import GlobalLabel from "./GlobalLabel.svelte";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import { reviewOrderChoices } from "./choices";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
@@ -96,7 +95,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let reviewTimeSuccessGradeProbs: number[] = [];
     let reviewTimeSuccessGradeCounts: number[] = [];
     let reviewTimeSampleMedian = 0;
-    const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     let smooth = true;
     let suspendLeeches = $config.leechAction == DeckConfig_Config_LeechAction.SUSPEND;
     let leechThreshold = $config.leechThreshold;
@@ -660,7 +658,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             if (!workload) {
                 $config.desiredRetention = simulateFsrsRequest.desiredRetention;
             }
-            $newCardsIgnoreReviewLimit = simulateFsrsRequest.newCardsIgnoreReviewLimit;
             $config.reviewOrder = simulateFsrsRequest.reviewOrder;
             $config.leechAction = suspendLeeches
                 ? DeckConfig_Config_LeechAction.SUSPEND
@@ -843,20 +840,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 {tr.deckConfigReviewSortOrder()}
                             </SettingTitle>
                         </EnumSelectorRow>
-
-                        <SwitchRow
-                            bind:value={simulateFsrsRequest.newCardsIgnoreReviewLimit}
-                            defaultValue={$newCardsIgnoreReviewLimit}
-                        >
-                            <SettingTitle
-                                on:click={() =>
-                                    openHelpModal("newCardsIgnoreReviewLimit")}
-                            >
-                                <GlobalLabel
-                                    title={tr.deckConfigNewCardsIgnoreReviewLimit()}
-                                />
-                            </SettingTitle>
-                        </SwitchRow>
 
                         <SwitchRow bind:value={smooth} defaultValue={true}>
                             <SettingTitle

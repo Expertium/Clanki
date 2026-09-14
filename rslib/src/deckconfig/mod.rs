@@ -442,8 +442,7 @@ mod tests {
     }
 
     // Pins spec/deck-options.md#deck-options.new-preset-defaults: a fresh
-    // collection's default preset gets the new-preset defaults, and the
-    // collection-wide same-day switch starts on.
+    // collection's default preset gets the new-preset defaults.
     #[test]
     fn fresh_collection_starts_with_new_preset_defaults() -> Result<()> {
         let col = CollectionBuilder::default().build()?;
@@ -451,7 +450,6 @@ mod tests {
         assert!(config.inner.learn_steps.is_empty());
         assert!(config.inner.relearn_steps.is_empty());
         assert!(config.inner.rwkv_review_enabled);
-        assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
         Ok(())
     }
 
