@@ -2043,7 +2043,11 @@ pub(crate) mod test {
                 .fsrs_short_term_with_steps
         );
 
-        for key in [BoolKey::Fsrs, BoolKey::FsrsShortTermWithStepsEnabled] {
+        // FsrsShortTermWithStepsEnabled always reads as on
+        // (spec sched.same-day-steps-always-on), so only the FSRS flag can
+        // change.
+        {
+            let key = BoolKey::Fsrs;
             col.set_config_bool(key, false, true)?;
             assert!(
                 col.state.card_queues.is_some(),

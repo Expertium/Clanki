@@ -583,11 +583,11 @@ fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> 
     }
 }
 
-/// Scheduling penalties are never used in optimization. The stored
+/// FSRS-7 optimization always uses scheduling penalties. The stored
 /// `fsrs7EnableSchedulingPenalties` flag is ignored (spec
 /// deck-options.fsrs-only-controls).
 fn fsrs7_enable_scheduling_penalties(_config: &DeckConfig) -> bool {
-    false
+    true
 }
 
 /// "Reschedule cards on change" applies FSRS intervals to a preset's cards
@@ -663,14 +663,15 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/deck-options.md#deck-options.fsrs-only-controls
     #[test]
-    fn fsrs7_scheduling_penalties_are_never_enabled() -> Result<()> {
+    fn fsrs7_scheduling_penalties_are_always_enabled() -> Result<()> {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7EnableSchedulingPenalties": true,
+            "fsrs7EnableSchedulingPenalties": false,
         }))?;
-        assert!(!fsrs7_enable_scheduling_penalties(&config));
+        assert!(fsrs7_enable_scheduling_penalties(&config));
         Ok(())
     }
 
@@ -1009,7 +1010,9 @@ mod test {
             review_fuzz_config: Default::default(),
         };
         col.update_deck_configs(input.clone())?;
-        assert!(!col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+        // the same-day flag is always on, whatever a save writes
+        // (spec sched.same-day-steps-always-on)
+        assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
         assert!(!col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
 
         input.fsrs_short_term_with_steps_enabled = true;

@@ -8,7 +8,7 @@
 
     import Row from "./Row.svelte";
     import type { HelpItem } from "./types";
-    import { mdiEarth } from "./icons";
+    import { mdiWeb } from "./icons";
     import Icon from "./Icon.svelte";
 
     export let item: HelpItem;
@@ -25,7 +25,7 @@
     {#if item.help}
         {#if item.global}
             <div class="icon">
-                <Icon icon={mdiEarth} />
+                <Icon icon={mdiWeb} />
             </div>
         {/if}
         {@html renderMarkdown(item.help)}
@@ -65,7 +65,7 @@
     .icon {
         display: inline-block;
         width: 1em;
-        fill: currentColor;
+        fill: var(--fg-link);
         margin-right: 0.25em;
         margin-bottom: 1.25em;
     }

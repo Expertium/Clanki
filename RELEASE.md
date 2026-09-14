@@ -22,6 +22,24 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Same-day reviews for (re)learning steps are always allowed under FSRS; the
+  "Allow same-day review for (re)learning steps" switch is gone.
+- New cards always count against the review limit; the "New cards ignore
+  review limit" switch is gone from deck options and from the simulator.
+- FSRS-7 optimization always uses scheduling penalties (as well as same-day
+  reviews and recency weighting); a stored preference to the contrary is
+  ignored.
+- The Algorithm dropdown is Advanced-only; Simple mode shows desired
+  retention without it (new presets run RWKV-Curve). The Easy Days sliders
+  are collapsed behind an "Easy Days" expander in both modes.
+- "Reschedule cards on change" is now "Reschedule cards when desired
+  retention changes" (Advanced only, every algorithm); the separate
+  "Reschedule Cards with RWKV-Curve Intervals" button is gone.
+- The Simple | Advanced switch now appears in the toolbar as soon as a
+  profile is open (it was drawn before the collection loaded and so was
+  missing).
+- Collection-wide settings are marked with a blue meridian globe instead of
+  the old earth glyph, in deck options and in their help entries.
 - Answer buttons have coloured borders (red Again, green otherwise; from
   upstream PR 4371) and, by default, only **Again** and **Good** are shown.
   Both can be switched off in Preferences > Review. In two-button mode key
@@ -78,8 +96,8 @@ repeated here unless they materially affect a fork feature.
   section (Help Me Decide, search filter, Check Health, simulator) appear
   only with FSRS-7 selected. The "Compare RWKV with FSRS" action is gone.
   One search filter serves both optimization and evaluation. FSRS-7 now
-  always includes same-day reviews and never uses scheduling penalties;
-  the two switches are gone.
+  always includes same-day reviews in optimization; the same-day and
+  scheduling-penalty switches are gone.
 - Deck options: **Reschedule cards on change** is shown for every
   algorithm. With it on, saving a changed desired retention reschedules
   RWKV-Curve presets with RWKV-Curve intervals (after the save), and

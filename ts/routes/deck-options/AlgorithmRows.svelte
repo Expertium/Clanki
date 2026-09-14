@@ -3,13 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
-    import {
-        type DeckConfig_Config,
-        UpdateDeckConfigsMode,
-    } from "@generated/anki/deck_config_pb";
-    import { DeckId } from "@generated/anki/decks_pb";
-    import { Empty } from "@generated/anki/generic_pb";
-    import { postProto } from "@generated/post";
+    import type { DeckConfig_Config } from "@generated/anki/deck_config_pb";
     import { get } from "svelte/store";
 
     import Item from "$lib/components/Item.svelte";
@@ -20,7 +14,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { algorithmHelpSettings } from "./algorithm-help";
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
-    import { commitEditing, type DeckOptionsState } from "./lib";
+    import type { DeckOptionsState } from "./lib";
     import {
         flagsFromSchedulerChoice,
         SchedulerChoice,
@@ -29,10 +23,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     } from "./scheduler-choice";
 
     /**
-     * The Algorithm block: the dropdown, the RWKV-Curve reschedule action and
-     * the FSRS options. Hosted by the Advanced-mode Algorithm section
-     * (FsrsOptionsOuter) and by the Simple-mode page (SimpleOptions), which
-     * own the help modal and receive the help key to open.
+     * The Algorithm block: the dropdown (Advanced mode only, spec
+     * deck-options.simple-view) and the FSRS options. Hosted by the
+     * Advanced-mode Algorithm section (FsrsOptionsOuter) and by the
+     * Simple-mode page (SimpleOptions), which own the help modal and receive
+     * the help key to open.
      */
     export let state: DeckOptionsState;
     export let openHelp: (key: AlgorithmHelpKey) => void;
@@ -46,6 +41,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const fsrs = state.fsrs;
     const config = state.currentConfig;
+    const advancedUi = state.advancedUi;
     const settings = algorithmHelpSettings();
     let newlyEnabled = false;
 
@@ -102,51 +98,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: if (!$fsrs) {
         newlyEnabled = true;
     }
-
-    // The RWKV-Curve reschedule action: saves, then asks the desktop to
-    // rewrite review intervals with the current RWKV-Curve predictions.
-    let reschedulingRwkvReviewCards = false;
-    async function rescheduleRwkvReviewCards(): Promise<void> {
-        reschedulingRwkvReviewCards = true;
-        try {
-            await commitEditing();
-            await state.save(UpdateDeckConfigsMode.NORMAL);
-            await postProto(
-                "rescheduleRwkvReviewCards",
-                new DeckId({ did: state.getTargetDeckId() }),
-                Empty,
-            );
-        } finally {
-            reschedulingRwkvReviewCards = false;
-        }
-    }
 </script>
 
-<Item>
-    <EnumSelectorRow
-        bind:value={schedulerChoice}
-        defaultValue={SchedulerChoice.FSRS}
-        choices={schedulerChoiceList}
-    >
-        <SettingTitle on:click={() => openHelp("fsrs")}>
-            <GlobalLabel title={settings.fsrs.title} />
-        </SettingTitle>
-    </EnumSelectorRow>
-</Item>
-
-{#if $config.rwkvReviewEnabled}
+<!-- The dropdown is Advanced-only; in Simple mode the preset keeps its
+     stored algorithm (new presets: RWKV-Curve). The manual RWKV-Curve
+     reschedule action is gone: the "Reschedule cards when desired retention
+     changes" switch in FsrsOptions covers every algorithm
+     (spec deck-options.reschedule-on-change). -->
+{#if $advancedUi}
     <Item>
-        <button
-            class="btn btn-outline-primary"
-            disabled={reschedulingRwkvReviewCards}
-            on:click={() => rescheduleRwkvReviewCards()}
+        <EnumSelectorRow
+            bind:value={schedulerChoice}
+            defaultValue={SchedulerChoice.FSRS}
+            choices={schedulerChoiceList}
         >
-            {#if reschedulingRwkvReviewCards}
-                Rescheduling Cards with RWKV-Curve Intervals...
-            {:else}
-                Reschedule Cards with RWKV-Curve Intervals
-            {/if}
-        </button>
+            <SettingTitle on:click={() => openHelp("fsrs")}>
+                <GlobalLabel title={settings.fsrs.title} />
+            </SettingTitle>
+        </EnumSelectorRow>
     </Item>
 {/if}
 

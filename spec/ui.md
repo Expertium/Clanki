@@ -1,5 +1,19 @@
 # User interface modes
 
+## ui.global-marker
+
+Given a deck-options setting that applies to the whole collection rather
+than to one preset (marked `global` in its help entry), its label carries a
+meridian-globe icon (`mdiWeb`, the Material Design "web" glyph) in the link
+colour (`--fg-link`), with the "affects the entire collection" tooltip; the
+help modal shows the same icon next to that setting's explanation.
+
+**Why:** Andrew, 2026-09-14: the upstream `earth` glyph reads as an odd blob;
+a blue meridian globe is the familiar "global" symbol.
+
+**Pinned by:** markup only (`ts/routes/deck-options/GlobalLabel.svelte`,
+`ts/lib/components/HelpSection.svelte`).
+
 ## ui.mode-switch
 
 Given a collection, the interface is in Simple mode unless the collection flag

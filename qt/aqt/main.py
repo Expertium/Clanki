@@ -784,6 +784,9 @@ class AnkiQt(QMainWindow):
             self.update_undo_actions()
             gui_hooks.collection_did_load(self.col)
             self.apply_collection_options()
+            # the toolbar was first drawn without a collection, so the
+            # Simple | Advanced switch (spec ui.mode-switch) was not in it
+            self.toolbar.draw()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
         except Exception:

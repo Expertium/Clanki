@@ -377,7 +377,8 @@ impl crate::services::SchedulerService for Collection {
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
             include_same_day_reviews: input.include_same_day_reviews,
-            enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
+            // always on (spec deck-options.fsrs-only-controls); the request field is ignored
+            enable_scheduling_penalties: true,
             model_version_override: input.fsrs_version.map(health_check_model_version),
         })
     }
@@ -396,7 +397,8 @@ impl crate::services::SchedulerService for Collection {
                 current_params: &item.current_params,
                 num_of_relearning_steps: item.num_of_relearning_steps as usize,
                 include_same_day_reviews: item.include_same_day_reviews,
-                enable_scheduling_penalties: item.enable_scheduling_penalties.unwrap_or(false),
+                // always on (spec deck-options.fsrs-only-controls); the request field is ignored
+                enable_scheduling_penalties: true,
                 model_version_override: item.fsrs_version.map(health_check_model_version),
             })?;
             response_meta.push((item.id.clone(), item.name.clone()));
@@ -435,7 +437,8 @@ impl crate::services::SchedulerService for Collection {
             current_params: &input.params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             include_same_day_reviews: input.include_same_day_reviews,
-            enable_scheduling_penalties: input.enable_scheduling_penalties.unwrap_or(false),
+            // always on (spec deck-options.fsrs-only-controls); the request field is ignored
+            enable_scheduling_penalties: true,
             model_version_override: input.fsrs_version.map(health_check_model_version),
         })?;
         let context = FsrsReviewPredictionContext::from_prepared(&prepared);
@@ -474,7 +477,6 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::GetFsrsNewCardIntervalsRequest,
     ) -> Result<generic::StringList> {
-        let requested_short_term_with_steps = input.fsrs_short_term_with_steps_enabled;
         let requested_learning_queues_disabled = input.fsrs_learning_queues_disabled;
         let config = crate::deckconfig::DeckConfig {
             inner: input.config.unwrap_or_default(),
@@ -487,10 +489,9 @@ impl crate::services::SchedulerService for Collection {
         } else {
             false
         };
-        let fsrs_short_term_with_steps_enabled = selected_short_term_with_steps_for_preview(
-            requested_short_term_with_steps,
-            self.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
-        );
+        // Always on (spec sched.same-day-steps-always-on); the request field
+        // is kept for wire compatibility and ignored.
+        let fsrs_short_term_with_steps_enabled = true;
         let fsrs_learning_queues_disabled = requested_learning_queues_disabled
             .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         let review_fuzz_config = self.review_fuzz_config();
@@ -615,7 +616,8 @@ impl crate::services::SchedulerService for Collection {
             model_version,
             input.include_same_day_reviews,
             input.include_same_day_reviews_for_training,
-            input.enable_scheduling_penalties.unwrap_or(false),
+            // always on (spec deck-options.fsrs-only-controls); the request field is ignored
+            true,
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -1088,10 +1090,6 @@ impl crate::services::SchedulerService for Collection {
     }
 }
 
-fn selected_short_term_with_steps_for_preview(requested: Option<bool>, stored: bool) -> bool {
-    requested.unwrap_or(stored)
-}
-
 fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
     FsrsPresetForCardResponse {
         id: fsrs_preset_id_to_string(preset.id),
@@ -1196,28 +1194,9 @@ mod tests {
 
     use super::fsrs_preset_to_proto;
     use super::health_check_model_version;
-    use super::selected_short_term_with_steps_for_preview;
     use super::FsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
-
-    #[test]
-    fn new_card_interval_preview_prefers_explicit_toggle_when_provided() {
-        assert!(selected_short_term_with_steps_for_preview(
-            Some(true),
-            false
-        ));
-        assert!(!selected_short_term_with_steps_for_preview(
-            Some(false),
-            true
-        ));
-    }
-
-    #[test]
-    fn new_card_interval_preview_falls_back_to_stored_toggle() {
-        assert!(selected_short_term_with_steps_for_preview(None, true));
-        assert!(!selected_short_term_with_steps_for_preview(None, false));
-    }
 
     #[test]
     fn health_check_uses_selected_fsrs6_or_fsrs7_family() {

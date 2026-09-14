@@ -35,16 +35,11 @@
         }
     }
 
-    const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const applyAllParentLimits = state.applyAllParentLimits;
 
     const v3Extra =
         "\n\n" + tr.deckConfigLimitDeckV3() + "\n\n" + tr.deckConfigTabDescription();
     const reviewV3Extra = "\n\n" + tr.deckConfigLimitInterdayBoundByReviews() + v3Extra;
-    const newCardsIgnoreReviewLimitHelp =
-        tr.deckConfigAffectsEntireCollection() +
-        "\n\n" +
-        tr.deckConfigNewCardsIgnoreReviewLimitTooltip();
     const applyAllParentLimitsHelp =
         tr.deckConfigAffectsEntireCollection() +
         "\n\n" +
@@ -60,12 +55,6 @@
             title: tr.schedulingMaximumReviewsday(),
             help: tr.deckConfigReviewLimitTooltip() + reviewV3Extra,
             url: HelpPage.DeckOptions.maximumReviewsday,
-        },
-        newCardsIgnoreReviewLimit: {
-            title: tr.deckConfigNewCardsIgnoreReviewLimit(),
-            help: newCardsIgnoreReviewLimitHelp,
-            url: HelpPage.DeckOptions.newCardsday,
-            global: true,
         },
         applyAllParentLimits: {
             title: tr.deckConfigApplyAllParentLimits(),
@@ -99,14 +88,8 @@
     <DynamicallySlottable slotHost={Item} {api}>
         <DailyLimitRows {state} {openHelp} bind:this={dailyLimitRows} />
 
-        <Item>
-            <SwitchRow bind:value={$newCardsIgnoreReviewLimit} defaultValue={false}>
-                <SettingTitle on:click={() => openHelp("newCardsIgnoreReviewLimit")}>
-                    <GlobalLabel title={settings.newCardsIgnoreReviewLimit.title} />
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
+        <!-- "New cards ignore review limit" is gone: new cards always count
+             against the review limit (spec sched.new-cards-never-ignore-review-limit). -->
         <Item>
             <SwitchRow bind:value={$applyAllParentLimits} defaultValue={false}>
                 <SettingTitle on:click={() => openHelp("applyAllParentLimits")}>

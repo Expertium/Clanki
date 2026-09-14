@@ -534,7 +534,9 @@ impl Collection {
             review_rating_prob: p.review_rating_prob,
             learn_limit: req.new_limit as usize,
             review_limit: req.review_limit as usize,
-            new_cards_ignore_review_limit: req.new_cards_ignore_review_limit,
+            // always false (spec sched.new-cards-never-ignore-review-limit);
+            // the request field is kept for wire compatibility and ignored
+            new_cards_ignore_review_limit: false,
             suspend_after_lapses: req.suspend_after_lapse_count,
             post_scheduling_fn,
             review_priority_fn,

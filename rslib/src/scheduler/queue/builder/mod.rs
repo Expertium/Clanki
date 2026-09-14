@@ -3068,8 +3068,9 @@ mod test {
         assert_eq!(col.card_queue_len(), old_queue_len - 1);
     }
 
+    // Pins spec/scheduling.md#sched.new-cards-never-ignore-review-limit
     #[test]
-    fn new_cards_may_ignore_review_limit() {
+    fn new_cards_never_ignore_review_limit() {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::NewCardsIgnoreReviewLimit, true, false)
             .unwrap();
@@ -3078,8 +3079,8 @@ mod test {
         });
         CardAdder::new().add(&mut col);
 
-        // review limit doesn't apply to new card
-        assert_eq!(col.card_queue_len(), 1);
+        // the stored flag is ignored: the review limit caps the new card
+        assert_eq!(col.card_queue_len(), 0);
     }
 
     #[test]

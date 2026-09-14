@@ -12,10 +12,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
 
     /**
-     * The Easy Days sliders and their warnings. Hosted by the Advanced-mode
-     * Easy Days section (EasyDays) and by the Simple-mode page
-     * (SimpleOptions). Review fuzz and the load balancer are always on and
-     * have no controls (spec sched.fuzz-always-on).
+     * The Easy Days sliders and their warnings, collapsed behind an
+     * "Easy Days" expander until the user opens it (spec
+     * deck-options.simple-view). Hosted by the Advanced-mode Easy Days
+     * section (EasyDays) and by the Simple-mode page (SimpleOptions).
+     * Review fuzz and the load balancer are always on and have no controls
+     * (spec sched.fuzz-always-on).
      */
     export let state: DeckOptionsState;
 
@@ -47,10 +49,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <option>0.5</option>
 </datalist>
 
-<EasyDaysInput bind:values={$config.easyDaysPercentages} />
-<Item>
-    <Warning warning={noNormalDay} />
-</Item>
-<Item>
-    <Warning warning={rescheduleWarning} />
-</Item>
+<details class="easy-days m-1">
+    <summary>{tr.deckConfigEasyDaysTitle()}</summary>
+
+    <EasyDaysInput bind:values={$config.easyDaysPercentages} />
+    <Item>
+        <Warning warning={noNormalDay} />
+    </Item>
+    <Item>
+        <Warning warning={rescheduleWarning} />
+    </Item>
+</details>
+
+<style>
+    .easy-days summary {
+        cursor: pointer;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+    }
+</style>
