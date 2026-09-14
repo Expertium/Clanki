@@ -31,6 +31,8 @@ repeated here unless they materially affect a fork feature.
   schedule is left alone. Moving a card between decks never reschedules it, a
   forgotten card stays forgotten, and no review-log entries are written. The
   sync protocol is unchanged, so AnkiWeb and self-hosted servers keep working.
+- Rescheduling ("Reschedule cards on change" and the RWKV-Curve reschedule)
+  no longer adds rows to the review log. Existing rescheduled rows are kept.
 - The application is now called **Clanki** in window titles, dialogs, the
   About screen, the installer and the English interface text. File-format
   names, the `Anki2` data folder and the version string that add-ons read

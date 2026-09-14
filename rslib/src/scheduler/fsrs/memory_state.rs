@@ -430,7 +430,6 @@ impl Collection {
                     let deckconfig_id = deck.config_id().unwrap();
                     // reschedule it
                     let days_elapsed = timing.next_day_at.elapsed_days_since(*last_review) as i32;
-                    let original_interval = card.interval;
                     let previous_interval = last_info.previous_interval.unwrap_or(0);
                     let interval = fsrs.next_interval(
                         Some(
@@ -481,8 +480,8 @@ impl Collection {
                         rescheduler.update_due_cnt_per_day(*due, new_due, deckconfig_id);
                     }
                     *due = new_due;
-                    // Add a rescheduled revlog entry
-                    collection.log_rescheduled_review(card, original_interval, usn)?;
+                    // Rescheduling changes the card only; it writes no review-log
+                    // row (spec sched.reschedule-no-revlog).
 
                     Ok(())
                 };
@@ -1642,6 +1641,65 @@ mod tests {
             timing
         ));
         assert_eq!(card, before);
+    }
+
+    // Pins spec/scheduling.md#sched.reschedule-no-revlog
+    #[test]
+    fn reschedule_on_change_writes_no_revlog_rows() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "q")?;
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = make_review_card(&mut col, note.id, 30.0)?;
+        for days_ago in [40, 20, 5] {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    ease_factor: 2500,
+                    interval: 10,
+                    cid,
+                    ..revlog(RevlogReviewKind::Review, days_ago)
+                },
+                false,
+            )?;
+        }
+        let rows_before = col.storage.get_revlog_entries_for_card(cid)?.len();
+        let due_before = col.storage.get_card(cid)?.unwrap().due;
+
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: String::new(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
+            fsrs_reschedule: true,
+            fsrs_health_check: false,
+            review_fuzz_config: Default::default(),
+        };
+        input.configs[0].inner.desired_retention = 0.7;
+        col.update_deck_configs(input)?;
+
+        let card = col.storage.get_card(cid)?.unwrap();
+        assert_eq!(card.desired_retention, Some(0.7));
+        assert_ne!(card.due, due_before, "the card was rescheduled");
+        assert_eq!(
+            col.storage.get_revlog_entries_for_card(cid)?.len(),
+            rows_before,
+            "rescheduling must not write review-log rows"
+        );
+        Ok(())
     }
 
     #[test]

@@ -26,11 +26,10 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    the default.** Many settings get hidden. The current deck-options UI is far
    too complex, even by the standards of Anki power users. Hiding a setting is a
    UI change, not a behavior change — the underlying setting keeps working.
-3. **Rescheduling must not write to the card's history.** Today, FSRS/RWKV
-   rescheduling adds an entry to the card's review log. It should not. Working
-   reference implementation: the rescheduling in the **FSRS Helper** add-on.
-   Note: this one **is** a behavior change under the contract below — the
-   collection DB can detect it — so it needs a `spec/` entry and a pinning test.
+3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
+   the FSRS "reschedule cards on change" path no longer logs a `Rescheduled`
+   review-log row (the RWKV-Curve reschedule never did). See
+   `spec/scheduling.md`, `sched.reschedule-no-revlog`.
 4. **Native AnkiConnect.** Integrate the functionality of
    https://github.com/JSchoreels/anki-connect into the core, so it does not need
    to be installed as an add-on. Its HTTP API surface is a hard compatibility
