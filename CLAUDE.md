@@ -143,6 +143,7 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
 
   ```markdown
   ## sched.fuzz-interval
+
   When the scheduler computes an interval of 3 days or more, it applies a random
   fuzz of ±5% (minimum ±1 day), seeded per card. Intervals under 3 days get no fuzz.
   **Why:** cards introduced together would otherwise stay synchronized forever.
@@ -215,7 +216,7 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   to the code.** `check:format:dprint` fetches plugins from plugins.dprint.dev
   (Cloudflare) on first run and can sit for 30+ minutes with open sockets and
   zero CPU on this connection; run the check without it and format Rust with
-  `check:format:rust` (which uses the repo's pinned *nightly* rustfmt — stable
+  `check:format:rust` (which uses the repo's pinned _nightly_ rustfmt — stable
   `cargo fmt` ignores `group_imports` and passes code that nightly rejects).
   `check:vitest` fails two ADR tests in `ts/routes/graphs/simulator.test.ts`
   because this PC's locale is ru-RU and `Intl` formats `20.0%` as `20,0 %`;

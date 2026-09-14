@@ -11,12 +11,12 @@ directory is the change log.
 point below.** Upstream is the implicit spec; `spec/` accumulates only
 divergences and areas we have touched. Do not backfill beyond that.
 
-| | |
-|---|---|
-| Fork point | `796f0140a5b66f212a905b6520ab1924516c7451` |
-| Fork point subject | Test portable installer parsing as macOS |
-| Forked from | https://github.com/JSchoreels/anki/ |
-| Anki version at fork point | 26.09b1 |
+|                            |                                            |
+| -------------------------- | ------------------------------------------ |
+| Fork point                 | `796f0140a5b66f212a905b6520ab1924516c7451` |
+| Fork point subject         | Test portable installer parsing as macOS   |
+| Forked from                | https://github.com/JSchoreels/anki/        |
+| Anki version at fork point | 26.09b1                                    |
 
 ## Entry format
 
@@ -24,6 +24,7 @@ One behavior per entry, four parts:
 
 ```markdown
 ## sched.fuzz-interval
+
 When the scheduler computes an interval of 3 days or more, it applies a random
 fuzz of ±5% (minimum ±1 day), seeded per card. Intervals under 3 days get no fuzz.
 **Why:** cards introduced together would otherwise stay synchronized forever.

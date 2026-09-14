@@ -35,8 +35,8 @@ Before this entry, RWKV-Curve wrote its interval over the already-fuzzed FSRS
 state and set the delta to 0, so RWKV-Curve users got no fuzz and no sibling
 dispersal at all.
 
-**Why:** fuzz and sibling dispersal are properties of the *scheduling
-outcome*, not of FSRS; switching the interval source must not switch them off.
+**Why:** fuzz and sibling dispersal are properties of the _scheduling
+outcome_, not of FSRS; switching the interval source must not switch them off.
 
 **Pinned by:** `interval_overrides::test::*` and
 `fuzz_review_intervals_uses_review_floors_and_clamps` (Rust);

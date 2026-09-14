@@ -506,6 +506,7 @@ class TestTrustedPageCSP:
             resp = legacy_page_data()
         assert _get_csp(resp) == _legacy_editor_content_security_policy(12345)
 
+
 class TestCardStats:
     @pytest.mark.parametrize(
         "deck_config",
