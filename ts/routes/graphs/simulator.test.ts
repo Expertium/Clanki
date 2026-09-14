@@ -12,7 +12,6 @@ import {
     SimulateWorkloadSubgraph,
     smoothPointsByLabel,
     type WorkloadPoint,
-    workloadSameMemorizedSavings,
 } from "./simulator";
 
 function makeSvg(): SVGElement {
@@ -51,7 +50,7 @@ function workloadPoint(
         weightedMemorized: memorized,
         reviewless_end_memorized: 0,
         reviewless_end_weighted_memorized: 0,
-        label: labelName.includes("ADR") ? 2 : 1,
+        label: 1,
         labelName,
         learnSpan: 365,
     };
@@ -245,27 +244,4 @@ test("smoothPointsByLabel sorts and smooths each simulation separately", () => {
         55,
     ]);
     expect(smoothed[3].memorized).toBe(1000);
-});
-
-test("workloadSameMemorizedSavings compares ADR cost against fixed DR memory targets", () => {
-    const table = workloadSameMemorizedSavings([
-        workloadPoint("Yomitan (Fixed DR)", 50, 100),
-        workloadPoint("Yomitan (Fixed DR)", 80, 200),
-        workloadPoint("Yomitan (ADR)", 50, 80),
-        workloadPoint("Yomitan (ADR)", 80, 160),
-    ]);
-
-    expect(table).toHaveLength(2);
-    expect(table[0].label).toBe("ADR same-memorized saving");
-    expect(table[0].value).toContain("20.0%");
-    expect(table[0].value).toContain("2/2");
-});
-
-test("workloadSameMemorizedSavings pairs nested preset workload labels", () => {
-    const table = workloadSameMemorizedSavings([
-        workloadPoint("Young cards (Yomitan (Fixed DR))", 60, 100),
-        workloadPoint("Young cards (Yomitan (ADR))", 60, 90),
-    ]);
-
-    expect(table[0].value).toContain("10.0%");
 });

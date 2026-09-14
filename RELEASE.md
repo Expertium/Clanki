@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Remove Dynamic Desired Retention (ADR). Every preset now schedules with its
+  fixed desired retention. Presets that still store ADR settings from an older
+  build load normally; the settings are ignored and dropped on the next save.
+  The ADR deck-option controls, the "Use Dynamic DR" simulator switch, the DR
+  plot page and the ADR add-on hooks are gone.
 - Deck options: one **Algorithm** dropdown (FSRS-7, RWKV-Curve, RWKV-Instant)
   replaces the FSRS switch and the two RWKV switches, so only one scheduler
   is active at a time, and FSRS is always on: SM-2 can no longer be selected

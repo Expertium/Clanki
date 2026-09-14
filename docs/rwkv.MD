@@ -398,9 +398,8 @@ are disabled, FSRS interval and queue behavior is unchanged.
 When RWKV-Instant ordering and the `Relative overdueness` review order are
 enabled, scored review cards are ordered by
 `RWKV retrievability / resolved target retention`, ascending. The resolved
-target is the per-card target carried with the transient score, including the
-current Dynamic Desired Retention provider result, with the card or preset
-target as a fallback. A score of `1` is at the card's target; lower scores are
+target is the per-card target carried with the transient score, taken from the
+card or preset desired retention. A score of `1` is at the card's target; lower scores are
 further below it. This same priority is applied before review limits, when
 selecting a daily-minimum card, during partial candidate refresh, and in RWKV
 workload simulation.
@@ -445,16 +444,11 @@ count-only cache. This keeps startup responsive while allowing every displayed
 RWKV scope to converge to its RWKV eligibility counts before the reviewer is
 opened.
 
-When the desktop Dynamic Desired Retention provider is available, RWKV review
-input batches are resolved through its bulk API before queue scoring or RWKV
-rescheduling predictions are made. The resolved target retention is carried with
-each transient queue score, so Rust queue gathering and deck counts compare RWKV
-retrievability against the same target the desktop scorer used. RWKV reschedule
-requests also carry the resolved target and persist it to the card's desired
-retention field together with the new interval and S90 value. When the provider
-reports that its rules changed, RWKV discards resolved targets and transient
-scores, rejects in-flight work prepared with the old rules, and refreshes the
-current screen's study queues and due counts.
+The target retention of each review input is carried with each transient queue
+score, so Rust queue gathering and deck counts compare RWKV retrievability
+against the same target the desktop scorer used. RWKV reschedule requests also
+carry that target and persist it to the card's desired retention field together
+with the new interval and S90 value.
 
 ## Stats And Search
 
@@ -568,16 +562,13 @@ curve never reaches the target, the configured maximum interval is used.
 per-grade S90 values. When neighboring RWKV predictions conflict, Anki replaces
 the conflicting estimates with their shared average until they are in order,
 then chooses the intervals from those adjusted estimates. This is the Pool
-Adjacent Violators Algorithm (PAVA). With per-grade Dynamic DR targets, Anki
-applies the same balancing to each prediction's distance from its own target.
-Disabling the option uses the raw, independently calculated RWKV-Curve
+Adjacent Violators Algorithm (PAVA). Disabling the option uses the raw,
+independently calculated RWKV-Curve
 crossings.
 
-The target retention is the scheduler's desired retention for the card. If
-Dynamic Desired Retention is active for the scheduling states, RWKV receives the
-per-grade Dynamic DR targets and uses the matching target for Again, Hard, Good,
-and Easy. Otherwise it uses the resolved preset desired retention, with
-deck-config desired retention and `0.9` as fallbacks.
+The target retention is the scheduler's desired retention for the card: the
+resolved preset desired retention, with deck-config desired retention and `0.9`
+as fallbacks. The same target is used for Again, Hard, Good, and Easy.
 
 The same per-grade RWKV-Curve is also evaluated at `90%` retrievability. That
 interval is the RWKV S90 equivalent. The selected answer's S90 is written to the
@@ -645,7 +636,7 @@ and state stride to `1`.
 Existing new cards are introduced up to the shared daily limit and transition
 to review scheduling after their first simulated answer. The RWKV path does not
 simulate separate learning/relearning steps, additional synthetic new cards,
-Dynamic DR/ADR, or easy days. It uses cached historical RWKV retrievability
+or easy days. It uses cached historical RWKV retrievability
 samples when available to estimate grade mix and review time, with a
 deterministic fallback model otherwise.
 
@@ -991,16 +982,6 @@ parity tolerance. Extremely close scores may exchange order. Recurrent state
 updates and serialization retain their original arithmetic and format, so
 existing state caches remain compatible. Other platforms retain their scalar
 query path.
-
-By default, Dynamic DR timing measures only card loading. To include the
-installed provider's rule evaluation, supply `--dynamic-dr-addon PATH` pointing
-to a copied add-on directory containing `dynamic_desired_retention/`, and
-`--dynamic-dr-config PATH` pointing to its copied configuration object as JSON.
-This installs a provider only in the benchmark process, without its GUI hooks,
-and compares cold and warm rule caches. `--profile-dynamic-dr PATH` writes a
-separate profile. The JSON result includes `dynamic_dr_target_hash` for comparing
-all resolved per-card retention targets between provider versions. It does not
-modify or synchronize the installed add-on.
 
 `--uncached-field-maps` runs the original Python field-map construction in the
 benchmark process for a before/after comparison. Normal note loading reuses

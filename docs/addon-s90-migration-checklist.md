@@ -45,15 +45,6 @@ by scheduling math.
 - [x] Update `docs/FSRS_STABILITY.MD` to state the new card-data contract.
 - [x] Add tests covering cards with both `s` and `s_int`.
 
-## Dynamic Desired Retention
-
-- [x] Update workload card stability extraction to prefer
-      `memory_state.stability_internal`.
-- [x] Keep `memory_state.stability` fallback for older builds.
-- [x] Review grade-state adjuster separately: scheduling-state memory values
-      may still be internal before card storage.
-- [x] Add workload tests with distinct S90/internal values.
-
 ## AnkiConnect Extended
 
 - [x] No code change expected: exported `prop:s` should remain S90.

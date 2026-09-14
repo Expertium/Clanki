@@ -8,20 +8,16 @@ from __future__ import annotations
 import argparse
 import cProfile
 import gc
-import hashlib
-import importlib
 import json
-import logging
 import pstats
 import statistics
 import struct
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TypeVar
 from unittest.mock import patch
 
 from anki.collection import Collection
@@ -32,9 +28,6 @@ from aqt.rwkv_srs_benchmark import (
     _RustRwkvRuntime,
 )
 
-if TYPE_CHECKING:
-    from anki.cards import CardId
-
 _T = TypeVar("_T")
 
 
@@ -44,75 +37,10 @@ def _timed(call: Callable[[], _T]) -> tuple[_T, float]:
     return result, (time.perf_counter() - start) * 1000
 
 
-def _benchmark_dynamic_dr(
-    args: argparse.Namespace,
-    reviewer: object,
-    inputs: list[tuple[int, scheduler.RwkvReviewInput]],
-) -> tuple[dict[str, list[float]], str]:
-    """Load an explicitly supplied provider copy without registering GUI hooks."""
-    sys.path.insert(0, str(args.dynamic_dr_addon.resolve()))
-    api = importlib.import_module("dynamic_desired_retention.api")
-    addon_module = importlib.import_module("dynamic_desired_retention.addon")
-    config_module = importlib.import_module("dynamic_desired_retention.config")
-    config = json.loads(args.dynamic_dr_config.read_text())
-    logger = logging.getLogger("rwkv_review_performance_bench")
-    provider = addon_module.DynamicDesiredRetentionAddon(
-        module="benchmark", logger=logger
-    )
-    provider._rules = config_module.load_rules(config, logger)
-    provider._field_rules = config_module.load_field_rules(config, logger)
-    provider._grade_rules = config_module.load_grade_rules(config, logger)
-    provider._matcher = addon_module.DesiredRetentionMatcher(
-        provider._rules, provider._field_rules, logger, provider._grade_rules
-    )
-    api.set_desired_retention_provider(provider)
-    samples: dict[str, list[float]] = {"dynamic_dr_cold": [], "dynamic_dr_warm": []}
-    try:
-        for _ in range(args.rounds):
-            provider._matcher.clear_cache()
-            cold, elapsed = _timed(
-                lambda: scheduler._resolve_dynamic_desired_retentions_for_inputs(
-                    reviewer, inputs
-                )
-            )
-            samples["dynamic_dr_cold"].append(elapsed)
-            warm, elapsed = _timed(
-                lambda: scheduler._resolve_dynamic_desired_retentions_for_inputs(
-                    reviewer, inputs
-                )
-            )
-            samples["dynamic_dr_warm"].append(elapsed)
-            if cold != warm:
-                raise ValueError(
-                    "Dynamic DR targets changed between cold and warm runs"
-                )
-        if args.profile_dynamic_dr:
-            provider._matcher.clear_cache()
-            profiler = cProfile.Profile()
-            profiler.runcall(
-                scheduler._resolve_dynamic_desired_retentions_for_inputs,
-                reviewer,
-                inputs,
-            )
-            with args.profile_dynamic_dr.open("w") as output:
-                pstats.Stats(profiler, stream=output).strip_dirs().sort_stats(
-                    "cumulative"
-                ).print_stats(40)
-    finally:
-        api.set_desired_retention_provider(None)
-        sys.path.pop(0)
-    targets = [
-        (card_id, review_input.target_retentions) for card_id, review_input in cold
-    ]
-    target_hash = hashlib.sha256(json.dumps(targets).encode()).hexdigest()
-    return samples, target_hash
-
-
 def benchmark(args: argparse.Namespace) -> dict[str, object]:
     col = Collection(str(args.collection_copy))
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
     samples: dict[str, list[float]] = {}
-    dynamic_dr_target_hash = None
 
     def measure(name: str, call: Callable[[], _T]) -> _T:
         result, elapsed = _timed(call)
@@ -187,20 +115,6 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
                 for card_id, row in prediction_reference["inputs"]
             ]
         queries = [review_input for _, review_input in inputs]
-
-        # This isolates the card-loading portion of Dynamic DR preparation. No
-        # add-on resolver is installed here, so it does not time provider rules.
-        for _ in range(args.rounds):
-            measure(
-                "dynamic_dr_card_load",
-                lambda: [col.get_card(cast("CardId", cid)) for cid, _ in inputs],
-            )
-        if args.dynamic_dr_addon:
-            print("Comparing cold and warm Dynamic DR provider calls...", flush=True)
-            provider_samples, dynamic_dr_target_hash = _benchmark_dynamic_dr(
-                args, reviewer, inputs
-            )
-            samples.update(provider_samples)
 
         print(
             f"Warming {history.review_count} reviews; queries={len(queries)}...",
@@ -326,8 +240,6 @@ def benchmark(args: argparse.Namespace) -> dict[str, object]:
             "prediction_reference_rank_changes": reference_rank_changes,
             "history_identity_parity": "exact",
             "history_hash": identity.history_hash,
-            "dynamic_dr_provider_loaded": args.dynamic_dr_addon is not None,
-            "dynamic_dr_target_hash": dynamic_dr_target_hash,
             "uncached_field_maps": args.uncached_field_maps,
             "milliseconds": {
                 name: {"median": statistics.median(values), "samples": values}
@@ -347,9 +259,6 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--history-rounds", type=int, default=3)
     parser.add_argument("--profile-history", type=Path)
-    parser.add_argument("--dynamic-dr-addon", type=Path)
-    parser.add_argument("--dynamic-dr-config", type=Path)
-    parser.add_argument("--profile-dynamic-dr", type=Path)
     parser.add_argument(
         "--uncached-field-maps",
         action="store_true",
@@ -363,8 +272,6 @@ def main() -> None:
         parser.error("queries and round counts must be positive")
     if not args.collection_copy.is_file():
         parser.error("collection-copy must be an existing extracted collection copy")
-    if bool(args.dynamic_dr_addon) != bool(args.dynamic_dr_config):
-        parser.error("dynamic-dr-addon and dynamic-dr-config must be supplied together")
     if args.uncached_field_maps:
         with patch(
             "anki.models.ModelManager.field_map",

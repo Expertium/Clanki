@@ -88,12 +88,6 @@ FSRS-7 parameters from the affected presets and open Deck Options so the user
 can run Optimize All Presets. Deck Options also checks Optimize All Presets for
 incompatible FSRS parameter arrays and asks before clearing them.
 
-FSRS-7 add-on presets may include Dynamic DR policy fields. Current policies
-should include `fsrs_dynamic_desired_retention_fixed_target_weights` and
-`fsrs_dynamic_desired_retention_fixed_target_drs`; Anki uses those arrays before
-the older `fsrs_dynamic_desired_retention_fsrs_eq_*` fallback when mapping a
-fixed desired-retention target to an ADR cost weight.
-
 During review, an explicit desired retention override supplied by the reviewer
 scheduling hook takes precedence over the matched preset's desired retention.
 The overlay value is used only when no review-time override is provided.
@@ -114,10 +108,10 @@ uses that fixed card-id set plus the simulated state bounds. Repetition bounds
 are evaluated against the simulated card's current repetition count; interval
 bounds are evaluated against the card's current simulated interval before that
 review is answered, matching persisted interval-style preset discrimination. The
-first matching simulator rule supplies the simulated card's FSRS params and, if
-available, Dynamic DR policy for that repetition. Cards that do not match a
-simulator rule use their starting-card add-on Dynamic DR preset from `rules`,
-when one matched, otherwise the simulator request's fallback preset. The normal
+first matching simulator rule supplies the simulated card's FSRS params for that
+repetition. Cards that do not match a simulator rule use their starting-card
+add-on preset from `rules`, when one matched, otherwise the simulator request's
+fallback preset. The normal
 `rules` searches are resolved once for the real starting cards; `simulator_rules`
 are only for preset changes caused by simulated state changes after that. Add-ons
 that discriminate by persisted interval should emit simulator rules by splitting
@@ -178,8 +172,9 @@ by parameter optimization.
 
 Fork-owned FSRS preset fields are stored in deck config `other` under the
 `jschoreels.fsrs` key. This includes FSRS-7 params, the selected FSRS version,
-minimum FSRS interval, Dynamic DR fields, and legacy deck-level review-fuzz
-fields.
+minimum FSRS interval, and legacy deck-level review-fuzz fields. Presets saved
+by older builds may still carry `fsrs_dynamic_desired_retention_*` keys there;
+they are ignored on load and dropped on the next save.
 
 Desktop-only RWKV review settings are stored separately in deck config `other`
 under the `jschoreels.rwkv` key. See `rwkv.MD` for RWKV queue scoring, warm-up

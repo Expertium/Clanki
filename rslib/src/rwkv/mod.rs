@@ -4669,7 +4669,7 @@ fn intervals_for_pava_adjusted_samples(
     let mut previous: [Option<(u32, f32)>; 4] = [None; 4];
     for day in interval_search_days(max_interval_days) {
         // Pool distance-to-target values rather than raw probabilities so that
-        // per-grade Dynamic DR targets retain the same crossing-order guarantee.
+        // per-grade target retentions retain the same crossing-order guarantee.
         let retrievabilities = retrievabilities_for_day(day);
         let margins =
             std::array::from_fn(|index| retrievabilities[index] - target_retentions[index]);

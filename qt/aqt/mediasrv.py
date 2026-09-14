@@ -556,7 +556,6 @@ def get_sveltekit_route(path: str) -> str | None:
         "card-info",
         "change-notetype",
         "deck-options",
-        "dynamic-desired-retention-plot",
         "import-anki-package",
         "import-csv",
         "import-page",
@@ -844,9 +843,7 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
             update.abort = True
 
     def handle_on_main() -> None:
-        rwkv_snapshot = aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot(
-            aqt.mw, input
-        )
+        rwkv_snapshot = aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot(aqt.mw, input)
         update_deck_configs_op(parent=aqt.mw, input=input).success(
             lambda _: _on_update_deck_configs_success(
                 input,

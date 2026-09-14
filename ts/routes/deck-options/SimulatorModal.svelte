@@ -22,7 +22,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         type Point,
         type WorkloadComparisonEngine,
         type WorkloadPoint,
-        workloadSameMemorizedSavings,
     } from "../graphs/simulator";
     import { SimulateFsrsWorkloadResponse } from "@generated/anki/scheduler_pb";
     import type {
@@ -41,9 +40,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { runWithBackendProgress } from "@tslib/progress";
     import {
         DeckConfig_Config_LeechAction,
-        DeckConfig_Config_FsrsVersion,
         type DeckConfig,
-        type DeckConfig_Config,
     } from "@generated/anki/deck_config_pb";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
@@ -129,8 +126,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let enforceMonotonicSuccessGradeProbs =
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs ??
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT;
-    let simulateDynamicDesiredRetention =
-        simulateFsrsRequest.simulateDynamicDesiredRetention;
     let splitWorkloadByPreset = simulateFsrsRequest.splitWorkloadByPreset;
     let rwkvWorkloadSampleLimit =
         simulateFsrsRequest.rwkvWorkloadSampleLimit ||
@@ -143,7 +138,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         (rwkvWorkload && !compareWorkloads
             ? RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT
             : 1);
-    let dynamicDesiredRetentionAvailable = false;
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
@@ -191,10 +185,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsRequest.helpMeDecideTransitionBlendAlpha = transitionBlendAlpha;
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs =
             enforceMonotonicSuccessGradeProbs;
-        simulateFsrsRequest.simulateDynamicDesiredRetention =
-            !rwkvWorkload &&
-            simulateDynamicDesiredRetention &&
-            dynamicDesiredRetentionAvailable;
         simulateFsrsRequest.splitWorkloadByPreset = workload && splitWorkloadByPreset;
         simulateFsrsRequest.rwkvWorkloadSampleLimit = rwkvWorkload
             ? rwkvWorkloadSampleLimit
@@ -229,40 +219,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     config,
                 );
                 return {
-                    name: workloadRunName(config.name, request, engine),
+                    name: workloadRunName(config.name, engine),
                     request,
                 };
             });
     }
 
-    function workloadRunName(
-        presetName: string,
-        request: SimulateFsrsReviewRequest,
-        engine: "fsrs" | "rwkv",
-    ): string {
+    function workloadRunName(presetName: string, engine: "fsrs" | "rwkv"): string {
         if (engine === "rwkv") {
             return `${presetName} (RWKV)`;
         }
-        return `${presetName} (${request.simulateDynamicDesiredRetention ? "ADR" : "Fixed DR"})`;
-    }
-
-    function supportsDynamicDesiredRetentionSimulation(
-        config: DeckConfig_Config | undefined,
-    ): boolean {
-        return config?.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN;
-    }
-
-    function hasDynamicDesiredRetention(config: DeckConfig): boolean {
-        return supportsDynamicDesiredRetentionSimulation(config.config);
-    }
-
-    $: dynamicDesiredRetentionAvailable =
-        !rwkvWorkload &&
-        (workload
-            ? Boolean($config) && subtreeConfigs().some(hasDynamicDesiredRetention)
-            : supportsDynamicDesiredRetentionSimulation($config));
-    $: if (!dynamicDesiredRetentionAvailable) {
-        simulateDynamicDesiredRetention = false;
+        return presetName;
     }
 
     function renderRetentionProgress(
@@ -433,7 +400,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                       (comparisonEngine === "rwkv" ? 1 : 0)
                     : runNumber * 1000 + labelOffset;
                 const comparisonLabel = comparisonEngine
-                    ? workload.name.replace(/\s+\((?:Fixed DR|RWKV)\)(\))?$/, "$1")
+                    ? workload.name.replace(/\s+\((?:RWKV)\)(\))?$/, "$1")
                     : undefined;
                 return Object.entries(workload.memorized)
                     .filter(
@@ -565,7 +532,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         points as WorkloadPoint[],
                         simulateWorkloadSubgraph,
                     ),
-                    ...workloadSameMemorizedSavings(points as WorkloadPoint[]),
                 ];
             }
         }
@@ -939,12 +905,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             pointsToRender as WorkloadPoint[],
             (workload ? simulateWorkloadSubgraph : simulateSubgraph) as any as never,
         );
-        tableData = workload
-            ? [
-                  ...chartTableData,
-                  ...workloadSameMemorizedSavings(pointsToRender as WorkloadPoint[]),
-              ]
-            : chartTableData;
+        tableData = chartTableData;
     }
 
     $: easyDayPercentages = [...$config.easyDaysPercentages];
@@ -1181,21 +1142,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     {tr.deckConfigSmoothGraph()}
                                 </SettingTitle>
                             </SwitchRow>
-
-                            {#if !compareWorkloads}
-                                <SwitchRow
-                                    bind:value={simulateDynamicDesiredRetention}
-                                    defaultValue={false}
-                                    disabled={!dynamicDesiredRetentionAvailable}
-                                >
-                                    <SettingTitle
-                                        on:click={() =>
-                                            openHelpModal("simulateFsrsReview")}
-                                    >
-                                        Use Dynamic DR (ADR)
-                                    </SettingTitle>
-                                </SwitchRow>
-                            {/if}
 
                             {#if workload && !compareWorkloads}
                                 <SwitchRow

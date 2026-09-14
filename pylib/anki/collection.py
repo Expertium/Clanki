@@ -67,7 +67,7 @@ import logging
 import os
 import time
 import weakref
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 import anki.latex
 from anki import hooks
@@ -141,29 +141,6 @@ class AddonFsrsPreset:
     desired_retention: float
     historical_retention: float
     ignore_revlogs_before_date: str = ""
-    fsrs_dynamic_desired_retention_enabled: bool = False
-    fsrs_dynamic_desired_retention_params: Sequence[float] = field(default_factory=list)
-    fsrs_dynamic_desired_retention_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_avg_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fsrs_eq_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fsrs_eq_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fixed_target_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fixed_target_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_min: float = 0.0
-    fsrs_dynamic_desired_retention_max: float = 0.0
-    fsrs_dynamic_desired_retention_clamp: bool = False
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> AddonFsrsPreset:
@@ -175,39 +152,6 @@ class AddonFsrsPreset:
             desired_retention=data["desired_retention"],
             historical_retention=data["historical_retention"],
             ignore_revlogs_before_date=data.get("ignore_revlogs_before_date", ""),
-            fsrs_dynamic_desired_retention_enabled=data.get(
-                "fsrs_dynamic_desired_retention_enabled", False
-            ),
-            fsrs_dynamic_desired_retention_params=data.get(
-                "fsrs_dynamic_desired_retention_params", []
-            ),
-            fsrs_dynamic_desired_retention_weights=data.get(
-                "fsrs_dynamic_desired_retention_weights", []
-            ),
-            fsrs_dynamic_desired_retention_avg_drs=data.get(
-                "fsrs_dynamic_desired_retention_avg_drs", []
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_weights=data.get(
-                "fsrs_dynamic_desired_retention_fsrs_eq_weights", []
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_drs=data.get(
-                "fsrs_dynamic_desired_retention_fsrs_eq_drs", []
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_weights=data.get(
-                "fsrs_dynamic_desired_retention_fixed_target_weights", []
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_drs=data.get(
-                "fsrs_dynamic_desired_retention_fixed_target_drs", []
-            ),
-            fsrs_dynamic_desired_retention_min=data.get(
-                "fsrs_dynamic_desired_retention_min", 0.0
-            ),
-            fsrs_dynamic_desired_retention_max=data.get(
-                "fsrs_dynamic_desired_retention_max", 0.0
-            ),
-            fsrs_dynamic_desired_retention_clamp=data.get(
-                "fsrs_dynamic_desired_retention_clamp", False
-            ),
         )
 
 
@@ -220,36 +164,11 @@ class ResolvedFsrsPreset:
     desired_retention: float
     historical_retention: float
     ignore_revlogs_before_date: str = ""
-    fsrs_dynamic_desired_retention_enabled: bool = False
-    fsrs_dynamic_desired_retention_params: Sequence[float] = field(default_factory=list)
-    fsrs_dynamic_desired_retention_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_avg_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fsrs_eq_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fsrs_eq_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fixed_target_weights: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_fixed_target_drs: Sequence[float] = field(
-        default_factory=list
-    )
-    fsrs_dynamic_desired_retention_min: float = 0.0
-    fsrs_dynamic_desired_retention_max: float = 0.0
-    fsrs_dynamic_desired_retention_clamp: bool = False
 
 
 @dataclass
 class FsrsDesiredRetentionForInterval:
     interval_target_desired_retention: float
-    dynamic_desired_retention_enabled: bool = False
-    dynamic_desired_retentions: Sequence[float] = field(default_factory=list)
 
 
 def _fsrs_version_name(version: int) -> FsrsPresetVersion:
@@ -1429,39 +1348,6 @@ class Collection(DeprecatedNamesMixin):
             desired_retention=resp.desired_retention,
             historical_retention=resp.historical_retention,
             ignore_revlogs_before_date=resp.ignore_revlogs_before_date,
-            fsrs_dynamic_desired_retention_enabled=(
-                resp.fsrs_dynamic_desired_retention_enabled
-            ),
-            fsrs_dynamic_desired_retention_params=(
-                resp.fsrs_dynamic_desired_retention_params
-            ),
-            fsrs_dynamic_desired_retention_weights=(
-                resp.fsrs_dynamic_desired_retention_weights
-            ),
-            fsrs_dynamic_desired_retention_avg_drs=(
-                resp.fsrs_dynamic_desired_retention_avg_drs
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_weights=(
-                resp.fsrs_dynamic_desired_retention_fsrs_eq_weights
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_drs=(
-                resp.fsrs_dynamic_desired_retention_fsrs_eq_drs
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_weights=(
-                resp.fsrs_dynamic_desired_retention_fixed_target_weights
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_drs=(
-                resp.fsrs_dynamic_desired_retention_fixed_target_drs
-            ),
-            fsrs_dynamic_desired_retention_min=(
-                resp.fsrs_dynamic_desired_retention_min
-            ),
-            fsrs_dynamic_desired_retention_max=(
-                resp.fsrs_dynamic_desired_retention_max
-            ),
-            fsrs_dynamic_desired_retention_clamp=(
-                resp.fsrs_dynamic_desired_retention_clamp
-            ),
         )
 
     def fsrs_interval_at_retrievability(
@@ -1526,10 +1412,6 @@ class Collection(DeprecatedNamesMixin):
                 interval_target_desired_retention=(
                     item.interval_target_desired_retention
                 ),
-                dynamic_desired_retention_enabled=(
-                    item.dynamic_desired_retention_enabled
-                ),
-                dynamic_desired_retentions=item.dynamic_desired_retentions,
             )
             for item in resp_items
         }

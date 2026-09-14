@@ -144,7 +144,8 @@ message Progress {
 message ComputeParamsProgress {
   enum Phase {
     OPTIMIZING_FSRS_PARAMS = 0;
-    TRAINING_DYNAMIC_DESIRED_RETENTION = 1;
+    // 1 was TRAINING_DYNAMIC_DESIRED_RETENTION (removed)
+    reserved 1;
   }
   // Current iteration
   uint32 current = 1;

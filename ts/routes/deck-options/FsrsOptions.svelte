@@ -5,7 +5,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import {
         ComputeRetentionProgress,
-        ComputeParamsProgress_Phase,
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
     import {
@@ -33,7 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
-    import DynamicDesiredRetentionPlotModal from "./DynamicDesiredRetentionPlotModal.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
         deltaClass,
@@ -56,16 +54,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
         type FsrsParamDiagnostics,
     } from "./fsrs-param-diagnostics";
-    import {
-        costWeightForAverageDr,
-        dynamicDesiredRetentionEnabled,
-        schedulingTargetDr,
-        targetDrCalibration,
-        validCalibration,
-        validOptionalFixedTargetCalibration,
-        validPolicyParams,
-        validRetentionBounds,
-    } from "./dynamic-desired-retention";
     import {
         DeckConfig_Config,
         DeckConfig_Config_FsrsVersion,
@@ -140,15 +128,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     };
     type OptimizationComparison = {
         optimizedParams: number[];
-        dynamicDesiredRetentionParams: number[];
-        dynamicDesiredRetentionWeights: number[];
-        dynamicDesiredRetentionAvgDrs: number[];
-        dynamicDesiredRetentionFsrsEqWeights: number[];
-        dynamicDesiredRetentionFsrsEqDrs: number[];
-        dynamicDesiredRetentionFixedTargetWeights: number[];
-        dynamicDesiredRetentionFixedTargetDrs: number[];
-        dynamicDesiredRetentionMin: number;
-        dynamicDesiredRetentionMax: number;
         search: string;
         ignoreRevlogsBeforeMs: bigint;
         includeSameDayReviews: boolean | undefined;
@@ -279,7 +258,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             fsrsVersion: $config.fsrsVersion,
             includeSameDayReviews: includeSameDayOverride(),
             enableSchedulingPenalties: enableSchedulingPenaltiesOverride(),
-            dynamicDesiredRetentionEnabled: $config.fsrsDynamicDesiredRetentionEnabled,
             search: optimizeSearchFilter(),
             evaluationSearch: evaluateSearchFilter(),
             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
@@ -347,8 +325,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 diagnostics,
                 fsrsVersion: $config.fsrsVersion,
                 includeSameDayReviews: includeSameDayOverride(),
-                dynamicDesiredRetentionEnabled:
-                    $config.fsrsDynamicDesiredRetentionEnabled,
                 search: optimizeSearchFilter(),
                 evaluationSearch: evaluateSearchFilter(),
                 ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
@@ -357,12 +333,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             err,
         );
 
-        const dynamicDesiredRetentionHint =
-            $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
-            $config.fsrsDynamicDesiredRetentionEnabled
-                ? "\n\nDynamic DR (ADR) is enabled. Try disabling it and optimizing again to check whether it is involved."
-                : "";
-        return `FSRS optimization failed. Details have been logged to the console.${dynamicDesiredRetentionHint}\n\n${errorMessage(err)}`;
+        return `FSRS optimization failed. Details have been logged to the console.\n\n${errorMessage(err)}`;
     }
 
     const healthCheck = state.fsrsHealthCheck;
@@ -706,10 +677,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             enableSchedulingPenalties:
                                 enableSchedulingPenaltiesOverride(),
                             fsrsVersion: $config.fsrsVersion,
-                            dynamicDesiredRetentionEnabled:
-                                $config.fsrsVersion ===
-                                    DeckConfig_Config_FsrsVersion.SEVEN &&
-                                $config.fsrsDynamicDesiredRetentionEnabled,
                         },
                         { alertOnError: false },
                     );
@@ -742,52 +709,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         setTimeout(() => alert(message), 200);
                     }
 
-                    const dynamicDesiredRetentionParams = [
-                        ...resp.fsrsDynamicDesiredRetentionParams,
-                    ];
-                    const dynamicDesiredRetentionWeights = [
-                        ...resp.fsrsDynamicDesiredRetentionWeights,
-                    ];
-                    const dynamicDesiredRetentionAvgDrs = [
-                        ...resp.fsrsDynamicDesiredRetentionAvgDrs,
-                    ];
-                    const dynamicDesiredRetentionFsrsEqWeights = [
-                        ...resp.fsrsDynamicDesiredRetentionFsrsEqWeights,
-                    ];
-                    const dynamicDesiredRetentionFsrsEqDrs = [
-                        ...resp.fsrsDynamicDesiredRetentionFsrsEqDrs,
-                    ];
-                    const dynamicDesiredRetentionFixedTargetWeights = [
-                        ...resp.fsrsDynamicDesiredRetentionFixedTargetWeights,
-                    ];
-                    const dynamicDesiredRetentionFixedTargetDrs = [
-                        ...resp.fsrsDynamicDesiredRetentionFixedTargetDrs,
-                    ];
-                    const dynamicDesiredRetentionMin =
-                        resp.fsrsDynamicDesiredRetentionMin;
-                    const dynamicDesiredRetentionMax =
-                        resp.fsrsDynamicDesiredRetentionMax;
-                    if (alreadyOptimal && dynamicDesiredRetentionParams.length) {
-                        $config.fsrsDynamicDesiredRetentionParams =
-                            dynamicDesiredRetentionParams;
-                        $config.fsrsDynamicDesiredRetentionWeights =
-                            dynamicDesiredRetentionWeights;
-                        $config.fsrsDynamicDesiredRetentionAvgDrs =
-                            dynamicDesiredRetentionAvgDrs;
-                        $config.fsrsDynamicDesiredRetentionFsrsEqWeights =
-                            dynamicDesiredRetentionFsrsEqWeights;
-                        $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
-                            dynamicDesiredRetentionFsrsEqDrs;
-                        $config.fsrsDynamicDesiredRetentionFixedTargetWeights =
-                            dynamicDesiredRetentionFixedTargetWeights;
-                        $config.fsrsDynamicDesiredRetentionFixedTargetDrs =
-                            dynamicDesiredRetentionFixedTargetDrs;
-                        $config.fsrsDynamicDesiredRetentionMin =
-                            dynamicDesiredRetentionMin;
-                        $config.fsrsDynamicDesiredRetentionMax =
-                            dynamicDesiredRetentionMax;
-                    }
-
                     if (!alreadyOptimal) {
                         const comparisonIncludeSameDayReviews =
                             includeSameDayOverrideForComparison(params, resp.params);
@@ -807,15 +728,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             });
                         optimizationComparison = {
                             optimizedParams: [...resp.params],
-                            dynamicDesiredRetentionParams,
-                            dynamicDesiredRetentionWeights,
-                            dynamicDesiredRetentionAvgDrs,
-                            dynamicDesiredRetentionFsrsEqWeights,
-                            dynamicDesiredRetentionFsrsEqDrs,
-                            dynamicDesiredRetentionFixedTargetWeights,
-                            dynamicDesiredRetentionFixedTargetDrs,
-                            dynamicDesiredRetentionMin,
-                            dynamicDesiredRetentionMax,
                             search: evaluateSearch,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             includeSameDayReviews: comparisonIncludeSameDayReviews,
@@ -863,26 +775,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return;
         }
         setSelectedFsrsParams(optimizationComparison.optimizedParams);
-        if (optimizationComparison.dynamicDesiredRetentionParams.length) {
-            $config.fsrsDynamicDesiredRetentionParams =
-                optimizationComparison.dynamicDesiredRetentionParams;
-            $config.fsrsDynamicDesiredRetentionWeights =
-                optimizationComparison.dynamicDesiredRetentionWeights;
-            $config.fsrsDynamicDesiredRetentionAvgDrs =
-                optimizationComparison.dynamicDesiredRetentionAvgDrs;
-            $config.fsrsDynamicDesiredRetentionFsrsEqWeights =
-                optimizationComparison.dynamicDesiredRetentionFsrsEqWeights;
-            $config.fsrsDynamicDesiredRetentionFsrsEqDrs =
-                optimizationComparison.dynamicDesiredRetentionFsrsEqDrs;
-            $config.fsrsDynamicDesiredRetentionFixedTargetWeights =
-                optimizationComparison.dynamicDesiredRetentionFixedTargetWeights;
-            $config.fsrsDynamicDesiredRetentionFixedTargetDrs =
-                optimizationComparison.dynamicDesiredRetentionFixedTargetDrs;
-            $config.fsrsDynamicDesiredRetentionMin =
-                optimizationComparison.dynamicDesiredRetentionMin;
-            $config.fsrsDynamicDesiredRetentionMax =
-                optimizationComparison.dynamicDesiredRetentionMax;
-        }
         optimized = true;
         closeOptimizationComparison();
     }
@@ -1086,10 +978,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const pct = pctValue.toFixed(1);
         if (val instanceof ComputeRetentionProgress) {
             return `${pct}%`;
-        } else if (
-            val.phase === ComputeParamsProgress_Phase.TRAINING_DYNAMIC_DESIRED_RETENTION
-        ) {
-            return `Compute ADR values: ${pct}%`;
         } else {
             if (val.current === val.total) {
                 return tr.deckConfigCheckingForImprovement();
@@ -1145,96 +1033,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let simulatorModal: Modal;
     let workloadModal: Modal;
-    let dynamicDesiredRetentionPlotModal: Modal;
-    const dynamicDesiredRetentionCalibrationCounts = Array.from(
-        { length: 31 },
-        (_, index) => index + 2,
-    );
-    dynamicDesiredRetentionCalibrationCounts.unshift(0);
-    $: dynamicDesiredRetentionTargetCalibration = targetDrCalibration(
-        $config.fsrsDynamicDesiredRetentionWeights,
-        $config.fsrsDynamicDesiredRetentionAvgDrs,
-        $config.fsrsDynamicDesiredRetentionFsrsEqWeights,
-        $config.fsrsDynamicDesiredRetentionFsrsEqDrs,
-        $config.fsrsDynamicDesiredRetentionFixedTargetWeights,
-        $config.fsrsDynamicDesiredRetentionFixedTargetDrs,
-    );
-    $: dynamicDesiredRetentionSchedulingTarget = schedulingTargetDr(
-        effectiveDesiredRetention,
-        dynamicDesiredRetentionTargetCalibration.weights,
-        dynamicDesiredRetentionTargetCalibration.drs,
-        $config.fsrsDynamicDesiredRetentionClamp,
-        dynamicDesiredRetentionTargetCalibration.fixedTarget,
-        $config.fsrsDynamicDesiredRetentionMin,
-    );
-    $: dynamicDesiredRetentionWeight = costWeightForAverageDr(
-        dynamicDesiredRetentionSchedulingTarget,
-        dynamicDesiredRetentionTargetCalibration.weights,
-        dynamicDesiredRetentionTargetCalibration.drs,
-        dynamicDesiredRetentionTargetCalibration.fixedTarget,
-        $config.fsrsDynamicDesiredRetentionMin,
-    );
-    $: dynamicDesiredRetentionConfigReady = dynamicDesiredRetentionEnabled($config);
-    $: dynamicDesiredRetentionReady =
-        dynamicDesiredRetentionConfigReady && dynamicDesiredRetentionWeight !== null;
-    $: dynamicDesiredRetentionWarning = dynamicDesiredRetentionWarningMessage(
-        $config,
-        dynamicDesiredRetentionConfigReady,
-        dynamicDesiredRetentionWeight,
-    );
     $: outdatedFsrs7ParamsWarning =
         $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
         fsrsParamDiagnostics($config.fsrsParams7).outdatedFsrs7PreviewParams
             ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
             : "";
-
-    function dynamicDesiredRetentionWarningMessage(
-        config: DeckConfig_Config,
-        configReady: boolean,
-        weight: number | null,
-    ): string {
-        if (!config.fsrsDynamicDesiredRetentionEnabled) {
-            return "";
-        }
-        if (
-            !validPolicyParams(config.fsrsDynamicDesiredRetentionParams) ||
-            !validCalibration(
-                config.fsrsDynamicDesiredRetentionWeights,
-                config.fsrsDynamicDesiredRetentionAvgDrs,
-            ) ||
-            !validOptionalFixedTargetCalibration(
-                config.fsrsDynamicDesiredRetentionFixedTargetWeights,
-                config.fsrsDynamicDesiredRetentionFixedTargetDrs,
-            )
-        ) {
-            return "Dynamic DR requires 15 ADR policy parameters and matching calibration arrays.";
-        }
-        if (
-            !validRetentionBounds(
-                config.fsrsDynamicDesiredRetentionMin,
-                config.fsrsDynamicDesiredRetentionMax,
-            )
-        ) {
-            return "Dynamic DR requires valid retention bounds.";
-        }
-        if (configReady && weight === null) {
-            return "Dynamic DR target is outside the calibrated target range.";
-        }
-        return "";
-    }
-
-    function formatDynamicDrBound(value: number): string {
-        return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "n/a";
-    }
-
-    function saveDynamicDesiredRetentionPlotTarget(event: CustomEvent<number>): void {
-        effectiveDesiredRetention = event.detail;
-        if ($limits.desiredRetention !== undefined) {
-            desiredRetentionTabs[1].setValue(event.detail);
-        } else {
-            desiredRetentionTabs[0].setValue(event.detail);
-        }
-    }
 </script>
 
 <DynamicallySlottable slotHost={Item} api={{}}>
@@ -1415,73 +1218,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </ParamsInputRow>
         {/if}
 
-        {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN}
-            <SwitchRow
-                bind:value={$config.fsrsDynamicDesiredRetentionEnabled}
-                defaultValue={false}
-            >
-                <SettingTitle>Dynamic DR (ADR)</SettingTitle>
-            </SwitchRow>
-
-            {#if $config.fsrsDynamicDesiredRetentionEnabled}
-                <SwitchRow
-                    bind:value={$config.fsrsDynamicDesiredRetentionClamp}
-                    defaultValue={false}
-                >
-                    <SettingTitle>Clamp Unsupported Dynamic DR Targets</SettingTitle>
-                </SwitchRow>
-                <ParamsInputRow
-                    bind:value={$config.fsrsDynamicDesiredRetentionParams}
-                    defaultValue={[]}
-                    validParamCounts={[0, 15]}
-                    ariaLabel="Dynamic DR ADR policy parameters"
-                >
-                    <SettingTitle>ADR Policy Parameters</SettingTitle>
-                </ParamsInputRow>
-                <ParamsInputRow
-                    bind:value={$config.fsrsDynamicDesiredRetentionWeights}
-                    defaultValue={[]}
-                    validParamCounts={dynamicDesiredRetentionCalibrationCounts}
-                    ariaLabel="Dynamic DR calibration weights"
-                >
-                    <SettingTitle>Calibration Weights</SettingTitle>
-                </ParamsInputRow>
-                <ParamsInputRow
-                    bind:value={$config.fsrsDynamicDesiredRetentionAvgDrs}
-                    defaultValue={[]}
-                    validParamCounts={dynamicDesiredRetentionCalibrationCounts}
-                    ariaLabel="Dynamic DR calibration average desired retentions"
-                >
-                    <SettingTitle>Calibration Avg ADR DRs</SettingTitle>
-                </ParamsInputRow>
-                <div class="dynamic-dr-actions">
-                    <span>
-                        Weight:
-                        {dynamicDesiredRetentionWeight === null
-                            ? "n/a"
-                            : dynamicDesiredRetentionWeight.toFixed(2)}
-                    </span>
-                    <span>
-                        Bounds:
-                        {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMin)}
-                        -
-                        {formatDynamicDrBound($config.fsrsDynamicDesiredRetentionMax)}
-                    </span>
-                    <button
-                        class="btn btn-outline-primary"
-                        disabled={!dynamicDesiredRetentionReady}
-                        on:click={() => dynamicDesiredRetentionPlotModal?.show()}
-                    >
-                        Visualize DR plot
-                    </button>
-                </div>
-                <Warning
-                    warning={dynamicDesiredRetentionWarning}
-                    className="alert-warning"
-                />
-            {/if}
-        {/if}
-
         <ParamsSearchRow
             bind:value={$config.paramSearch}
             placeholder={defaultparamSearch}
@@ -1549,21 +1285,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {computing}
     {openHelpModal}
     {onPresetChange}
-/>
-
-<DynamicDesiredRetentionPlotModal
-    bind:modal={dynamicDesiredRetentionPlotModal}
-    params={$config.fsrsDynamicDesiredRetentionParams}
-    calibrationWeights={$config.fsrsDynamicDesiredRetentionWeights}
-    calibrationAvgDrs={$config.fsrsDynamicDesiredRetentionAvgDrs}
-    fsrsEquivalentWeights={$config.fsrsDynamicDesiredRetentionFsrsEqWeights}
-    fsrsEquivalentDrs={$config.fsrsDynamicDesiredRetentionFsrsEqDrs}
-    fixedTargetWeights={$config.fsrsDynamicDesiredRetentionFixedTargetWeights}
-    fixedTargetDrs={$config.fsrsDynamicDesiredRetentionFixedTargetDrs}
-    retentionMin={$config.fsrsDynamicDesiredRetentionMin}
-    retentionMax={$config.fsrsDynamicDesiredRetentionMax}
-    targetAverageDr={effectiveDesiredRetention}
-    on:saveTarget={saveDynamicDesiredRetentionPlotTarget}
 />
 
 {#if optimizationComparison}
@@ -1817,14 +1538,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     .optimization-popup-actions {
         padding: 0 1rem 0.25rem;
-    }
-
-    .dynamic-dr-actions {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin: 0.5rem 0 0.75rem;
-        font-size: 0.9rem;
     }
 
     .fsrs-progress {

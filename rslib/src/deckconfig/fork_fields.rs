@@ -19,8 +19,6 @@ use super::DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL;
 const FSRS_FORK_FIELDS_KEY: &str = "jschoreels.fsrs";
 const RWKV_FORK_FIELDS_KEY: &str = "jschoreels.rwkv";
 const FSRS_MINIMUM_INTERVAL_SECS_DEFAULT: u32 = 1;
-const DYNAMIC_DR_MIN_DEFAULT: f32 = 0.30;
-const DYNAMIC_DR_MAX_DEFAULT: f32 = 0.995;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,28 +27,6 @@ struct ForkDeckConfigFields {
     fsrs_params_7: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_minimum_interval_secs: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_params: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_weights: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_avg_drs: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_fsrs_eq_weights: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_fsrs_eq_drs: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_fixed_target_weights: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_fixed_target_drs: Option<Vec<f32>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_min: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_max: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fsrs_dynamic_desired_retention_clamp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fsrs_version: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,41 +49,6 @@ impl ForkDeckConfigFields {
                 config.fsrs_minimum_interval_secs,
                 FSRS_MINIMUM_INTERVAL_SECS_DEFAULT,
             ),
-            fsrs_dynamic_desired_retention_enabled: true_only(
-                config.fsrs_dynamic_desired_retention_enabled,
-            ),
-            fsrs_dynamic_desired_retention_params: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_params,
-            ),
-            fsrs_dynamic_desired_retention_weights: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_weights,
-            ),
-            fsrs_dynamic_desired_retention_avg_drs: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_avg_drs,
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_fsrs_eq_weights,
-            ),
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_fsrs_eq_drs,
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_weights: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_fixed_target_weights,
-            ),
-            fsrs_dynamic_desired_retention_fixed_target_drs: non_empty_vec(
-                &config.fsrs_dynamic_desired_retention_fixed_target_drs,
-            ),
-            fsrs_dynamic_desired_retention_min: non_default_f32(
-                config.fsrs_dynamic_desired_retention_min,
-                DYNAMIC_DR_MIN_DEFAULT,
-            ),
-            fsrs_dynamic_desired_retention_max: non_default_f32(
-                config.fsrs_dynamic_desired_retention_max,
-                DYNAMIC_DR_MAX_DEFAULT,
-            ),
-            fsrs_dynamic_desired_retention_clamp: true_only(
-                config.fsrs_dynamic_desired_retention_clamp,
-            ),
             fsrs_version: non_default(config.fsrs_version, FsrsVersion::Seven as i32),
             review_fuzz_base: config.review_fuzz_base,
             review_fuzz_factor_short: config.review_fuzz_factor_short,
@@ -123,39 +64,6 @@ impl ForkDeckConfigFields {
         }
         if let Some(value) = self.fsrs_minimum_interval_secs {
             config.fsrs_minimum_interval_secs = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_enabled {
-            config.fsrs_dynamic_desired_retention_enabled = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_params {
-            config.fsrs_dynamic_desired_retention_params = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_weights {
-            config.fsrs_dynamic_desired_retention_weights = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_avg_drs {
-            config.fsrs_dynamic_desired_retention_avg_drs = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_fsrs_eq_weights {
-            config.fsrs_dynamic_desired_retention_fsrs_eq_weights = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_fsrs_eq_drs {
-            config.fsrs_dynamic_desired_retention_fsrs_eq_drs = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_fixed_target_weights {
-            config.fsrs_dynamic_desired_retention_fixed_target_weights = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_fixed_target_drs {
-            config.fsrs_dynamic_desired_retention_fixed_target_drs = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_min {
-            config.fsrs_dynamic_desired_retention_min = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_max {
-            config.fsrs_dynamic_desired_retention_max = value;
-        }
-        if let Some(value) = self.fsrs_dynamic_desired_retention_clamp {
-            config.fsrs_dynamic_desired_retention_clamp = value;
         }
         if let Some(value) = self.fsrs_version {
             config.fsrs_version = value;
@@ -342,12 +250,6 @@ pub(crate) fn restore_fork_fields_from_other(config: &mut DeckConfigInner) {
     if config.fsrs_minimum_interval_secs == 0 {
         config.fsrs_minimum_interval_secs = FSRS_MINIMUM_INTERVAL_SECS_DEFAULT;
     }
-    if config.fsrs_dynamic_desired_retention_min == 0.0 {
-        config.fsrs_dynamic_desired_retention_min = DYNAMIC_DR_MIN_DEFAULT;
-    }
-    if config.fsrs_dynamic_desired_retention_max == 0.0 {
-        config.fsrs_dynamic_desired_retention_max = DYNAMIC_DR_MAX_DEFAULT;
-    }
     if config.rwkv_review_batch_size == 0 {
         config.rwkv_review_batch_size = DEFAULT_RWKV_REVIEW_BATCH_SIZE;
     }
@@ -412,23 +314,6 @@ fn other_with_fork_fields(
 fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.fsrs_params_7.clear();
     config.fsrs_minimum_interval_secs = 0;
-    config.fsrs_dynamic_desired_retention_enabled = false;
-    config.fsrs_dynamic_desired_retention_params.clear();
-    config.fsrs_dynamic_desired_retention_weights.clear();
-    config.fsrs_dynamic_desired_retention_avg_drs.clear();
-    config
-        .fsrs_dynamic_desired_retention_fsrs_eq_weights
-        .clear();
-    config.fsrs_dynamic_desired_retention_fsrs_eq_drs.clear();
-    config
-        .fsrs_dynamic_desired_retention_fixed_target_weights
-        .clear();
-    config
-        .fsrs_dynamic_desired_retention_fixed_target_drs
-        .clear();
-    config.fsrs_dynamic_desired_retention_min = 0.0;
-    config.fsrs_dynamic_desired_retention_max = 0.0;
-    config.fsrs_dynamic_desired_retention_clamp = false;
     config.fsrs_version = FsrsVersion::Seven as i32;
     config.review_fuzz_base = None;
     config.review_fuzz_factor_short = None;
@@ -458,10 +343,6 @@ fn non_default<T: Copy + PartialEq>(value: T, default: T) -> Option<T> {
     (value != default).then_some(value)
 }
 
-fn non_default_f32(value: f32, default: f32) -> Option<f32> {
-    ((value - default).abs() > f32::EPSILON).then_some(value)
-}
-
 fn true_only(value: bool) -> Option<bool> {
     value.then_some(value)
 }
@@ -478,17 +359,6 @@ mod tests {
         DeckConfigInner {
             fsrs_params_7: vec![0.1; 34],
             fsrs_minimum_interval_secs: 42,
-            fsrs_dynamic_desired_retention_enabled: true,
-            fsrs_dynamic_desired_retention_params: vec![1.0; 15],
-            fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
-            fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![3.0],
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.85],
-            fsrs_dynamic_desired_retention_fixed_target_weights: vec![4.0],
-            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.86],
-            fsrs_dynamic_desired_retention_min: 0.31,
-            fsrs_dynamic_desired_retention_max: 0.96,
-            fsrs_dynamic_desired_retention_clamp: true,
             fsrs_version: FsrsVersion::Six as i32,
             review_fuzz_base: Some(1.2),
             review_fuzz_factor_short: Some(0.2),
@@ -519,10 +389,6 @@ mod tests {
 
         assert!(storage_config.fsrs_params_7.is_empty());
         assert_eq!(storage_config.fsrs_minimum_interval_secs, 0);
-        assert!(!storage_config.fsrs_dynamic_desired_retention_enabled);
-        assert!(storage_config
-            .fsrs_dynamic_desired_retention_params
-            .is_empty());
         assert_eq!(storage_config.fsrs_version, FsrsVersion::Seven as i32);
         assert_eq!(storage_config.review_fuzz_base, None);
         assert!(!storage_config.rwkv_review_enabled);
@@ -596,12 +462,8 @@ mod tests {
 
         assert_eq!(decoded.fsrs_params_7, config.fsrs_params_7);
         assert_eq!(
-            decoded.fsrs_dynamic_desired_retention_params,
-            config.fsrs_dynamic_desired_retention_params
-        );
-        assert_eq!(
-            decoded.fsrs_dynamic_desired_retention_clamp,
-            config.fsrs_dynamic_desired_retention_clamp
+            decoded.fsrs_minimum_interval_secs,
+            config.fsrs_minimum_interval_secs
         );
         assert_eq!(decoded.fsrs_version, config.fsrs_version);
         assert_eq!(decoded.review_fuzz_base, config.review_fuzz_base);
@@ -663,7 +525,53 @@ mod tests {
 
         assert_eq!(config.fsrs_params_7, vec![0.1; 34]);
         assert_eq!(config.fsrs_version, FsrsVersion::Six as i32);
-        assert_eq!(config.fsrs_dynamic_desired_retention_min, 0.31);
+        assert_eq!(config.fsrs_minimum_interval_secs, 42);
+    }
+
+    #[test]
+    fn legacy_dynamic_desired_retention_fork_fields_are_ignored() {
+        let mut config = DeckConfigInner {
+            other: serde_json::to_vec(&json!({
+                FSRS_FORK_FIELDS_KEY: {
+                    "fsrs_params_7": vec![0.2; 34],
+                    "fsrs_minimum_interval_secs": 7,
+                    "fsrs_dynamic_desired_retention_enabled": true,
+                    "fsrs_dynamic_desired_retention_params": vec![1.0; 15],
+                    "fsrs_dynamic_desired_retention_weights": [0.0, 15.0],
+                    "fsrs_dynamic_desired_retention_avg_drs": [0.8, 0.9],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_weights": [3.0],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_drs": [0.85],
+                    "fsrs_dynamic_desired_retention_fixed_target_weights": [4.0],
+                    "fsrs_dynamic_desired_retention_fixed_target_drs": [0.86],
+                    "fsrs_dynamic_desired_retention_min": 0.31,
+                    "fsrs_dynamic_desired_retention_max": 0.96,
+                    "fsrs_dynamic_desired_retention_clamp": true,
+                },
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+
+        restore_fork_fields_from_other(&mut config);
+
+        // the surviving fork fields still load; the ADR keys are dropped
+        assert_eq!(config.fsrs_params_7, vec![0.2; 34]);
+        assert_eq!(config.fsrs_minimum_interval_secs, 7);
+
+        // re-serialising for storage drops the legacy keys for good
+        let storage_config = deck_config_inner_for_storage(&config);
+        let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
+        let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
+        assert!(fsrs_other
+            .get("fsrs_dynamic_desired_retention_enabled")
+            .is_none());
+        assert!(fsrs_other
+            .get("fsrs_dynamic_desired_retention_params")
+            .is_none());
+        assert_eq!(
+            fsrs_other.get("fsrs_minimum_interval_secs"),
+            Some(&json!(7))
+        );
     }
 
     #[test]

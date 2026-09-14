@@ -88,34 +88,6 @@ pub struct DeckConfSchema11 {
     fsrs_params_7: Vec<f32>,
     #[serde(default, skip_serializing_if = "is_default_fsrs_minimum_interval_secs")]
     fsrs_minimum_interval_secs: u32,
-    #[serde(default, skip_serializing_if = "is_false")]
-    fsrs_dynamic_desired_retention_enabled: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_params: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_weights: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_avg_drs: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_fixed_target_weights: Vec<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fsrs_dynamic_desired_retention_fixed_target_drs: Vec<f32>,
-    #[serde(
-        default = "default_dynamic_desired_retention_min",
-        skip_serializing_if = "is_default_dynamic_desired_retention_min"
-    )]
-    fsrs_dynamic_desired_retention_min: f32,
-    #[serde(
-        default = "default_dynamic_desired_retention_max",
-        skip_serializing_if = "is_default_dynamic_desired_retention_max"
-    )]
-    fsrs_dynamic_desired_retention_max: f32,
-    #[serde(default, skip_serializing_if = "is_false")]
-    fsrs_dynamic_desired_retention_clamp: bool,
     #[serde(default, skip_serializing_if = "is_default_fsrs_version")]
     fsrs_version: i32,
     #[serde(default)]
@@ -193,14 +165,6 @@ pub struct DeckConfSchema11 {
     other: HashMap<String, Value>,
 }
 
-fn default_dynamic_desired_retention_min() -> f32 {
-    0.30
-}
-
-fn default_dynamic_desired_retention_max() -> f32 {
-    0.995
-}
-
 fn is_false(value: &bool) -> bool {
     !value
 }
@@ -267,14 +231,6 @@ fn is_default_rwkv_review_enforce_grade_order(value: &bool) -> bool {
 
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
-}
-
-fn is_default_dynamic_desired_retention_min(value: &f32) -> bool {
-    (*value - default_dynamic_desired_retention_min()).abs() <= f32::EPSILON
-}
-
-fn is_default_dynamic_desired_retention_max(value: &f32) -> bool {
-    (*value - default_dynamic_desired_retention_max()).abs() <= f32::EPSILON
 }
 
 fn is_default_fsrs_version(value: &i32) -> bool {
@@ -493,17 +449,6 @@ impl Default for DeckConfSchema11 {
             fsrs_params_6: vec![],
             fsrs_params_7: vec![],
             fsrs_minimum_interval_secs: 1,
-            fsrs_dynamic_desired_retention_enabled: false,
-            fsrs_dynamic_desired_retention_params: vec![],
-            fsrs_dynamic_desired_retention_weights: vec![],
-            fsrs_dynamic_desired_retention_avg_drs: vec![],
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![],
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![],
-            fsrs_dynamic_desired_retention_fixed_target_weights: vec![],
-            fsrs_dynamic_desired_retention_fixed_target_drs: vec![],
-            fsrs_dynamic_desired_retention_min: default_dynamic_desired_retention_min(),
-            fsrs_dynamic_desired_retention_max: default_dynamic_desired_retention_max(),
-            fsrs_dynamic_desired_retention_clamp: false,
             fsrs_version: 0,
             desired_retention: 0.9,
             sm2_retention: 0.9,
@@ -613,21 +558,6 @@ impl From<DeckConfSchema11> for DeckConfig {
             fsrs_params_6: c.fsrs_params_6,
             fsrs_params_7: c.fsrs_params_7,
             fsrs_minimum_interval_secs: c.fsrs_minimum_interval_secs,
-            fsrs_dynamic_desired_retention_enabled: c.fsrs_dynamic_desired_retention_enabled,
-            fsrs_dynamic_desired_retention_params: c.fsrs_dynamic_desired_retention_params,
-            fsrs_dynamic_desired_retention_weights: c.fsrs_dynamic_desired_retention_weights,
-            fsrs_dynamic_desired_retention_avg_drs: c.fsrs_dynamic_desired_retention_avg_drs,
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: c
-                .fsrs_dynamic_desired_retention_fsrs_eq_weights,
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: c
-                .fsrs_dynamic_desired_retention_fsrs_eq_drs,
-            fsrs_dynamic_desired_retention_fixed_target_weights: c
-                .fsrs_dynamic_desired_retention_fixed_target_weights,
-            fsrs_dynamic_desired_retention_fixed_target_drs: c
-                .fsrs_dynamic_desired_retention_fixed_target_drs,
-            fsrs_dynamic_desired_retention_min: c.fsrs_dynamic_desired_retention_min,
-            fsrs_dynamic_desired_retention_max: c.fsrs_dynamic_desired_retention_max,
-            fsrs_dynamic_desired_retention_clamp: c.fsrs_dynamic_desired_retention_clamp,
             fsrs_version: c.fsrs_version,
             ignore_revlogs_before_date: c.ignore_revlogs_before_date,
             easy_days_percentages: c.easy_days_percentages,
@@ -761,21 +691,6 @@ impl From<DeckConfig> for DeckConfSchema11 {
             fsrs_params_6: i.fsrs_params_6,
             fsrs_params_7: i.fsrs_params_7,
             fsrs_minimum_interval_secs: i.fsrs_minimum_interval_secs,
-            fsrs_dynamic_desired_retention_enabled: i.fsrs_dynamic_desired_retention_enabled,
-            fsrs_dynamic_desired_retention_params: i.fsrs_dynamic_desired_retention_params,
-            fsrs_dynamic_desired_retention_weights: i.fsrs_dynamic_desired_retention_weights,
-            fsrs_dynamic_desired_retention_avg_drs: i.fsrs_dynamic_desired_retention_avg_drs,
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: i
-                .fsrs_dynamic_desired_retention_fsrs_eq_weights,
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: i
-                .fsrs_dynamic_desired_retention_fsrs_eq_drs,
-            fsrs_dynamic_desired_retention_fixed_target_weights: i
-                .fsrs_dynamic_desired_retention_fixed_target_weights,
-            fsrs_dynamic_desired_retention_fixed_target_drs: i
-                .fsrs_dynamic_desired_retention_fixed_target_drs,
-            fsrs_dynamic_desired_retention_min: i.fsrs_dynamic_desired_retention_min,
-            fsrs_dynamic_desired_retention_max: i.fsrs_dynamic_desired_retention_max,
-            fsrs_dynamic_desired_retention_clamp: i.fsrs_dynamic_desired_retention_clamp,
             fsrs_version: i.fsrs_version,
             desired_retention: i.desired_retention,
             sm2_retention: i.historical_retention,
@@ -830,6 +745,9 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "fsrsDynamicDesiredRetentionFsrsEqDrs",
     "fsrsDynamicDesiredRetentionMin",
     "fsrsDynamicDesiredRetentionMax",
+    "fsrsDynamicDesiredRetentionClamp",
+    "fsrsDynamicDesiredRetentionFixedTargetWeights",
+    "fsrsDynamicDesiredRetentionFixedTargetDrs",
     "fsrsVersion",
     "desiredRetention",
     "stopTimerOnAnswer",
@@ -894,6 +812,59 @@ mod test {
         assert_eq!(&s11.rev.other.keys().collect_vec(), empty);
         assert_eq!(&s11.lapse.other.keys().collect_vec(), empty);
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_dynamic_desired_retention_keys_load_and_are_dropped() -> Result<()> {
+        let mut legacy = serde_json::to_value(DeckConfSchema11::default())?;
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("fsrsParams7".into(), json!(vec![0.2; 34]));
+        object.insert("fsrsDynamicDesiredRetentionEnabled".into(), json!(true));
+        object.insert(
+            "fsrsDynamicDesiredRetentionParams".into(),
+            json!(vec![1.0; 15]),
+        );
+        object.insert(
+            "fsrsDynamicDesiredRetentionWeights".into(),
+            json!([0.0, 15.0]),
+        );
+        object.insert(
+            "fsrsDynamicDesiredRetentionAvgDrs".into(),
+            json!([0.8, 0.9]),
+        );
+        object.insert(
+            "fsrsDynamicDesiredRetentionFsrsEqWeights".into(),
+            json!([3.0]),
+        );
+        object.insert("fsrsDynamicDesiredRetentionFsrsEqDrs".into(), json!([0.85]));
+        object.insert(
+            "fsrsDynamicDesiredRetentionFixedTargetWeights".into(),
+            json!([4.0]),
+        );
+        object.insert(
+            "fsrsDynamicDesiredRetentionFixedTargetDrs".into(),
+            json!([0.86]),
+        );
+        object.insert("fsrsDynamicDesiredRetentionMin".into(), json!(0.31));
+        object.insert("fsrsDynamicDesiredRetentionMax".into(), json!(0.96));
+        object.insert("fsrsDynamicDesiredRetentionClamp".into(), json!(true));
+
+        // the legacy keys must not break loading, and the other settings survive
+        let decoded: DeckConfSchema11 = serde_json::from_value(legacy)?;
+        assert_eq!(decoded.fsrs_params_7, vec![0.2; 34]);
+        let config: DeckConfig = decoded.into();
+        assert_eq!(config.inner.fsrs_params_7, vec![0.2; 34]);
+        assert_eq!(config.inner.desired_retention, 0.9);
+
+        // and the round trip back to schema11 drops every legacy key
+        let s11 = DeckConfSchema11::from(config);
+        let keys = s11.other.keys().cloned().collect_vec();
+        assert!(
+            keys.iter()
+                .all(|key| !key.starts_with("fsrsDynamicDesiredRetention")),
+            "legacy keys leaked: {keys:?}"
+        );
         Ok(())
     }
 

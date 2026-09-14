@@ -369,8 +369,8 @@ message SchedulingStates {
   SchedulingState hard = 3;
   SchedulingState good = 4;
   SchedulingState easy = 5;
-  repeated float dynamic_desired_retentions = 6;
-  bool dynamic_desired_retention_enabled = 7;
+  // 6-7 held the removed dynamic desired retention outputs
+  reserved 6, 7;
 }
 
 message CardAnswer {
@@ -473,9 +473,8 @@ message ComputeFsrsParamsRequest {
   bool health_check = 5;
   optional bool include_same_day_reviews = 6;
   optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 7;
-  bool dynamic_desired_retention_enabled = 8;
-  optional uint32 dynamic_desired_retention_review_limit = 9;
-  optional float dynamic_desired_retention_max_cost_perday_minutes = 10;
+  // 8-10 held the removed dynamic desired retention options
+  reserved 8 to 10;
   optional bool enable_scheduling_penalties = 11;
 }
 
@@ -483,15 +482,8 @@ message ComputeFsrsParamsResponse {
   repeated float params = 1;
   uint32 fsrs_items = 2;
   optional bool health_check_passed = 3;
-  repeated float fsrs_dynamic_desired_retention_params = 4;
-  repeated float fsrs_dynamic_desired_retention_weights = 5;
-  repeated float fsrs_dynamic_desired_retention_avg_drs = 6;
-  float fsrs_dynamic_desired_retention_min = 7;
-  float fsrs_dynamic_desired_retention_max = 8;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 9;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 10;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 11;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 12;
+  // 4-12 held the removed dynamic desired retention results
+  reserved 4 to 12;
 }
 
 message ComputeFsrsParamsBatchRequest {
@@ -505,9 +497,8 @@ message ComputeFsrsParamsBatchRequest {
     uint32 num_of_relearning_steps = 6;
     optional bool include_same_day_reviews = 7;
     optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 8;
-    bool dynamic_desired_retention_enabled = 9;
-    optional uint32 dynamic_desired_retention_review_limit = 10;
-    optional float dynamic_desired_retention_max_cost_perday_minutes = 11;
+    // 9-11 held the removed dynamic desired retention options
+    reserved 9 to 11;
     optional bool enable_scheduling_penalties = 12;
   }
 
@@ -520,15 +511,8 @@ message ComputeFsrsParamsBatchResponse {
     string name = 2;
     repeated float params = 3;
     uint32 fsrs_items = 4;
-    repeated float fsrs_dynamic_desired_retention_params = 5;
-    repeated float fsrs_dynamic_desired_retention_weights = 6;
-    repeated float fsrs_dynamic_desired_retention_avg_drs = 7;
-    float fsrs_dynamic_desired_retention_min = 8;
-    float fsrs_dynamic_desired_retention_max = 9;
-    repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 10;
-    repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 11;
-    repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 12;
-    repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 13;
+    // 5-13 held the removed dynamic desired retention results
+    reserved 5 to 13;
   }
 
   repeated Item items = 1;
@@ -594,17 +578,8 @@ message SimulateFsrsReviewRequest {
   optional float review_fuzz_factor_long = 19;
   optional float help_me_decide_transition_blend_alpha = 21;
   optional bool help_me_decide_enforce_monotonic_success_grade_probs = 22;
-  bool simulate_dynamic_desired_retention = 23;
-  repeated float fsrs_dynamic_desired_retention_params = 24;
-  repeated float fsrs_dynamic_desired_retention_weights = 25;
-  repeated float fsrs_dynamic_desired_retention_avg_drs = 26;
-  float fsrs_dynamic_desired_retention_min = 27;
-  float fsrs_dynamic_desired_retention_max = 28;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 29;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 30;
-  bool fsrs_dynamic_desired_retention_clamp = 31;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 32;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 33;
+  // 23-33 held the removed dynamic desired retention simulation inputs
+  reserved 23 to 33;
   bool split_workload_by_preset = 34;
   string workload_preset_label = 35;
   uint32 rwkv_workload_sample_limit = 36;
@@ -730,17 +705,8 @@ message FsrsPresetForCardResponse {
   float desired_retention = 5;
   float historical_retention = 6;
   string ignore_revlogs_before_date = 7;
-  bool fsrs_dynamic_desired_retention_enabled = 8;
-  repeated float fsrs_dynamic_desired_retention_params = 9;
-  repeated float fsrs_dynamic_desired_retention_weights = 10;
-  repeated float fsrs_dynamic_desired_retention_avg_drs = 11;
-  float fsrs_dynamic_desired_retention_min = 12;
-  float fsrs_dynamic_desired_retention_max = 13;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 14;
-  repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 15;
-  bool fsrs_dynamic_desired_retention_clamp = 16;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 17;
-  repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 18;
+  // 8-18 held the removed dynamic desired retention settings
+  reserved 8 to 18;
 }
 
 message FsrsPresetIdsForCardsResponse {
@@ -889,8 +855,8 @@ message FsrsDesiredRetentionForIntervalsBatchResponse {
   message Item {
     uint32 request_index = 1;
     float interval_target_desired_retention = 2;
-    repeated float dynamic_desired_retentions = 3;
-    bool dynamic_desired_retention_enabled = 4;
+    // 3-4 held the removed dynamic desired retention outputs
+    reserved 3, 4;
   }
   repeated Item items = 1;
 }

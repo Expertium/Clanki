@@ -16,8 +16,6 @@ use crate::deckconfig::DeckConfigId;
 use crate::deckconfig::FsrsVersion;
 use crate::decks::Deck;
 use crate::prelude::*;
-use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetention;
-use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
 use crate::search::FieldSearchMode;
 use crate::search::Node;
@@ -43,7 +41,6 @@ pub(crate) struct FsrsPreset {
     pub fsrs_version: FsrsVersion,
     pub params: Vec<f32>,
     pub desired_retention: f32,
-    pub dynamic_desired_retention: Option<DynamicDesiredRetention>,
     pub historical_retention: f32,
     pub ignore_revlogs_before_date: String,
 }
@@ -92,28 +89,6 @@ pub(crate) struct AddonFsrsPreset {
     pub historical_retention: f32,
     #[serde(default)]
     pub ignore_revlogs_before_date: String,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_enabled: bool,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_params: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_weights: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_avg_drs: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_fixed_target_weights: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_fixed_target_drs: Vec<f32>,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_min: f32,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_max: f32,
-    #[serde(default)]
-    pub fsrs_dynamic_desired_retention_clamp: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -151,18 +126,12 @@ impl FsrsPreset {
     pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Result<Self> {
         let fsrs_version =
             FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven);
-        let dynamic_desired_retention = if fsrs_version == FsrsVersion::Seven {
-            DynamicDesiredRetention::from_deck_config(&config.inner)?
-        } else {
-            None
-        };
         Ok(Self {
             id: FsrsPresetId::DeckConfig(config.id),
             name: config.name.clone(),
             fsrs_version,
             params: config.fsrs_params().to_vec(),
             desired_retention: deck.effective_desired_retention(config),
-            dynamic_desired_retention,
             historical_retention: config.inner.historical_retention,
             ignore_revlogs_before_date: config.inner.ignore_revlogs_before_date.clone(),
         })
@@ -207,34 +176,12 @@ impl AddonFsrsPreset {
             self.params
         };
         FSRS::new(&params)?;
-        let dynamic_desired_retention = if fsrs_version == FsrsVersion::Seven
-            && self.fsrs_dynamic_desired_retention_enabled
-        {
-            Some(DynamicDesiredRetention::from_fields(
-                DynamicDesiredRetentionFields {
-                    policy_params: self.fsrs_dynamic_desired_retention_params,
-                    calibration_weights: self.fsrs_dynamic_desired_retention_weights,
-                    calibration_avg_drs: self.fsrs_dynamic_desired_retention_avg_drs,
-                    fsrs_equivalent_weights: self.fsrs_dynamic_desired_retention_fsrs_eq_weights,
-                    fsrs_equivalent_drs: self.fsrs_dynamic_desired_retention_fsrs_eq_drs,
-                    fixed_target_weights: self.fsrs_dynamic_desired_retention_fixed_target_weights,
-                    fixed_target_drs: self.fsrs_dynamic_desired_retention_fixed_target_drs,
-                    retention_min: self.fsrs_dynamic_desired_retention_min,
-                    retention_max: self.fsrs_dynamic_desired_retention_max,
-                    clamp_target: self.fsrs_dynamic_desired_retention_clamp,
-                    max_interval_days: None,
-                },
-            )?)
-        } else {
-            None
-        };
         Ok(FsrsPreset {
             id: FsrsPresetId::Addon(self.id),
             name: self.name,
             fsrs_version,
             params,
             desired_retention: self.desired_retention,
-            dynamic_desired_retention,
             historical_retention: self.historical_retention,
             ignore_revlogs_before_date: self.ignore_revlogs_before_date,
         })
@@ -733,60 +680,6 @@ mod test {
     }
 
     #[test]
-    fn dynamic_desired_retention_is_fsrs7_only() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.fsrs_version = FsrsVersion::Six as i32;
-            config.fsrs_dynamic_desired_retention_enabled = true;
-            config.fsrs_dynamic_desired_retention_params = vec![0.0; 15];
-            config.fsrs_dynamic_desired_retention_weights = vec![0.0, 15.0];
-            config.fsrs_dynamic_desired_retention_avg_drs = vec![0.9, 0.8];
-            config.fsrs_dynamic_desired_retention_min = 0.75;
-            config.fsrs_dynamic_desired_retention_max = 0.95;
-        });
-        NoteAdder::basic(&mut col).add(&mut col);
-
-        let card = col.get_first_card();
-        let preset = col.fsrs_preset_for_card(&card)?;
-
-        assert_eq!(preset.fsrs_version, FsrsVersion::Six);
-        assert!(preset.dynamic_desired_retention.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn addon_fsrs_preset_uses_dynamic_desired_retention_fields() -> Result<()> {
-        let preset = AddonFsrsPreset {
-            id: "addon:test:dynamic-dr".into(),
-            name: "Dynamic DR".into(),
-            fsrs_version: AddonFsrsVersion::Seven,
-            params: vec![2.0; 34],
-            desired_retention: 0.82,
-            historical_retention: 0.72,
-            ignore_revlogs_before_date: String::new(),
-            fsrs_dynamic_desired_retention_enabled: true,
-            fsrs_dynamic_desired_retention_params: vec![0.0; 15],
-            fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
-            fsrs_dynamic_desired_retention_avg_drs: vec![0.9, 0.8],
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![0.0, 15.0],
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.91, 0.82],
-            fsrs_dynamic_desired_retention_fixed_target_weights: vec![64.0, 16.0],
-            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.8, 0.9],
-            fsrs_dynamic_desired_retention_min: 0.3,
-            fsrs_dynamic_desired_retention_max: 0.995,
-            fsrs_dynamic_desired_retention_clamp: false,
-        }
-        .into_fsrs_preset()?;
-
-        let dynamic_dr = preset.dynamic_desired_retention.unwrap();
-        assert_eq!(
-            dynamic_dr.fixed_target_calibration(),
-            &[(64.0, 0.8), (16.0, 0.9)]
-        );
-        Ok(())
-    }
-
-    #[test]
     fn fsrs_preset_overlay_exposes_simulator_rules() -> Result<()> {
         let mut col = Collection::new();
         col.set_config(
@@ -800,7 +693,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: Vec::new(),
                 simulator_rules: vec![FsrsPresetSimulatorRule {
@@ -840,7 +732,6 @@ mod test {
                 desired_retention: 0.81,
                 historical_retention: 0.71,
                 ignore_revlogs_before_date: String::new(),
-                ..Default::default()
             }],
             rules: Vec::new(),
             simulator_rules: vec![FsrsPresetSimulatorRule {
@@ -866,7 +757,6 @@ mod test {
                 desired_retention: 0.81,
                 historical_retention: 0.71,
                 ignore_revlogs_before_date: String::new(),
-                ..Default::default()
             }],
             rules: Vec::new(),
             simulator_rules: vec![FsrsPresetSimulatorRule {
@@ -892,7 +782,6 @@ mod test {
                 desired_retention: 0.81,
                 historical_retention: 0.71,
                 ignore_revlogs_before_date: String::new(),
-                ..Default::default()
             }],
             rules: Vec::new(),
             simulator_rules: vec![FsrsPresetSimulatorRule {
@@ -924,7 +813,6 @@ mod test {
                         desired_retention: 0.81,
                         historical_retention: 0.71,
                         ignore_revlogs_before_date: String::new(),
-                        ..Default::default()
                     },
                     AddonFsrsPreset {
                         id: "addon:test:second".into(),
@@ -934,7 +822,6 @@ mod test {
                         desired_retention: 0.82,
                         historical_retention: 0.72,
                         ignore_revlogs_before_date: String::new(),
-                        ..Default::default()
                     },
                 ],
                 rules: vec![
@@ -981,7 +868,6 @@ mod test {
                     desired_retention: 0.82,
                     historical_retention: 0.72,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "front".into(),
@@ -1024,7 +910,6 @@ mod test {
                             desired_retention: 0.81,
                             historical_retention: 0.71,
                             ignore_revlogs_before_date: String::new(),
-                            ..Default::default()
                         }],
                         rules: vec![FsrsPresetRule {
                             search: search.into(),
@@ -1055,7 +940,6 @@ mod test {
                         desired_retention: 0.81,
                         historical_retention: 0.71,
                         ignore_revlogs_before_date: String::new(),
-                        ..Default::default()
                     }],
                     rules: vec![FsrsPresetRule {
                         search: "front".into(),
@@ -1121,7 +1005,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:medical".into(),
@@ -1151,7 +1034,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:medical".into(),
@@ -1191,7 +1073,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "front".into(),
@@ -1229,7 +1110,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:medical".into(),
@@ -1278,7 +1158,6 @@ mod test {
                         desired_retention: 0.81,
                         historical_retention: 0.71,
                         ignore_revlogs_before_date: String::new(),
-                        ..Default::default()
                     },
                     AddonFsrsPreset {
                         id: "addon:test:second".into(),
@@ -1288,7 +1167,6 @@ mod test {
                         desired_retention: 0.82,
                         historical_retention: 0.72,
                         ignore_revlogs_before_date: String::new(),
-                        ..Default::default()
                     },
                 ],
                 rules: vec![
@@ -1343,7 +1221,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:medical".into(),
@@ -1397,7 +1274,6 @@ mod test {
                     desired_retention: 0.81,
                     historical_retention: 0.71,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:medical".into(),

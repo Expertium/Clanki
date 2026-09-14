@@ -160,15 +160,12 @@ class TestIsLocalhostOrigin:
 
 
 class TestGetSveltekitRoute:
-    def test_dynamic_desired_retention_plot_is_internal_page(self) -> None:
-        assert (
-            get_sveltekit_route("dynamic-desired-retention-plot")
-            == "dynamic-desired-retention-plot"
-        )
-        assert (
-            get_sveltekit_route("dynamic-desired-retention-plot/_app/start.js")
-            == "dynamic-desired-retention-plot"
-        )
+    def test_deck_options_is_internal_page(self) -> None:
+        assert get_sveltekit_route("deck-options") == "deck-options"
+        assert get_sveltekit_route("deck-options/_app/start.js") == "deck-options"
+
+    def test_removed_dynamic_desired_retention_plot_is_not_a_page(self) -> None:
+        assert get_sveltekit_route("dynamic-desired-retention-plot") is None
 
 
 class TestRequestLogging:
