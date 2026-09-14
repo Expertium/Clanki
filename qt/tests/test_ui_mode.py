@@ -67,7 +67,7 @@ def test_no_toggle_without_a_collection() -> None:
     assert Toolbar(cast(Any, mw), MagicMock())._create_ui_mode_toggle() == ""
 
 
-def test_deck_browser_bottom_row_is_hidden_in_simple_mode() -> None:
+def test_deck_browser_bottom_row_keeps_only_create_deck_in_simple_mode() -> None:
     drawn: list[str] = []
 
     def draw(buf: str = "", **_kwargs: object) -> None:
@@ -83,11 +83,13 @@ def test_deck_browser_bottom_row_is_hidden_in_simple_mode() -> None:
         ),
     )
     DeckBrowser._drawButtons(browser)
-    assert drawn == [""]
+    assert drawn[0].count("<button") == 1
+    assert 'pycmd("create")' in drawn[0]
+    assert "shared" not in drawn[0] and "import" not in drawn[0]
 
     browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     DeckBrowser._drawButtons(browser)
-    assert "<button" in drawn[1]
+    assert drawn[1].count("<button") == 3
 
 
 def test_deck_menu_rwkv_submenu_is_advanced_only() -> None:

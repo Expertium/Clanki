@@ -25,6 +25,8 @@ repeated here unless they materially affect a fork feature.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".
+- Simple mode shows the Create Deck button under the deck list again; Get
+  Shared and Import File stay Advanced-only.
 - Same-day reviews for (re)learning steps are always allowed under FSRS; the
   "Allow same-day review for (re)learning steps" switch is gone.
 - New cards always count against the review limit; the "New cards ignore

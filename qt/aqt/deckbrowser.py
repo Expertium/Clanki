@@ -605,9 +605,11 @@ class DeckBrowser:
 
     def _drawButtons(self) -> None:
         buf = ""
-        # Simple mode hides this row (spec ui.mode-switch); Import stays in
-        # the File menu and a deck can be created from the Add window.
-        drawLinks = deepcopy(self.drawLinks) if self.mw.advanced_ui() else []
+        # Simple mode keeps only Create Deck (spec ui.mode-switch); Import
+        # stays in the File menu.
+        drawLinks = deepcopy(self.drawLinks)
+        if not self.mw.advanced_ui():
+            drawLinks = [b for b in drawLinks if b[1] == "create"]
         for b in drawLinks:
             if b[0]:
                 b[0] = tr.actions_shortcut_key(val=shortcut(b[0]))
