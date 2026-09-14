@@ -22,6 +22,8 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Deck options: "Don't play audio automatically" is now "Play audio
+  automatically", on by default. Audio plays exactly as before.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".

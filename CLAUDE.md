@@ -31,7 +31,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    `deck-options.simple-view`): New cards/day, Maximum reviews/day, Algorithm
    with desired retention (plus the FSRS-7 First intervals table, the
    RWKV-Instant box and the RWKV-Curve reschedule button), one Bury siblings
-   switch (all three bury settings), Don't play audio automatically, one
+   switch (all three bury settings), Play audio automatically, one
    On-screen timer switch (show + stop on
    answer), Easy Days. Advanced mode keeps the per-topic sections. Alongside:
    new presets have empty steps and run RWKV-Curve

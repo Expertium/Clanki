@@ -18,6 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     import { algorithmHelpSettings } from "./algorithm-help";
+    import { applyPlayAudio, playAudioFromConfig } from "./autoplay-switch";
     import AlgorithmRows from "./AlgorithmRows.svelte";
     import { applyBurySiblings, burySiblingsFromConfig } from "./bury-siblings";
     import DailyLimitRows from "./DailyLimitRows.svelte";
@@ -71,6 +72,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     $: setOnScreenTimer(onScreenTimer);
 
+    // "Play audio automatically" is `disableAutoplay` turned the other way
+    // round (spec deck-options.play-audio-switch).
+    let playAudio = playAudioFromConfig($config);
+    $: playAudio = playAudioFromConfig($config);
+    function setPlayAudio(on: boolean): void {
+        if (playAudioFromConfig(get(config)) !== on) {
+            config.update((current) => applyPlayAudio(current, on));
+        }
+    }
+    $: setPlayAudio(playAudio);
+
     const algorithmHelp = algorithmHelpSettings();
     const settings = {
         newLimit: {
@@ -100,8 +112,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             url: HelpPage.Studying.siblingsAndBurying,
         },
         disableAutoplay: {
-            title: tr.deckConfigDisableAutoplay(),
-            help: tr.deckConfigDisableAutoplayTooltip(),
+            title: tr.deckConfigPlayAudioAutomatically(),
+            help: tr.deckConfigPlayAudioAutomaticallyTooltip(),
             url: HelpPage.DeckOptions.audio,
         },
         onScreenTimer: {
@@ -166,8 +178,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         <Item>
             <SwitchRow
-                bind:value={$config.disableAutoplay}
-                defaultValue={defaults.disableAutoplay}
+                bind:value={playAudio}
+                defaultValue={playAudioFromConfig(defaults)}
             >
                 <SettingTitle on:click={() => openHelp("disableAutoplay")}>
                     {settings.disableAutoplay.title}
