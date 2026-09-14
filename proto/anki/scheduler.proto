@@ -582,9 +582,8 @@ message SimulateFsrsReviewRequest {
   reserved 23 to 33;
   bool split_workload_by_preset = 34;
   string workload_preset_label = 35;
-  uint32 rwkv_workload_sample_limit = 36;
-  uint32 rwkv_workload_target_step = 37;
-  uint32 rwkv_workload_state_update_interval = 38;
+  // 36-38 held the removed RWKV workload simulation inputs
+  reserved 36 to 38;
 }
 
 message SimulateFsrsReviewResponse {

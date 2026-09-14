@@ -27,6 +27,7 @@ from aqt.mediasrv import (
     _legacy_editor_content_security_policy,
     _rwkv_raw_backend_mutation_note_ids,
     _should_log_request,
+    post_handler_list,
     _untrusted_sveltekit_content_security_policy,
     ensure_safe_path,
     get_sveltekit_route,
@@ -77,6 +78,18 @@ def test_rwkv_raw_backend_mutation_scopes() -> None:
         update_image.SerializeToString(),
     ) == (30,)
     assert _rwkv_raw_backend_mutation_note_ids("remove_notes", b"") is None
+
+
+def test_post_handler_list_has_no_rwkv_workload_handlers() -> None:
+    # Pins spec/deck-options.md deck-options.simulator-fsrs-only: the desktop
+    # no longer serves the RWKV workload simulation endpoints.
+    from aqt import rwkv_scheduler
+
+    handler_names = {handler.__name__ for handler in post_handler_list}
+
+    assert "reschedule_rwkv_review_cards" in handler_names
+    assert not {name for name in handler_names if "workload" in name}
+    assert not hasattr(rwkv_scheduler, "simulate_rwkv_workload")
 
 
 class TestEnsureSafePath:

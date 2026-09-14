@@ -39,11 +39,10 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    `Collection::new()` / `getEmptyCol()` restate the upstream SM-2 preset so
    the upstream tests keep their assumptions), and historical retention is
    fixed at 0.9 (`deck-options.historical-retention-fixed`).
-3. **Rescheduling must not write to the card's history.** Today, FSRS/RWKV
-   rescheduling adds an entry to the card's review log. It should not. Working
-   reference implementation: the rescheduling in the **FSRS Helper** add-on.
-   Note: this one **is** a behavior change under the contract below — the
-   collection DB can detect it — so it needs a `spec/` entry and a pinning test.
+3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
+   the FSRS "reschedule cards on change" path no longer logs a `Rescheduled`
+   review-log row (the RWKV-Curve reschedule never did). See
+   `spec/scheduling.md`, `sched.reschedule-no-revlog`.
 4. **Native AnkiConnect.** Integrate the functionality of
    https://github.com/JSchoreels/anki-connect into the core, so it does not need
    to be installed as an add-on. Its HTTP API surface is a hard compatibility
@@ -52,41 +51,20 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    https://github.com/JSchoreels/Anki-Search-Stats-Extended — deliberately **not**
    all of them. Ask which ones before porting; picking the subset is a product
    decision, not an implementation detail.
-6. **The simulator stays FSRS-only.** Remove or deactivate the RWKV simulator
-   path. Reason: RWKV uses many more input features, and it processes all cards
-   together instead of treating them as independent. A correct RWKV simulator is
-   a very large job and is **out of scope** — do not start one. Known surface:
-   `rwkvWorkload`, `rwkvWorkloadSampleLimit`, `rwkvWorkloadTargetStep`,
-   `rwkvWorkloadStateUpdateInterval` and the FSRS-vs-RWKV comparison mode in
-   `ts/routes/deck-options/SimulatorModal.svelte`, the matching fields on
-   `simulateFsrsRequest` (so `proto/` too), and
-   `ts/routes/deck-options/simulator-workload.ts`. One thing to check rather than
-   assume: `rslib/src/scheduler/fsrs/simulator.rs` imports
-   `scheduler::rwkv::relative_overdueness`. Confirm whether that is RWKV
-   simulation or just a shared helper before deleting it.
-7. **Port upstream PR 4717 (FSRS sync reconciliation) with the 2026-06-20
-   fixes.** https://github.com/ankitects/anki/pull/4717 by JSchoreels, open
-   since 2026-04-18 and stalled: only dae reviews sync code. It reconciles FSRS
-   memory state on the client after a normal sync instead of forcing a full
-   sync. It is wire-transparent (the server path passes an empty map), so
-   AnkiWeb keeps working. A `git apply --check` against Clanki: the sync-layer
-   hunks apply; `rslib/src/scheduler/fsrs/memory_state.rs` and
-   `rslib/src/sync/collection/tests.rs` conflict with the fork's own edits, so
-   those two need a manual merge. Land Andrew's review findings from the PR
-   thread at the same time, as behavior with tests, not as follow-ups:
-   - the reschedule half must respect the "reschedule cards on change" opt-out,
-     must not fire on pure deck moves, and should reuse
-     `LastRevlogInfo.previous_interval` instead of recomputing via
-     `next_interval`;
-   - `reconcile_itemless_cards_after_sync` must not null an agreed
-     `memory_state` on a momentary `last_review_time` difference;
-   - add a forget/reset test so a sync cannot un-forget a card;
-   - build `Rescheduler` once and call `update_due_cnt_per_day` per placement,
-     not once per card (currently O(K·D), should be O(D+K)).
-8. Many smaller changes and tweaks.
+6. Many smaller changes and tweaks.
 
 ## Changes already made in Clanki
 
+- Ported upstream PR 4717 (FSRS sync reconciliation, JSchoreels) with
+  Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the
+  client rebuilds the FSRS data of conflicting cards from the merged review
+  log (`spec/sync.md`). The schedule half is gated by the remembered
+  "Reschedule cards on change" choice (`BoolKey::FsrsReschedule`, written on
+  deck-options save — the switch itself was never persisted), never fires on
+  a pure deck move, and restores the last real review's interval instead of
+  recomputing with `next_interval`, so it needs no `Rescheduler` at all;
+  agreed memory state survives an itemless reconcile; a forgotten card stays
+  forgotten; no review-log rows are written. Wire protocol unchanged.
 - Branding (2026-09-14): the visible product name is `aqt.APP_NAME` =
   "Clanki" (window titles, dialogs, About, installer `formal_name`, English
   ftl strings about the running app). The version string add-ons read stays
@@ -98,6 +76,15 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
   the deck-options controls, the simulator mode, the plot page and the add-on
   hooks are gone. Legacy presets still load (`spec/scheduling.md`,
   `sched.no-dynamic-desired-retention`). The `fsrs` crate dependency stays.
+- The simulator is FSRS-only (2026-09-14): the RWKV workload simulation path
+  is gone end to end (`SimulatorModal.svelte` run mode and FSRS/RWKV
+  comparison, the `rwkv_workload_*` request fields, now reserved 36-38, the
+  `*RwkvWorkload` mediasrv handlers and the Python simulation in
+  `qt/aqt/rwkv_scheduler.py`). A correct RWKV simulator is out of scope
+  (`spec/deck-options.md`, `deck-options.simulator-fsrs-only`).
+  `scheduler::rwkv::relative_overdueness` is a shared review-order helper and
+  stays. The Rust `rwkv::simulate_workload` and its `rsbridge` binding are
+  now unreachable from Python but were left for the RWKV session to remove.
 - Removed `+fsrs7` from the version name. `.version` now tracks the official
   Anki release (`26.09` since the 26.09 merge; it was `26.09b1+fsrs7`).
   Note: `qt/tests/test_update.py` still hardcodes

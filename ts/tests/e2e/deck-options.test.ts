@@ -36,14 +36,14 @@ test("Algorithm dropdown replaces the FSRS switch, in Simple mode", async ({ pag
     await expect(page.getByText("FSRS-7", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Bury siblings", { exact: true }).first()).toBeVisible();
     await expect(
-        page.getByRole("button", { name: "FSRS Parameters", exact: true }),
+        page.locator('[role="button"][aria-label="FSRS Parameters"]'),
     ).toHaveCount(0);
     await expect(page.getByText("Reschedule cards on change", { exact: true })).toHaveCount(0);
 });
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {
     const advanced = page.locator("details.fsrs-advanced");
-    const parameters = page.getByRole("button", { name: "FSRS Parameters", exact: true });
+    const parameters = page.locator('[role="button"][aria-label="FSRS Parameters"]');
     const input = parameters.locator("textarea");
 
     async function setTimeoutMs(ms: number): Promise<void> {
