@@ -53,6 +53,9 @@ pub enum BoolKey {
     AdvancedUi,
     ShowColoredButtons,
     TwoButtonMode,
+    /// The review heatmap on the deck list and the overview; on by default
+    /// (spec `ui.review-heatmap`).
+    ReviewHeatmapEnabled,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,
     #[strum(to_string = "dayLearnFirst")]
@@ -75,6 +78,7 @@ impl Collection {
             | BoolKey::ShowIntervalsAboveAnswerButtons
             | BoolKey::ShowColoredButtons
             | BoolKey::TwoButtonMode
+            | BoolKey::ReviewHeatmapEnabled
             | BoolKey::AddingDefaultsToCurrentDeck
             | BoolKey::FutureDueShowBacklog
             | BoolKey::ShowRemainingDueCountsInStudy

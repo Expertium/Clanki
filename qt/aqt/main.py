@@ -787,9 +787,9 @@ class AnkiQt(QMainWindow):
             # the toolbar was first drawn without a collection, so the
             # Simple | Advanced switch (spec ui.mode-switch) was not in it
             self.toolbar.draw()
-            self._sync_addons_action()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
+            self._show_review_heatmap_addon_notice()
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
@@ -801,6 +801,18 @@ class AnkiQt(QMainWindow):
         self.col = Collection(cpath, backend=self.backend)
         self._outdated_fsrs7_preview_warning_shown = False
         self.setEnabled(True)
+
+    def _show_review_heatmap_addon_notice(self) -> None:
+        """Once ever: the Review Heatmap add-on was disabled at start-up."""
+
+        if not getattr(self, "_review_heatmap_addon_notice_pending", False):
+            return
+        from aqt.review_heatmap import ADDON_NOTICE_SHOWN_KEY
+
+        self._review_heatmap_addon_notice_pending = False
+        self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
+        self.pm.save()
+        showInfo(tr.preferences_heatmap_addon_disabled(), parent=self)
 
     def _warn_if_outdated_fsrs7_preview_params(self) -> None:
         if getattr(self, "_outdated_fsrs7_preview_warning_shown", False):
@@ -1183,6 +1195,16 @@ title="{}" {}>{}</button>""".format(
         import aqt.addons
 
         self.addonManager = aqt.addons.AddonManager(self)
+
+        # Clanki draws the review heatmap itself (spec ui.review-heatmap)
+        from aqt.review_heatmap import (
+            ADDON_NOTICE_SHOWN_KEY,
+            disable_review_heatmap_addon,
+        )
+
+        self._review_heatmap_addon_notice_pending = bool(
+            disable_review_heatmap_addon(self.addonManager)
+        ) and not self.pm.meta.get(ADDON_NOTICE_SHOWN_KEY, False)
 
         if args and args[0] and self._isAddon(args[0]):
             self.installAddon(args[0], startup=True)
@@ -1708,7 +1730,6 @@ title="{}" {}>{}</button>""".format(
             return
         self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
-        self._sync_addons_action()
         self.toolbar.draw()
         # Only the deck list's bottom row depends on the mode, so it is
         # redrawn from the data already on screen. A full reset() would
@@ -1722,13 +1743,6 @@ title="{}" {}>{}</button>""".format(
         action.blockSignals(True)
         action.setChecked(self.advanced_ui())
         action.blockSignals(False)
-
-    def _sync_addons_action(self) -> None:
-        """Tools > Add-ons shows in Advanced mode, and in Simple mode only while
-        at least one add-on is installed (spec ui.mode-switch)."""
-        self.form.actionAdd_ons.setVisible(
-            self.advanced_ui() or bool(self.addonManager.allAddons())
-        )
 
     def updateTitleBar(self) -> None:
         self.setWindowTitle(aqt.application_name())
@@ -1890,6 +1904,9 @@ title="{}" {}>{}</button>""".format(
         gui_hooks.av_player_did_end_playing.append(self.on_av_player_did_end_playing)
         gui_hooks.operation_did_execute.append(self.on_operation_did_execute)
         gui_hooks.focus_did_change.append(self.on_focus_did_change)
+        from aqt import review_heatmap
+
+        review_heatmap.initialize(self)
 
         self._activeWindowOnPlay: QWidget | None = None
 
