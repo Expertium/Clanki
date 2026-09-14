@@ -20,6 +20,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Sequence
 
 from anki.collection import Config
+from anki.decks import DeckId
 from anki.utils import ids2str, is_mac, is_win
 from aqt import gui_hooks
 
@@ -382,9 +383,11 @@ class ActivityReporter:
             return None
         excluded: set[int] = set()
         for did in self._settings.excluded_decks:
-            if decks.name_if_exists(did) is None:
+            if decks.name_if_exists(DeckId(did)) is None:
                 continue
-            excluded.update(int(child) for child in decks.deck_and_child_ids(did))
+            excluded.update(
+                int(child) for child in decks.deck_and_child_ids(DeckId(did))
+            )
         return [
             int(deck.id)
             for deck in decks.all_names_and_ids()
@@ -736,7 +739,8 @@ class ReviewHeatmap:
         settings = self.settings()
         current = getattr(settings, name)
         following = values[(values.index(current) + 1) % len(values)]
-        save_settings(col, replace(settings, **{name: following}))
+        changes: dict[str, Any] = {name: following}
+        save_settings(col, replace(settings, **changes))
         self.redraw(context)
 
     def redraw_current_screen(self) -> None:
