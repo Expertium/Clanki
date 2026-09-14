@@ -211,6 +211,18 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   JSchoreels build is often running and holding that collection open.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
+- **`./ninja check` has two steps that fail on this PC for reasons unrelated
+  to the code.** `check:format:dprint` fetches plugins from plugins.dprint.dev
+  (Cloudflare) on first run and can sit for 30+ minutes with open sockets and
+  zero CPU on this connection; run the check without it and format Rust with
+  `check:format:rust` (which uses the repo's pinned *nightly* rustfmt — stable
+  `cargo fmt` ignores `group_imports` and passes code that nightly rejects).
+  `check:vitest` fails two ADR tests in `ts/routes/graphs/simulator.test.ts`
+  because this PC's locale is ru-RU and `Intl` formats `20.0%` as `20,0 %`;
+  upstream CI is en-US. Pre-existing, not a regression signal.
+- **Close the running Clanki before a build that touches PyQt.** `uv sync`
+  cannot replace `out/pyenv/.../PyQt6/Qt6/resources/*.bin` while the app holds
+  them, and the `pyenv` step fails with "used by another process" (os error 32).
 - **Detached builds must never be able to prompt.** The first build here hung for
   two hours at the `node_modules` step: corepack wanted to ask "download
   yarn@4.11.0?" and waited forever on a stdin that a detached process does not

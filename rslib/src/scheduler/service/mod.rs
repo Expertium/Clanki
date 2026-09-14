@@ -741,9 +741,10 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: FuzzReviewIntervalsRequest,
     ) -> Result<FuzzReviewIntervalsResponse> {
+        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
+
         use crate::scheduler::states::interval_overrides::FuzzedInterval;
         use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
-        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
 
         let fuzzed = self.fuzz_review_intervals(
             CardId(input.card_id),
