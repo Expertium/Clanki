@@ -80,3 +80,10 @@ qt-misc-rwkv-filtered-deck-preparation-failed = RWKV retrievability scores could
 ## to be translated
 
 qt-misc-replace-your-collection-with-an-earlier = Replace your collection with an earlier backup?
+
+## UI mode (Clanki)
+
+qt-misc-ui-mode = UI mode
+qt-misc-ui-mode-simple = Simple
+qt-misc-ui-mode-advanced = Advanced
+qt-misc-ui-mode-tooltip = Simple shows the essential settings. Advanced shows everything.

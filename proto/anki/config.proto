@@ -59,8 +59,9 @@ message ConfigKey {
     FSRS_LEGACY_EVALUATE = 28;
     SHOW_FUZZ_DELTA_ABOVE_ANSWER_BUTTONS = 29;
     FSRS_LEARNING_QUEUES_DISABLED = 30;
-    // Deck options: show the settings hidden from the simplified view.
-    DECK_OPTIONS_ADVANCED = 31;
+    // Advanced UI mode (Simple is the default): every screen that has a
+    // simplified view reads this collection-wide flag.
+    ADVANCED_UI = 31;
   }
   enum String {
     SET_DUE_BROWSER = 0;

@@ -25,7 +25,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const advanced = state.deckOptionsAdvanced;
+    const advanced = state.advancedUi;
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;

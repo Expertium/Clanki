@@ -101,6 +101,7 @@
     <property name="title">
      <string>qt_accel_view</string>
     </property>
+    <addaction name="actionAdvancedUi"/>
     <addaction name="actionFullScreen"/>
     <addaction name="separator"/>
     <addaction name="actionZoomIn"/>
@@ -250,6 +251,14 @@
    </property>
    <property name="shortcut">
     <string notr="true">Ctrl+Shift+Z</string>
+   </property>
+  </action>
+  <action name="actionAdvancedUi">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>qt_accel_advanced_ui</string>
    </property>
   </action>
   <action name="actionFullScreen">

@@ -103,7 +103,7 @@ impl Collection {
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
-            deck_options_advanced: self.get_config_bool(BoolKey::DeckOptionsAdvanced),
+            advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
         })
     }
 
@@ -793,17 +793,11 @@ mod test {
     }
 
     #[test]
-    fn deck_options_advanced_flag_is_reported() -> Result<()> {
+    fn advanced_ui_flag_is_reported() -> Result<()> {
         let mut col = Collection::new();
-        assert!(
-            !col.get_deck_configs_for_update(DeckId(1))?
-                .deck_options_advanced
-        );
-        col.set_config_bool(BoolKey::DeckOptionsAdvanced, true, false)?;
-        assert!(
-            col.get_deck_configs_for_update(DeckId(1))?
-                .deck_options_advanced
-        );
+        assert!(!col.get_deck_configs_for_update(DeckId(1))?.advanced_ui);
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        assert!(col.get_deck_configs_for_update(DeckId(1))?.advanced_ui);
         Ok(())
     }
 

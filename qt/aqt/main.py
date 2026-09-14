@@ -1680,12 +1680,38 @@ title="{}" {}>{}</button>""".format(
             lambda: self.web.setZoomFactor(self.web.zoomFactor() - 0.1),
         )
         qconnect(m.actionResetZoom.triggered, lambda: self.web.setZoomFactor(1))
+        m.actionAdvancedUi.setCheckable(True)
+        m.actionAdvancedUi.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        qconnect(m.actionAdvancedUi.triggered, self.set_advanced_ui)
         # app-wide shortcut
         qconnect(m.actionFullScreen.triggered, self.on_toggle_full_screen)
         m.actionFullScreen.setShortcut(
             QKeySequence("F11") if is_lin else QKeySequence.StandardKey.FullScreen
         )
         m.actionFullScreen.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+
+    # UI mode (spec ui.mode-switch)
+    ##########################################################################
+
+    def advanced_ui(self) -> bool:
+        """Whether the collection is in Advanced UI mode; Simple is the default."""
+        if self.col is None:
+            return False
+        return self.col.get_config_bool(Config.Bool.ADVANCED_UI)
+
+    def set_advanced_ui(self, advanced: bool) -> None:
+        if self.col is None or advanced == self.advanced_ui():
+            return
+        self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
+        self._sync_advanced_ui_action()
+        self.toolbar.draw()
+        self.reset()
+
+    def _sync_advanced_ui_action(self) -> None:
+        action = self.form.actionAdvancedUi
+        action.blockSignals(True)
+        action.setChecked(self.advanced_ui())
+        action.blockSignals(False)
 
     def updateTitleBar(self) -> None:
         self.setWindowTitle(aqt.application_name())

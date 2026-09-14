@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- A **Simple | Advanced** UI mode switch in the top-right corner of the main
+  window (also View > Advanced UI, Ctrl+Shift+U). Simple is the default. In
+  Simple mode the deck list hides the Get Shared / Create Deck / Import File
+  row, and deck options show their simplified view; the "Show advanced
+  options" switch on the deck-options page is gone.
 - The application is now called **Clanki** in window titles, dialogs, the
   About screen, the installer and the English interface text. File-format
   names, the `Anki2` data folder and the version string that add-ons read

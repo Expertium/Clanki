@@ -284,10 +284,9 @@ message DeckConfigsForUpdate {
   float review_fuzz_factor_short = 18;
   float review_fuzz_factor_mid = 19;
   float review_fuzz_factor_long = 20;
-  // Collection-wide view preference: show the settings hidden from the
-  // simplified deck-options view. Written immediately via SetConfigBool,
-  // so it is not part of UpdateDeckConfigsRequest.
-  bool deck_options_advanced = 21;
+  // The collection-wide Advanced UI mode (spec ui.mode-switch); the page
+  // follows it and never writes it.
+  bool advanced_ui = 21;
 }
 
 enum UpdateDeckConfigsMode {

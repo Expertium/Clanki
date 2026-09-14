@@ -95,7 +95,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
-    const advanced = state.deckOptionsAdvanced;
+    const advanced = state.advancedUi;
 
     // Which value the Algorithm dropdown holds for this preset (spec
     // deck-options.scheduler-choice). The interval preview and the interval
