@@ -11,8 +11,9 @@ the deck list, the bottom row from the tree already on screen. The switch
 never recomputes the due counts: the mode does not affect dueness, so a
 full main-window reset (which would rebuild the RWKV counts, slowly and
 with "…" placeholders meanwhile) is not done. In
-Simple mode the deck list's bottom row shows only Create Deck (Get Shared
-and Import File are Advanced-only; Import stays under File), the
+Simple mode the deck list's bottom row shows Find Decks Online (the button
+formerly named "Get Shared") and Create Deck but not Import File (Import
+stays under File), the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown only while at
 least one add-on is installed (in Advanced mode it is always shown; the

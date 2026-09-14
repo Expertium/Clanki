@@ -605,11 +605,11 @@ class DeckBrowser:
 
     def _drawButtons(self) -> None:
         buf = ""
-        # Simple mode keeps only Create Deck (spec ui.mode-switch); Import
-        # stays in the File menu.
+        # Simple mode keeps Find Decks Online and Create Deck (spec
+        # ui.mode-switch); Import stays in the File menu.
         drawLinks = deepcopy(self.drawLinks)
         if not self.mw.advanced_ui():
-            drawLinks = [b for b in drawLinks if b[1] == "create"]
+            drawLinks = [b for b in drawLinks if b[1] != "import"]
         for b in drawLinks:
             if b[0]:
                 b[0] = tr.actions_shortcut_key(val=shortcut(b[0]))
