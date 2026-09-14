@@ -239,8 +239,17 @@ class DeckStats(QDialog):
         stats = self.mw.col.stats()
         stats.wholeCollection = self.wholeCollection
         self.report = stats.report(type=self.period)
+        # the review heatmap above the report (spec ui.review-heatmap)
+        from aqt import review_heatmap
+
+        heatmap = review_heatmap.instance()
+        heatmap_html = (
+            heatmap.render_for_stats(self.period, self.wholeCollection)
+            if heatmap is not None
+            else ""
+        )
         self.form.web.stdHtml(
-            f"<html><body>{self.report}</body></html>",
+            f"<html><body>{heatmap_html}{self.report}</body></html>",
             js=["js/vendor/jquery.min.js", "js/vendor/plot.js"],
             context=self,
         )

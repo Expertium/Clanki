@@ -179,6 +179,21 @@ class Preferences(QDialog):
         add_ellipsis_to_action_label(self.form.url_schemes)
         qconnect(self.form.url_schemes.clicked, show_url_schemes_dialog)
 
+        # the Review Heatmap tab, after Review (spec ui.review-heatmap)
+        from aqt.review_heatmap_prefs import ReviewHeatmapPreferences
+
+        self.heatmap_tab = ReviewHeatmapPreferences(
+            self.mw, reviewing.review_heatmap_enabled
+        )
+        self.form.tabWidget.insertTab(
+            self.form.tabWidget.indexOf(self.form.tab_3) + 1,
+            self.heatmap_tab,
+            tr.preferences_heatmap_tab(),
+        )
+
+    def show_review_heatmap_tab(self) -> None:
+        self.form.tabWidget.setCurrentWidget(self.heatmap_tab)
+
     def update_collection(self, on_done: Callable[[], None]) -> None:
         form = self.form
 
@@ -198,6 +213,8 @@ class Preferences(QDialog):
         reviewing.hide_audio_play_buttons = not self.form.showPlayButtons.isChecked()
         reviewing.interrupt_audio_when_answering = self.form.interrupt_audio.isChecked()
         reviewing.show_fuzz_delta_on_buttons = form.showFuzzDelta.isChecked()
+        reviewing.review_heatmap_enabled = self.heatmap_tab.is_enabled()
+        heatmap_settings_changed = self.heatmap_tab.save()
 
         editing = self.prefs.editing
         editing.adding_defaults_to_current_deck = not form.useCurrent.currentIndex()
@@ -219,6 +236,12 @@ class Preferences(QDialog):
             on_done()
 
         if self.prefs == self.old_prefs:
+            if heatmap_settings_changed:
+                from aqt import review_heatmap
+
+                heatmap = review_heatmap.instance()
+                if heatmap is not None:
+                    heatmap.redraw_current_screen()
             after_prefs_update()
         else:
             set_preferences(parent=self, preferences=self.prefs).success(

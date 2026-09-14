@@ -44,6 +44,7 @@ impl From<BoolKeyProto> for BoolKey {
             BoolKeyProto::AdvancedUi => BoolKey::AdvancedUi,
             BoolKeyProto::ShowColoredButtons => BoolKey::ShowColoredButtons,
             BoolKeyProto::TwoButtonMode => BoolKey::TwoButtonMode,
+            BoolKeyProto::ReviewHeatmapEnabled => BoolKey::ReviewHeatmapEnabled,
             BoolKeyProto::ShowFuzzDeltaAboveAnswerButtons => {
                 BoolKey::ShowFuzzDeltaAboveAnswerButtons
             }

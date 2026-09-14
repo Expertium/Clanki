@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The Review Heatmap add-on is part of Clanki now, with all its settings,
+  in Preferences > Review Heatmap: a review calendar with streak figures
+  under the deck list, on the deck overview and in the legacy stats. An
+  installed copy of the add-on is disabled at start-up, with a one-time
+  notice; its settings carry over.
+- Tools > Add-ons is shown in both modes again.
 - "Skip learning/relearning queues with FSRS/RWKV" is gone. Instead, each
   preset has "Max number of same-day reviews" (Advanced mode, under Learning
   steps): once a card has come back that many times on the day you studied
@@ -74,8 +80,7 @@ repeated here unless they materially affect a fork feature.
   burying are, and that the one switch stands for the three burying settings
   of Advanced mode.
 - Simple mode hides the RWKV submenu of the deck menu (Reschedule With
-  RWKV-Curve, Reschedule All Decks) and shows Tools > Add-ons only while at
-  least one add-on is installed.
+  RWKV-Curve, Reschedule All Decks).
 - "Optimize All Presets" is the one optimize action, and it appears in
   Simple mode too. "Optimize Current Preset", its result comparison, the
   custom decay table and the "Check health when optimizing" switch are gone
