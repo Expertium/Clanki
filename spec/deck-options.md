@@ -125,6 +125,25 @@ scope.
 (`qt/tests/test_mediasrv.py`); "simulate request carries no RWKV fields"
 (`ts/routes/deck-options/simulate-fsrs-request.test.ts`).
 
+## deck-options.reschedule-choice-remembered
+
+Given a deck-options save, the collection stores the value of the
+"Reschedule cards on change" switch at that save under the collection flag
+`fsrsReschedule` (absent or off until the first save with the switch on).
+The switch itself still opens off every time, and the save-time rescheduling
+it triggers is unchanged (`deck-options.reschedule-on-change`). The stored
+value is read by one thing only: the schedule half of the post-sync FSRS
+reconcile pass (`sync.post-sync-reschedule-gate`), which runs only while it
+is on.
+
+**Why:** the post-sync reconcile must respect the user's rescheduling
+opt-out (Andrew's review of upstream PR 4717, 2026-06-20), and the switch is
+sent with each save rather than stored, so the last saved choice is the only
+record of it.
+
+**Pinned by:** `deck_options_save_remembers_reschedule_on_change_choice`
+(`rslib/src/deckconfig/update.rs`).
+
 ## deck-options.advanced-view
 
 Given the collection flag `deckOptionsAdvanced` (default off), the deck-options

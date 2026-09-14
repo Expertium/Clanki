@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashMap;
+
 use reqwest::Client;
 use tracing::debug;
 
@@ -134,7 +136,18 @@ impl NormalSyncer<'_> {
         debug!("unchunked changes");
         self.process_unchunked_changes(&state).await?;
         debug!("begin stream from server");
-        self.process_chunks_from_server(&state).await?;
+        let mut fsrs_conflicts = HashMap::new();
+        self.process_chunks_from_server(&state, &mut fsrs_conflicts)
+            .await?;
+        debug!(
+            cards = fsrs_conflicts.len(),
+            schedule_conflicts = fsrs_conflicts
+                .values()
+                .filter(|conflict| conflict.schedule_differs)
+                .count(),
+            "reconciling fsrs state"
+        );
+        self.col.reconcile_fsrs_state_after_sync(fsrs_conflicts)?;
         debug!("begin stream to server");
         self.send_chunks_to_server(&state).await?;
 

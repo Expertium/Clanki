@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashMap;
+
 use itertools::Itertools;
 use serde::Deserialize;
 use serde::Serialize;
@@ -13,6 +15,7 @@ use crate::card::CardType;
 use crate::notes::Note;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
+use crate::scheduler::fsrs::memory_state::FsrsSyncConflict;
 use crate::serde::deserialize_int_from_number;
 use crate::storage::card::data::card_data_string;
 use crate::storage::card::data::CardData;
@@ -90,6 +93,7 @@ impl NormalSyncer<'_> {
     pub(in crate::sync) async fn process_chunks_from_server(
         &mut self,
         state: &ClientSyncState,
+        fsrs_conflicts: &mut HashMap<CardId, FsrsSyncConflict>,
     ) -> Result<()> {
         loop {
             let chunk = self.server.chunk(EmptyInput::request()).await?.json()?;
@@ -116,7 +120,8 @@ impl NormalSyncer<'_> {
             })?;
 
             let done = chunk.done;
-            self.col.apply_chunk(chunk, state.pending_usn)?;
+            self.col
+                .apply_chunk(chunk, state.pending_usn, fsrs_conflicts)?;
 
             self.progress.check_cancelled()?;
 
@@ -168,9 +173,17 @@ impl Collection {
     /// pending_usn is used to decide whether the local objects are newer.
     /// If the provided objects are not modified locally, the USN inside
     /// the individual objects is used.
-    pub(in crate::sync) fn apply_chunk(&mut self, chunk: Chunk, pending_usn: Usn) -> Result<()> {
+    /// Cards whose local pending row conflicts with the incoming row on FSRS
+    /// data or schedule are recorded in `fsrs_conflicts` for the post-sync
+    /// reconcile pass; the server passes a throwaway map.
+    pub(in crate::sync) fn apply_chunk(
+        &mut self,
+        chunk: Chunk,
+        pending_usn: Usn,
+        fsrs_conflicts: &mut HashMap<CardId, FsrsSyncConflict>,
+    ) -> Result<()> {
         self.merge_revlog(chunk.revlog)?;
-        self.merge_cards(chunk.cards, pending_usn)?;
+        self.merge_cards(chunk.cards, pending_usn, fsrs_conflicts)?;
         self.merge_notes(chunk.notes, pending_usn)
     }
 
@@ -181,15 +194,33 @@ impl Collection {
         Ok(())
     }
 
-    fn merge_cards(&self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<()> {
+    fn merge_cards(
+        &self,
+        entries: Vec<CardEntry>,
+        pending_usn: Usn,
+        fsrs_conflicts: &mut HashMap<CardId, FsrsSyncConflict>,
+    ) -> Result<()> {
         for entry in entries {
-            self.add_or_update_card_if_newer(entry, pending_usn)?;
+            self.add_or_update_card_if_newer(entry, pending_usn, fsrs_conflicts)?;
         }
         Ok(())
     }
 
-    fn add_or_update_card_if_newer(&self, entry: CardEntry, pending_usn: Usn) -> Result<()> {
+    fn add_or_update_card_if_newer(
+        &self,
+        entry: CardEntry,
+        pending_usn: Usn,
+        fsrs_conflicts: &mut HashMap<CardId, FsrsSyncConflict>,
+    ) -> Result<()> {
         let proceed = if let Some(existing_card) = self.storage.get_card(entry.id)? {
+            if existing_card.usn.is_pending_sync(pending_usn) {
+                if let Some(conflict) = fsrs_sync_conflict(&existing_card, &entry) {
+                    fsrs_conflicts
+                        .entry(entry.id)
+                        .and_modify(|existing| existing.merge(conflict))
+                        .or_insert(conflict);
+                }
+            }
             !existing_card.usn.is_pending_sync(pending_usn) || existing_card.mtime < entry.mtime
         } else {
             true
@@ -317,6 +348,47 @@ impl Collection {
     }
 }
 
+/// Compare a locally modified card row with the row the server sent for it.
+/// Returns what differs when at least one side carries FSRS data and the two
+/// rows disagree on that data or on the schedule; None when there is nothing
+/// for the post-sync reconcile pass to do. Which row wins the merge is decided
+/// separately, by `mtime`.
+pub(crate) fn fsrs_sync_conflict(
+    existing: &Card,
+    incoming: &CardEntry,
+) -> Option<FsrsSyncConflict> {
+    let incoming_data = CardData::from_str(&incoming.data);
+    let either_has_fsrs = incoming_data.memory_state().is_some()
+        || incoming_data.fsrs_desired_retention.is_some()
+        || incoming_data.decay.is_some()
+        || existing.memory_state.is_some()
+        || existing.desired_retention.is_some()
+        || existing.decay.is_some();
+    if !either_has_fsrs {
+        return None;
+    }
+    let conflict = FsrsSyncConflict {
+        schedule_differs: card_schedule_differs(existing, incoming),
+        memory_state_agreed: existing.memory_state == incoming_data.memory_state(),
+        last_review_time_agreed: existing.last_review_time == incoming_data.last_review_time,
+    };
+    let differs = !conflict.memory_state_agreed
+        || !conflict.last_review_time_agreed
+        || conflict.schedule_differs
+        || existing.desired_retention != incoming_data.fsrs_desired_retention
+        || existing.decay != incoming_data.decay;
+    differs.then_some(conflict)
+}
+
+/// True when the two rows disagree on the fields a post-sync reschedule would
+/// rewrite. A change of deck, card type or queue alone is not a schedule
+/// difference: moving a card between decks must not reschedule it.
+fn card_schedule_differs(existing: &Card, incoming: &CardEntry) -> bool {
+    existing.due != incoming.due
+        || existing.interval != incoming.ivl
+        || existing.original_due != incoming.odue
+}
+
 impl From<CardEntry> for Card {
     fn from(e: CardEntry) -> Self {
         let data = CardData::from_str(&e.data);
@@ -420,7 +492,7 @@ pub fn server_apply_chunk(
     col: &mut Collection,
     state: &mut ServerSyncState,
 ) -> Result<()> {
-    col.apply_chunk(req.chunk, state.client_usn)
+    col.apply_chunk(req.chunk, state.client_usn, &mut HashMap::new())
 }
 
 impl Usn {
@@ -438,4 +510,146 @@ pub const CHUNK_SIZE: usize = 250;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ApplyChunkRequest {
     pub chunk: Chunk,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::card::FsrsMemoryState;
+
+    fn review_card() -> Card {
+        Card {
+            id: CardId(1),
+            deck_id: DeckId(1),
+            ctype: CardType::Review,
+            queue: CardQueue::Review,
+            due: 100,
+            interval: 10,
+            memory_state: Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            }),
+            desired_retention: Some(0.9),
+            decay: Some(0.2),
+            last_review_time: Some(TimestampSecs(1_000)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fsrs_sync_conflict_ignores_a_card_that_only_moved_deck() {
+        let existing = review_card();
+        let mut incoming: CardEntry = review_card().into();
+        incoming.did = DeckId(2);
+        assert_eq!(fsrs_sync_conflict(&existing, &incoming), None);
+
+        // a deck move alongside an FSRS difference is flagged, but not as a
+        // schedule conflict
+        incoming.data = card_data_string(&Card {
+            desired_retention: Some(0.8),
+            ..review_card()
+        });
+        assert_eq!(
+            fsrs_sync_conflict(&existing, &incoming),
+            Some(FsrsSyncConflict {
+                schedule_differs: false,
+                memory_state_agreed: true,
+                last_review_time_agreed: true,
+            })
+        );
+    }
+
+    #[test]
+    fn fsrs_sync_conflict_ignores_type_and_queue_changes_alone() {
+        let existing = review_card();
+        let mut incoming: CardEntry = review_card().into();
+        incoming.queue = CardQueue::Suspended;
+        assert_eq!(fsrs_sync_conflict(&existing, &incoming), None);
+        incoming.ctype = CardType::Relearn;
+        assert_eq!(fsrs_sync_conflict(&existing, &incoming), None);
+    }
+
+    #[test]
+    fn fsrs_sync_conflict_flags_schedule_and_memory_state_differences() {
+        let existing = review_card();
+        let mut incoming: CardEntry = review_card().into();
+        incoming.due += 1;
+        assert_eq!(
+            fsrs_sync_conflict(&existing, &incoming),
+            Some(FsrsSyncConflict {
+                schedule_differs: true,
+                memory_state_agreed: true,
+                last_review_time_agreed: true,
+            })
+        );
+
+        let mut incoming: CardEntry = review_card().into();
+        incoming.ivl += 1;
+        assert!(
+            fsrs_sync_conflict(&existing, &incoming)
+                .unwrap()
+                .schedule_differs
+        );
+
+        let mut incoming: CardEntry = review_card().into();
+        incoming.odue = 5;
+        assert!(
+            fsrs_sync_conflict(&existing, &incoming)
+                .unwrap()
+                .schedule_differs
+        );
+
+        let incoming: CardEntry = Card {
+            memory_state: None,
+            last_review_time: Some(TimestampSecs(2_000)),
+            ..review_card()
+        }
+        .into();
+        assert_eq!(
+            fsrs_sync_conflict(&existing, &incoming),
+            Some(FsrsSyncConflict {
+                schedule_differs: false,
+                memory_state_agreed: false,
+                last_review_time_agreed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn fsrs_sync_conflict_is_none_without_fsrs_data_on_either_side() {
+        let existing = Card {
+            memory_state: None,
+            desired_retention: None,
+            decay: None,
+            ..review_card()
+        };
+        let mut incoming: CardEntry = existing.clone().into();
+        incoming.due += 1;
+        incoming.ivl += 1;
+        assert_eq!(fsrs_sync_conflict(&existing, &incoming), None);
+    }
+
+    #[test]
+    fn fsrs_sync_conflict_merge_keeps_the_worse_of_both_observations() {
+        let mut first = FsrsSyncConflict {
+            schedule_differs: false,
+            memory_state_agreed: true,
+            last_review_time_agreed: false,
+        };
+        first.merge(FsrsSyncConflict {
+            schedule_differs: true,
+            memory_state_agreed: false,
+            last_review_time_agreed: true,
+        });
+        assert_eq!(
+            first,
+            FsrsSyncConflict {
+                schedule_differs: true,
+                memory_state_agreed: false,
+                last_review_time_agreed: false,
+            }
+        );
+    }
 }
