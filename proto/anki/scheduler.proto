@@ -78,12 +78,13 @@ service SchedulerService {
   // The number of days the calculated interval was fuzzed by on the previous
   // review (if any). Utilized by the FSRS add-on.
   rpc FuzzDelta(FuzzDeltaRequest) returns (FuzzDeltaResponse);
-  // Apply the standard review fuzz (fuzz range, load balancer, sibling
-  // dispersal, Hard < Good < Easy floors) to intervals supplied by an
-  // external scheduler such as RWKV-Curve, exactly as if FSRS had produced
-  // them. Ratings not present in the request are not present in the response.
-  rpc FuzzReviewIntervals(FuzzReviewIntervalsRequest)
-      returns (FuzzReviewIntervalsResponse);
+  // The answer states of a card when an external scheduler such as
+  // RWKV-Curve supplies the unrounded interval (days) of some buttons: the
+  // same rules as FSRS intervals (sub-day intervals in the intraday queue,
+  // review fuzz, load balancer, sibling dispersal, Again < Hard < Good < Easy
+  // among the day buttons). Buttons without an interval keep FSRS's.
+  rpc SchedulingStatesWithIntervals(SchedulingStatesWithIntervalsRequest)
+      returns (SchedulingStates);
   // Helper APIs for add-ons that need scheduler-accurate FSRS math.
   rpc FsrsCurrentRetrievability(FsrsCurrentRetrievabilityRequest)
       returns (FsrsCurrentRetrievabilityResponse);
@@ -675,7 +676,8 @@ message EvaluateParamsRequest {
 message GetFsrsNewCardIntervalsRequest {
   deck_config.DeckConfig.Config config = 1;
   optional bool fsrs_short_term_with_steps_enabled = 2;
-  optional bool fsrs_learning_queues_disabled = 3;
+  // was fsrs_learning_queues_disabled (spec sched.max-same-day-reviews)
+  reserved 3;
 }
 
 message EvaluateParamsLegacyRequest {
@@ -756,24 +758,14 @@ message FuzzDeltaResponse {
   sint32 delta_days = 1;
 }
 
-message FuzzReviewIntervalsRequest {
+message SchedulingStatesWithIntervalsRequest {
   int64 card_id = 1;
-  // Target intervals in days, one per answer button.
-  optional uint32 again = 2;
-  optional uint32 hard = 3;
-  optional uint32 good = 4;
-  optional uint32 easy = 5;
-}
-
-message FuzzReviewIntervalsResponse {
-  message Interval {
-    uint32 scheduled_days = 1;
-    sint32 fuzz_delta_days = 2;
-  }
-  optional Interval again = 1;
-  optional Interval hard = 2;
-  optional Interval good = 3;
-  optional Interval easy = 4;
+  // Unrounded target intervals in days, one per answer button; may be under
+  // one day (spec sched.sub-day-intervals).
+  optional float again = 2;
+  optional float hard = 3;
+  optional float good = 4;
+  optional float easy = 5;
 }
 
 message FsrsCurrentRetrievabilityRequest {

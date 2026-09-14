@@ -88,6 +88,16 @@ deck-config-new-insertion-order-random-with-v3 =
 
 ## Lapses section
 
+deck-config-max-same-day-reviews = Max number of same-day reviews
+deck-config-max-same-day-reviews-tooltip =
+    How many times a card can come back on the day you already studied it.
+    The first time you see a card on a day does not count. When a card
+    reaches this number, every answer, Again included, shows it again on
+    another day, and its remaining learning or relearning steps are skipped.
+    0 means a card never comes back on the same day. 9999 means no limit.
+    It applies to FSRS, RWKV-Curve and RWKV-Instant. It shows, and applies,
+    only while Learning steps is empty; with learning steps, the steps decide
+    the same-day reviews.
 deck-config-relearning-steps = Relearning steps
 deck-config-relearning-steps-tooltip =
     Zero or more delays, separated by spaces. By default, pressing the `Again`

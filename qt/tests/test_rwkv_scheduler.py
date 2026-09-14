@@ -44,7 +44,6 @@ from aqt.rwkv_scheduler import (
     configure_reviewer_backend_from_environment,
     current_reviewer_diagnostics,
     current_reviewer_retrievability,
-    fuzz_review_interval_overrides,
     interval_from_recall_curve,
     prepare_filtered_deck_retrievability_scores,
     prepare_reviewer_queue_order,
@@ -54,10 +53,12 @@ from aqt.rwkv_scheduler import (
     record_collection_undo,
     record_reviewer_answer,
     rwkv_card_info_rows,
+    rwkv_curve_scheduling_states,
     rwkv_review_enabled,
     rwkv_review_identity,
     rwkv_review_input,
     set_reviewer_backend,
+    unrounded_interval_from_recall_curve,
     update_reviewer_scheduling_states,
 )
 from aqt.rwkv_srs_benchmark import (
@@ -3114,37 +3115,47 @@ def test_apply_review_interval_overrides_records_fuzz_deltas() -> None:
     assert updated.easy.normal.review.fuzz_delta_days == 0
 
 
-def test_fuzz_review_interval_overrides_uses_backend_review_fuzz() -> None:
-    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
-
-    def fuzz_review_intervals(
-        request: scheduler_pb2.FuzzReviewIntervalsRequest,
-    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
+def _states_backend(
+    requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest],
+    rebuilt: SchedulingStates,
+) -> SimpleNamespace:
+    def scheduling_states_with_intervals(
+        request: scheduler_pb2.SchedulingStatesWithIntervalsRequest,
+    ) -> SchedulingStates:
         requests.append(request)
-        response = scheduler_pb2.FuzzReviewIntervalsResponse()
-        response.again.scheduled_days = 1
-        response.again.fuzz_delta_days = 0
-        response.hard.scheduled_days = 9
-        response.hard.fuzz_delta_days = -1
-        response.good.scheduled_days = 22
-        response.good.fuzz_delta_days = 2
-        response.easy.scheduled_days = 40
-        response.easy.fuzz_delta_days = 0
-        return response
+        return rebuilt
 
-    reviewer = SimpleNamespace(
+    return SimpleNamespace(
         mw=SimpleNamespace(
             col=SimpleNamespace(
-                _backend=SimpleNamespace(fuzz_review_intervals=fuzz_review_intervals)
+                _backend=SimpleNamespace(
+                    scheduling_states_with_intervals=scheduling_states_with_intervals
+                )
             )
         )
     )
-    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
 
-    fuzzed, deltas = fuzz_review_interval_overrides(
+
+def test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals() -> None:
+    """Pins spec/scheduling.md#sched.sub-day-intervals and #sched.rwkv-curve-fuzz."""
+
+    requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest] = []
+    rebuilt = SchedulingStates()
+    rebuilt.again.CopyFrom(_relearning_state())
+    rebuilt.hard.CopyFrom(_normal_review_state(interval=2, fuzz_delta=0))
+    rebuilt.good.CopyFrom(_normal_review_state(interval=9, fuzz_delta=-1))
+    rebuilt.easy.CopyFrom(_normal_review_state(interval=20, fuzz_delta=2))
+    reviewer = _states_backend(requests, rebuilt)
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+    original = SchedulingStates()
+    original.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+
+    updated = rwkv_curve_scheduling_states(
         reviewer,
         card,
-        RwkvIntervalOverride(again=1, hard=10, good=20, easy=40),
+        original,
+        RwkvIntervalOverride(again=0.2, hard=1.5, good=9.4, easy=18.0),
+        RwkvIntervalOverride(again=1, hard=2, good=10, easy=19),
     )
 
     assert len(requests) == 1
@@ -3154,57 +3165,71 @@ def test_fuzz_review_interval_overrides_uses_backend_review_fuzz() -> None:
         requests[0].hard,
         requests[0].good,
         requests[0].easy,
-    ) == (
-        1,
-        10,
-        20,
-        40,
-    )
-    assert fuzzed == RwkvIntervalOverride(again=1, hard=9, good=22, easy=40)
-    assert deltas == RwkvIntervalOverride(again=0, hard=-1, good=2, easy=0)
+    ) == pytest.approx((0.2, 1.5, 9.4, 18.0))
+    # the backend's states are used, with each button's S90 as its stability
+    assert updated.again.normal.relearning.learning.scheduled_secs == 120
+    assert updated.good.normal.review.scheduled_days == 9
+    assert updated.good.normal.review.fuzz_delta_days == -1
+    assert updated.good.normal.review.memory_state.stability == pytest.approx(10)
+    assert updated.easy.normal.review.memory_state.stability == pytest.approx(19)
+    # the input states are left alone
+    assert original.good.normal.review.scheduled_days == 3
 
 
-def test_fuzz_review_interval_overrides_only_sends_supplied_ratings() -> None:
-    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
-
-    def fuzz_review_intervals(
-        request: scheduler_pb2.FuzzReviewIntervalsRequest,
-    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
-        requests.append(request)
-        response = scheduler_pb2.FuzzReviewIntervalsResponse()
-        response.good.scheduled_days = 12
-        response.good.fuzz_delta_days = 2
-        return response
-
-    reviewer = SimpleNamespace(
-        mw=SimpleNamespace(
-            col=SimpleNamespace(
-                _backend=SimpleNamespace(fuzz_review_intervals=fuzz_review_intervals)
-            )
-        )
-    )
+def test_rwkv_curve_states_only_send_supplied_ratings() -> None:
+    requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest] = []
+    reviewer = _states_backend(requests, SchedulingStates())
     card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
 
-    fuzzed, deltas = fuzz_review_interval_overrides(
-        reviewer,
-        card,
-        RwkvIntervalOverride(good=10),
+    rwkv_curve_scheduling_states(
+        reviewer, card, SchedulingStates(), RwkvIntervalOverride(good=10.5)
     )
 
     assert not requests[0].HasField("hard")
-    assert fuzzed == RwkvIntervalOverride(good=12)
-    assert deltas == RwkvIntervalOverride(good=2)
+    assert requests[0].good == pytest.approx(10.5)
 
 
-def test_fuzz_review_interval_overrides_without_backend_returns_input() -> None:
+def test_rwkv_curve_states_without_backend_use_whole_days() -> None:
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=None))
     card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
-    overrides = RwkvIntervalOverride(again=1, hard=10, good=20, easy=40)
+    states = SchedulingStates()
+    states.hard.CopyFrom(_normal_review_state(interval=6, fuzz_delta=6))
+    states.good.CopyFrom(_normal_review_state(interval=12, fuzz_delta=12))
 
-    fuzzed, deltas = fuzz_review_interval_overrides(reviewer, card, overrides)
+    updated = rwkv_curve_scheduling_states(
+        reviewer, card, states, RwkvIntervalOverride(hard=0.3, good=20.2)
+    )
 
-    assert fuzzed == overrides
-    assert deltas == RwkvIntervalOverride()
+    assert updated.hard.normal.review.scheduled_days == 1
+    assert updated.good.normal.review.scheduled_days == 21
+
+
+def test_rwkv_curve_states_reject_invalid_intervals() -> None:
+    requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest] = []
+    reviewer = _states_backend(requests, SchedulingStates())
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            rwkv_curve_scheduling_states(
+                reviewer, card, SchedulingStates(), RwkvIntervalOverride(good=bad)
+            )
+    assert requests == []
+
+
+def test_unrounded_interval_from_recall_curve_keeps_sub_day_crossings() -> None:
+    points = [
+        RwkvRecallPoint(elapsed_days=1 / 24, retrievability=0.97),
+        RwkvRecallPoint(elapsed_days=6 / 24, retrievability=0.85),
+        RwkvRecallPoint(elapsed_days=1.0, retrievability=0.6),
+    ]
+
+    unrounded = unrounded_interval_from_recall_curve(
+        points, 0.9, max_interval_days=36500
+    )
+
+    assert unrounded is not None and 1 / 24 < unrounded < 6 / 24
+    # the whole-day variant rounds the same crossing up
+    assert interval_from_recall_curve(points, 0.9, max_interval_days=36500) == 1
 
 
 def _resident_interval_access(
@@ -3378,27 +3403,23 @@ def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
                 ),
             )
 
-    requests: list[scheduler_pb2.FuzzReviewIntervalsRequest] = []
+    requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest] = []
 
-    def fuzz_review_intervals(
-        request: scheduler_pb2.FuzzReviewIntervalsRequest,
-    ) -> scheduler_pb2.FuzzReviewIntervalsResponse:
+    def scheduling_states_with_intervals(
+        request: scheduler_pb2.SchedulingStatesWithIntervalsRequest,
+    ) -> SchedulingStates:
         requests.append(request)
-        response = scheduler_pb2.FuzzReviewIntervalsResponse()
-        response.again.scheduled_days = 1
-        response.again.fuzz_delta_days = 0
-        response.hard.scheduled_days = 5
-        response.hard.fuzz_delta_days = 1
-        response.good.scheduled_days = 8
-        response.good.fuzz_delta_days = -1
-        response.easy.scheduled_days = 20
-        response.easy.fuzz_delta_days = 2
-        return response
+        rebuilt = SchedulingStates()
+        rebuilt.again.CopyFrom(_normal_review_state(interval=1, fuzz_delta=0))
+        rebuilt.hard.CopyFrom(_normal_review_state(interval=5, fuzz_delta=1))
+        rebuilt.good.CopyFrom(_normal_review_state(interval=8, fuzz_delta=-1))
+        rebuilt.easy.CopyFrom(_normal_review_state(interval=20, fuzz_delta=2))
+        return rebuilt
 
     set_reviewer_backend(Backend())
     reviewer = _rwkv_reviewer()
     reviewer.mw.col._backend = SimpleNamespace(
-        fuzz_review_intervals=fuzz_review_intervals
+        scheduling_states_with_intervals=scheduling_states_with_intervals
     )
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     states = SchedulingStates()
@@ -3409,7 +3430,7 @@ def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
 
     updated = update_reviewer_scheduling_states(states, reviewer, card)
 
-    # the RWKV-Curve targets were sent to the backend fuzz for this card...
+    # the RWKV-Curve targets were sent to the backend for this card...
     assert len(requests) == 1
     assert requests[0].card_id == 1
     assert (
@@ -3423,7 +3444,7 @@ def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
         9,
         18,
     )
-    # ...and the fuzzed intervals and their deltas are what the reviewer applies
+    # ...and the backend's states, fuzz deltas included, are what the reviewer uses
     assert updated.again.normal.review.scheduled_days == 1
     assert updated.again.normal.review.fuzz_delta_days == 0
     assert updated.hard.normal.review.scheduled_days == 5
