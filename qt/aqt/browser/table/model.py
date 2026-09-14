@@ -131,6 +131,24 @@ class DataModel(QAbstractTableModel):
         """Get row if it is cached, regardless of staleness."""
         return self._rows.get(self.get_item(index))
 
+    def count_enabled_cells(self, selection: QItemSelection) -> int:
+        """The same number as `len(selection.indexes())`: the cells of the
+        selection whose `flags()` are enabled and selectable. Qt calls
+        `flags()` in Python for every cell to get it, which takes seconds for
+        a large selection; this reads the row cache once instead."""
+        disabled = {item for item, row in self._rows.items() if row.is_disabled}
+        count = 0
+        for selection_range in selection:
+            if not selection_range.isValid():
+                continue
+            rows = range(selection_range.top(), selection_range.bottom() + 1)
+            if disabled:
+                enabled = sum(1 for row in rows if self._items[row] not in disabled)
+            else:
+                enabled = len(rows)
+            count += enabled * selection_range.width()
+        return count
+
     # Reset
 
     def mark_cache_stale(self) -> None:
