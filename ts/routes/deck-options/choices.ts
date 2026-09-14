@@ -11,6 +11,7 @@ import {
     DeckConfig_Config_ReviewCardOrder,
     DeckConfig_Config_ReviewMix,
 } from "@generated/anki/deck_config_pb";
+import { withoutDifficultyOrdersUnderRwkv } from "./review-order";
 import * as tr from "@generated/ftl";
 
 import type { Choice } from "$lib/components/EnumSelector.svelte";
@@ -79,7 +80,14 @@ export function newSortOrderChoices(): Choice<DeckConfig_Config_NewCardSortOrder
 
 export function reviewOrderChoices(
     fsrs: boolean,
+    rwkv = false,
 ): Choice<DeckConfig_Config_ReviewCardOrder>[] {
+    // no difficulty orders under RWKV (spec
+    // deck-options.no-difficulty-order-under-rwkv)
+    return withoutDifficultyOrdersUnderRwkv(allReviewOrderChoices(fsrs), rwkv);
+}
+
+function allReviewOrderChoices(fsrs: boolean): Choice<DeckConfig_Config_ReviewCardOrder>[] {
     return [
         ...[
             {

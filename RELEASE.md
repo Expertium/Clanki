@@ -30,6 +30,34 @@ repeated here unless they materially affect a fork feature.
   RWKV-Curve and RWKV-Instant on (older builds, add-ons) is RWKV-Curve
   everywhere.
 - RWKV-Instant cards show no intervals above the answer buttons.
+- Deck options: "Don't play audio automatically" is now "Play audio
+  automatically", on by default. Audio plays exactly as before.
+- New presets get 9999 maximum reviews/day and sort reviews by ascending
+  retrievability (least likely to be recalled first). Maximum reviews/day is
+  Advanced-only; Simple mode keeps the stored value.
+- Under RWKV-Curve and RWKV-Instant the review sort order no longer offers
+  "Easy cards first" or "Difficult cards first" (difficulty is an FSRS
+  variable); a preset that had one of them uses ascending retrievability.
+- The Review Heatmap add-on is part of Clanki now, with all its settings,
+  in Preferences > Review Heatmap: a review calendar with streak figures
+  under the deck list, on the deck overview and in the legacy stats. An
+  installed copy of the add-on is disabled at start-up, with a one-time
+  notice; its settings carry over.
+- Tools > Add-ons is shown in both modes again.
+- "Skip learning/relearning queues with FSRS/RWKV" is gone. Instead, each
+  preset has "Max number of same-day reviews" (Advanced mode, under Learning
+  steps): once a card has come back that many times on the day you studied
+  it, every answer sends it to another day.
+  0 means cards never come back on the same day; the default is no limit
+  (shown as 9999). It applies to FSRS and RWKV-Curve alike, and only to
+  presets without learning steps; the row shows only then. A collection
+  that had the switch on gets 0 on every preset.
+- FSRS-7 and RWKV-Curve can schedule intervals under a day for any card and
+  any answer button: such an answer goes to the intraday queue with its exact
+  interval. Answers of a day or more stay in whole days, and each day button
+  is at least one day longer than the one before it (Hard ≥ Again + 1, Good
+  ≥ Hard + 1, Easy ≥ Good + 1). Before, only learning answers under half a
+  day went intraday, and RWKV-Curve always rounded up to whole days.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".
@@ -50,8 +78,8 @@ repeated here unless they materially affect a fork feature.
   retention changes" (every algorithm); the separate "Reschedule Cards with
   RWKV-Curve Intervals" button is gone.
 - Deck options holds only per-preset settings now. Limits start from top,
-  Skip learning/relearning queues, Reschedule cards when desired retention
-  changes and Custom scheduling moved to Preferences > Review (Scheduler
+  Reschedule cards when desired retention changes and Custom scheduling
+  moved to Preferences > Review (Scheduler
   group and a Custom scheduling group). The reschedule choice is shown as
   stored instead of opening off every time, and a deck-options save no
   longer overwrites these settings. The globe marker is gone with them.
@@ -68,8 +96,7 @@ repeated here unless they materially affect a fork feature.
   burying are, and that the one switch stands for the three burying settings
   of Advanced mode.
 - Simple mode hides the RWKV submenu of the deck menu (Reschedule With
-  RWKV-Curve, Reschedule All Decks) and shows Tools > Add-ons only while at
-  least one add-on is installed.
+  RWKV-Curve, Reschedule All Decks).
 - "Optimize All Presets" is the one optimize action, and it appears in
   Simple mode too. "Optimize Current Preset", its result comparison, the
   custom decay table and the "Check health when optimizing" switch are gone

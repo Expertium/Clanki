@@ -31,7 +31,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    `deck-options.simple-view`): New cards/day, Maximum reviews/day, Algorithm
    with desired retention (plus the FSRS-7 First intervals table, the
    RWKV-Instant box and the RWKV-Curve reschedule button), one Bury siblings
-   switch (all three bury settings), Don't play audio automatically, one
+   switch (all three bury settings), Play audio automatically, one
    On-screen timer switch (show + stop on
    answer), Easy Days. Advanced mode keeps the per-topic sections. Alongside:
    new presets have empty steps and run RWKV-Curve
@@ -50,7 +50,9 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    (Limits start from top, Skip learning/relearning queues, the reschedule
    choice, Custom scheduling) moved to Preferences > Review
    (`deck-options.collection-wide-in-preferences`; the deck-options save
-   ignores their request fields), "Optimize Current Preset" and the
+   ignores their request fields; Skip learning/relearning queues was then
+   replaced by the per-preset "Max number of same-day reviews",
+   `sched.max-same-day-reviews`), "Optimize Current Preset" and the
    health-check switch are gone, and "Optimize All Presets" shows in both
    modes (`deck-options.fsrs-only-controls`).
 3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
@@ -95,6 +97,13 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
 
 ## Changes already made in Clanki
 
+- Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
+  the add-on's JS bundle vendored under `qt/aqt/data/web/js/vendor/`
+  (`spec/ui.md`, `ui.review-heatmap`). All the add-on's settings, in the
+  Preferences > Review Heatmap tab (`qt/aqt/review_heatmap_prefs.py`;
+  stored under the `reviewHeatmap` collection config key, the on/off switch
+  is `BoolKey::ReviewHeatmapEnabled`); an installed add-on is disabled at
+  start-up with a one-time notice.
 - Ported upstream PR 4717 (FSRS sync reconciliation, JSchoreels) with
   Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the
   client rebuilds the FSRS data of conflicting cards from the merged review

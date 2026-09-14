@@ -26,6 +26,7 @@ pub use update::UpdateDeckConfigsRequest;
 /// Old deck config and cards table store 250% as 2500.
 pub(crate) const INITIAL_EASE_FACTOR_THOUSANDS: u16 = (INITIAL_EASE_FACTOR * 1000.0) as u16;
 
+use crate::config::BoolKey;
 use crate::define_newtype;
 use crate::prelude::*;
 use crate::scheduler::states::review::INITIAL_EASE_FACTOR;
@@ -63,7 +64,9 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     learn_steps: Vec::new(),
     relearn_steps: Vec::new(),
     new_per_day: 20,
-    reviews_per_day: 200,
+    // no practical review cap for new presets; the control is Advanced-only
+    // (spec deck-options.new-preset-defaults)
+    reviews_per_day: 9999,
     new_per_day_minimum: 0,
     initial_ease: 2.5,
     easy_multiplier: 1.3,
@@ -77,7 +80,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     new_card_insert_order: NewCardInsertOrder::Due as i32,
     new_card_gather_priority: NewCardGatherPriority::Deck as i32,
     new_card_sort_order: NewCardSortOrder::Template as i32,
-    review_order: ReviewCardOrder::Day as i32,
+    // least likely to be recalled first (spec deck-options.new-preset-defaults)
+    review_order: ReviewCardOrder::RetrievabilityAscending as i32,
     new_mix: ReviewMix::MixWithReviews as i32,
     interday_learning_mix: ReviewMix::MixWithReviews as i32,
     leech_action: LeechAction::TagOnly as i32,
@@ -127,6 +131,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     review_fuzz_factor_mid: None,
     review_fuzz_factor_long: None,
     review_fuzz_enabled: None,
+    max_same_day_reviews: None,
 };
 
 impl Default for DeckConfig {
@@ -180,6 +185,17 @@ impl DeckConfig {
             &self.inner.fsrs_params_4
         } else {
             &[]
+        }
+    }
+
+    /// The preset's "Max number of same-day reviews". It applies only while
+    /// the preset has no learning steps; with steps, the steps decide the
+    /// same-day reviews (spec sched.max-same-day-reviews).
+    pub(crate) fn effective_max_same_day_reviews(&self) -> Option<u32> {
+        if self.inner.learn_steps.is_empty() {
+            self.inner.max_same_day_reviews
+        } else {
+            None
         }
     }
 
@@ -274,6 +290,29 @@ impl Collection {
             config.set_modified(usn);
         }
         self.update_deck_config_undoable(config, original)
+    }
+
+    /// The removed collection-wide "Skip learning/relearning queues with
+    /// FSRS/RWKV" switch becomes a limit of 0 same-day reviews on every
+    /// preset, and the switch is cleared, so this runs once (spec
+    /// sched.max-same-day-reviews).
+    pub(crate) fn migrate_learning_queues_switch(&mut self) -> Result<()> {
+        if !self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled) {
+            return Ok(());
+        }
+        self.transact_no_undo(|col| {
+            let usn = col.usn()?;
+            for original in col.storage.all_deck_config()? {
+                if original.inner.max_same_day_reviews == Some(0) {
+                    continue;
+                }
+                let mut config = original.clone();
+                config.inner.max_same_day_reviews = Some(0);
+                col.update_deck_config_inner(&mut config, original, Some(usn))?;
+            }
+            col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, false)?;
+            Ok(())
+        })
     }
 
     /// Remove a deck configuration. This will force a full sync.
@@ -431,6 +470,56 @@ mod tests {
     use super::*;
     use crate::collection::CollectionBuilder;
 
+    // Pins spec/scheduling.md#sched.max-same-day-reviews: the removed switch
+    // becomes a limit of 0 on every preset, once, when the collection opens.
+    #[test]
+    fn learning_queues_switch_becomes_a_zero_limit_on_open() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("col.anki2");
+        {
+            let mut col = CollectionBuilder::new(&path).build()?;
+            let mut second = DeckConfig::default();
+            col.add_or_update_deck_config(&mut second)?;
+            col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, true)?;
+            col.close(None)?;
+        }
+        let mut col = CollectionBuilder::new(&path).build()?;
+        assert!(!col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        let configs = col.storage.all_deck_config()?;
+        assert_eq!(configs.len(), 2);
+        for config in &configs {
+            assert_eq!(config.inner.max_same_day_reviews, Some(0));
+        }
+
+        // a later change is not undone by the next open
+        let mut config = configs[0].clone();
+        config.inner.max_same_day_reviews = Some(3);
+        col.add_or_update_deck_config(&mut config)?;
+        col.close(None)?;
+        let col = CollectionBuilder::new(&path).build()?;
+        let config = col.get_deck_config(config.id, false)?.unwrap();
+        assert_eq!(config.inner.max_same_day_reviews, Some(3));
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.max-same-day-reviews: the limit is stored
+    // and synced with the preset; unset means no limit.
+    #[test]
+    fn max_same_day_reviews_survives_storage_and_schema11() -> Result<()> {
+        let mut col = Collection::new();
+        let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(config.inner.max_same_day_reviews, None);
+        config.inner.max_same_day_reviews = Some(2);
+        col.add_or_update_deck_config(&mut config)?;
+        let stored = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(stored.inner.max_same_day_reviews, Some(2));
+        let legacy = DeckConfSchema11::from(stored);
+        let json = serde_json::to_string(&legacy)?;
+        let back = DeckConfig::from(serde_json::from_str::<DeckConfSchema11>(&json)?);
+        assert_eq!(back.inner.max_same_day_reviews, Some(2));
+        Ok(())
+    }
+
     // Pins spec/deck-options.md#deck-options.new-preset-defaults
     #[test]
     fn new_preset_has_no_steps_and_runs_rwkv_curve() {
@@ -440,13 +529,19 @@ mod tests {
         assert!(config.inner.rwkv_review_enabled);
         assert!(!config.inner.rwkv_review_instant_order_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(config.inner.reviews_per_day, 9999);
+        assert_eq!(
+            config.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
+        );
         // the legacy JSON default (Python add_config / restore_to_default)
         // agrees
+        let legacy = DeckConfig::from(DeckConfSchema11::default());
+        assert_eq!(legacy.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(legacy.inner.reviews_per_day, 9999);
         assert_eq!(
-            DeckConfig::from(DeckConfSchema11::default())
-                .inner
-                .leech_action,
-            LeechAction::TagOnly as i32
+            legacy.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
         );
     }
 
@@ -460,6 +555,11 @@ mod tests {
         assert!(config.inner.relearn_steps.is_empty());
         assert!(config.inner.rwkv_review_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(config.inner.reviews_per_day, 9999);
+        assert_eq!(
+            config.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
+        );
         Ok(())
     }
 

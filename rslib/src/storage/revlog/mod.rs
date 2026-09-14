@@ -552,6 +552,23 @@ impl SqliteStorage {
         Ok(review_times)
     }
 
+    /// The reviews of a card logged at or after `since`, counted the way
+    /// `time_of_last_review` finds the last one: answers 1-4, without
+    /// filtered-deck reviews that did not reschedule.
+    pub(crate) fn review_count_since(
+        &self,
+        card_id: CardId,
+        since: TimestampMillis,
+    ) -> Result<u32> {
+        self.db
+            .prepare_cached(
+                "select count() from revlog where cid = ? and id >= ? \
+                 and ease between 1 and 4 and (type != 3 or factor != 0)",
+            )?
+            .query_row(params![card_id, since.0], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
     /// Only intended to be used by the undo code, as Anki can not sync revlog
     /// deletions.
     pub(crate) fn remove_revlog_entry(&self, id: RevlogId) -> Result<()> {

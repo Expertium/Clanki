@@ -68,7 +68,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
-    const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
     const reviewFuzzEnabled = state.reviewFuzzEnabled;
     const reviewFuzzBase = state.reviewFuzzBase;
     const reviewFuzzFactorShort = state.reviewFuzzFactorShort;
@@ -348,7 +347,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         startingDesiredRetentionValue,
         effectiveDesiredRetention,
         $fsrsShortTermWithStepsEnabled,
-        $fsrsLearningQueuesDisabled,
+        $config.maxSameDayReviews,
         selectedFsrsParams($config),
         $config.learnSteps,
         $config.relearnSteps,
@@ -395,7 +394,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         currentRetention: number,
         selectedRetention: number,
         fsrsShortTermWithStepsEnabled: boolean,
-        fsrsLearningQueuesDisabled: boolean,
+        _maxSameDayReviews: number | undefined,
         params: number[],
         _learnSteps: number[],
         _relearnSteps: number[],
@@ -425,7 +424,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 getFsrsNewCardIntervals({
                     config: configWithDesiredRetention(currentConfig, currentRetention),
                     fsrsShortTermWithStepsEnabled,
-                    fsrsLearningQueuesDisabled,
                 }),
                 getFsrsNewCardIntervals({
                     config: configWithDesiredRetention(
@@ -433,7 +431,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         selectedRetention,
                     ),
                     fsrsShortTermWithStepsEnabled,
-                    fsrsLearningQueuesDisabled,
                 }),
             ]);
             if (request !== newCardIntervalRequest) {

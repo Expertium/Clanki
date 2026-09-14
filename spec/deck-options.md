@@ -220,17 +220,17 @@ Given the collection flag `advancedUi` off (Simple mode, the default;
 `spec/ui.md`, `ui.mode-switch`), the deck-options screen is one section,
 titled "Deck Options", with exactly these controls in this order:
 
-1. New cards/day and Maximum reviews/day, without the preset / This deck /
-   Today only tabs: each box edits the level that is in effect (a deck or
-   today override when one is set, else the preset), and the page neither
-   writes nor clears an override;
+1. New cards/day, without the preset / This deck / Today only tabs: the
+   box edits the level that is in effect (a deck or today override when one
+   is set, else the preset), and the page neither writes nor clears an
+   override. Maximum reviews/day is not shown and keeps its stored value;
 2. Desired retention, likewise without its preset / This deck tabs, and, as
    in Advanced mode, the First intervals table and the "Optimize All
    Presets" button for FSRS-7 and the RWKV-Instant information box
    (`deck-options.first-intervals`, `deck-options.fsrs-only-controls`) —
    without the Algorithm dropdown, which is Advanced-only;
 3. Bury siblings — one switch;
-4. Don't play audio automatically;
+4. Play audio automatically (`deck-options.play-audio-switch`);
 5. On-screen timer — one switch;
 6. the Easy Days sliders, collapsed behind an "Easy Days" expander (plain,
    not bold) that the user opens by clicking its name; a small "?" next to
@@ -253,7 +253,7 @@ Given the flag on (Advanced mode), the screen has the per-topic sections
 Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
 bury switches and the two separate timer settings, and it alone shows: the
 preset / This deck / Today only tabs of the daily limits and the preset /
-This deck tabs of desired retention, the
+This deck tabs of desired retention, Maximum reviews/day, the
 Algorithm dropdown, Learning steps, Insertion order, Relearning steps, Leech
 threshold, Leech action, the whole Display order section, the FSRS advanced
 section (`deck-options.fsrs-only-controls`), Skip question when replaying
@@ -276,21 +276,36 @@ dropdown, the limit tabs and Skip question when replaying answer exist only
 in Advanced mode; Desired retention and Bury siblings are visible in Simple
 mode). The section layout itself is markup.
 
+## deck-options.play-audio-switch
+
+Given a preset, the deck-options screen shows its `disableAutoplay` setting,
+in both modes, as a switch named "Play audio automatically" that is on
+while `disableAutoplay` is off. Turning the switch off stores
+`disableAutoplay` on, turning it on stores it off, and showing a preset
+writes nothing. A preset that never changed the setting shows the switch
+on; the revert button restores on. What plays is unchanged: the stored
+setting still decides it.
+
+**Why:** Andrew, 2026-09-15: a positive switch ("Play audio
+automatically", on by default) is simpler than the negative "Don't play
+audio automatically".
+
+**Pinned by:** `ts/routes/deck-options/autoplay-switch.test.ts`.
+
 ## deck-options.collection-wide-in-preferences
 
 Given the deck-options screen, every setting on it belongs to one preset
-(or, for the limit tabs, to the current deck). The four settings that apply
-to the whole collection live in Preferences > Review, in the Scheduler group
-and a "Custom scheduling" group, and nowhere else: Limits start from top
-(`applyAllParentLimits`), Skip learning/relearning queues with FSRS/RWKV
-(`fsrsLearningQueuesDisabled`), Reschedule cards when desired retention
+(or, for the limit tabs, to the current deck). The three settings that
+apply to the whole collection live in Preferences > Review, in the Scheduler
+group and a "Custom scheduling" group, and nowhere else: Limits start from
+top (`applyAllParentLimits`), Reschedule cards when desired retention
 changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
 and Custom scheduling (`cardStateCustomizer`). They are read and written
 through the `Preferences.Scheduling` message; the matching fields of the
 deck-options save request are ignored, so a deck-options save never
-overwrites a Preferences change. The deck-options page still reads two of
-them: Skip learning/relearning queues for the First intervals preview and
-the reschedule choice for the Easy Days warning. With no collection-wide
+overwrites a Preferences change. The deck-options page still reads one of
+them: the reschedule choice, for the Easy Days warning. With no
+collection-wide
 setting left on the page, the globe marker and the "affects the entire
 collection" help icon are gone.
 
@@ -316,21 +331,38 @@ Given a new preset — added on the deck-options screen, created by
 `col.decks.add_config()` without a source, or reset with "Restore
 defaults" — its learning steps and relearning steps are empty and its
 algorithm is RWKV-Curve (`rwkv_review_enabled` on,
-`rwkv_review_instant_order_enabled` off), and its leech action is Tag Only;
-the revert buttons for the steps restore empty and the one for the leech
-action restores Tag Only. Given a new collection, its default preset has these values,
+`rwkv_review_instant_order_enabled` off), its leech action is Tag Only, its
+maximum reviews/day is 9999 and its review sort order is ascending
+retrievability (least likely to be recalled first); the revert buttons
+restore these values. Given a new collection, its default preset has these values,
 so the collection starts on RWKV-Curve. Existing presets keep their stored
 values: a stored preset without the RWKV flag still reads as FSRS-7, and
 scheduling outcomes for existing presets do not change. (Same-day reviews for
 (re)learning steps are always allowed: `sched.same-day-steps-always-on`.)
 
 **Why:** Andrew, 2026-09-14: RWKV-Curve is the algorithm new users should
-get, and it needs no learning steps. Existing presets must keep the
-assumptions their review histories were built on.
+get, and it needs no learning steps. Andrew, 2026-09-15: no practical review
+cap by default, and the reviews most at risk of being forgotten first.
+Existing presets must keep the assumptions their review histories were
+built on.
 
 **Pinned by:** `new_preset_has_no_steps_and_runs_rwkv_curve`,
 `fresh_collection_starts_with_new_preset_defaults`,
 `stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`).
+
+## deck-options.no-difficulty-order-under-rwkv
+
+Given a preset whose algorithm is RWKV-Curve or RWKV-Instant, the review
+sort order dropdown does not offer "Easy cards first" or "Difficult cards
+first" (the difficulty orders, stored as `EASE_ASCENDING` /
+`EASE_DESCENDING`). A preset that stores one of them reads as ascending
+retrievability when the deck-options screen shows it under RWKV, in either
+mode, and saving writes that value. Under FSRS-7 both orders stay available.
+
+**Why:** Andrew, 2026-09-15: difficulty is an FSRS state variable, so
+sorting RWKV cards by it has no meaning.
+
+**Pinned by:** `ts/routes/deck-options/review-order.test.ts`.
 
 ## deck-options.historical-retention-fixed
 

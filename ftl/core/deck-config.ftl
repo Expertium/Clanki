@@ -88,6 +88,16 @@ deck-config-new-insertion-order-random-with-v3 =
 
 ## Lapses section
 
+deck-config-max-same-day-reviews = Max number of same-day reviews
+deck-config-max-same-day-reviews-tooltip =
+    How many times a card can come back on the day you already studied it.
+    The first time you see a card on a day does not count. When a card
+    reaches this number, every answer, Again included, shows it again on
+    another day, and its remaining learning or relearning steps are skipped.
+    0 means a card never comes back on the same day. 9999 means no limit.
+    It applies to FSRS, RWKV-Curve and RWKV-Instant. It shows, and applies,
+    only while Learning steps is empty; with learning steps, the steps decide
+    the same-day reviews.
 deck-config-relearning-steps = Relearning steps
 deck-config-relearning-steps-tooltip =
     Zero or more delays, separated by spaces. By default, pressing the `Again`
@@ -274,6 +284,10 @@ deck-config-stop-timer-on-answer-tooltip =
     This doesn't affect statistics.
 # The Simple-mode switch that shows the timer and stops it on answer together
 deck-config-on-screen-timer = On-screen timer
+# Help text of the Simple-mode "On-screen timer" switch, shown before the
+# two per-setting explanations.
+deck-config-on-screen-timer-simple-tooltip =
+    In Simple mode this one switch stands for the two timer settings of Advanced mode (Show on-screen timer, Stop on-screen timer on answer). Turning it on turns both on; turning it off turns both off. The two settings are explained below.
 
 ## Auto Advance section
 
@@ -292,10 +306,10 @@ deck-config-wait-for-audio-tooltip-2 = Wait for audio to finish before automatic
 ## Audio section
 
 deck-config-audio-title = Audio
-deck-config-disable-autoplay = Don't play audio automatically
-deck-config-disable-autoplay-tooltip =
-    When enabled, Clanki will not play audio automatically.
-    It can be played manually by clicking/tapping on an audio icon, or by using the Replay action.
+deck-config-play-audio-automatically = Play audio automatically
+deck-config-play-audio-automatically-tooltip =
+    When enabled, Clanki plays a card's audio automatically when the card is shown.
+    When disabled, you can play it by clicking/tapping on an audio icon, or by using the Replay action.
 deck-config-skip-question-when-replaying = Skip question when replaying answer
 deck-config-always-include-question-audio-tooltip =
     Whether the question audio should be included when the Replay action is

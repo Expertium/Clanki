@@ -280,10 +280,14 @@ class RwkvRecallPoint:
 
 @dataclass(frozen=True)
 class RwkvIntervalOverride:
-    again: int | None = None
-    hard: int | None = None
-    good: int | None = None
-    easy: int | None = None
+    """One value per answer button. Answer intervals are unrounded days and
+    may be under one day (spec sched.sub-day-intervals); S90s and fuzz deltas
+    are whole days."""
+
+    again: float | None = None
+    hard: float | None = None
+    good: float | None = None
+    easy: float | None = None
 
 
 RwkvButtonProbabilities = tuple[float, float, float, float]
@@ -3809,16 +3813,12 @@ def update_reviewer_scheduling_states(
                     interval_override_used=curve_enabled and has_interval_overrides,
                 )
                 if curve_enabled and has_interval_overrides:
-                    fuzzed_overrides, fuzz_deltas = fuzz_review_interval_overrides(
+                    return rwkv_curve_scheduling_states(
                         reviewer,
                         card,
-                        prediction.interval_overrides,
-                    )
-                    return apply_review_interval_overrides(
                         states,
-                        fuzzed_overrides,
+                        prediction.interval_overrides,
                         prediction.s90_overrides,
-                        fuzz_deltas,
                     )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
@@ -8068,7 +8068,29 @@ def interval_from_recall_curve(
     max_interval_days: int,
     nonmonotonic_tolerance: float = 1e-4,
 ) -> int | None:
-    """Return the first interval where projected recall reaches the target."""
+    """Return the first interval where projected recall reaches the target,
+    rounded up to whole days."""
+
+    interval = unrounded_interval_from_recall_curve(
+        points,
+        target_retention,
+        max_interval_days=max_interval_days,
+        nonmonotonic_tolerance=nonmonotonic_tolerance,
+    )
+    if interval is None:
+        return None
+    return _clamped_interval(interval, max_interval_days)
+
+
+def unrounded_interval_from_recall_curve(
+    points: Sequence[RwkvRecallPoint],
+    target_retention: float,
+    *,
+    max_interval_days: int,
+    nonmonotonic_tolerance: float = 1e-4,
+) -> float | None:
+    """Return the first elapsed time, in days and unrounded, where projected
+    recall reaches the target (spec sched.sub-day-intervals)."""
 
     if not _valid_probability(target_retention):
         raise ValueError("target_retention must be between 0 and 1")
@@ -8089,60 +8111,81 @@ def interval_from_recall_curve(
 
     previous = ordered_points[0]
     if previous.retrievability <= target_retention:
-        return _clamped_interval(previous.elapsed_days, max_interval_days)
+        return min(previous.elapsed_days, float(max_interval_days))
 
     for point in ordered_points[1:]:
         if point.retrievability <= target_retention:
-            return _clamped_interval(
+            return min(
                 _interpolated_elapsed_days(previous, point, target_retention),
-                max_interval_days,
+                float(max_interval_days),
             )
 
         previous = point
 
-    return max_interval_days
+    return float(max_interval_days)
 
 
-def fuzz_review_interval_overrides(
+def rwkv_curve_scheduling_states(
     reviewer: object,
     card: object,
+    states: SchedulingStates,
     overrides: RwkvIntervalOverride,
-) -> tuple[RwkvIntervalOverride, RwkvIntervalOverride]:
-    """Run RWKV-Curve intervals through Anki's review fuzz for this card.
+    s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride(),
+) -> SchedulingStates:
+    """The answer states with RWKV-Curve's unrounded intervals.
 
-    The backend applies the same fuzz range, load balancer, sibling dispersal
-    and Hard < Good < Easy floors that FSRS intervals go through. Returns the
-    fuzzed intervals and, for each of them, the fuzz delta in days. Without a
-    collection backend (unit tests) the intervals come back unchanged with no
-    deltas.
+    The backend rebuilds the states with the same rules as FSRS intervals
+    (spec sched.sub-day-intervals, sched.rwkv-curve-fuzz): a sub-day interval
+    goes to the intraday queue in seconds; a day or more gets the review
+    fuzz, load balancer and sibling dispersal, and the day buttons stay in
+    order. The S90 of each supplied button then becomes its stability.
+    Without a collection backend (unit tests) the intervals are rounded up
+    to whole days and written into the review states as they are.
     """
 
     backend = getattr(_collection(reviewer), "_backend", None)
-    fuzz = getattr(backend, "fuzz_review_intervals", None)
+    build = getattr(backend, "scheduling_states_with_intervals", None)
     card_id = _card_id(card)
-    if not callable(fuzz) or card_id is None:
-        logger.debug("RWKV interval fuzz skipped: no collection backend")
-        return overrides, RwkvIntervalOverride()
+    if not callable(build) or card_id is None:
+        logger.debug("RWKV-Curve states built without backend: whole days only")
+        whole_days = RwkvIntervalOverride(
+            **{
+                rating: _whole_days(getattr(overrides, rating))
+                for rating in _RWKV_RATING_FIELDS
+            }
+        )
+        return apply_review_interval_overrides(states, whole_days, s90_overrides)
 
-    request = scheduler_pb2.FuzzReviewIntervalsRequest(card_id=card_id)
+    request = scheduler_pb2.SchedulingStatesWithIntervalsRequest(card_id=card_id)
     for rating in _RWKV_RATING_FIELDS:
         interval = getattr(overrides, rating)
         if interval is not None:
-            setattr(request, rating, _validated_interval(interval))
-    response = fuzz(request)
+            setattr(request, rating, _validated_unrounded_interval(interval))
+    rebuilt = SchedulingStates()
+    rebuilt.CopyFrom(build(request))
+    return apply_review_s90_overrides(rebuilt, overrides, s90_overrides)
 
-    fuzzed: dict[str, int | None] = {}
-    deltas: dict[str, int | None] = {}
+
+def apply_review_s90_overrides(
+    states: SchedulingStates,
+    overrides: RwkvIntervalOverride,
+    s90_overrides: RwkvIntervalOverride,
+) -> SchedulingStates:
+    """Set the S90 stability of every button RWKV-Curve supplied an interval
+    for, without mutating the input states."""
+
+    updated_states = SchedulingStates()
+    updated_states.CopyFrom(states)
     for rating in _RWKV_RATING_FIELDS:
-        interval = getattr(overrides, rating)
-        if interval is None or not response.HasField(rating):
-            fuzzed[rating] = interval
-            deltas[rating] = None
+        if getattr(overrides, rating) is None:
             continue
-        fuzzed_interval = getattr(response, rating)
-        fuzzed[rating] = int(fuzzed_interval.scheduled_days)
-        deltas[rating] = int(fuzzed_interval.fuzz_delta_days)
-    return RwkvIntervalOverride(**fuzzed), RwkvIntervalOverride(**deltas)
+        s90 = getattr(s90_overrides, rating)
+        if s90 is not None:
+            _set_review_s90_if_present(
+                getattr(updated_states, rating),
+                _validated_interval(s90),
+            )
+    return updated_states
 
 
 def apply_review_interval_overrides(
@@ -8153,9 +8196,10 @@ def apply_review_interval_overrides(
 ) -> SchedulingStates:
     """Apply RWKV day intervals to review answers without mutating input states.
 
-    `fuzz_deltas` carries, per rating, how many days fuzz moved the interval
-    (see `fuzz_review_interval_overrides`); it is shown above the answer
-    buttons when that preference is on. A missing delta is recorded as 0.
+    Used when no collection backend is available (see
+    `rwkv_curve_scheduling_states`). `fuzz_deltas` carries, per rating, how
+    many days fuzz moved the interval; it is shown above the answer buttons
+    when that preference is on. A missing delta is recorded as 0.
     """
 
     updated_states = SchedulingStates()
@@ -8204,7 +8248,7 @@ def _validate_prediction(prediction: RwkvReviewPrediction) -> None:
     for rating in _RWKV_RATING_FIELDS:
         interval = getattr(prediction.interval_overrides, rating)
         if interval is not None:
-            _validated_interval(interval)
+            _validated_unrounded_interval(interval)
         s90 = getattr(prediction.s90_overrides, rating)
         if s90 is not None:
             _validated_interval(s90)
@@ -22718,10 +22762,32 @@ def _clamped_interval(elapsed_days: float, max_interval_days: int) -> int:
     return min(max(1, math.ceil(elapsed_days)), max_interval_days)
 
 
-def _validated_interval(interval: int) -> int:
+def _validated_interval(interval: float) -> int:
     if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
         raise ValueError("interval overrides must be positive day counts")
     return interval
+
+
+def _validated_unrounded_interval(interval: float) -> float:
+    """An unrounded answer interval in days: positive and finite, possibly
+    under one day (spec sched.sub-day-intervals)."""
+
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not math.isfinite(interval)
+        or interval <= 0
+    ):
+        raise ValueError("interval overrides must be positive numbers of days")
+    return float(interval)
+
+
+def _whole_days(interval: float | None) -> int | None:
+    """An unrounded interval rounded up to whole days, at least one."""
+
+    if interval is None:
+        return None
+    return max(1, math.ceil(_validated_unrounded_interval(interval)))
 
 
 def _chunks(items: Sequence[_T], size: int) -> Iterator[Sequence[_T]]:

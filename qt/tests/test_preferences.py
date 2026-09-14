@@ -15,7 +15,6 @@ def make_prefs() -> PreferencesProto:
     prefs.scheduling.learn_ahead_secs = 20 * 60
     prefs.scheduling.rollover = 4
     prefs.scheduling.apply_all_parent_limits = True
-    prefs.scheduling.fsrs_learning_queues_disabled = False
     prefs.scheduling.fsrs_reschedule = True
     prefs.scheduling.card_state_customizer = "// custom"
     prefs.reviewing.show_remaining_due_counts = True
@@ -25,6 +24,7 @@ def make_prefs() -> PreferencesProto:
     prefs.reviewing.interrupt_audio_when_answering = False
     prefs.reviewing.show_colored_buttons = True
     prefs.reviewing.two_button_mode = True
+    prefs.reviewing.review_heatmap_enabled = True
     prefs.editing.adding_defaults_to_current_deck = True
     prefs.editing.paste_images_as_png = False
     prefs.editing.paste_strips_formatting = True
@@ -45,9 +45,6 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
     form.dayOffset.value.return_value = prefs.scheduling.rollover
     form.applyAllParentLimits.isChecked.return_value = (
         prefs.scheduling.apply_all_parent_limits
-    )
-    form.fsrsLearningQueuesDisabled.isChecked.return_value = (
-        prefs.scheduling.fsrs_learning_queues_disabled
     )
     form.fsrsReschedule.isChecked.return_value = prefs.scheduling.fsrs_reschedule
     form.customScheduling.toPlainText.return_value = (
@@ -98,6 +95,9 @@ def make_dialog(prefs: PreferencesProto, form: MagicMock) -> Preferences:
     dialog.form = form
     dialog.prefs = prefs
     dialog.old_prefs = deepcopy(prefs)
+    dialog.heatmap_tab = MagicMock()
+    dialog.heatmap_tab.is_enabled.return_value = prefs.reviewing.review_heatmap_enabled
+    dialog.heatmap_tab.save.return_value = False
     return dialog
 
 
@@ -152,7 +152,6 @@ def test_update_collection_writes_the_collection_wide_scheduling_settings(
     prefs = make_prefs()
     form = make_form(prefs)
     form.applyAllParentLimits.isChecked.return_value = False
-    form.fsrsLearningQueuesDisabled.isChecked.return_value = True
     form.fsrsReschedule.isChecked.return_value = False
     form.customScheduling.toPlainText.return_value = "// changed"
     dialog = make_dialog(prefs, form)
@@ -161,9 +160,26 @@ def test_update_collection_writes_the_collection_wide_scheduling_settings(
 
     scheduling = dialog.prefs.scheduling
     assert scheduling.apply_all_parent_limits is False
-    assert scheduling.fsrs_learning_queues_disabled is True
     assert scheduling.fsrs_reschedule is False
     assert scheduling.card_state_customizer == "// changed"
+    mock_set_preferences.assert_called_once_with(
+        parent=dialog, preferences=dialog.prefs
+    )
+
+
+# Pins spec/ui.md#ui.review-heatmap
+@patch("aqt.preferences.set_preferences")
+def test_update_collection_writes_the_review_heatmap_preference(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()
+    form = make_form(prefs)
+    dialog = make_dialog(prefs, form)
+    dialog.heatmap_tab.is_enabled.return_value = False
+
+    dialog.update_collection(MagicMock())
+
+    assert dialog.prefs.reviewing.review_heatmap_enabled is False
     mock_set_preferences.assert_called_once_with(
         parent=dialog, preferences=dialog.prefs
     )

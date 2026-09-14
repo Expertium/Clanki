@@ -14,6 +14,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { algorithmHelpSettings } from "./algorithm-help";
     import FsrsOptions from "./FsrsOptions.svelte";
     import type { DeckOptionsState } from "./lib";
+    import { reviewOrderForAlgorithm } from "./review-order";
     import {
         flagsFromSchedulerChoice,
         SchedulerChoice,
@@ -61,6 +62,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         if (!fsrsOn) {
             fsrs.set(true);
+        }
+        // Difficulty orders are FSRS-only; under RWKV a stored one reads as
+        // the default order (spec deck-options.no-difficulty-order-under-rwkv).
+        const rwkv = current.rwkvReviewEnabled || current.rwkvReviewInstantOrderEnabled;
+        const order = reviewOrderForAlgorithm(current.reviewOrder, rwkv);
+        if (order !== current.reviewOrder) {
+            config.update((c) => {
+                c.reviewOrder = order;
+                return c;
+            });
         }
     }
     $: normalizeSchedulerFlags($config, $fsrs);

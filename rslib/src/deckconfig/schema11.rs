@@ -380,7 +380,7 @@ impl Default for RevConfSchema11 {
             ease4: 1.3,
             ivl_fct: 1.0,
             max_ivl: 36500,
-            per_day: 200,
+            per_day: 9999,
             hard_factor: 1.2,
             other: Default::default(),
         }
@@ -450,7 +450,8 @@ impl Default for DeckConfSchema11 {
             new_mix: 0,
             new_per_day_minimum: 0,
             interday_learning_mix: 0,
-            review_order: 0,
+            // RetrievabilityAscending (spec deck-options.new-preset-defaults)
+            review_order: 7,
             new_sort_order: 0,
             new_gather_priority: 0,
             bury_interday_learning: false,
@@ -576,6 +577,7 @@ impl From<DeckConfSchema11> for DeckConfig {
             review_fuzz_factor_mid: None,
             review_fuzz_factor_long: None,
             review_fuzz_enabled: None,
+            max_same_day_reviews: None,
             desired_retention: c.desired_retention,
             historical_retention: c.sm2_retention,
             param_search: c.param_search,
