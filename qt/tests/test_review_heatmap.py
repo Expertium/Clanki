@@ -67,6 +67,7 @@ def test_render_report_marks_view_and_falls_back_without_data() -> None:
     report = compute_activity([(today, 12)], [(today + DAY, -4)], today, offset=4)
     html = render_report(report, HeatmapView.deckbrowser, current_deck_only=False)
     assert "rh-view-deckbrowser" in html
+    assert "rh-theme-magenta" in html
     assert 'id="cal-heatmap"' in html
     assert '"whole": true' in html
     assert "12 cards" in html and "Current streak" in html

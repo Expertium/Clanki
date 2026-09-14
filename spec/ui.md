@@ -50,12 +50,12 @@ yesterday). Clicking a past day opens the browser on `prop:rated=-N` (with
 Days are grouped in local time with the "next day starts at" hour applied.
 
 This is the Review Heatmap add-on (Glutanimate, AGPLv3) made native with
-its default look (lime colours, yearly overview); the add-on's options
+the add-on's magenta colours and yearly overview; the add-on's options
 dialog, colour and mode switches, stats-screen injection and contribution
-links are not ported.
+links are not ported, so the one setting is the Preferences checkbox.
 
 **Why:** Andrew, 2026-09-15: integrate the add-on natively, with an option
-to disable it in Preferences.
+to disable it in Preferences, in magenta.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, the disabled flag, the render cache, the browser search);

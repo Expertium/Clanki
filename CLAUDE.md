@@ -97,7 +97,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
 
 - Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
   the add-on's JS bundle vendored under `qt/aqt/data/web/js/vendor/`
-  (`spec/ui.md`, `ui.review-heatmap`). Default look only; one preference
+  (`spec/ui.md`, `ui.review-heatmap`). Magenta, yearly view; one preference
   (`BoolKey::ReviewHeatmapEnabled`, Preferences > Review) turns it off.
 - Ported upstream PR 4717 (FSRS sync reconciliation, JSchoreels) with
   Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the

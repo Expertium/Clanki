@@ -5,7 +5,7 @@
 
 Ported into Clanki from Glutanimate's "Review Heatmap" add-on
 (https://github.com/glutanimate/review-heatmap, GNU AGPLv3), with its
-default look (lime colours, yearly overview) and without the add-on's
+magenta colours and yearly overview, and without the add-on's
 options dialog: the one setting is the "Show the review heatmap"
 checkbox in Preferences > Review (spec ui.review-heatmap).
 
@@ -362,7 +362,9 @@ def render_heatmap(report: ActivityReport, current_deck_only: bool) -> str:
 def render_report(
     report: ActivityReport | None, view: HeatmapView, current_deck_only: bool
 ) -> str:
-    classes = f"rh-platform-{PLATFORM} rh-theme-lime rh-mode-year rh-view-{view.value}"
+    classes = (
+        f"rh-platform-{PLATFORM} rh-theme-magenta rh-mode-year rh-view-{view.value}"
+    )
     if report is None:
         return HTML_MAIN.format(content=HTML_NODATA, classes=classes)
     content = render_heatmap(report, current_deck_only) + render_stats(report.stats)
