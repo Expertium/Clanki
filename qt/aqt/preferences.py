@@ -146,6 +146,8 @@ class Preferences(QDialog):
         reviewing = self.prefs.reviewing
         form.timeLimit.setValue(int(reviewing.time_limit_secs / 60.0))
         form.showEstimates.setChecked(reviewing.show_intervals_on_buttons)
+        form.showColoredButtons.setChecked(reviewing.show_colored_buttons)
+        form.twoButtonMode.setChecked(reviewing.two_button_mode)
         form.showProgress.setChecked(reviewing.show_remaining_due_counts)
         form.showPlayButtons.setChecked(not reviewing.hide_audio_play_buttons)
         form.interrupt_audio.setChecked(reviewing.interrupt_audio_when_answering)
@@ -182,6 +184,8 @@ class Preferences(QDialog):
         reviewing = self.prefs.reviewing
         reviewing.show_remaining_due_counts = form.showProgress.isChecked()
         reviewing.show_intervals_on_buttons = form.showEstimates.isChecked()
+        reviewing.show_colored_buttons = form.showColoredButtons.isChecked()
+        reviewing.two_button_mode = form.twoButtonMode.isChecked()
         reviewing.time_limit_secs = form.timeLimit.value() * 60
         reviewing.hide_audio_play_buttons = not self.form.showPlayButtons.isChecked()
         reviewing.interrupt_audio_when_answering = self.form.interrupt_audio.isChecked()

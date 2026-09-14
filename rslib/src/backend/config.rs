@@ -42,6 +42,8 @@ impl From<BoolKeyProto> for BoolKey {
             BoolKeyProto::FsrsLearningQueuesDisabled => BoolKey::FsrsLearningQueuesDisabled,
             BoolKeyProto::FsrsLegacyEvaluate => BoolKey::FsrsLegacyEvaluate,
             BoolKeyProto::AdvancedUi => BoolKey::AdvancedUi,
+            BoolKeyProto::ShowColoredButtons => BoolKey::ShowColoredButtons,
+            BoolKeyProto::TwoButtonMode => BoolKey::TwoButtonMode,
             BoolKeyProto::ShowFuzzDeltaAboveAnswerButtons => {
                 BoolKey::ShowFuzzDeltaAboveAnswerButtons
             }

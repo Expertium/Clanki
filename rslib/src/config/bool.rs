@@ -45,6 +45,8 @@ pub enum BoolKey {
     FsrsLearningQueuesDisabled,
     ShowFuzzDeltaAboveAnswerButtons,
     AdvancedUi,
+    ShowColoredButtons,
+    TwoButtonMode,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,
     #[strum(to_string = "dayLearnFirst")]
@@ -65,6 +67,8 @@ impl Collection {
             // some keys default to true
             BoolKey::InterruptAudioWhenAnswering
             | BoolKey::ShowIntervalsAboveAnswerButtons
+            | BoolKey::ShowColoredButtons
+            | BoolKey::TwoButtonMode
             | BoolKey::AddingDefaultsToCurrentDeck
             | BoolKey::FutureDueShowBacklog
             | BoolKey::ShowRemainingDueCountsInStudy
@@ -109,6 +113,14 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pins spec/reviewer.md#review.answer-buttons
+    #[test]
+    fn answer_button_options_default_to_on() {
+        let col = Collection::new();
+        assert!(col.get_config_bool(BoolKey::ShowColoredButtons));
+        assert!(col.get_config_bool(BoolKey::TwoButtonMode));
+    }
 
     // Pins spec/scheduling.md#sched.fuzz-always-on
     #[test]

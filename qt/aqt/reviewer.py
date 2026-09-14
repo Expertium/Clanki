@@ -1633,8 +1633,10 @@ class Reviewer:
                 key = aqt.mw.pm.get_answer_key(ease)
                 if not key:
                     continue
-                ease = cast(Literal[1, 2, 3, 4], ease)
-                answer_card_according_to_pressed_key = partial(self._answerCard, ease)
+                target = self._ease_for_answer_key(ease)
+                if target is None:
+                    continue
+                answer_card_according_to_pressed_key = partial(self._answerCard, target)
                 yield (key, answer_card_according_to_pressed_key)
 
         return [
@@ -2057,10 +2059,27 @@ timeboxReps = 0;
     def _defaultEase(self) -> Literal[2, 3]:
         return 3
 
+    def _two_button_mode(self) -> bool:
+        """Only Again and Good are offered (spec review.answer-buttons)."""
+        return self.mw.col.get_config_bool(Config.Bool.TWO_BUTTON_MODE)
+
+    def _ease_for_answer_key(self, ease: int) -> Literal[1, 2, 3, 4] | None:
+        """Which ease an answer key (1-4) triggers; None when the key does nothing."""
+        if self._two_button_mode():
+            # keys 1 and 2 follow the two buttons on screen; 3 is Good too;
+            # 4 (Easy) is not available
+            return {1: 1, 2: 3, 3: 3}.get(ease)
+        return cast(Literal[1, 2, 3, 4], ease)
+
     def _answerButtonList(self) -> tuple[tuple[int, str], ...]:
         button_count = self.mw.col.sched.answerButtons(self.card)
-        if button_count == 2:
+        if self._two_button_mode() and button_count == 4:
             buttons_tuple: tuple[tuple[int, str], ...] = (
+                (1, tr.studying_again()),
+                (3, tr.studying_good()),
+            )
+        elif button_count == 2:
+            buttons_tuple = (
                 (1, tr.studying_again()),
                 (2, tr.studying_good()),
             )
@@ -2102,12 +2121,17 @@ timeboxReps = 0;
                 self._v3.states.current,
             )
         labels = self.mw.col.sched.describe_next_states(self._v3.states)
+        colored = self.mw.col.get_config_bool(Config.Bool.SHOW_COLORED_BUTTONS)
 
         def but(i: int, label: str) -> str:
             if i == default:
                 extra = """id="defease" """
             else:
                 extra = ""
+            if colored:
+                # upstream PR 4371: red border for Again, green for the rest
+                button_class = "answerIncorrect" if i == 1 else "answerCorrect"
+                extra += f'class="answerButton {button_class}" '
             due = self._buttonTime(i, v3_labels=labels)
             key = (
                 tr.actions_shortcut_key(val=aqt.mw.pm.get_answer_key(i))
