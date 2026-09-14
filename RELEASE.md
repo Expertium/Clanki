@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Answer buttons have coloured borders (red Again, green otherwise; from
+  upstream PR 4371) and, by default, only **Again** and **Good** are shown.
+  Both can be switched off in Preferences > Review. In two-button mode key
+  1 is Again, keys 2 and 3 are Good.
 - Deck options in Simple mode are one section: New cards/day, Maximum
   reviews/day, Algorithm (with desired retention, the First intervals table
   for FSRS-7 and the RWKV-Curve reschedule button), one **Bury siblings**

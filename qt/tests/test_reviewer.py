@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -2606,3 +2607,54 @@ def test_answer_card_updates_rwkv_state_used_by_other_card(
         reviewer, card_b
     ) == pytest.approx(0.60)
     assert reviewer._answeredIds == [1]
+
+
+# ---- spec/reviewer.md#review.answer-buttons ----------------------------------
+
+
+def _button_reviewer(*, two_button: bool, answer_buttons: int = 4) -> Any:
+    from types import SimpleNamespace
+
+    from anki.config import Config
+
+    def get_config_bool(key: int) -> bool:
+        return {Config.Bool.TWO_BUTTON_MODE: two_button}.get(key, True)
+
+    return SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                get_config_bool=get_config_bool,
+                sched=SimpleNamespace(answerButtons=lambda _card: answer_buttons),
+            )
+        ),
+        card=object(),
+        _two_button_mode=lambda: two_button,
+    )
+
+
+def test_two_button_mode_offers_again_and_good() -> None:
+    from aqt.reviewer import Reviewer
+
+    reviewer = _button_reviewer(two_button=True)
+    assert [ease for ease, _ in Reviewer._answerButtonList(reviewer)] == [1, 3]
+    reviewer = _button_reviewer(two_button=False)
+    assert [ease for ease, _ in Reviewer._answerButtonList(reviewer)] == [1, 2, 3, 4]
+
+
+def test_two_button_mode_maps_answer_keys() -> None:
+    from aqt.reviewer import Reviewer
+
+    reviewer = _button_reviewer(two_button=True)
+    assert [Reviewer._ease_for_answer_key(reviewer, k) for k in (1, 2, 3, 4)] == [
+        1,
+        3,
+        3,
+        None,
+    ]
+    reviewer = _button_reviewer(two_button=False)
+    assert [Reviewer._ease_for_answer_key(reviewer, k) for k in (1, 2, 3, 4)] == [
+        1,
+        2,
+        3,
+        4,
+    ]
