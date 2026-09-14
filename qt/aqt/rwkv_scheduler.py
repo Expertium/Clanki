@@ -1950,6 +1950,51 @@ class RwkvStatefulReviewerBackend:
             for retrievability in retrievabilities
         ]
 
+    @property
+    def supports_resident_current_intervals(self) -> bool:
+        """True when the runtime can predict current intervals in place."""
+
+        return callable(
+            getattr(self._runtime, "predict_current_intervals_many_from_warm_up", None)
+        )
+
+    def predict_current_intervals_inputs_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[RwkvReviewPrediction | None] | None:
+        """Query-only current interval and S90 straight from the resident state.
+
+        This is all that "Reschedule cards with RWKV-Curve" needs. The full
+        prediction path additionally runs the four simulated-answer passes,
+        serializes each card's state across the bridge, hashes it, and holds
+        the GIL; none of that changes the two numbers used here. Returns None
+        when the runtime cannot do it, so callers fall back to the full path.
+        """
+
+        predict_many = getattr(
+            self._runtime,
+            "predict_current_intervals_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            return None
+        if not review_inputs:
+            return []
+        if any(not review_input.is_query for review_input in review_inputs):
+            return None
+
+        outputs = predict_many(review_inputs)
+        if len(outputs) != len(review_inputs):
+            raise ValueError("RWKV current interval prediction count mismatch")
+        return [
+            RwkvReviewPrediction(
+                retrievability=float(retrievability),
+                current_interval=int(current_interval) if current_interval else None,
+                current_s90=int(current_s90) if current_s90 else None,
+            )
+            for retrievability, current_interval, current_s90 in outputs
+        ]
+
     def predict_review_requests_uncached(
         self,
         requests: Sequence[RwkvReviewPredictionRequest],
@@ -20420,7 +20465,18 @@ def _rwkv_review_reschedule_items_for_deck(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            if state_token is None:
+            # Rescheduling only consumes current_interval / current_s90, so try
+            # the query-only resident-state prediction first; the full path
+            # (five passes per card plus a state round-trip through the bridge)
+            # is the fallback when the runtime cannot provide it.
+            resident = _rwkv_review_current_interval_predictions_for_inputs(
+                batch,
+                state_token=state_token,
+            )
+            predictions: list[RwkvReviewPrediction | None] | None
+            if not isinstance(resident, _ResidentIntervalsUnavailable):
+                predictions = resident
+            elif state_token is None:
                 predictions = _rwkv_review_predictions_for_inputs(
                     batch,
                     batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
@@ -20685,7 +20741,18 @@ def _rwkv_review_reschedule_items_from_input_build(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            if state_token is None:
+            # Rescheduling only consumes current_interval / current_s90, so try
+            # the query-only resident-state prediction first; the full path
+            # (five passes per card plus a state round-trip through the bridge)
+            # is the fallback when the runtime cannot provide it.
+            resident = _rwkv_review_current_interval_predictions_for_inputs(
+                batch,
+                state_token=state_token,
+            )
+            predictions: list[RwkvReviewPrediction | None] | None
+            if not isinstance(resident, _ResidentIntervalsUnavailable):
+                predictions = resident
+            elif state_token is None:
                 predictions = _rwkv_review_predictions_for_inputs(
                     batch,
                     batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
@@ -21167,6 +21234,65 @@ def _predict_retrievability_inputs_from_warm_up_uncached(
     if not callable(predict):
         raise ValueError("RWKV resident retrievability prediction is unavailable")
     return cast(Sequence[RwkvReviewPrediction | None], predict(review_inputs))
+
+
+class _ResidentIntervalsUnavailable:
+    """Sentinel: the backend cannot predict current intervals in place."""
+
+
+_RESIDENT_INTERVALS_UNAVAILABLE = _ResidentIntervalsUnavailable()
+
+
+def _rwkv_review_current_interval_predictions_for_inputs(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    *,
+    state_token: _ReviewerBackendPredictionStateToken | None = None,
+) -> list[RwkvReviewPrediction | None] | None | _ResidentIntervalsUnavailable:
+    """Query-only current interval and S90 straight from the resident state.
+
+    Used by rescheduling, which needs nothing else. Returns the
+    `_RESIDENT_INTERVALS_UNAVAILABLE` sentinel when the backend cannot do it,
+    so the caller falls back to `_rwkv_review_predictions_for_inputs`. The
+    busy / state-changed outcomes (None, or the abort exception when a state
+    token is held) are the same as that function's.
+    """
+
+    if not getattr(_reviewer_backend, "supports_resident_current_intervals", False):
+        return _RESIDENT_INTERVALS_UNAVAILABLE
+
+    with _try_reviewer_backend_prediction_access(
+        expected_state_token=state_token,
+    ) as backend:
+        if backend is None:
+            logger.debug("RWKV input prediction skipped: backend busy")
+            if state_token is not None:
+                _raise_reviewer_backend_prediction_unavailable(state_token)
+            return None
+        predict = getattr(
+            backend, "predict_current_intervals_inputs_from_warm_up", None
+        )
+        if not callable(predict):
+            return _RESIDENT_INTERVALS_UNAVAILABLE
+        state_generation = _reviewer_backend_state_generation(backend)
+        start = time.monotonic()
+        predictions = predict([review_input for _, review_input in inputs_by_card_id])
+        if predictions is None:
+            return _RESIDENT_INTERVALS_UNAVAILABLE
+        logger.debug(
+            "RWKV review inputs predicted from resident state (current intervals "
+            "only): inputs=%s elapsed_ms=%.1f",
+            len(inputs_by_card_id),
+            (time.monotonic() - start) * 1000,
+        )
+        if _reviewer_backend_prediction_access_is_current(
+            backend,
+            expected_state_generation=state_generation,
+            expected_state_token=state_token,
+        ):
+            return list(predictions)
+        if state_token is not None:
+            raise _ReviewerBackendPredictionAborted
+        return None
 
 
 def _rwkv_review_predictions_for_inputs(
