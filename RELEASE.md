@@ -27,6 +27,17 @@ repeated here unless they materially affect a fork feature.
   Simple mode the deck list hides the Get Shared / Create Deck / Import File
   row, and deck options show their simplified view; the "Show advanced
   options" switch on the deck-options page is gone.
+- Sync: after a normal sync, cards whose FSRS data was changed on this device
+  while another device also changed them are repaired from the merged review
+  history, so a full sync is no longer needed to get the two devices to agree
+  on memory state, desired retention and decay. When the last deck-options
+  save had "Reschedule cards on change" on, such a card also gets back the
+  interval and due date its most recent review produced; otherwise its
+  schedule is left alone. Moving a card between decks never reschedules it, a
+  forgotten card stays forgotten, and no review-log entries are written. The
+  sync protocol is unchanged, so AnkiWeb and self-hosted servers keep working.
+- Rescheduling ("Reschedule cards on change" and the RWKV-Curve reschedule)
+  no longer adds rows to the review log. Existing rescheduled rows are kept.
 - The application is now called **Clanki** in window titles, dialogs, the
   About screen, the installer and the English interface text. File-format
   names, the `Anki2` data folder and the version string that add-ons read
@@ -65,6 +76,10 @@ repeated here unless they materially affect a fork feature.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.
+- The simulator ("FSRS Simulator" and "Help Me Decide") is FSRS-only. The
+  RWKV workload simulation, the FSRS/RWKV comparison and the RWKV sample
+  cap, DR step and state stride settings are gone, together with their
+  desktop endpoints. RWKV presets simulate with their FSRS parameters.
 - "Reschedule cards with RWKV-Curve" is much faster. It now runs one forward
   pass per card against the resident RWKV state instead of five, no longer
   copies each card's state between Python and Rust, and no longer freezes the

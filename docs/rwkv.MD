@@ -112,12 +112,12 @@ that may depend on the changed content. When the resident and persisted history
 identities match, Anki also advances the persisted collection marker so these
 changes do not force a full cache validation on the next launch.
 
-State-cache work is serialized across profile changes. Workload simulations and
-calibration replays also hide the resident state while they temporarily use the
-backend, then restore and republish it only if the collection generation is still
-current. A real answer or undo never waits for a long replay: it invalidates that
-work, leaves the runtime unready, and lets the next canonical restore include the
-collection change. Answers, undo, and redo wait on their collection worker for
+State-cache work is serialized across profile changes. Calibration replays also
+hide the resident state while they temporarily use the backend, then restore and
+republish it only if the collection generation is still current. A real answer
+or undo never waits for a long replay: it invalidates that work, leaves the
+runtime unready, and lets the next canonical restore include the collection
+change. Answers, undo, and redo wait on their collection worker for
 an in-flight prediction reader to release the resident backend before applying
 the state change. This keeps the UI thread responsive and preserves the resident
 state instead of treating ordinary queue scoring as state loss.
@@ -401,8 +401,7 @@ enabled, scored review cards are ordered by
 target is the per-card target carried with the transient score, taken from the
 card or preset desired retention. A score of `1` is at the card's target; lower scores are
 further below it. This same priority is applied before review limits, when
-selecting a daily-minimum card, during partial candidate refresh, and in RWKV
-workload simulation.
+selecting a daily-minimum card, and during partial candidate refresh.
 
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
@@ -593,53 +592,6 @@ due day are recomputed from the card's last review day. New, learning,
 relearning, suspended, and filtered cards are not changed by this maintenance
 action.
 
-Deck Options also exposes an experimental RWKV Desired Retention "Help Me
-Decide" workload simulator. It is desktop-only and requires a usable local RWKV
-state cache. The Deck Options action opens an FSRS/RWKV comparison that overlays
-both curves in one chart. FSRS and RWKV use distinct colors, and the chart hover
-reports both values plus RWKV's relative performance. Both runs are built from
-the same exact per-preset request, including days, new cards/day, reviews/day,
-maximum interval, review order, whether new cards ignore the review limit, and
-leech suspension. The simulator runs a fixed target-retention sweep over RWKV-enabled
-new and review cards matched by the selected deck/preset search, snapshots and
-restores the recurrent RWKV state for each target, and reports the result through the
-same workload chart shape as the FSRS Help Me Decide tool. The embedded Rust
-runtime runs the whole sweep behind one bridge call: it restores the snapshot
-for each target, predicts due reviews, chooses deterministic simulated grades,
-and applies answer-state transitions sequentially inside Rust. Development
-backends without that embedded simulator fall back to the older Python loop.
-Simulated grade sampling uses the same deterministic per-card quantiles across
-target retentions, and reported review counts are normalized to be nondecreasing
-as target retention rises, reducing adjacent-DR sawtooth noise in the Reviews
-view.
-The Efficiency view reports net memorized gain per hour relative to the
-reviewless baseline, so it can be negative when simulated reviews leave the
-final predicted retrievability sum below the no-review trajectory.
-When Smooth graph is enabled, RWKV workload curves use a centered moving window
-over neighboring target-retention points to reduce approximate-simulation noise.
-While the sweep is running, Deck Options polls a desktop-local progress value
-that advances over the reviewless baseline and each target-retention point.
-For large collections, the RWKV simulator exposes approximate controls: the
-sample cap limits how many active review cards are simulated and scales the
-result back up, the DR step skips intermediate target-retention points, and the
-state stride updates the simulated recurrent RWKV state only every Nth simulated
-review. When sampling is active, the daily review limit is scaled down for the
-sample before results are scaled back up, and reported review totals are capped
-at the configured daily limit multiplied by the simulated day count. The
-standalone RWKV workload form defaults to a sample cap of `250`, a DR step of
-`1`, a max target retention of `99%`, and a state stride of `10`. The
-combined comparison defaults to exact settings so its RWKV and FSRS curves
-cover the same target-retention points without sampling or skipped state
-updates.
-Exact mode is still available by setting the sample cap to `0`, DR step to `1`,
-and state stride to `1`.
-Existing new cards are introduced up to the shared daily limit and transition
-to review scheduling after their first simulated answer. The RWKV path does not
-simulate separate learning/relearning steps, additional synthetic new cards,
-or easy days. It uses cached historical RWKV retrievability
-samples when available to estimate grade mix and review time, with a
-deterministic fallback model otherwise.
-
 After an answer is applied on desktop, the reviewer updates the in-memory RWKV
 state. Every `rwkv_review_refresh_interval` answered reviews, it refreshes the
 transient RWKV score map and invalidates the active queue so the next queue
@@ -775,9 +727,9 @@ Add-ons that need these rows can call
 `aqt.rwkv_scheduler.ensure_rwkv_calibration_data(mw)` from a background task.
 The synchronous API returns immediately when current role-aware data is
 complete; otherwise it performs the same calibration-only replay while
-snapshotting and restoring active reviewer state. Calibration replays,
-first-review comparisons, and workload simulations claim an exclusive
-generation-scoped backend operation. A real answer that arrives during one of
+snapshotting and restoring active reviewer state. Calibration replays and
+first-review comparisons claim an exclusive generation-scoped backend
+operation. A real answer that arrives during one of
 these temporary operations invalidates it and leaves state unready for replay
 from canonical history instead of letting the temporary snapshot erase the
 answer.

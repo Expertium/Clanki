@@ -34,7 +34,6 @@ from aqt.rwkv_scheduler import (
     RwkvWarmUpProgress,
     RwkvWarmUpProgressCallback,
     _rwkv_state_update_input,
-    _RwkvWorkloadScheduling,
     interval_from_recall_curve,
     rwkv_review_identity,
     rwkv_review_input,
@@ -1065,79 +1064,6 @@ class _RustRwkvRuntime:
             for answer_outputs in outputs
         ]
 
-    def simulate_workload(
-        self,
-        *,
-        inputs: Sequence[tuple[int, RwkvReviewInput, int]],
-        snapshot: RwkvBackendCacheSnapshot,
-        min_dr: int,
-        max_dr: int,
-        target_dr_step: int,
-        days_to_simulate: int,
-        scheduling: _RwkvWorkloadScheduling,
-        state_update_interval: int,
-        review_model: object,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> object:
-        simulate_workload = getattr(self._process, "simulate_workload", None)
-        if not callable(simulate_workload):
-            raise ValueError("RWKV Rust runtime does not support workload simulation")
-
-        build_start = time.monotonic()
-        rows = [_workload_input_row(review_input) for _, review_input, _ in inputs]
-        grade_seconds = tuple(getattr(review_model, "grade_seconds"))
-        bucket_probabilities = _workload_bucket_probabilities(review_model)
-        build_elapsed_ms = (time.monotonic() - build_start) * 1000
-        predict_start = time.monotonic()
-        logger.debug(
-            "RWKV embedded Rust workload simulation bridge started: "
-            "inputs=%s dr=%s..%s step=%s days=%s state_update_interval=%s "
-            "build_elapsed_ms=%.1f",
-            len(rows),
-            min_dr,
-            max_dr,
-            target_dr_step,
-            days_to_simulate,
-            state_update_interval,
-            build_elapsed_ms,
-        )
-        with self._locked_process():
-            output = simulate_workload(
-                rows,
-                _workload_snapshot(snapshot),
-                int(min_dr),
-                int(max_dr),
-                int(target_dr_step),
-                int(days_to_simulate),
-                int(scheduling.review_limit),
-                int(scheduling.new_limit),
-                bool(scheduling.new_cards_ignore_review_limit),
-                int(scheduling.max_interval),
-                int(scheduling.review_order),
-                scheduling.suspend_after_lapses,
-                int(state_update_interval),
-                grade_seconds,
-                bucket_probabilities,
-                progress,
-            )
-        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
-        logger.debug(
-            "RWKV embedded Rust workload simulation bridge finished: "
-            "inputs=%s dr=%s..%s step=%s days=%s state_update_interval=%s "
-            "build_elapsed_ms=%.1f "
-            "bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
-            len(rows),
-            min_dr,
-            max_dr,
-            target_dr_step,
-            days_to_simulate,
-            state_update_interval,
-            build_elapsed_ms,
-            predict_elapsed_ms,
-            build_elapsed_ms + predict_elapsed_ms,
-        )
-        return output
-
     def snapshot(self, review_input: RwkvReviewInput) -> object:
         with self._locked_process():
             return self._process.state_for_card(review_input.identity.card_id)
@@ -1222,39 +1148,6 @@ def _review_input_row(
     )
 
 
-def _workload_input_row(
-    review_input: RwkvReviewInput,
-) -> tuple[
-    int,
-    int | None,
-    int | None,
-    int | None,
-    bool,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-    float | None,
-    float | None,
-    float | None,
-    float | None,
-    bool,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-]:
-    return (
-        *_review_input_row(review_input),
-        review_input.interval_days,
-        review_input.ease_factor,
-        review_input.reps,
-        review_input.lapses,
-    )
-
-
 def _workload_snapshot(
     snapshot: RwkvBackendCacheSnapshot,
 ) -> tuple[
@@ -1320,16 +1213,6 @@ def _selected_state_items(
         (state_id, states[state_id])
         for state_id in sorted(selected_ids)
         if state_id in states
-    ]
-
-
-def _workload_bucket_probabilities(
-    review_model: object,
-) -> list[tuple[int, float, float, float, float]]:
-    probabilities = getattr(review_model, "bucket_probabilities")
-    return [
-        (int(bucket), float(again), float(hard), float(good), float(easy))
-        for bucket, (again, hard, good, easy) in sorted(probabilities.items())
     ]
 
 
