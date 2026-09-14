@@ -22,6 +22,15 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Sync: after a normal sync, cards whose FSRS data was changed on this device
+  while another device also changed them are repaired from the merged review
+  history, so a full sync is no longer needed to get the two devices to agree
+  on memory state, desired retention and decay. When the last deck-options
+  save had "Reschedule cards on change" on, such a card also gets back the
+  interval and due date its most recent review produced; otherwise its
+  schedule is left alone. Moving a card between decks never reschedules it, a
+  forgotten card stays forgotten, and no review-log entries are written. The
+  sync protocol is unchanged, so AnkiWeb and self-hosted servers keep working.
 - The application is now called **Clanki** in window titles, dialogs, the
   About screen, the installer and the English interface text. File-format
   names, the `Anki2` data folder and the version string that add-ons read

@@ -43,6 +43,10 @@ pub enum BoolKey {
     LoadBalancerEnabled,
     FsrsShortTermWithStepsEnabled,
     FsrsLearningQueuesDisabled,
+    /// The "Reschedule cards on change" choice of the last deck-options
+    /// save. Gates the schedule half of the post-sync FSRS reconcile pass
+    /// (spec `sync.post-sync-reschedule-gate`).
+    FsrsReschedule,
     ShowFuzzDeltaAboveAnswerButtons,
     DeckOptionsAdvanced,
     #[strum(to_string = "normalize_note_text")]
