@@ -77,6 +77,16 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
       median speedup is at least 2.5%. Anything else is "no change", however
       promising it looks.
 
+   And a rule on what a speedup may change in the outputs:
+   - Bit-exact speedups (the output does not change at all) are always
+     welcome.
+   - A speedup that is not bit-exact but only causes minor output differences
+     that do not matter in practice is fine, provided you are sure nothing
+     breaks in a subtle way. Always ask yourself "Is there an edge case where
+     this would blow up?" and check it before applying.
+   - A speedup that is not bit-exact and changes the outputs significantly is
+     applied only after consulting Andrew.
+
 ## Changes already made in Clanki
 
 - Ported upstream PR 4717 (FSRS sync reconciliation, JSchoreels) with
