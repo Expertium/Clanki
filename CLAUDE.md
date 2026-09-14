@@ -220,6 +220,12 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   `check:vitest` fails two ADR tests in `ts/routes/graphs/simulator.test.ts`
   because this PC's locale is ru-RU and `Intl` formats `20.0%` as `20,0 %`;
   upstream CI is en-US. Pre-existing, not a regression signal.
+- **The installer templates are git submodules.** `qt/installer/windows-template`
+  and `mac-template` are empty in a fresh clone until
+  `git submodule update --init -- qt/installer/windows-template qt/installer/mac-template`.
+  Without them `qt/tests/test_installer.py` fails inside Briefcase with
+  "Unable to clone application template" (exit status 200). The `ftl/*-repo`
+  submodules are handled by the build itself.
 - **Close the running Clanki before a build that touches PyQt.** `uv sync`
   cannot replace `out/pyenv/.../PyQt6/Qt6/resources/*.bin` while the app holds
   them, and the `pyenv` step fails with "used by another process" (os error 32).
