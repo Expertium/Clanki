@@ -215,7 +215,7 @@ titled "Deck Options", with exactly these controls in this order:
    (`deck-options.first-intervals`, `deck-options.fsrs-only-controls`) —
    without the Algorithm dropdown, which is Advanced-only;
 3. Bury siblings — one switch;
-4. Don't play audio automatically;
+4. Play audio automatically (`deck-options.play-audio-switch`);
 5. On-screen timer — one switch;
 6. the Easy Days sliders, collapsed behind an "Easy Days" expander (plain,
    not bold) that the user opens by clicking its name; a small "?" next to
@@ -260,6 +260,22 @@ settings only matter to power users.
 dropdown, the limit tabs and Skip question when replaying answer exist only
 in Advanced mode; Desired retention and Bury siblings are visible in Simple
 mode). The section layout itself is markup.
+
+## deck-options.play-audio-switch
+
+Given a preset, the deck-options screen shows its `disableAutoplay` setting,
+in both modes, as a switch named "Play audio automatically" that is on
+while `disableAutoplay` is off. Turning the switch off stores
+`disableAutoplay` on, turning it on stores it off, and showing a preset
+writes nothing. A preset that never changed the setting shows the switch
+on; the revert button restores on. What plays is unchanged: the stored
+setting still decides it.
+
+**Why:** Andrew, 2026-09-15: a positive switch ("Play audio
+automatically", on by default) is simpler than the negative "Don't play
+audio automatically".
+
+**Pinned by:** `ts/routes/deck-options/autoplay-switch.test.ts`.
 
 ## deck-options.collection-wide-in-preferences
 

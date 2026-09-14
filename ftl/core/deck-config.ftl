@@ -306,10 +306,10 @@ deck-config-wait-for-audio-tooltip-2 = Wait for audio to finish before automatic
 ## Audio section
 
 deck-config-audio-title = Audio
-deck-config-disable-autoplay = Don't play audio automatically
-deck-config-disable-autoplay-tooltip =
-    When enabled, Clanki will not play audio automatically.
-    It can be played manually by clicking/tapping on an audio icon, or by using the Replay action.
+deck-config-play-audio-automatically = Play audio automatically
+deck-config-play-audio-automatically-tooltip =
+    When enabled, Clanki plays a card's audio automatically when the card is shown.
+    When disabled, you can play it by clicking/tapping on an audio icon, or by using the Replay action.
 deck-config-skip-question-when-replaying = Skip question when replaying answer
 deck-config-always-include-question-audio-tooltip =
     Whether the question audio should be included when the Replay action is

@@ -22,6 +22,8 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Deck options: "Don't play audio automatically" is now "Play audio
+  automatically", on by default. Audio plays exactly as before.
 - New presets get 9999 maximum reviews/day and sort reviews by ascending
   retrievability (least likely to be recalled first). Maximum reviews/day is
   Advanced-only; Simple mode keeps the stored value.
