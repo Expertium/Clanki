@@ -108,9 +108,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigOnScreenTimer(),
             help:
                 tr.deckConfigOnScreenTimerSimpleTooltip() +
-                "
-
-" +
+                "\n\n" +
                 tr.deckConfigShowAnswerTimerTooltip() +
                 "\n\n" +
                 tr.deckConfigStopTimerOnAnswerTooltip(),
