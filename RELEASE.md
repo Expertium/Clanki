@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The Review Heatmap add-on is part of Clanki now: a review calendar with
+  streak figures under the deck list and on the deck overview. Preferences >
+  Review has a checkbox to hide it. Users who still have the add-on
+  installed should remove it.
+- Tools > Add-ons is shown in both modes again.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".
@@ -60,8 +65,7 @@ repeated here unless they materially affect a fork feature.
   burying are, and that the one switch stands for the three burying settings
   of Advanced mode.
 - Simple mode hides the RWKV submenu of the deck menu (Reschedule With
-  RWKV-Curve, Reschedule All Decks) and shows Tools > Add-ons only while at
-  least one add-on is installed.
+  RWKV-Curve, Reschedule All Decks).
 - "Optimize All Presets" is the one optimize action, and it appears in
   Simple mode too. "Optimize Current Preset", its result comparison, the
   custom decay table and the "Check health when optimizing" switch are gone

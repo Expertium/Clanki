@@ -25,6 +25,7 @@ def make_prefs() -> PreferencesProto:
     prefs.reviewing.interrupt_audio_when_answering = False
     prefs.reviewing.show_colored_buttons = True
     prefs.reviewing.two_button_mode = True
+    prefs.reviewing.review_heatmap_enabled = True
     prefs.editing.adding_defaults_to_current_deck = True
     prefs.editing.paste_images_as_png = False
     prefs.editing.paste_strips_formatting = True
@@ -64,6 +65,7 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
         prefs.reviewing.show_colored_buttons
     )
     form.twoButtonMode.isChecked.return_value = prefs.reviewing.two_button_mode
+    form.reviewHeatmap.isChecked.return_value = prefs.reviewing.review_heatmap_enabled
     form.timeLimit.value.return_value = int(prefs.reviewing.time_limit_secs / 60)
     form.showPlayButtons.isChecked.return_value = (
         not prefs.reviewing.hide_audio_play_buttons
@@ -164,6 +166,24 @@ def test_update_collection_writes_the_collection_wide_scheduling_settings(
     assert scheduling.fsrs_learning_queues_disabled is True
     assert scheduling.fsrs_reschedule is False
     assert scheduling.card_state_customizer == "// changed"
+    mock_set_preferences.assert_called_once_with(
+        parent=dialog, preferences=dialog.prefs
+    )
+
+
+# Pins spec/ui.md#ui.review-heatmap
+@patch("aqt.preferences.set_preferences")
+def test_update_collection_writes_the_review_heatmap_preference(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()
+    form = make_form(prefs)
+    form.reviewHeatmap.isChecked.return_value = False
+    dialog = make_dialog(prefs, form)
+
+    dialog.update_collection(MagicMock())
+
+    assert dialog.prefs.reviewing.review_heatmap_enabled is False
     mock_set_preferences.assert_called_once_with(
         parent=dialog, preferences=dialog.prefs
     )

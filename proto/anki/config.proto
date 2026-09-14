@@ -66,6 +66,8 @@ message ConfigKey {
     // two-button Again/Good mode; both on by default (spec review.answer-buttons).
     SHOW_COLORED_BUTTONS = 32;
     TWO_BUTTON_MODE = 33;
+    // on by default (spec ui.review-heatmap)
+    REVIEW_HEATMAP_ENABLED = 34;
   }
   enum String {
     SET_DUE_BROWSER = 0;
@@ -147,6 +149,8 @@ message Preferences {
     bool show_fuzz_delta_on_buttons = 8;
     bool show_colored_buttons = 9;
     bool two_button_mode = 10;
+    // the review heatmap on the deck list and overview (spec ui.review-heatmap)
+    bool review_heatmap_enabled = 11;
   }
   message Editing {
     bool adding_defaults_to_current_deck = 1;

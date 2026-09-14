@@ -160,6 +160,7 @@ class Preferences(QDialog):
         form.showPlayButtons.setChecked(not reviewing.hide_audio_play_buttons)
         form.interrupt_audio.setChecked(reviewing.interrupt_audio_when_answering)
         form.showFuzzDelta.setChecked(reviewing.show_fuzz_delta_on_buttons)
+        form.reviewHeatmap.setChecked(reviewing.review_heatmap_enabled)
 
         editing = self.prefs.editing
         form.useCurrent.setCurrentIndex(
@@ -204,6 +205,7 @@ class Preferences(QDialog):
         reviewing.hide_audio_play_buttons = not self.form.showPlayButtons.isChecked()
         reviewing.interrupt_audio_when_answering = self.form.interrupt_audio.isChecked()
         reviewing.show_fuzz_delta_on_buttons = form.showFuzzDelta.isChecked()
+        reviewing.review_heatmap_enabled = form.reviewHeatmap.isChecked()
 
         editing = self.prefs.editing
         editing.adding_defaults_to_current_deck = not form.useCurrent.currentIndex()

@@ -25,6 +25,7 @@ preferences-show-next-review-time-above-answer = Show next review time above ans
 preferences-show-colored-buttons = Show colored border on answer buttons
 preferences-two-button-mode = Show only Again and Good answer buttons
 preferences-show-fuzz-delta-above-answer-buttons = Show fuzz delta next to answer button intervals
+preferences-show-review-heatmap = Show the review heatmap on the deck list and the deck overview
 preferences-spacebar-rates-card = Spacebar (or enter) also answers card
 preferences-show-play-buttons-on-cards-with = Show play buttons on cards with audio
 preferences-show-remaining-card-count = Show remaining card count

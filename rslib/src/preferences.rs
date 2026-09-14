@@ -113,6 +113,7 @@ impl Collection {
                 .get_config_bool(BoolKey::ShowIntervalsAboveAnswerButtons),
             show_colored_buttons: self.get_config_bool(BoolKey::ShowColoredButtons),
             two_button_mode: self.get_config_bool(BoolKey::TwoButtonMode),
+            review_heatmap_enabled: self.get_config_bool(BoolKey::ReviewHeatmapEnabled),
             time_limit_secs: self.get_answer_time_limit_secs(),
             load_balancer_enabled: self.get_config_bool(BoolKey::LoadBalancerEnabled),
             fsrs_short_term_with_steps_enabled: self
@@ -139,6 +140,7 @@ impl Collection {
         )?;
         self.set_config_bool_inner(BoolKey::ShowColoredButtons, s.show_colored_buttons)?;
         self.set_config_bool_inner(BoolKey::TwoButtonMode, s.two_button_mode)?;
+        self.set_config_bool_inner(BoolKey::ReviewHeatmapEnabled, s.review_heatmap_enabled)?;
         self.set_answer_time_limit_secs(s.time_limit_secs)?;
         self.set_config_bool_inner(BoolKey::LoadBalancerEnabled, s.load_balancer_enabled)?;
         self.set_config_bool_inner(
@@ -212,6 +214,21 @@ mod test {
         assert!(scheduling.fsrs_learning_queues_disabled);
         assert!(scheduling.fsrs_reschedule);
         assert_eq!(scheduling.card_state_customizer, "// custom");
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.review-heatmap
+    #[test]
+    fn review_heatmap_is_on_by_default_and_a_reviewing_preference() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(col.get_config_bool(BoolKey::ReviewHeatmapEnabled));
+        let mut reviewing = col.get_reviewing_preferences()?;
+        assert!(reviewing.review_heatmap_enabled);
+
+        reviewing.review_heatmap_enabled = false;
+        col.set_reviewing_preferences(reviewing)?;
+        assert!(!col.get_config_bool(BoolKey::ReviewHeatmapEnabled));
+        assert!(!col.get_reviewing_preferences()?.review_heatmap_enabled);
         Ok(())
     }
 
