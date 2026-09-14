@@ -478,6 +478,24 @@ var rhNewFinderAPI = true;
 </div>
 """
 
+# The add-on's styles size the settings button differently from the three
+# navigation buttons; all four get one width.
+HEATMAP_BUTTON_CSS = """
+<style>
+.heatmap .heatmap-controls .hm-btn {
+    box-sizing: border-box;
+    width: 28px;
+    padding: 2px 0;
+    text-align: center;
+}
+.heatmap .heatmap-controls .hm-btn > img {
+    height: 10px;
+    width: 10px;
+    object-fit: contain;
+}
+</style>
+"""
+
 HTML_HEATMAP = f"""
 <div class="heatmap">
     <div class="heatmap-controls">
@@ -586,7 +604,7 @@ def render_heatmap(
         "legend": _heatmap_legend(_dynamic_legend(report.stats.activity_daily_avg)),
         "whole": not current_deck_only,
     }
-    return HTML_HEATMAP.format(
+    return HEATMAP_BUTTON_CSS + HTML_HEATMAP.format(
         options=json.dumps(options), data=json.dumps(report.activity)
     )
 
