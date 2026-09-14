@@ -306,6 +306,38 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    /// Query-only current interval and S90 per input from the resident
+    /// warm-up state; returns `(retrievability, current_interval, current_s90)`
+    /// with `0` standing for "no interval". Releases the GIL while predicting.
+    fn predict_current_intervals_many_from_warm_up(
+        &mut self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<(f32, u32, u32)>> {
+        let mut parsed_inputs = Vec::new();
+        for input in inputs.try_iter()? {
+            parsed_inputs.push(parse_rwkv_review_input(&input?)?);
+        }
+
+        py.detach(|| {
+            self.inner
+                .predict_current_intervals_many_from_warm_up(parsed_inputs)
+        })
+        .map(|outputs| {
+            outputs
+                .into_iter()
+                .map(|output| {
+                    (
+                        output.retrievability,
+                        output.current_interval.unwrap_or(0),
+                        output.current_s90.unwrap_or(0),
+                    )
+                })
+                .collect()
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn predict_retrievability_many_from_warm_up_packed(
         &mut self,
         py: Python<'_>,

@@ -45,6 +45,10 @@ repeated here unless they materially affect a fork feature.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.
+- "Reschedule cards with RWKV-Curve" is much faster. It now runs one forward
+  pass per card against the resident RWKV state instead of five, no longer
+  copies each card's state between Python and Rust, and no longer freezes the
+  progress dialog while predicting. The intervals it writes are unchanged.
 - RWKV-Curve answer intervals now get the same fuzz as FSRS intervals: the
   same fuzz range, load balancing, and sibling dispersal (when "Bury review
   siblings" is on). Previously RWKV-Curve intervals were applied exactly, so

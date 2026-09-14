@@ -3854,6 +3854,157 @@ def test_fuzz_review_interval_overrides_without_backend_returns_input() -> None:
     assert deltas == RwkvIntervalOverride()
 
 
+def _resident_interval_access(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: object,
+) -> None:
+    """Route the fast reschedule path at `backend`, bypassing the global state."""
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def access(*, expected_state_token: object = None) -> Iterator[object]:
+        yield backend
+
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_reviewer_backend_state_generation", lambda b=None: 0
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_reviewer_backend_prediction_access_is_current",
+        lambda backend, **kwargs: True,
+    )
+
+
+def test_reschedule_predictions_prefer_resident_current_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the fast reschedule path: query-only, resident-state predictions."""
+
+    calls: list[list[RwkvReviewInput]] = []
+
+    def predict_current_intervals_inputs_from_warm_up(
+        review_inputs: list[RwkvReviewInput],
+    ) -> list[RwkvReviewPrediction | None]:
+        calls.append(list(review_inputs))
+        return [
+            RwkvReviewPrediction(
+                retrievability=0.5, current_interval=7, current_s90=12
+            ),
+            None,
+        ]
+
+    backend = SimpleNamespace(
+        supports_resident_current_intervals=True,
+        predict_current_intervals_inputs_from_warm_up=(
+            predict_current_intervals_inputs_from_warm_up
+        ),
+    )
+    _resident_interval_access(monkeypatch, backend)
+    first = _rwkv_review_input(card_id=1, note_id=10)
+    second = _rwkv_review_input(card_id=2, note_id=20)
+
+    predictions = rwkv_scheduler._rwkv_review_current_interval_predictions_for_inputs(
+        [(1, first), (2, second)]
+    )
+
+    assert calls == [[first, second]]
+    assert predictions == [
+        RwkvReviewPrediction(retrievability=0.5, current_interval=7, current_s90=12),
+        None,
+    ]
+
+
+def test_reschedule_predictions_report_unsupported_resident_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+
+    # backend without the capability: never enters the prediction context
+    _resident_interval_access(monkeypatch, SimpleNamespace())
+    assert isinstance(
+        rwkv_scheduler._rwkv_review_current_interval_predictions_for_inputs(
+            [(1, review_input)]
+        ),
+        rwkv_scheduler._ResidentIntervalsUnavailable,
+    )
+
+    # backend that claims support but whose runtime declines at call time
+    _resident_interval_access(
+        monkeypatch,
+        SimpleNamespace(
+            supports_resident_current_intervals=True,
+            predict_current_intervals_inputs_from_warm_up=lambda inputs: None,
+        ),
+    )
+    assert isinstance(
+        rwkv_scheduler._rwkv_review_current_interval_predictions_for_inputs(
+            [(1, review_input)]
+        ),
+        rwkv_scheduler._ResidentIntervalsUnavailable,
+    )
+
+
+def test_backend_resident_current_intervals_require_runtime_support() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+
+    # no runtime support -> None, so the caller falls back to the full path
+    assert not backend.supports_resident_current_intervals
+    assert backend.predict_current_intervals_inputs_from_warm_up([review_input]) is None
+
+    def predict_current_intervals_many_from_warm_up(
+        review_inputs: list[RwkvReviewInput],
+    ) -> list[tuple[float, int, int]]:
+        assert review_inputs == [review_input, review_input]
+        return [(0.5, 7, 12), (0.4, 0, 0)]
+
+    runtime.predict_current_intervals_many_from_warm_up = (  # type: ignore[attr-defined]
+        predict_current_intervals_many_from_warm_up
+    )
+    assert backend.supports_resident_current_intervals
+    assert backend.predict_current_intervals_inputs_from_warm_up(
+        [review_input, review_input]
+    ) == [
+        RwkvReviewPrediction(retrievability=0.5, current_interval=7, current_s90=12),
+        RwkvReviewPrediction(retrievability=0.4),
+    ]
+    assert backend.predict_current_intervals_inputs_from_warm_up([]) == []
+
+
+def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    rows: list[tuple[object, ...]] = []
+
+    def predict_current_intervals_many_from_warm_up(
+        batch: list[tuple[object, ...]],
+    ) -> list[tuple[float, int, int]]:
+        rows.extend(batch)
+        return [(0.5, 7, 12), (0.4, 0, 0)]
+
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = SimpleNamespace(
+        predict_current_intervals_many_from_warm_up=(
+            predict_current_intervals_many_from_warm_up
+        )
+    )
+    inputs = [
+        _rwkv_review_input(card_id=1, note_id=10),
+        _rwkv_review_input(card_id=2, note_id=20),
+    ]
+
+    outputs = runtime.predict_current_intervals_many_from_warm_up(inputs)
+
+    assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
+    assert outputs == [(0.5, 7, 12), (0.4, None, None)]
+
+
 def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
     """Pins spec/scheduling.md#sched.rwkv-curve-fuzz end to end in the reviewer."""
 

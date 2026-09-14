@@ -846,6 +846,51 @@ class _RustRwkvRuntime:
         )
         return [float(retrievability) for retrievability in outputs]
 
+    def predict_current_intervals_many_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[tuple[float, int | None, int | None]]:
+        """Query-only current interval and S90 per input from the resident state.
+
+        One forward pass per card, no state bytes across the bridge, GIL
+        released in Rust. Used by "Reschedule cards with RWKV-Curve".
+        """
+
+        predict_many = getattr(
+            self._process,
+            "predict_current_intervals_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError("RWKV resident-state interval prediction is unavailable")
+
+        build_start = time.monotonic()
+        rows = [_review_input_row(review_input) for review_input in review_inputs]
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        with self._locked_process():
+            outputs = predict_many(rows)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(review_inputs):
+            raise ValueError("RWKV Rust resident interval prediction count mismatch")
+
+        logger.debug(
+            "RWKV embedded Rust resident interval batch predicted: requests=%s "
+            "build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f elapsed_ms=%.1f",
+            len(rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [
+            (
+                float(retrievability),
+                int(current_interval) if current_interval else None,
+                int(current_s90) if current_s90 else None,
+            )
+            for retrievability, current_interval, current_s90 in outputs
+        ]
+
     def predict_memorised_retrievability_from_warm_up(
         self,
         review_inputs: Sequence[RwkvReviewInput],
