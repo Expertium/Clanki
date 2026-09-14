@@ -8,7 +8,6 @@ import bisect
 import enum
 import gzip
 import hashlib
-import importlib
 import inspect
 import json
 import logging
@@ -250,7 +249,7 @@ _rwkv_review_queue_target_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_score_generations: dict[int, int] = {}
 _rwkv_review_queue_score_config_keys: dict[int, RwkvReviewQueueScoreConfigKey] = {}
 _rwkv_review_queue_collection_key: RwkvReviewQueueCollectionKey | None = None
-_dynamic_desired_retention_generation = 0
+_rwkv_review_input_generation = 0
 _rwkv_study_queue_generation = 0
 _RWKV_REVIEW_UNDO_CARD_IDS_ATTR = "_rwkv_review_undo_card_ids"
 _RWKV_REVIEW_HANDLED_QUEUE_CHANGE_PENDING_ATTR = (
@@ -436,7 +435,6 @@ class RwkvReviewInputBatchBuild:
     load_elapsed_ms: float
     candidate_elapsed_ms: float
     searched_rows: int = 0
-    dynamic_desired_retentions_resolved: bool = False
     session_answered_ids: tuple[int, ...] = ()
     dirty_card_ids: tuple[int, ...] = ()
 
@@ -466,7 +464,7 @@ class RwkvReviewQueueContext:
     days_elapsed: int
     next_day_at: int
     config_key: str
-    dynamic_desired_retention_generation: int
+    review_input_generation: int
     study_queue_generation: int
 
 
@@ -657,7 +655,7 @@ class _ReviewerBackendPredictionStateToken:
     resident_state_key: tuple[int, int] | None
     resident_state_generation: int | None
     resident_state_ready: bool
-    dynamic_desired_retention_generation: int
+    review_input_generation: int
     study_queue_generation: int
 
 
@@ -3590,9 +3588,7 @@ def _capture_reviewer_backend_prediction_state_token(
             resident_state_key=resident_state_key,
             resident_state_generation=resident_state_generation,
             resident_state_ready=resident_state_ready,
-            dynamic_desired_retention_generation=(
-                _dynamic_desired_retention_generation
-            ),
+            review_input_generation=(_rwkv_review_input_generation),
             study_queue_generation=_rwkv_study_queue_generation,
         )
 
@@ -6417,9 +6413,9 @@ def _rwkv_stats_prepare_key(
         ),
         state_token.resident_state_ready if state_token is not None else False,
         (
-            state_token.dynamic_desired_retention_generation
+            state_token.review_input_generation
             if state_token is not None
-            else _dynamic_desired_retention_generation
+            else _rwkv_review_input_generation
         ),
         (
             state_token.study_queue_generation
@@ -8152,17 +8148,6 @@ def _rwkv_target_retentions(
     card: object,
     states: SchedulingStates | None,
 ) -> tuple[float | None, float | None, float | None, float | None]:
-    if states is not None and getattr(
-        states, "dynamic_desired_retention_enabled", False
-    ):
-        retentions = tuple(
-            value
-            for value in getattr(states, "dynamic_desired_retentions", [])
-            if _valid_probability(value)
-        )
-        if len(retentions) == 4:
-            return cast(tuple[float, float, float, float], retentions)
-
     desired_retention = _reviewer_desired_retention_override(reviewer)
     if desired_retention is None:
         desired_retention = _desired_retention_for_card(reviewer, card)
@@ -13616,6 +13601,213 @@ def reschedule_rwkv_review_cards_with_progress(
     _run_on_main(mw, start_reschedule)
 
 
+@dataclass(frozen=True)
+class RwkvCurveRescheduleSnapshot:
+    """What decided RWKV-Curve due dates before a deck-options save."""
+
+    preset_desired_retention: dict[int, float]
+    preset_curve_enabled: dict[int, bool]
+    deck_desired_retention: float | None
+    preset_instant_enabled: dict[int, bool] = field(default_factory=dict)
+
+
+def _same_retention(before: float | None, after: float | None) -> bool:
+    if before is None or after is None:
+        return before is None and after is None
+    return abs(before - after) < 1e-4
+
+
+def _legacy_deck_desired_retention(deck: object) -> float | None:
+    """The deck's own desired-retention override; legacy decks store percent."""
+
+    if not isinstance(deck, dict):
+        return None
+    value = deck.get("desiredRetention")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) / 100.0
+
+
+def rwkv_curve_reschedule_snapshot(
+    mw: object,
+    request: object,
+) -> RwkvCurveRescheduleSnapshot:
+    """Record the stored presets and deck override before a deck-options save."""
+
+    col = getattr(mw, "col", None)
+    decks = getattr(col, "decks", None)
+    get_config = getattr(decks, "get_config", None)
+    get_deck = getattr(decks, "get", None)
+
+    preset_desired_retention: dict[int, float] = {}
+    preset_curve_enabled: dict[int, bool] = {}
+    preset_instant_enabled: dict[int, bool] = {}
+    for config in getattr(request, "configs", ()):
+        config_id = int(getattr(config, "id", 0))
+        stored: object = None
+        if callable(get_config):
+            try:
+                stored = get_config(config_id)
+            except Exception:
+                logger.debug("failed to read preset %s before save", config_id)
+                stored = None
+        if not isinstance(stored, dict):
+            continue
+        value = stored.get("desiredRetention")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            preset_desired_retention[config_id] = float(value)
+        preset_curve_enabled[config_id] = _rwkv_review_config_enabled(stored)
+        preset_instant_enabled[config_id] = _rwkv_review_instant_order_enabled(stored)
+
+    deck: object = None
+    if callable(get_deck):
+        try:
+            deck = get_deck(int(getattr(request, "target_deck_id", 0)), default=False)
+        except Exception:
+            logger.debug("failed to read target deck before save")
+            deck = None
+
+    return RwkvCurveRescheduleSnapshot(
+        preset_desired_retention=preset_desired_retention,
+        preset_curve_enabled=preset_curve_enabled,
+        deck_desired_retention=_legacy_deck_desired_retention(deck),
+        preset_instant_enabled=preset_instant_enabled,
+    )
+
+
+def _request_deck_desired_retention(request: object) -> float | None:
+    limits = getattr(request, "limits", None)
+    has_field = getattr(limits, "HasField", None)
+    if not callable(has_field):
+        return None
+    try:
+        if not has_field("desired_retention"):
+            return None
+    except ValueError:
+        return None
+    value = getattr(limits, "desired_retention", None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _rwkv_retention_change_needs_refresh(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+    *,
+    flag: str,
+    previously_enabled: dict[int, bool],
+) -> bool:
+    """Shared rule for both RWKV modes (spec deck-options.reschedule-on-change).
+
+    True when "Reschedule cards on change" is on and either a preset in the
+    request with `flag` set changed its desired retention or newly has the
+    flag, or the target deck keeps such a preset and its own desired-retention
+    override changed.
+    """
+
+    if not getattr(request, "fsrs_reschedule", False):
+        return False
+    configs = list(getattr(request, "configs", ()))
+    for config in configs:
+        inner = getattr(config, "config", None)
+        if not getattr(inner, flag, False):
+            continue
+        config_id = int(getattr(config, "id", 0))
+        if not previously_enabled.get(config_id, False):
+            return True
+        if not _same_retention(
+            snapshot.preset_desired_retention.get(config_id),
+            float(getattr(inner, "desired_retention", 0.0)),
+        ):
+            return True
+    # The deck is assigned the last preset in the request.
+    if configs and getattr(configs[-1].config, flag, False):
+        if not _same_retention(
+            snapshot.deck_desired_retention,
+            _request_deck_desired_retention(request),
+        ):
+            return True
+    return False
+
+
+def rwkv_curve_reschedule_needed(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Whether a save must run the RWKV-Curve reschedule.
+
+    The Rust save never writes FSRS intervals onto RWKV-Curve presets, so
+    this is the only reschedule those cards get.
+    """
+
+    return _rwkv_retention_change_needs_refresh(
+        snapshot,
+        request,
+        flag="rwkv_review_enabled",
+        previously_enabled=snapshot.preset_curve_enabled,
+    )
+
+
+def rwkv_instant_refresh_needed(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Whether a save must recompute RWKV-Instant dueness.
+
+    Under RWKV-Instant a card is due when its RWKV retrievability is at or
+    below its target retention. The installed queue scores and deck counts
+    carry the old target, so they are discarded after the save and the
+    screens refresh with the new desired retention.
+    """
+
+    return _rwkv_retention_change_needs_refresh(
+        snapshot,
+        request,
+        flag="rwkv_review_instant_order_enabled",
+        previously_enabled=snapshot.preset_instant_enabled,
+    )
+
+
+def rwkv_instant_retention_did_change(mw: object) -> None:
+    """Drop RWKV targets and queue scores, then refresh the study screens."""
+
+    generation = _invalidate_rwkv_review_input_caches(mw)
+    reset = getattr(mw, "reset", None)
+    if callable(reset):
+        reset()
+    logger.debug(
+        "RWKV-Instant targets invalidated after desired retention change: "
+        "generation=%s",
+        generation,
+    )
+
+
+def refresh_rwkv_instant_after_save(
+    mw: object,
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Recompute RWKV-Instant dueness after a deck-options save when needed."""
+
+    if not rwkv_instant_refresh_needed(snapshot, request):
+        return False
+    rwkv_instant_retention_did_change(mw)
+    return True
+
+
+def reschedule_rwkv_curve_after_save(
+    mw: object,
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Run the RWKV-Curve reschedule after a deck-options save when needed."""
+
+    if not rwkv_curve_reschedule_needed(snapshot, request):
+        return False
+    logger.debug("deck options saved with reschedule on; RWKV-Curve reschedule starts")
+    reschedule_rwkv_review_cards_with_progress(mw, deck_id=None)
+    return True
+
+
 def reschedule_rwkv_review_cards(
     mw: object,
     *,
@@ -18560,7 +18752,7 @@ def _rwkv_review_queue_context(
         return None
 
     with _reviewer_backend_state_lock:
-        dynamic_desired_retention_generation = _dynamic_desired_retention_generation
+        review_input_generation = _rwkv_review_input_generation
         study_queue_generation = _rwkv_study_queue_generation
 
     return RwkvReviewQueueContext(
@@ -18571,7 +18763,7 @@ def _rwkv_review_queue_context(
         days_elapsed=days_elapsed,
         next_day_at=next_day_at,
         config_key=_rwkv_review_queue_configuration_key(reviewer),
-        dynamic_desired_retention_generation=(dynamic_desired_retention_generation),
+        review_input_generation=(review_input_generation),
         study_queue_generation=study_queue_generation,
     )
 
@@ -18582,8 +18774,7 @@ def _rwkv_review_queue_context_epochs_are_current(
     """Validate queue-wide epochs while the caller holds the state lock."""
 
     return (
-        context.dynamic_desired_retention_generation
-        == _dynamic_desired_retention_generation
+        context.review_input_generation == _rwkv_review_input_generation
         and context.study_queue_generation == _rwkv_study_queue_generation
     )
 
@@ -18622,44 +18813,12 @@ def _rwkv_review_input_build_inputs(
     ]
 
 
-def _resolve_dynamic_desired_retentions_for_input_build(
-    reviewer: object,
-    input_build: RwkvReviewInputBatchBuild,
-) -> RwkvReviewInputBatchBuild:
-    if input_build.dynamic_desired_retentions_resolved:
-        return input_build
-
-    inputs_by_card_id = _rwkv_review_input_build_inputs(input_build)
-    resolved_inputs_by_card_id = _resolve_dynamic_desired_retentions_for_inputs(
-        reviewer,
-        inputs_by_card_id,
-    )
-    if resolved_inputs_by_card_id is inputs_by_card_id:
-        return replace(input_build, dynamic_desired_retentions_resolved=True)
-
-    remaining_by_card_id = dict(resolved_inputs_by_card_id)
-    resolved_inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
-    for batch_size, batch_inputs in input_build.inputs_by_batch_size.items():
-        resolved_batch = [
-            (card_id, remaining_by_card_id.pop(card_id, review_input))
-            for card_id, review_input in batch_inputs
-        ]
-        if resolved_batch:
-            resolved_inputs_by_batch_size[batch_size] = resolved_batch
-
-    return replace(
-        input_build,
-        inputs_by_batch_size=resolved_inputs_by_batch_size,
-        dynamic_desired_retentions_resolved=True,
-    )
-
-
 def _invalidate_rwkv_review_input_caches(mw: object) -> int:
-    global _dynamic_desired_retention_generation
+    global _rwkv_review_input_generation
 
     with _reviewer_backend_state_lock:
-        _dynamic_desired_retention_generation += 1
-        generation = _dynamic_desired_retention_generation
+        _rwkv_review_input_generation += 1
+        generation = _rwkv_review_input_generation
     _clear_rwkv_review_queue_score_cache()
     _rwkv_review_input_batch_module_cache.clear()
     with _rwkv_score_prewarm_lock:
@@ -18669,21 +18828,6 @@ def _invalidate_rwkv_review_input_caches(mw: object) -> int:
     _clear_rwkv_review_queue_scores(reviewer)
     clear_deck_browser_rwkv_count_scores(mw)
     return generation
-
-
-def dynamic_desired_retention_did_change(mw: object) -> None:
-    """Invalidate RWKV targets and refresh study queues after provider changes."""
-
-    generation = _invalidate_rwkv_review_input_caches(mw)
-
-    reset = getattr(mw, "reset", None)
-    if callable(reset):
-        reset()
-
-    logger.debug(
-        "RWKV Dynamic DR caches invalidated: generation=%s",
-        generation,
-    )
 
 
 def collection_content_did_change(mw: object, initiator: object | None) -> None:
@@ -18973,169 +19117,6 @@ def study_queues_did_change(
     )
 
 
-def _resolve_dynamic_desired_retentions_for_inputs(
-    reviewer: object,
-    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
-) -> Sequence[tuple[int, RwkvReviewInput]]:
-    start = time.monotonic()
-    target_retentions_by_card_id = _dynamic_desired_retention_targets_for_inputs(
-        reviewer,
-        inputs_by_card_id,
-    )
-    if not target_retentions_by_card_id:
-        return inputs_by_card_id
-
-    resolved_inputs: list[tuple[int, RwkvReviewInput]] = []
-    updated = 0
-    for card_id, review_input in inputs_by_card_id:
-        target_retention = target_retentions_by_card_id.get(card_id)
-        if target_retention is None:
-            resolved_inputs.append((card_id, review_input))
-            continue
-
-        resolved_input = _rwkv_review_input_with_target_retention(
-            review_input,
-            target_retention,
-        )
-        if resolved_input is not review_input:
-            updated += 1
-        resolved_inputs.append((card_id, resolved_input))
-
-    if not updated:
-        return inputs_by_card_id
-
-    logger.debug(
-        "RWKV Dynamic DR targets resolved: inputs=%s targets=%s updated=%s "
-        "elapsed_ms=%.1f",
-        len(inputs_by_card_id),
-        len(target_retentions_by_card_id),
-        updated,
-        (time.monotonic() - start) * 1000,
-    )
-    return resolved_inputs
-
-
-def _dynamic_desired_retention_targets_for_inputs(
-    reviewer: object,
-    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
-) -> dict[int, float]:
-    info_for_cards = _dynamic_desired_retention_info_for_cards_resolver()
-    if info_for_cards is None:
-        return {}
-
-    current_desired_retentions = {
-        card_id: target_retention
-        for card_id, review_input in inputs_by_card_id
-        if (target_retention := _rwkv_review_input_target_retention(review_input))
-        is not None
-    }
-    if not current_desired_retentions:
-        return {}
-
-    col = _collection(reviewer)
-    get_card = getattr(col, "get_card", None)
-    if not callable(get_card):
-        return {}
-
-    cards = []
-    for card_id in current_desired_retentions:
-        try:
-            card = get_card(card_id)
-        except Exception:
-            logger.debug("failed to load card for RWKV Dynamic DR: card_id=%s", card_id)
-            continue
-        if _card_id(card) == card_id:
-            cards.append(card)
-
-    if not cards:
-        return {}
-
-    info_by_card_id = _dynamic_desired_retention_info_for_cards(
-        collection=col,
-        cards=cards,
-        current_desired_retentions=current_desired_retentions,
-        info_for_cards=info_for_cards,
-    )
-    if not isinstance(info_by_card_id, Mapping):
-        return {}
-
-    target_retentions_by_card_id: dict[int, float] = {}
-    for card in cards:
-        card_id = _card_id(card)
-        if card_id is None:
-            continue
-        info = info_by_card_id.get(card_id)
-        target_retention = getattr(info, "desired_retention", None)
-        if _valid_probability(target_retention):
-            target_retentions_by_card_id[card_id] = float(target_retention)
-
-    return target_retentions_by_card_id
-
-
-def _dynamic_desired_retention_info_for_cards_resolver() -> (
-    Callable[..., object] | None
-):
-    try:
-        dynamic_desired_retention = importlib.import_module("dynamic_desired_retention")
-    except ImportError:
-        return None
-    except Exception:
-        logger.debug("failed to import Dynamic DR provider for RWKV", exc_info=True)
-        return None
-
-    effective_desired_retention_info_for_cards = getattr(
-        dynamic_desired_retention,
-        "effective_desired_retention_info_for_cards",
-        None,
-    )
-    if not callable(effective_desired_retention_info_for_cards):
-        return None
-
-    return effective_desired_retention_info_for_cards
-
-
-def _dynamic_desired_retention_info_for_cards(
-    *,
-    collection: object,
-    cards: Sequence[object],
-    current_desired_retentions: Mapping[int, float | None],
-    info_for_cards: Callable[..., object],
-) -> object | None:
-    try:
-        return info_for_cards(
-            collection=collection,
-            cards=cards,
-            current_desired_retentions=current_desired_retentions,
-        )
-    except Exception:
-        logger.debug("failed to resolve Dynamic DR targets for RWKV", exc_info=True)
-        return None
-
-
-def _rwkv_review_input_with_target_retention(
-    review_input: RwkvReviewInput,
-    target_retention: float,
-) -> RwkvReviewInput:
-    current_target_retention = _rwkv_review_input_target_retention(review_input)
-    if current_target_retention is not None and math.isclose(
-        current_target_retention,
-        target_retention,
-        rel_tol=0.0,
-        abs_tol=1e-6,
-    ):
-        return review_input
-
-    return replace(
-        review_input,
-        target_retentions=(
-            target_retention,
-            target_retention,
-            target_retention,
-            target_retention,
-        ),
-    )
-
-
 def _rwkv_review_input_build_target_retentions_by_card_id(
     input_build: RwkvReviewInputBatchBuild,
 ) -> dict[int, float]:
@@ -19368,10 +19349,6 @@ def _rwkv_review_queue_async_work_from_input_build(  # noqa: PLR0913
     if context.collection_key != (id(collection), id(collection_backend)):
         return None
 
-    input_build = _resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        input_build,
-    )
     inputs_by_card_id = tuple(_rwkv_review_input_build_inputs(input_build))
     indexed_inputs = [
         (index, review_input)
@@ -19518,10 +19495,6 @@ def _rwkv_review_queue_scores_for_deck(
     if input_build is None:
         return None
 
-    input_build = _resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        input_build,
-    )
     score_start = time.monotonic()
     scores: list[tuple[int, float]] = []
     for input_batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
@@ -19591,10 +19564,6 @@ def _rwkv_review_queue_score_result(
             batch_size_override=batch_size,
         )
         if input_build is not None:
-            input_build = _resolve_dynamic_desired_retentions_for_input_build(
-                reviewer,
-                input_build,
-            )
             score_start = time.monotonic()
             scores: list[tuple[int, float]] = []
             for (
@@ -19724,12 +19693,6 @@ def _rwkv_review_queue_score_result(
 
     candidate_elapsed_ms = (time.monotonic() - start) * 1000
     score_start = time.monotonic()
-    inputs_by_card_id = list(
-        _resolve_dynamic_desired_retentions_for_inputs(
-            reviewer,
-            inputs_by_card_id,
-        )
-    )
     scores = (
         _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
@@ -20160,12 +20123,6 @@ def _rwkv_stats_graph_scores_for_search(
     )
     if input_build is None:
         return None
-    if prepare_instant_due or prepare_curve_due:
-        input_build = _resolve_dynamic_desired_retentions_for_input_build(
-            reviewer,
-            input_build,
-        )
-
     scores: list[tuple[int, float]] = []
     curve_scores: list[tuple[int, float]] = []
     fully_predicted_card_ids: set[int] = set()
@@ -20438,10 +20395,6 @@ def _rwkv_review_reschedule_items_for_deck(
         return None
 
     input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
-    input_build = _resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        input_build,
-    )
     total_inputs = sum(
         len(inputs) for inputs in input_build.inputs_by_batch_size.values()
     )
@@ -20551,10 +20504,6 @@ def _rwkv_review_reschedule_items(
         )
         if input_build is not None:
             input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
-            input_build = _resolve_dynamic_desired_retentions_for_input_build(
-                reviewer,
-                input_build,
-            )
             return _rwkv_review_reschedule_items_from_input_build(
                 input_build,
                 progress=progress,
@@ -21877,10 +21826,6 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         source_label="deck_review_queue_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
     )
-    input_build = _resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        input_build,
-    )
     if cache_key is not None:
         _cache_rwkv_review_input_batch_build(reviewer, cache_key, input_build)
     return input_build
@@ -21913,7 +21858,7 @@ def _rwkv_review_input_batch_cache_key(
         collection_key,
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
-        _dynamic_desired_retention_generation,
+        _rwkv_review_input_generation,
         _rwkv_study_queue_generation,
     )
 
@@ -21941,7 +21886,7 @@ def _rwkv_review_queue_score_config_key(
         next_day_at if isinstance(next_day_at, int) else -1,
         _rwkv_review_queue_configuration_key(reviewer),
         _rwkv_review_deck_scope_key(reviewer, deck_id),
-        _dynamic_desired_retention_generation,
+        _rwkv_review_input_generation,
         _rwkv_study_queue_generation,
     )
 
@@ -21955,7 +21900,7 @@ def _rwkv_review_queue_score_config_key_from_context(
         context.next_day_at,
         context.config_key,
         context.deck_scope,
-        context.dynamic_desired_retention_generation,
+        context.review_input_generation,
         context.study_queue_generation,
     )
 
@@ -22100,10 +22045,6 @@ def _cached_rwkv_review_input_batch_build(
         eligible_cards=sum(
             len(inputs) for inputs in refreshed_inputs_by_batch_size.values()
         ),
-    )
-    refreshed_build = _resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        refreshed_build,
     )
     refresh_id_set = set(refresh_ids)
     merged_inputs_by_batch_size = {

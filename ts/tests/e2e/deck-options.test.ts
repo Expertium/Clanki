@@ -3,26 +3,31 @@
 
 import { expect, test } from "./fixtures";
 
-test("FSRS parameter unlock timing survives mounting and unmounting", async ({ page }) => {
+// Pins spec/deck-options.md#deck-options.scheduler-choice: there is no FSRS
+// switch any more, the algorithm comes from one dropdown, and the FSRS
+// options are always mounted.
+test("Algorithm dropdown replaces the FSRS switch", async ({ page }) => {
+    await page.goto("/deck-options/1");
+
+    await expect(page.getByRole("checkbox", { name: /^FSRS\b/ })).toHaveCount(0);
+    await expect(page.getByText("Algorithm", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("FSRS-7", { exact: true }).first()).toBeVisible();
+    await expect(
+        page.getByRole("button", { name: "FSRS Parameters", exact: true }),
+    ).toHaveCount(1);
+});
+
+test("FSRS parameter unlock timing is per page", async ({ page }) => {
     await page.clock.install();
     await page.goto("/deck-options/1");
 
-    const fsrs = page.getByRole("checkbox", { name: /^FSRS\b/ });
     const advanced = page.locator("details.fsrs-advanced");
     const parameters = page.getByRole("button", { name: "FSRS Parameters", exact: true });
     const input = parameters.locator("textarea");
-    await expect(fsrs).not.toBeChecked();
-    await expect(parameters).toHaveCount(0);
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
 
     async function setTimeoutMs(ms: number): Promise<void> {
         await page.evaluate((ms) => (window as any).anki.setParameterUnlockClickTimeoutMs(ms), ms);
-    }
-
-    async function enableFsrs(): Promise<void> {
-        await fsrs.check();
-        await page.clock.runFor(1);
-        await advanced.locator("summary").click();
     }
 
     async function clickThreeTimes(interval: number): Promise<void> {
@@ -34,41 +39,21 @@ test("FSRS parameter unlock timing survives mounting and unmounting", async ({ p
         await parameters.click();
     }
 
-    await setTimeoutMs(1000);
     const defaultMs = await page.evaluate(() => (window as any).anki.defaultParameterUnlockClickTimeoutMs);
     expect(defaultMs).toBe(500);
 
-    // The host can configure timing before the first mount, and remounts retain it.
-    for (let mount = 0; mount < 2; mount++) {
-        await enableFsrs();
-        await expect(input).toBeDisabled();
-        await clickThreeTimes(750);
-        await expect(input).toBeEnabled();
-        await fsrs.uncheck();
-        await expect(parameters).toHaveCount(0);
-    }
-
-    // Changing the timeout while the controls are absent applies to their next mount.
-    await setTimeoutMs(2000);
-    await enableFsrs();
-    await clickThreeTimes(1250);
-    await expect(input).toBeEnabled();
-    await fsrs.uncheck();
-    await enableFsrs();
-
-    // Changes made after mounting also apply, without changing the three-click gate.
-    await setTimeoutMs(defaultMs);
-    await clickThreeTimes(750);
+    // The host can configure timing, and three clicks inside it unlock the input.
+    await setTimeoutMs(1000);
+    await advanced.locator("summary").click();
     await expect(input).toBeDisabled();
-    await page.clock.runFor(defaultMs + 1);
-    await clickThreeTimes(100);
+    await clickThreeTimes(750);
     await expect(input).toBeEnabled();
 
     // Host preferences last for this page only; a fresh page starts at the default.
     await setTimeoutMs(2000);
     await page.reload();
-    await expect(fsrs).not.toBeChecked();
-    await enableFsrs();
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await advanced.locator("summary").click();
     await clickThreeTimes(750);
     await expect(input).toBeDisabled();
 });

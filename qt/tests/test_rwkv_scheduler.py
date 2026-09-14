@@ -21,7 +21,7 @@ from typing import Any, cast
 
 import pytest
 
-from anki import cards_pb2, collection_pb2, scheduler_pb2
+from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from aqt import rwkv_scheduler
@@ -122,9 +122,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_review_queue_score_config_keys
     )
     previous_queue_collection_key = rwkv_scheduler._rwkv_review_queue_collection_key
-    previous_dynamic_dr_generation = (
-        rwkv_scheduler._dynamic_desired_retention_generation
-    )
+    previous_review_input_generation = rwkv_scheduler._rwkv_review_input_generation
     previous_study_queue_generation = rwkv_scheduler._rwkv_study_queue_generation
     previous_input_batch_cache = (
         rwkv_scheduler._rwkv_review_input_batch_module_cache.copy()
@@ -148,7 +146,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_queue_score_generations.clear()
     rwkv_scheduler._rwkv_review_queue_score_config_keys.clear()
     rwkv_scheduler._rwkv_review_queue_collection_key = None
-    rwkv_scheduler._dynamic_desired_retention_generation = 0
+    rwkv_scheduler._rwkv_review_input_generation = 0
     rwkv_scheduler._rwkv_study_queue_generation = 0
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
@@ -204,9 +202,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
             previous_queue_score_config_keys
         )
         rwkv_scheduler._rwkv_review_queue_collection_key = previous_queue_collection_key
-        rwkv_scheduler._dynamic_desired_retention_generation = (
-            previous_dynamic_dr_generation
-        )
+        rwkv_scheduler._rwkv_review_input_generation = previous_review_input_generation
         rwkv_scheduler._rwkv_study_queue_generation = previous_study_queue_generation
         rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
         rwkv_scheduler._rwkv_review_input_batch_module_cache.update(
@@ -352,65 +348,6 @@ def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
         1: pytest.approx(0.25)
     }
     assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(second, 100) is None
-
-
-def test_dynamic_desired_retention_change_invalidates_rwkv_and_resets_ui() -> None:
-    class Rpc(_RwkvQueueScoreRpc):
-        def __init__(self) -> None:
-            super().__init__()
-            self.deck_count_clears = 0
-
-        def clear_rwkv_deck_count_scores(self) -> None:
-            self.deck_count_clears += 1
-
-    rpc = Rpc()
-    reviewer = _rwkv_reviewer(
-        rpc=rpc,
-        rwkv_review_instant_order_enabled=True,
-    )
-    reviewer.mw.col.decks.get_current_id = lambda: 100
-    reviewer.mw.col.decks.deck_and_child_ids = lambda deck_id: [deck_id]
-    resets: list[bool] = []
-    reviewer.mw.reset = lambda: resets.append(True)
-
-    context_before = rwkv_scheduler._rwkv_review_queue_context(reviewer, 100)
-    cache_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
-        reviewer=reviewer,
-        deck_id=100,
-        batch_size_override=512,
-        include_new_cards=False,
-    )
-    assert context_before is not None
-    assert cache_key is not None
-
-    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.75}
-    rwkv_scheduler._rwkv_review_queue_target_maps[100] = {1: 0.90}
-    rwkv_scheduler._rwkv_review_input_batch_module_cache[cache_key] = (
-        rwkv_scheduler.RwkvReviewInputBatchBuild(
-            inputs_by_batch_size={},
-            loaded_rows=0,
-            parsed_cards=0,
-            cards_with_state=0,
-            disabled_config_cards=0,
-            eligible_cards=0,
-            deck_configs=0,
-            preset_elapsed_ms=0.0,
-            load_elapsed_ms=0.0,
-            candidate_elapsed_ms=0.0,
-        )
-    )
-    rwkv_scheduler._rwkv_score_prewarm_in_flight.add((1, 2, 3, 4, (100,)))
-
-    rwkv_scheduler.dynamic_desired_retention_did_change(reviewer.mw)
-
-    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
-    assert rwkv_scheduler._rwkv_review_queue_target_maps == {}
-    assert rwkv_scheduler._rwkv_review_input_batch_module_cache == {}
-    assert rwkv_scheduler._rwkv_score_prewarm_in_flight == set()
-    assert rpc.calls[-1] == {"deck_id": 100, "scores": []}
-    assert rpc.deck_count_clears == 1
-    assert resets == [True]
-    assert rwkv_scheduler._rwkv_review_queue_context(reviewer, 100) != context_before
 
 
 def test_study_queue_change_invalidates_cached_and_async_rwkv_work() -> None:
@@ -657,7 +594,7 @@ def test_editor_change_keeps_resident_state_for_undo_restored_card(
     )
     assert rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0) == 0
     assert rwkv_scheduler._resolved_preset_id_cache[cache_key] == {1: "1000"}
-    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+    assert rwkv_scheduler._rwkv_review_input_generation == 1
 
 
 def test_collection_content_change_invalidates_state_when_preset_changes() -> None:
@@ -694,7 +631,7 @@ def test_collection_content_change_invalidates_state_when_preset_changes() -> No
 
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
     assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
-    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+    assert rwkv_scheduler._rwkv_review_input_generation == 1
 
 
 def test_reviewer_answer_does_not_invalidate_rwkv_queue_caches() -> None:
@@ -1014,7 +951,7 @@ def test_collection_mutation_wrapper_preserves_non_queue_config_change(
     rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
 
     assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
-    assert rwkv_scheduler._dynamic_desired_retention_generation == 1
+    assert rwkv_scheduler._rwkv_review_input_generation == 1
     assert refreshed_markers == [resident_identity]
 
 
@@ -4371,22 +4308,6 @@ def test_rwkv_review_input_falls_back_to_deck_desired_retention() -> None:
     assert review_input.target_retentions == pytest.approx((0.82, 0.82, 0.82, 0.82))
 
 
-def test_rwkv_review_input_uses_dynamic_desired_retention_per_grade() -> None:
-    reviewer = _rwkv_reviewer(preset_desired_retention=0.86)
-    reviewer._v3.states.dynamic_desired_retention_enabled = True
-    reviewer._v3.states.dynamic_desired_retentions.extend([0.81, 0.82, 0.83, 0.84])
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
-
-    review_input = rwkv_review_input(
-        reviewer=reviewer,
-        card=card,
-        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
-        ease=None,
-    )
-
-    assert review_input.target_retentions == pytest.approx((0.81, 0.82, 0.83, 0.84))
-
-
 def test_rwkv_review_input_encodes_filtered_state_like_training_data() -> None:
     reviewer = _rwkv_reviewer()
     reviewer._v3.states.current.Clear()
@@ -4500,86 +4421,6 @@ def test_live_review_after_explicit_filtered_answer_respects_scheduler_state() -
     )
 
     assert review_state == int(RwkvReviewState.REVIEW)
-
-
-def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class DynamicRetentionInfo:
-        def __init__(self, desired_retention: float | None) -> None:
-            self.desired_retention = desired_retention
-
-    cards = {1: SimpleNamespace(id=1), 2: SimpleNamespace(id=2)}
-
-    class Collection:
-        def get_card(self, card_id: int) -> object:
-            return cards[card_id]
-
-    col = Collection()
-    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
-    first = replace(
-        _rwkv_review_input(card_id=1, note_id=10),
-        target_retentions=(0.90, 0.90, 0.90, 0.90),
-    )
-    second = replace(
-        _rwkv_review_input(card_id=2, note_id=20),
-        target_retentions=(0.81, 0.82, 0.83, 0.84),
-    )
-    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
-        inputs_by_batch_size={512: [(1, first), (2, second)]},
-        loaded_rows=2,
-        parsed_cards=2,
-        cards_with_state=2,
-        disabled_config_cards=0,
-        eligible_cards=2,
-        deck_configs=1,
-        preset_elapsed_ms=0.0,
-        load_elapsed_ms=0.0,
-        candidate_elapsed_ms=0.0,
-    )
-
-    def resolver(
-        *,
-        collection: object,
-        cards: Sequence[object],
-        current_desired_retentions: Mapping[int, float | None],
-    ) -> dict[int, DynamicRetentionInfo]:
-        assert collection is col
-        assert [card.id for card in cards] == [1, 2]
-        assert set(current_desired_retentions) == {1, 2}
-        assert current_desired_retentions[1] == pytest.approx(0.90)
-        assert current_desired_retentions[2] == pytest.approx(0.83)
-        return {
-            1: DynamicRetentionInfo(0.50),
-            2: DynamicRetentionInfo(0.83),
-        }
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_dynamic_desired_retention_info_for_cards_resolver",
-        lambda: resolver,
-    )
-
-    resolved = rwkv_scheduler._resolve_dynamic_desired_retentions_for_input_build(
-        reviewer,
-        input_build,
-    )
-
-    resolved_inputs = dict(resolved.inputs_by_batch_size[512])
-    assert resolved_inputs[1].target_retentions == pytest.approx(
-        (0.50, 0.50, 0.50, 0.50)
-    )
-    assert resolved_inputs[2].target_retentions == pytest.approx(
-        (0.81, 0.82, 0.83, 0.84)
-    )
-    assert resolved.dynamic_desired_retentions_resolved
-    assert (
-        rwkv_scheduler._resolve_dynamic_desired_retentions_for_input_build(
-            reviewer,
-            resolved,
-        )
-        is resolved
-    )
 
 
 def test_rwkv_review_input_uses_exact_elapsed_for_review_cards(
@@ -11210,24 +11051,6 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
     monkeypatch.setattr(
         rwkv_scheduler, "_warm_up_reviewer_backend", lambda reviewer: True
     )
-    dynamic_resolution_sizes: list[int] = []
-
-    def resolve_dynamic_targets(
-        reviewer: object,
-        input_build: rwkv_scheduler.RwkvReviewInputBatchBuild,
-    ) -> rwkv_scheduler.RwkvReviewInputBatchBuild:
-        if input_build.dynamic_desired_retentions_resolved:
-            return input_build
-        dynamic_resolution_sizes.append(
-            sum(len(inputs) for inputs in input_build.inputs_by_batch_size.values())
-        )
-        return replace(input_build, dynamic_desired_retentions_resolved=True)
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_resolve_dynamic_desired_retentions_for_input_build",
-        resolve_dynamic_targets,
-    )
     previous_backend = set_reviewer_backend(backend)
     try:
         prepare_reviewer_queue_order(reviewer)
@@ -11255,7 +11078,6 @@ def test_prepare_reviewer_queue_order_refreshes_answered_cached_backend_inputs(
         39,
         0,
     ]
-    assert dynamic_resolution_sizes == [1, 1]
     scores = cast(list[object], rpc.calls[-1]["scores"])
     assert scores[0].intervening_reviews == 0
 
@@ -11606,7 +11428,7 @@ def test_prepare_reviewer_queue_order_candidate_refresh_scores_stale_window() ->
     assert score_pairs[-1] == (65, pytest.approx(0.065))
 
 
-def test_rwkv_candidate_refresh_relative_overdueness_uses_dynamic_dr() -> None:
+def test_rwkv_candidate_refresh_relative_overdueness_uses_card_targets() -> None:
     assert rwkv_scheduler._rwkv_review_candidate_refresh_card_ids(
         {"reviewOrder": 12},
         {1: 0.90, 2: 0.79},
@@ -12230,7 +12052,7 @@ def test_install_async_reviewer_queue_order_discards_stale_generation() -> None:
             days_elapsed=42,
             next_day_at=43 * 86_400,
             config_key="",
-            dynamic_desired_retention_generation=0,
+            review_input_generation=0,
             study_queue_generation=0,
         ),
         deck_id=100,
@@ -12564,7 +12386,6 @@ def test_async_queue_order_supports_stateless_backend_without_warmup(
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
-        dynamic_desired_retentions_resolved=True,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -12625,7 +12446,7 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
             days_elapsed=42,
             next_day_at=43 * 86_400,
             config_key="",
-            dynamic_desired_retention_generation=0,
+            review_input_generation=0,
             study_queue_generation=0,
         ),
         deck_id=100,
@@ -12687,7 +12508,6 @@ def test_async_reviewer_queue_order_scores_resident_inputs() -> None:
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
-        dynamic_desired_retentions_resolved=True,
     )
     collection_backend = object()
     collection = SimpleNamespace(_backend=collection_backend)
@@ -12964,7 +12784,7 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
     installed_scores: list[int] = []
     due_tree_calls = 0
     context = SimpleNamespace(
-        dynamic_desired_retention_generation=0,
+        review_input_generation=0,
         study_queue_generation=0,
     )
 
@@ -13527,130 +13347,6 @@ def test_rwkv_due_search_detection(
     assert rwkv_scheduler._search_uses_rwkv_curve_due(search) is curve_due
 
 
-def test_prepare_stats_due_search_transports_dynamic_desired_retention(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Backend:
-        def __init__(self) -> None:
-            self.review_inputs: list[RwkvReviewInput] = []
-
-        def state_generation(self) -> int:
-            return 0
-
-        def cached_review_input_predictions(
-            self,
-            inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
-        ) -> tuple[
-            list[RwkvReviewPrediction | None],
-            list[tuple[int, RwkvReviewPredictionRequest]],
-            int,
-        ]:
-            return (
-                [None] * len(inputs_by_index),
-                [
-                    (
-                        index,
-                        RwkvReviewPredictionRequest(review_input=review_input),
-                    )
-                    for index, review_input in inputs_by_index
-                ],
-                0,
-            )
-
-        def predict_review_requests(
-            self,
-            requests: Sequence[RwkvReviewPredictionRequest],
-        ) -> list[RwkvReviewPrediction]:
-            self.review_inputs.extend(request.review_input for request in requests)
-            return [RwkvReviewPrediction(retrievability=0.60) for _request in requests]
-
-    base_input = replace(
-        _rwkv_review_input(card_id=1, note_id=10),
-        target_retentions=(0.90, 0.90, 0.90, 0.90),
-    )
-    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
-        inputs_by_batch_size={512: [(1, base_input)]},
-        loaded_rows=1,
-        parsed_cards=1,
-        cards_with_state=1,
-        disabled_config_cards=0,
-        eligible_cards=1,
-        deck_configs=1,
-        preset_elapsed_ms=0.0,
-        load_elapsed_ms=0.0,
-        candidate_elapsed_ms=0.0,
-    )
-    rpc = _RwkvQueueScoreRpc()
-    col = SimpleNamespace(
-        _backend=rpc,
-        db=object(),
-        sched=SimpleNamespace(
-            _timing_today=lambda: SimpleNamespace(
-                days_elapsed=42,
-                next_day_at=43 * 86_400,
-            )
-        ),
-        get_card=lambda card_id: SimpleNamespace(id=card_id),
-    )
-    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
-
-    def dynamic_desired_retention(
-        *,
-        collection: object,
-        cards: Sequence[object],
-        current_desired_retentions: Mapping[int, float | None],
-    ) -> dict[int, SimpleNamespace]:
-        assert collection is col
-        assert [getattr(card, "id") for card in cards] == [1]
-        assert current_desired_retentions == {1: pytest.approx(0.90)}
-        return {1: SimpleNamespace(desired_retention=0.40)}
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_prepare_reviewer_backend_for_stats",
-        lambda _reviewer: True,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_review_input_batches_for_search",
-        lambda **_kwargs: input_build,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_dynamic_desired_retention_info_for_cards_resolver",
-        lambda: dynamic_desired_retention,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_fresh_rwkv_review_queue_score_map",
-        lambda _reviewer: {},
-    )
-
-    backend = Backend()
-    previous_backend = set_reviewer_backend(backend)
-    try:
-        status = prepare_stats_retrievability_scores(
-            reviewer,
-            "deck:current is:rwkv:due",
-        )
-    finally:
-        set_reviewer_backend(previous_backend)
-
-    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
-    assert len(backend.review_inputs) == 1
-    assert backend.review_inputs[0].target_retentions == pytest.approx(
-        (0.40, 0.40, 0.40, 0.40)
-    )
-    assert len(rpc.stats_calls) == 1
-    scores = rpc.stats_calls[0]["scores"]
-    assert isinstance(scores, list)
-    assert len(scores) == 1
-    score = scores[0]
-    assert getattr(score, "retrievability") == pytest.approx(0.60)
-    assert score.HasField("target_retention")
-    assert getattr(score, "target_retention") == pytest.approx(0.40)
-
-
 @pytest.mark.parametrize(
     (
         "search",
@@ -13831,11 +13527,6 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
         rwkv_scheduler,
         "_rwkv_review_input_batches_for_search",
         lambda **_kwargs: input_build,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_resolve_dynamic_desired_retentions_for_input_build",
-        lambda _reviewer, build: build,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -18288,9 +17979,9 @@ def _mutate_multi_batch_prediction_state(
         set_reviewer_backend(backend_a)
     elif mutation == "runtime_generation":
         backend_a.generation += 1
-    elif mutation == "dynamic_epoch":
+    elif mutation == "input_epoch":
         with rwkv_scheduler._reviewer_backend_state_lock:
-            rwkv_scheduler._dynamic_desired_retention_generation += 1
+            rwkv_scheduler._rwkv_review_input_generation += 1
     elif mutation == "study_epoch":
         with rwkv_scheduler._reviewer_backend_state_lock:
             rwkv_scheduler._rwkv_study_queue_generation += 1
@@ -18328,7 +18019,7 @@ def _start_multi_batch_execution_lock_holder(
         "same_backend_reset",
         "backend_aba",
         "runtime_generation",
-        "dynamic_epoch",
+        "input_epoch",
         "study_epoch",
         "resident_invalidation",
         "collection_swap",
@@ -18369,7 +18060,6 @@ def test_stats_multi_batch_discards_scores_after_prediction_state_change(
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
-        dynamic_desired_retentions_resolved=True,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -18570,7 +18260,7 @@ def test_tokenized_candidate_prediction_aborts_on_contention() -> None:
         "same_backend_reset",
         "backend_aba",
         "runtime_generation",
-        "dynamic_epoch",
+        "input_epoch",
         "study_epoch",
         "resident_invalidation",
         "collection_swap",
@@ -18624,7 +18314,6 @@ def test_reschedule_multi_batch_discards_items_after_prediction_state_change(
         preset_elapsed_ms=0.0,
         load_elapsed_ms=0.0,
         candidate_elapsed_ms=0.0,
-        dynamic_desired_retentions_resolved=True,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -18738,7 +18427,7 @@ def _rwkv_async_test_work(
             days_elapsed=42,
             next_day_at=43 * 86_400,
             config_key="",
-            dynamic_desired_retention_generation=0,
+            review_input_generation=0,
             study_queue_generation=0,
         ),
         deck_id=100,
@@ -18901,3 +18590,194 @@ def _filtered_preview_state() -> SchedulingState:
     state = SchedulingState()
     state.filtered.preview.scheduled_secs = 180
     return state
+
+
+# ---- deck-options.reschedule-on-change --------------------------------------
+
+
+def _reschedule_request(
+    *,
+    fsrs_reschedule: bool = True,
+    configs: Sequence[tuple[int, float, bool] | tuple[int, float, bool, bool]] = (),
+    deck_desired_retention: float | None = None,
+) -> deck_config_pb2.UpdateDeckConfigsRequest:
+    request = deck_config_pb2.UpdateDeckConfigsRequest()
+    request.target_deck_id = 1
+    request.fsrs_reschedule = fsrs_reschedule
+    for entry in configs:
+        config_id, desired_retention, curve = entry[:3]
+        instant = bool(entry[3]) if len(entry) > 3 else False
+        config = request.configs.add()
+        config.id = config_id
+        config.config.desired_retention = desired_retention
+        config.config.rwkv_review_enabled = curve
+        config.config.rwkv_review_instant_order_enabled = instant
+    if deck_desired_retention is not None:
+        request.limits.desired_retention = deck_desired_retention
+    return request
+
+
+def _reschedule_snapshot(
+    presets: dict[int, tuple[float, bool] | tuple[float, bool, bool]],
+    deck_desired_retention: float | None = None,
+) -> rwkv_scheduler.RwkvCurveRescheduleSnapshot:
+    return rwkv_scheduler.RwkvCurveRescheduleSnapshot(
+        preset_desired_retention={k: v[0] for k, v in presets.items()},
+        preset_curve_enabled={k: v[1] for k, v in presets.items()},
+        deck_desired_retention=deck_desired_retention,
+        preset_instant_enabled={
+            k: bool(v[2]) if len(v) > 2 else False for k, v in presets.items()
+        },
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_curve_preset_retention_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.85, True)])
+    )
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+
+
+def test_rwkv_curve_reschedule_not_needed_without_the_switch() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, True)]),
+    )
+
+
+def test_rwkv_curve_reschedule_ignores_presets_without_curve() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False), 11: (0.9, True)})
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(configs=[(11, 0.9, True), (10, 0.8, False)]),
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_preset_becomes_curve() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False)})
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    # A preset the collection did not know (new preset) counts as newly Curve.
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(0, 0.9, True)])
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_deck_override_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)}, deck_desired_retention=0.9)
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(configs=[(10, 0.9, True)], deck_desired_retention=0.8),
+    )
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    # The override only matters for the preset the deck ends up with.
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        _reschedule_snapshot({10: (0.9, True), 11: (0.9, False)}, 0.9),
+        _reschedule_request(
+            configs=[(10, 0.9, True), (11, 0.9, False)],
+            deck_desired_retention=0.8,
+        ),
+    )
+
+
+def test_rwkv_curve_reschedule_snapshot_reads_legacy_dicts() -> None:
+    class Decks:
+        def get_config(self, config_id: int) -> dict[str, object] | None:
+            return {
+                10: {
+                    "desiredRetention": 0.9,
+                    "other": {"jschoreels.rwkv": {"rwkv_review_enabled": True}},
+                },
+                11: {"desiredRetention": 0.85},
+            }.get(config_id)
+
+        def get(self, deck_id: int, default: bool = True) -> dict[str, object] | None:
+            return {"id": deck_id, "desiredRetention": 80} if deck_id == 1 else None
+
+    mw = SimpleNamespace(col=SimpleNamespace(decks=Decks()))
+    snapshot = rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+        mw,
+        _reschedule_request(
+            configs=[(10, 0.9, True), (11, 0.85, False), (12, 0.9, False)]
+        ),
+    )
+    assert snapshot.preset_desired_retention == {10: 0.9, 11: 0.85}
+    assert snapshot.preset_curve_enabled == {10: True, 11: False}
+    assert snapshot.preset_instant_enabled == {10: False, 11: False}
+    assert snapshot.deck_desired_retention == pytest.approx(0.8)
+
+
+def test_reschedule_rwkv_curve_after_save_runs_only_when_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int | None] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "reschedule_rwkv_review_cards_with_progress",
+        lambda _mw, *, deck_id=None: calls.append(deck_id),
+    )
+    mw = SimpleNamespace()
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert not rwkv_scheduler.reschedule_rwkv_curve_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    assert calls == []
+    assert rwkv_scheduler.reschedule_rwkv_curve_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.85, True)])
+    )
+    assert calls == [None]
+
+
+def test_rwkv_instant_refresh_needed_when_instant_retention_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False, True)})
+    assert rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.85, False, True)])
+    )
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot,
+        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, False, True)]),
+    )
+    # An RWKV-Curve change is not an RWKV-Instant change.
+    assert not rwkv_scheduler.rwkv_instant_refresh_needed(
+        _reschedule_snapshot({10: (0.9, True)}),
+        _reschedule_request(configs=[(10, 0.85, True)]),
+    )
+
+
+def test_rwkv_instant_refresh_needed_when_preset_becomes_instant() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False, False)})
+    assert rwkv_scheduler.rwkv_instant_refresh_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+
+
+def test_refresh_rwkv_instant_after_save_invalidates_and_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidated: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_invalidate_rwkv_review_input_caches",
+        lambda mw: invalidated.append(mw) or 7,
+    )
+    resets: list[int] = []
+    mw = SimpleNamespace(reset=lambda: resets.append(1))
+    snapshot = _reschedule_snapshot({10: (0.9, False, True)})
+    assert not rwkv_scheduler.refresh_rwkv_instant_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.9, False, True)])
+    )
+    assert invalidated == [] and resets == []
+    assert rwkv_scheduler.refresh_rwkv_instant_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.8, False, True)])
+    )
+    assert invalidated == [mw] and resets == [1]

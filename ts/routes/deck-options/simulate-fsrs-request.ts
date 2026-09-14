@@ -49,15 +49,5 @@ export function buildSimulateFsrsRequest({
         reviewFuzzFactorLong: reviewFuzzEnabled ? reviewFuzzFactorLong : 0,
         helpMeDecideTransitionBlendAlpha: HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
         helpMeDecideEnforceMonotonicSuccessGradeProbs: HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
-        fsrsDynamicDesiredRetentionParams: config.fsrsDynamicDesiredRetentionParams,
-        fsrsDynamicDesiredRetentionWeights: config.fsrsDynamicDesiredRetentionWeights,
-        fsrsDynamicDesiredRetentionAvgDrs: config.fsrsDynamicDesiredRetentionAvgDrs,
-        fsrsDynamicDesiredRetentionFsrsEqWeights: config.fsrsDynamicDesiredRetentionFsrsEqWeights,
-        fsrsDynamicDesiredRetentionFsrsEqDrs: config.fsrsDynamicDesiredRetentionFsrsEqDrs,
-        fsrsDynamicDesiredRetentionFixedTargetWeights: config.fsrsDynamicDesiredRetentionFixedTargetWeights,
-        fsrsDynamicDesiredRetentionFixedTargetDrs: config.fsrsDynamicDesiredRetentionFixedTargetDrs,
-        fsrsDynamicDesiredRetentionMin: config.fsrsDynamicDesiredRetentionMin,
-        fsrsDynamicDesiredRetentionMax: config.fsrsDynamicDesiredRetentionMax,
-        fsrsDynamicDesiredRetentionClamp: config.fsrsDynamicDesiredRetentionClamp,
     });
 }

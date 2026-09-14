@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::iter;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -22,33 +21,20 @@ use chrono::NaiveDate;
 use chrono::NaiveTime;
 use fsrs::compute_parameters;
 use fsrs::evaluate_with_time_series_splits;
-use fsrs::extract_simulator_config;
 use fsrs::CombinedProgressState;
 use fsrs::ComputeParametersInput;
 use fsrs::ComputeParametersVersion;
-use fsrs::CostAdrEvaluationPoint;
-use fsrs::CostAdrMetrics;
-use fsrs::CostAdrPolicy;
-use fsrs::CostAdrTrainingConfig;
 use fsrs::FSRSItem;
 use fsrs::FSRSReview;
 use fsrs::ModelEvaluation;
-use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
 
-use crate::card::Card;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
-use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MAX;
-use crate::scheduler::fsrs::dynamic_desired_retention::DEFAULT_RETENTION_MIN;
-use crate::scheduler::fsrs::memory_state::fsrs_items_for_memory_states;
-use crate::scheduler::fsrs::review_time_model::build_help_me_decide_review_time_model_from_revlogs;
-use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
-use crate::scheduler::fsrs::simulator::is_included_card;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
@@ -111,9 +97,6 @@ pub struct ComputeParamsRequest<'t> {
     pub include_same_day_reviews: Option<bool>,
     pub enable_scheduling_penalties: bool,
     pub model_version_override: Option<ComputeParametersVersion>,
-    pub dynamic_desired_retention_enabled: bool,
-    pub dynamic_desired_retention_review_limit: Option<u32>,
-    pub dynamic_desired_retention_max_cost_perday_minutes: Option<f32>,
 }
 
 pub(crate) struct PreparedComputeParams {
@@ -122,24 +105,11 @@ pub(crate) struct PreparedComputeParams {
     pub model_version: ComputeParametersVersion,
     pub include_same_day_reviews: bool,
     pub enable_scheduling_penalties: bool,
-    pub dynamic_desired_retention_enabled: bool,
-    pub simulator_config: SimulatorConfig,
-    pub existing_card_input: Option<ExistingCardInput>,
     pub items: Vec<FSRSItem>,
     pub item_card_ids: Vec<i64>,
     pub item_revlog_ids: Vec<RevlogId>,
     pub fsrs_prediction_sources: Vec<FsrsReviewPredictionSource>,
     pub target_counts: TrainingTargetCounts,
-}
-
-pub(crate) struct ExistingCardInput {
-    pub cards: Vec<Card>,
-    pub revlogs: Vec<RevlogEntry>,
-    pub next_day_at: TimestampSecs,
-    pub days_elapsed: i32,
-    pub ignore_revlogs_before: TimestampMillis,
-    pub historical_retention: f32,
-    pub desired_retention: f32,
 }
 
 pub(crate) struct PrepareComputeParamsInput<'a> {
@@ -150,72 +120,17 @@ pub(crate) struct PrepareComputeParamsInput<'a> {
     pub include_same_day_reviews: Option<bool>,
     pub enable_scheduling_penalties: bool,
     pub model_version_override: Option<ComputeParametersVersion>,
-    pub dynamic_desired_retention_enabled: bool,
-    pub historical_retention: f32,
-    pub desired_retention: f32,
-    pub dynamic_desired_retention_simulator_options: DynamicDesiredRetentionSimulatorOptions,
-}
-
-struct DynamicDesiredRetentionCalibration {
-    params: Vec<f32>,
-    weights: Vec<f32>,
-    avg_drs: Vec<f32>,
-    fsrs_eq_weights: Vec<f32>,
-    fsrs_eq_drs: Vec<f32>,
-    fixed_target_weights: Vec<f32>,
-    fixed_target_drs: Vec<f32>,
-    retention_min: f32,
-    retention_max: f32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct DynamicDesiredRetentionBounds {
-    retention_min: f32,
-    retention_max: f32,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DynamicDesiredRetentionSimulatorOptions {
-    pub review_limit: Option<u32>,
-    pub max_cost_perday_minutes: Option<f32>,
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputeParamsProgressPhase {
     #[default]
     OptimizingFsrsParams = 0,
-    TrainingDynamicDesiredRetention = 1,
-}
-
-impl ComputeParamsProgressPhase {
-    pub(crate) fn from_shared(progress_phase: &SharedComputeParamsProgressPhase) -> Self {
-        match progress_phase.load(Ordering::Acquire) {
-            1 => Self::TrainingDynamicDesiredRetention,
-            _ => Self::OptimizingFsrsParams,
-        }
-    }
-}
-
-pub(crate) type SharedComputeParamsProgressPhase = Arc<AtomicU8>;
-
-pub(crate) fn new_compute_params_progress_phase() -> SharedComputeParamsProgressPhase {
-    Arc::new(AtomicU8::new(
-        ComputeParamsProgressPhase::OptimizingFsrsParams as u8,
-    ))
 }
 
 pub(crate) struct FsrsReviewRetrievabilityProgress {
     training_progress: Arc<Mutex<CombinedProgressState>>,
     completed_validation_folds: Arc<AtomicUsize>,
-}
-
-fn set_compute_params_progress_phase(
-    progress_phase: Option<&SharedComputeParamsProgressPhase>,
-    phase: ComputeParamsProgressPhase,
-) {
-    if let Some(progress_phase) = progress_phase {
-        progress_phase.store(phase as u8, Ordering::Release);
-    }
 }
 
 /// r: retention
@@ -548,9 +463,6 @@ pub(crate) fn compute_params_from_prepared(
         model_version,
         include_same_day_reviews,
         enable_scheduling_penalties,
-        dynamic_desired_retention_enabled,
-        simulator_config,
-        existing_card_input,
         items,
         item_card_ids,
         item_revlog_ids,
@@ -558,7 +470,6 @@ pub(crate) fn compute_params_from_prepared(
         target_counts: _,
     }: PreparedComputeParams,
     progress: Option<Arc<Mutex<CombinedProgressState>>>,
-    progress_phase: Option<SharedComputeParamsProgressPhase>,
     health_check: bool,
 ) -> Result<ComputeFsrsParamsResponse> {
     let fsrs_items = items.len() as u32;
@@ -567,22 +478,9 @@ pub(crate) fn compute_params_from_prepared(
             params: current_params,
             fsrs_items,
             health_check_passed: None,
-            fsrs_dynamic_desired_retention_params: Vec::new(),
-            fsrs_dynamic_desired_retention_weights: Vec::new(),
-            fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
-            fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
-            fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
-            fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
-            fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
-            fsrs_dynamic_desired_retention_min: 0.0,
-            fsrs_dynamic_desired_retention_max: 0.0,
         });
     }
 
-    set_compute_params_progress_phase(
-        progress_phase.as_ref(),
-        ComputeParamsProgressPhase::OptimizingFsrsParams,
-    );
     let input = ComputeParametersInput {
         training_config: None,
         train_set: items.clone(),
@@ -598,19 +496,6 @@ pub(crate) fn compute_params_from_prepared(
         &current_params,
         compute_parameters(input)?,
     );
-    let existing_cards = existing_card_input
-        .map(|input| existing_cards_for_dynamic_desired_retention(input, &params))
-        .transpose()?
-        .unwrap_or_default();
-    let dynamic_desired_retention = train_dynamic_desired_retention(
-        dynamic_desired_retention_enabled,
-        model_version,
-        &simulator_config,
-        &existing_cards,
-        &params,
-        progress,
-        progress_phase.as_ref(),
-    )?;
 
     let health_check_items = if include_same_day_reviews {
         TrainingItemsForFsrs::with_card_and_revlog_ids(
@@ -652,322 +537,6 @@ pub(crate) fn compute_params_from_prepared(
         params,
         fsrs_items,
         health_check_passed,
-        fsrs_dynamic_desired_retention_params: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.params.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_weights: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.weights.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_avg_drs: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.avg_drs.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_fsrs_eq_weights: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.fsrs_eq_weights.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_fsrs_eq_drs: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.fsrs_eq_drs.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_fixed_target_weights: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.fixed_target_weights.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_fixed_target_drs: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.fixed_target_drs.clone())
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_min: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.retention_min)
-            .unwrap_or_default(),
-        fsrs_dynamic_desired_retention_max: dynamic_desired_retention
-            .as_ref()
-            .map(|calibration| calibration.retention_max)
-            .unwrap_or_default(),
-    })
-}
-
-fn train_dynamic_desired_retention(
-    enabled: bool,
-    model_version: ComputeParametersVersion,
-    simulator_config: &SimulatorConfig,
-    existing_cards: &[fsrs::Card],
-    params: &[f32],
-    progress: Option<Arc<Mutex<CombinedProgressState>>>,
-    progress_phase: Option<&SharedComputeParamsProgressPhase>,
-) -> Result<Option<DynamicDesiredRetentionCalibration>> {
-    if !enabled || model_version != ComputeParametersVersion::Fsrs7 {
-        return Ok(None);
-    }
-
-    let bounds = default_dynamic_desired_retention_bounds();
-    set_compute_params_progress_phase(
-        progress_phase,
-        ComputeParamsProgressPhase::TrainingDynamicDesiredRetention,
-    );
-    let training_config = CostAdrTrainingConfig {
-        retention_min: bounds.retention_min,
-        retention_max: bounds.retention_max,
-        progress,
-        ..Default::default()
-    };
-    let result = if existing_cards.is_empty() {
-        CostAdrPolicy::train_single_user(simulator_config, params, &training_config)?
-    } else {
-        CostAdrPolicy::train_single_user_with_existing_cards(
-            simulator_config,
-            params,
-            &training_config,
-            existing_cards,
-        )?
-    };
-    let calibration_points = if existing_cards.is_empty() {
-        result.policy.calibrate_average_desired_retention_range(
-            simulator_config,
-            params,
-            DYNAMIC_DR_CALIBRATION_POINT_COUNT,
-            training_config.simulation_seed,
-        )?
-    } else {
-        result
-            .policy
-            .calibrate_average_desired_retention_range_with_existing_cards(
-                simulator_config,
-                params,
-                DYNAMIC_DR_CALIBRATION_POINT_COUNT,
-                training_config.simulation_seed,
-                existing_cards,
-            )?
-    };
-    let fsrs_equivalent_points = fsrs_equivalent_desired_retention_points(
-        &training_config.baseline_desired_retentions,
-        &result.baseline_metrics,
-        &calibration_points,
-    );
-    let fixed_target_points = result
-        .efficient_fixed_desired_retention_points(&training_config.baseline_desired_retentions);
-    dynamic_desired_retention_calibration_from_parts(
-        result.policy.coefficients,
-        calibration_points
-            .into_iter()
-            .map(|point| (point.goal_cost_weight, point.average_desired_retention)),
-        fsrs_equivalent_points,
-        fixed_target_points
-            .into_iter()
-            .map(|point| (point.goal_cost_weight, point.desired_retention)),
-        bounds,
-    )
-    .map(Some)
-}
-
-fn existing_cards_for_dynamic_desired_retention(
-    input: ExistingCardInput,
-    params: &[f32],
-) -> Result<Vec<fsrs::Card>> {
-    let fsrs = FSRS::new(params)?;
-    let mut items_by_card = fsrs_items_for_memory_states(
-        &fsrs,
-        params,
-        input.revlogs,
-        input.next_day_at,
-        input.historical_retention,
-        input.ignore_revlogs_before,
-    )?
-    .into_iter()
-    .collect::<HashMap<_, _>>();
-    let shared_params = Arc::new(params.to_vec());
-    let converted_cards = input
-        .cards
-        .into_iter()
-        .filter(is_included_card)
-        .map(|mut card| -> Result<Option<fsrs::Card>> {
-            let item = items_by_card.remove(&card.id).flatten();
-            card.set_memory_state(&fsrs, params, item, input.historical_retention)?;
-            let Some(memory_state) = card.memory_state else {
-                return Ok(None);
-            };
-            card.desired_retention = Some(input.desired_retention);
-            Ok(Card::convert_with_options(
-                card,
-                input.days_elapsed,
-                memory_state,
-                input.desired_retention,
-                &shared_params,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
-    Ok(converted_cards)
-}
-
-const DYNAMIC_DR_CALIBRATION_POINT_COUNT: usize = 16;
-const DYNAMIC_DR_DEFAULT_REVIEW_LIMIT: usize = 9999;
-const DYNAMIC_DR_DEFAULT_MAX_COST_PERDAY_MINUTES: f32 = 720.0;
-
-fn default_dynamic_desired_retention_bounds() -> DynamicDesiredRetentionBounds {
-    DynamicDesiredRetentionBounds {
-        retention_min: DEFAULT_RETENTION_MIN,
-        retention_max: DEFAULT_RETENTION_MAX,
-    }
-}
-
-fn shape_simulator_config_for_dynamic_desired_retention(
-    config: &mut SimulatorConfig,
-    revlogs: &[RevlogEntry],
-    day_cutoff: i64,
-    options: DynamicDesiredRetentionSimulatorOptions,
-) -> Result<()> {
-    let reviewed_cards = revlogs
-        .iter()
-        .map(|entry| entry.cid)
-        .collect::<HashSet<_>>();
-    if reviewed_cards.is_empty() {
-        return Ok(());
-    }
-    let review_limit = options
-        .review_limit
-        .map(|value| value as usize)
-        .unwrap_or(DYNAMIC_DR_DEFAULT_REVIEW_LIMIT);
-    let max_cost_perday_minutes = options
-        .max_cost_perday_minutes
-        .unwrap_or(DYNAMIC_DR_DEFAULT_MAX_COST_PERDAY_MINUTES);
-    require!(review_limit > 0, "Dynamic DR review limit must be positive");
-    require!(
-        max_cost_perday_minutes.is_finite() && max_cost_perday_minutes > 0.0,
-        "Dynamic DR daily time budget must be positive minutes"
-    );
-
-    let active_new_card_days = revlogs
-        .iter()
-        .filter(|entry| entry.review_kind == RevlogReviewKind::Learning)
-        .map(|entry| real_day(entry.id.0, day_cutoff))
-        .collect::<HashSet<_>>()
-        .len()
-        .max(1);
-    let learn_limit =
-        ((reviewed_cards.len() as f32 / active_new_card_days as f32).round() as usize).max(1);
-
-    config.deck_size = reviewed_cards.len();
-    config.learn_span = active_new_card_days;
-    config.learn_limit = learn_limit;
-    config.review_limit = review_limit;
-    config.max_cost_perday = max_cost_perday_minutes * 60.0;
-    Ok(())
-}
-
-fn install_dynamic_desired_retention_review_time_cost_fn(
-    config: &mut SimulatorConfig,
-    revlogs: &[RevlogEntry],
-    params: &[f32],
-    next_day_at: TimestampSecs,
-) -> Result<()> {
-    let review_time_model = build_help_me_decide_review_time_model_from_revlogs(
-        revlogs,
-        params,
-        next_day_at,
-        false,
-        config.state_rating_costs[1],
-    )?;
-    install_review_time_cost_fn(config, Arc::new(review_time_model));
-    Ok(())
-}
-
-fn real_day(timestamp_millis: i64, day_cutoff: i64) -> i64 {
-    (timestamp_millis / 1000 - day_cutoff) / 86400
-}
-
-fn dynamic_desired_retention_calibration_from_parts(
-    params: Vec<f32>,
-    points: impl IntoIterator<Item = (f32, Option<f32>)>,
-    fsrs_equivalent_points: impl IntoIterator<Item = (f32, f32)>,
-    fixed_target_points: impl IntoIterator<Item = (f32, f32)>,
-    bounds: DynamicDesiredRetentionBounds,
-) -> Result<DynamicDesiredRetentionCalibration> {
-    let calibration = points
-        .into_iter()
-        .filter_map(|(weight, average_desired_retention)| {
-            average_desired_retention.map(|avg_dr| (weight, avg_dr))
-        })
-        .collect::<Vec<_>>();
-    require!(
-        calibration.len() >= 2,
-        "Dynamic DR calibration did not produce enough points"
-    );
-
-    let (weights, avg_drs) = calibration.into_iter().unzip();
-    let (fsrs_eq_weights, fsrs_eq_drs) = fsrs_equivalent_points.into_iter().unzip();
-    let (fixed_target_weights, fixed_target_drs) = fixed_target_points.into_iter().unzip();
-    Ok(DynamicDesiredRetentionCalibration {
-        params,
-        weights,
-        avg_drs,
-        fsrs_eq_weights,
-        fsrs_eq_drs,
-        fixed_target_weights,
-        fixed_target_drs,
-        retention_min: bounds.retention_min,
-        retention_max: bounds.retention_max,
-    })
-}
-
-fn fsrs_equivalent_desired_retention_points(
-    baseline_desired_retentions: &[f32],
-    baseline_metrics: &[CostAdrMetrics],
-    points: &[CostAdrEvaluationPoint],
-) -> Vec<(f32, f32)> {
-    let mut baseline_points = baseline_desired_retentions
-        .iter()
-        .copied()
-        .zip(baseline_metrics.iter().copied())
-        .filter(|(desired_retention, metrics)| {
-            desired_retention.is_finite()
-                && metrics.memorized_average.is_finite()
-                && metrics.time_average.is_finite()
-        })
-        .map(|(desired_retention, metrics)| (metrics.memorized_average, desired_retention))
-        .collect::<Vec<_>>();
-    baseline_points.sort_by(|left, right| left.0.total_cmp(&right.0));
-
-    points
-        .iter()
-        .filter_map(|point| {
-            interpolated_desired_retention_for_memory_target(
-                &baseline_points,
-                point.metrics.memorized_average,
-            )
-            .map(|desired_retention| (point.goal_cost_weight, desired_retention))
-        })
-        .collect()
-}
-
-fn interpolated_desired_retention_for_memory_target(
-    baseline_points: &[(f32, f32)],
-    target_memorized_average: f32,
-) -> Option<f32> {
-    if !(target_memorized_average.is_finite() && baseline_points.len() >= 2) {
-        return None;
-    }
-
-    baseline_points.windows(2).find_map(|pair| {
-        let (left_memory, left_retention) = pair[0];
-        let (right_memory, right_retention) = pair[1];
-        if (left_memory - target_memorized_average) * (right_memory - target_memorized_average)
-            > 0.0
-        {
-            return None;
-        }
-        if (left_memory - right_memory).abs() < f32::EPSILON {
-            return Some(left_retention);
-        }
-        let t = ((target_memorized_average - left_memory) / (right_memory - left_memory))
-            .clamp(0.0, 1.0);
-        Some(left_retention + (right_retention - left_retention) * t)
     })
 }
 
@@ -1019,9 +588,6 @@ impl Collection {
             include_same_day_reviews,
             enable_scheduling_penalties,
             model_version_override,
-            dynamic_desired_retention_enabled,
-            dynamic_desired_retention_review_limit,
-            dynamic_desired_retention_max_cost_perday_minutes,
         } = request;
 
         self.clear_progress();
@@ -1033,13 +599,6 @@ impl Collection {
             include_same_day_reviews,
             enable_scheduling_penalties,
             model_version_override,
-            dynamic_desired_retention_enabled,
-            historical_retention: 0.9,
-            desired_retention: 0.9,
-            dynamic_desired_retention_simulator_options: DynamicDesiredRetentionSimulatorOptions {
-                review_limit: dynamic_desired_retention_review_limit,
-                max_cost_perday_minutes: dynamic_desired_retention_max_cost_perday_minutes,
-            },
         })?;
 
         if prepared.items.is_empty() {
@@ -1047,15 +606,6 @@ impl Collection {
                 params: current_params.to_vec(),
                 fsrs_items: 0,
                 health_check_passed: None,
-                fsrs_dynamic_desired_retention_params: Vec::new(),
-                fsrs_dynamic_desired_retention_weights: Vec::new(),
-                fsrs_dynamic_desired_retention_avg_drs: Vec::new(),
-                fsrs_dynamic_desired_retention_fsrs_eq_weights: Vec::new(),
-                fsrs_dynamic_desired_retention_fsrs_eq_drs: Vec::new(),
-                fsrs_dynamic_desired_retention_fixed_target_weights: Vec::new(),
-                fsrs_dynamic_desired_retention_fixed_target_drs: Vec::new(),
-                fsrs_dynamic_desired_retention_min: 0.0,
-                fsrs_dynamic_desired_retention_max: 0.0,
             });
         }
         // adapt the progress handler to our built-in progress handling
@@ -1067,9 +617,7 @@ impl Collection {
                 p.total_presets = total_presets;
             })?;
             let progress = CombinedProgressState::new_shared();
-            let progress_phase = new_compute_params_progress_phase();
             let progress2 = progress.clone();
-            let progress_phase2 = progress_phase.clone();
             let progress_thread = thread::spawn(move || {
                 let mut finished = false;
                 while !finished {
@@ -1081,7 +629,6 @@ impl Collection {
                         s.reviews = prepared.target_counts.total_targets as u32;
                         s.long_term_reviews = prepared.target_counts.long_term_targets as u32;
                         s.short_term_reviews = prepared.target_counts.short_term_targets as u32;
-                        s.phase = ComputeParamsProgressPhase::from_shared(&progress_phase);
                         finished = guard.finished();
                     }) {
                         guard.want_abort = true;
@@ -1089,16 +636,11 @@ impl Collection {
                     }
                 }
             });
-            Ok((progress2, progress_phase2, progress_thread))
+            Ok((progress2, progress_thread))
         };
 
-        let (progress, progress_phase, progress_thread) = create_progress_thread()?;
-        let output = compute_params_from_prepared(
-            prepared,
-            Some(progress.clone()),
-            Some(progress_phase),
-            health_check,
-        );
+        let (progress, progress_thread) = create_progress_thread()?;
+        let output = compute_params_from_prepared(prepared, Some(progress.clone()), health_check);
         progress_thread.join().ok();
         output
     }
@@ -1202,53 +744,12 @@ impl Collection {
             include_same_day_reviews,
             enable_scheduling_penalties,
             model_version_override,
-            dynamic_desired_retention_enabled,
-            historical_retention,
-            desired_retention,
-            dynamic_desired_retention_simulator_options,
         } = input;
         let timing = self.timing_today()?;
         let revlogs = self.revlog_for_srs(search)?;
-        let mut simulator_config = extract_simulator_config(
-            revlogs.iter().cloned().map(Into::into).collect(),
-            timing.next_day_at.into(),
-            true,
-        );
-        if dynamic_desired_retention_enabled {
-            shape_simulator_config_for_dynamic_desired_retention(
-                &mut simulator_config,
-                &revlogs,
-                timing.next_day_at.into(),
-                dynamic_desired_retention_simulator_options,
-            )?;
-            install_dynamic_desired_retention_review_time_cost_fn(
-                &mut simulator_config,
-                &revlogs,
-                current_params,
-                timing.next_day_at,
-            )?;
-        }
         let model_version = resolved_model_version(current_params, model_version_override);
         let include_same_day_reviews =
             include_same_day_training_entries(model_version, include_same_day_reviews);
-        let existing_card_input = if dynamic_desired_retention_enabled
-            && model_version == ComputeParametersVersion::Fsrs7
-        {
-            let guard = self.search_cards_into_table(search, SortMode::NoOrder)?;
-            let cards = guard.col.storage.all_searched_cards()?;
-            drop(guard);
-            Some(ExistingCardInput {
-                cards,
-                revlogs: revlogs.clone(),
-                next_day_at: timing.next_day_at,
-                days_elapsed: timing.days_elapsed as i32,
-                ignore_revlogs_before,
-                historical_retention,
-                desired_retention,
-            })
-        } else {
-            None
-        };
         let training_items = fsrs_items_for_training(
             revlogs,
             timing.next_day_at,
@@ -1268,9 +769,6 @@ impl Collection {
             model_version,
             include_same_day_reviews,
             enable_scheduling_penalties,
-            dynamic_desired_retention_enabled,
-            simulator_config,
-            existing_card_input,
             items,
             item_card_ids: card_ids.unwrap_or_default(),
             item_revlog_ids: revlog_ids.unwrap_or_default(),
@@ -2126,16 +1624,12 @@ pub(crate) mod tests {
                 model_version: ComputeParametersVersion::Fsrs7,
                 include_same_day_reviews: true,
                 enable_scheduling_penalties: true,
-                dynamic_desired_retention_enabled: false,
-                simulator_config: Default::default(),
-                existing_card_input: None,
                 items: vec![],
                 item_card_ids: vec![],
                 item_revlog_ids: vec![],
                 fsrs_prediction_sources: vec![],
                 target_counts: TrainingTargetCounts::default(),
             },
-            None,
             None,
             false,
         )?;
@@ -2305,11 +1799,6 @@ pub(crate) mod tests {
             include_same_day_reviews: Some(true),
             enable_scheduling_penalties: false,
             model_version_override: Some(ComputeParametersVersion::Fsrs7),
-            dynamic_desired_retention_enabled: false,
-            historical_retention: 0.9,
-            desired_retention: 0.9,
-            dynamic_desired_retention_simulator_options:
-                DynamicDesiredRetentionSimulatorOptions::default(),
         })?;
         let prepared_items = prepared.items.len();
         let prepared_targets = prepared.target_counts.total_targets;
@@ -2318,7 +1807,7 @@ pub(crate) mod tests {
         let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
 
         let optimize_started = Instant::now();
-        let output = compute_params_from_prepared(prepared, None, None, false)?;
+        let output = compute_params_from_prepared(prepared, None, false)?;
         let optimize_ms = optimize_started.elapsed().as_secs_f64() * 1000.0;
 
         let eval_started = Instant::now();
@@ -2392,119 +1881,6 @@ pub(crate) mod tests {
         assert_eq!(legacy_stored, predictions.len());
         assert_eq!(batched_stored, predictions.len());
         assert_eq!(repeated_stored, predictions.len());
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_desired_retention_calibration_keeps_weights_and_avg_drs() -> Result<()> {
-        let calibration = dynamic_desired_retention_calibration_from_parts(
-            vec![1.0; 15],
-            [(0.0, Some(0.9)), (16.0, None), (64.0, Some(0.8))],
-            [(0.0, 0.91), (64.0, 0.81)],
-            [(16.0, 0.9), (64.0, 0.8)],
-            DynamicDesiredRetentionBounds {
-                retention_min: 0.75,
-                retention_max: 0.95,
-            },
-        )?;
-
-        assert_eq!(calibration.params, vec![1.0; 15]);
-        assert_eq!(calibration.weights, vec![0.0, 64.0]);
-        assert_eq!(calibration.avg_drs, vec![0.9, 0.8]);
-        assert_eq!(calibration.fsrs_eq_weights, vec![0.0, 64.0]);
-        assert_eq!(calibration.fsrs_eq_drs, vec![0.91, 0.81]);
-        assert_eq!(calibration.fixed_target_weights, vec![16.0, 64.0]);
-        assert_eq!(calibration.fixed_target_drs, vec![0.9, 0.8]);
-        assert_eq!(calibration.retention_min, 0.75);
-        assert_eq!(calibration.retention_max, 0.95);
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_desired_retention_uses_default_bounds() -> Result<()> {
-        let bounds = default_dynamic_desired_retention_bounds();
-
-        assert_eq!(bounds.retention_min, DEFAULT_RETENTION_MIN);
-        assert_eq!(bounds.retention_max, DEFAULT_RETENTION_MAX);
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_desired_retention_simulator_uses_selected_slice_shape() {
-        let mut card_one_learning = revlog(RevlogReviewKind::Learning, 10);
-        card_one_learning.cid = CardId(1);
-        let mut card_one_review = revlog(RevlogReviewKind::Review, 9);
-        card_one_review.cid = CardId(1);
-        let mut card_two_learning = revlog(RevlogReviewKind::Learning, 4);
-        card_two_learning.cid = CardId(2);
-        let mut card_two_review = revlog(RevlogReviewKind::Review, 2);
-        card_two_review.cid = CardId(2);
-        let mut config = SimulatorConfig::default();
-
-        shape_simulator_config_for_dynamic_desired_retention(
-            &mut config,
-            &[
-                card_one_learning,
-                card_one_review,
-                card_two_learning,
-                card_two_review,
-            ],
-            NEXT_DAY_AT.0,
-            DynamicDesiredRetentionSimulatorOptions::default(),
-        )
-        .unwrap();
-
-        assert_eq!(config.deck_size, 2);
-        assert_eq!(config.learn_span, 2);
-        assert_eq!(config.learn_limit, 1);
-        assert_eq!(config.review_limit, DYNAMIC_DR_DEFAULT_REVIEW_LIMIT);
-        assert_eq!(
-            config.max_cost_perday,
-            DYNAMIC_DR_DEFAULT_MAX_COST_PERDAY_MINUTES * 60.0
-        );
-    }
-
-    #[test]
-    fn dynamic_desired_retention_simulator_uses_limit_overrides() {
-        let mut card_learning = revlog(RevlogReviewKind::Learning, 10);
-        card_learning.cid = CardId(1);
-        let mut config = SimulatorConfig::default();
-
-        shape_simulator_config_for_dynamic_desired_retention(
-            &mut config,
-            &[card_learning],
-            NEXT_DAY_AT.0,
-            DynamicDesiredRetentionSimulatorOptions {
-                review_limit: Some(123),
-                max_cost_perday_minutes: Some(45.0),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(config.review_limit, 123);
-        assert_eq!(config.max_cost_perday, 45.0 * 60.0);
-    }
-
-    #[test]
-    fn dynamic_desired_retention_installs_review_time_cost_fn() -> Result<()> {
-        let mut config = SimulatorConfig {
-            state_rating_costs: [
-                [1.0, 2.0, 3.0, 4.0],
-                [11.0, 12.0, 13.0, 14.0],
-                [21.0, 22.0, 23.0, 24.0],
-            ],
-            ..Default::default()
-        };
-
-        install_dynamic_desired_retention_review_time_cost_fn(
-            &mut config,
-            &[],
-            &fsrs::DEFAULT_PARAMETERS,
-            NEXT_DAY_AT,
-        )?;
-
-        let cost_fn = config.review_rating_cost_fn.as_ref().unwrap();
-        assert_eq!(cost_fn(&fsrs::Card::default(), 3, 0.8), 13.0);
         Ok(())
     }
 

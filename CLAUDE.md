@@ -39,17 +39,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    https://github.com/JSchoreels/Anki-Search-Stats-Extended — deliberately **not**
    all of them. Ask which ones before porting; picking the subset is a product
    decision, not an implementation detail.
-6. **Remove Adaptive Desired Retention (ADR).** In this codebase the feature is
-   named **dynamic desired retention** — it is the same thing; the underlying
-   `fsrs` crate types are `CostAdrPolicy` and `CostAdrNextStates`. Known surface:
-   `rslib/src/scheduler/fsrs/dynamic_desired_retention.rs`,
-   `ts/routes/deck-options/dynamic-desired-retention.ts` and its test, plus
-   references in `ts/routes/deck-options/FsrsOptions.svelte` and
-   `rslib/src/scheduler/fsrs/simulator.rs`. The `fsrs` crate dependency stays;
-   only Anki's use of ADR goes. Removing a user-visible option is a behavior
-   change: it needs a `spec/` entry, and deck presets that already stored ADR
-   settings must still load without error.
-7. **The simulator stays FSRS-only.** Remove or deactivate the RWKV simulator
+6. **The simulator stays FSRS-only.** Remove or deactivate the RWKV simulator
    path. Reason: RWKV uses many more input features, and it processes all cards
    together instead of treating them as independent. A correct RWKV simulator is
    a very large job and is **out of scope** — do not start one. Known surface:
@@ -61,7 +51,7 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    assume: `rslib/src/scheduler/fsrs/simulator.rs` imports
    `scheduler::rwkv::relative_overdueness`. Confirm whether that is RWKV
    simulation or just a shared helper before deleting it.
-8. **Port upstream PR 4717 (FSRS sync reconciliation) with the 2026-06-20
+7. **Port upstream PR 4717 (FSRS sync reconciliation) with the 2026-06-20
    fixes.** https://github.com/ankitects/anki/pull/4717 by JSchoreels, open
    since 2026-04-18 and stalled: only dae reviews sync code. It reconciles FSRS
    memory state on the client after a normal sync instead of forcing a full
@@ -80,12 +70,24 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    - add a forget/reset test so a sync cannot un-forget a card;
    - build `Rescheduler` once and call `update_due_cnt_per_day` per placement,
      not once per card (currently O(K·D), should be O(D+K)).
-9. Many smaller changes and tweaks.
+8. Many smaller changes and tweaks.
 
 ## Changes already made in Clanki
 
-- Removed `+fsrs7` from the version name. `.version` is now `26.09b1`
-  (was `26.09b1+fsrs7`). Note: `qt/tests/test_update.py` still hardcodes
+- Branding (2026-09-14): the visible product name is `aqt.APP_NAME` =
+  "Clanki" (window titles, dialogs, About, installer `formal_name`, English
+  ftl strings about the running app). The version string add-ons read stays
+  the official Anki release number, and the data folder stays `Anki2`
+  (`spec/branding.md`). When merging upstream, re-run the ftl rename rule in
+  the spec rather than hand-editing strings.
+- Removed Dynamic Desired Retention (ADR) end to end (2026-09-14): proto
+  fields reserved, `rslib/src/scheduler/fsrs/dynamic_desired_retention.rs`,
+  the deck-options controls, the simulator mode, the plot page and the add-on
+  hooks are gone. Legacy presets still load (`spec/scheduling.md`,
+  `sched.no-dynamic-desired-retention`). The `fsrs` crate dependency stays.
+- Removed `+fsrs7` from the version name. `.version` now tracks the official
+  Anki release (`26.09` since the 26.09 merge; it was `26.09b1+fsrs7`).
+  Note: `qt/tests/test_update.py` still hardcodes
   `26.09b1+fsrs7` in its own fixtures. That test does not read `.version`, so it
   still passes. The fork's release tags used the `+fsrs7.build.N` form.
 
@@ -212,15 +214,12 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   JSchoreels build is often running and holding that collection open.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
-- **`./ninja check` has two steps that fail on this PC for reasons unrelated
+- **`./ninja check` has one step that fails on this PC for reasons unrelated
   to the code.** `check:format:dprint` fetches plugins from plugins.dprint.dev
   (Cloudflare) on first run and can sit for 30+ minutes with open sockets and
   zero CPU on this connection; run the check without it and format Rust with
   `check:format:rust` (which uses the repo's pinned _nightly_ rustfmt — stable
   `cargo fmt` ignores `group_imports` and passes code that nightly rejects).
-  `check:vitest` fails two ADR tests in `ts/routes/graphs/simulator.test.ts`
-  because this PC's locale is ru-RU and `Intl` formats `20.0%` as `20,0 %`;
-  upstream CI is en-US. Pre-existing, not a regression signal.
 - **The installer templates are git submodules.** `qt/installer/windows-template`
   and `mac-template` are empty in a fresh clone until
   `git submodule update --init -- qt/installer/windows-template qt/installer/mac-template`.

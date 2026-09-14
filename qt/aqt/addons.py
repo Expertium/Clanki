@@ -35,6 +35,7 @@ from anki.httpclient import HttpClient
 from anki.lang import without_unicode_isolation
 from anki.utils import int_version_to_str
 from aqt import gui_hooks
+from aqt.branding import APP_NAME
 from aqt.log import ADDON_LOGGER_PREFIX, find_addon_logger, get_addon_logs_folder
 from aqt.qt import *
 from aqt.utils import (
@@ -1289,7 +1290,7 @@ class DownloaderInstaller(QObject):
 
 
 def show_log_to_user(
-    parent: QWidget, log: list[DownloadLogEntry], title: str = "Anki"
+    parent: QWidget, log: list[DownloadLogEntry], title: str = APP_NAME
 ) -> None:
     have_problem = download_encountered_problem(log)
 

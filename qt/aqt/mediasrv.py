@@ -556,7 +556,6 @@ def get_sveltekit_route(path: str) -> str | None:
         "card-info",
         "change-notetype",
         "deck-options",
-        "dynamic-desired-retention-plot",
         "import-anki-package",
         "import-csv",
         "import-page",
@@ -685,7 +684,10 @@ def get_deck_configs_for_update() -> bytes:
 
 
 def _on_update_deck_configs_success(
-    input: UpdateDeckConfigs, *, close_on_success: bool
+    input: UpdateDeckConfigs,
+    *,
+    close_on_success: bool,
+    rwkv_snapshot: aqt.rwkv_scheduler.RwkvCurveRescheduleSnapshot | None = None,
 ) -> None:
     is_compute_all = (
         input.mode == UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_COMPUTE_ALL_PARAMS
@@ -697,6 +699,13 @@ def _on_update_deck_configs_success(
             window.reject()
         else:
             window.web.eval("anki.deckOptionsSaved();")
+    if rwkv_snapshot is not None:
+        # RWKV-Curve presets are excluded from the FSRS reschedule above;
+        # they get their own one (spec deck-options.reschedule-on-change).
+        aqt.rwkv_scheduler.refresh_rwkv_instant_after_save(aqt.mw, rwkv_snapshot, input)
+        aqt.rwkv_scheduler.reschedule_rwkv_curve_after_save(
+            aqt.mw, rwkv_snapshot, input
+        )
 
 
 def _update_deck_configs(*, close_on_success: bool) -> bytes:
@@ -835,9 +844,12 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
             update.abort = True
 
     def handle_on_main() -> None:
+        rwkv_snapshot = aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot(aqt.mw, input)
         update_deck_configs_op(parent=aqt.mw, input=input).success(
             lambda _: _on_update_deck_configs_success(
-                input, close_on_success=close_on_success
+                input,
+                close_on_success=close_on_success,
+                rwkv_snapshot=rwkv_snapshot,
             )
         ).with_backend_progress(on_progress).run_in_background()
 

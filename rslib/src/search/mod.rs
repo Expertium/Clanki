@@ -1784,14 +1784,14 @@ mod test {
         instant_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
         col.add_card(&mut instant_due)?;
 
-        let mut dynamic_dr_not_due =
+        let mut card_dr_not_due =
             Card::new(NoteId(12), 0, DeckId(1), timing.days_elapsed as i32 + 10);
-        dynamic_dr_not_due.ctype = CardType::Review;
-        dynamic_dr_not_due.queue = CardQueue::Review;
-        dynamic_dr_not_due.interval = 30;
-        dynamic_dr_not_due.desired_retention = Some(0.9);
-        dynamic_dr_not_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
-        col.add_card(&mut dynamic_dr_not_due)?;
+        card_dr_not_due.ctype = CardType::Review;
+        card_dr_not_due.queue = CardQueue::Review;
+        card_dr_not_due.interval = 30;
+        card_dr_not_due.desired_retention = Some(0.9);
+        card_dr_not_due.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.add_card(&mut card_dr_not_due)?;
 
         let mut curve_due = Card::new(NoteId(11), 0, DeckId(1), timing.days_elapsed as i32);
         curve_due.ctype = CardType::Review;
@@ -1815,7 +1815,7 @@ mod test {
                     },
                 ),
                 (
-                    dynamic_dr_not_due.id,
+                    card_dr_not_due.id,
                     RwkvStatsGraphScoreEntry {
                         retrievability: 0.6,
                         curve_retrievability: None,

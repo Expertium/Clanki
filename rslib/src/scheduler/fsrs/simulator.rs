@@ -16,7 +16,6 @@ use fsrs::simulate_summary;
 use fsrs::simulate_summary_with_card_update_and_event_fn;
 use fsrs::simulate_summary_with_card_update_fn;
 use fsrs::simulate_with_card_update_fn;
-use fsrs::CostAdrPolicy;
 use fsrs::SimulationEvent;
 use fsrs::SimulatorCardUpdateFn;
 use fsrs::SimulatorCardUpdatePhase;
@@ -31,8 +30,6 @@ use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
-use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetention;
-use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
 use crate::scheduler::fsrs::memory_state::memory_state_from_sm2_with_params;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
@@ -134,29 +131,9 @@ fn help_me_decide_timing_line(
 }
 
 #[derive(Clone)]
-struct SimulationDynamicDesiredRetention {
-    dynamic_desired_retention: DynamicDesiredRetention,
-    policy: CostAdrPolicy,
-}
-
-#[derive(Clone)]
 struct SimulationPreset {
     name: String,
     parameters: Option<Arc<Vec<f32>>>,
-    dynamic_desired_retention: Option<SimulationDynamicDesiredRetention>,
-}
-
-#[derive(Clone)]
-struct SimulationPresetForTarget {
-    name: String,
-    parameters: Option<Arc<Vec<f32>>>,
-    dynamic_desired_retention: Option<SimulationDynamicDesiredRetentionForTarget>,
-}
-
-#[derive(Clone)]
-struct SimulationDynamicDesiredRetentionForTarget {
-    policy: CostAdrPolicy,
-    cost_weight: f32,
 }
 
 #[derive(Clone)]
@@ -175,118 +152,12 @@ struct SimulationPresetRouter {
     routes: Vec<SimulationPresetRoute>,
 }
 
-fn simulation_dynamic_desired_retention(
-    req: &SimulateFsrsReviewRequest,
-) -> Result<Option<SimulationDynamicDesiredRetention>> {
-    if !req.simulate_dynamic_desired_retention {
-        return Ok(None);
-    }
-    if req.fsrs_dynamic_desired_retention_params.is_empty() {
-        return Ok(None);
-    }
-
-    let dynamic_desired_retention =
-        DynamicDesiredRetention::from_fields(DynamicDesiredRetentionFields {
-            policy_params: req.fsrs_dynamic_desired_retention_params.clone(),
-            calibration_weights: req.fsrs_dynamic_desired_retention_weights.clone(),
-            calibration_avg_drs: req.fsrs_dynamic_desired_retention_avg_drs.clone(),
-            fsrs_equivalent_weights: req.fsrs_dynamic_desired_retention_fsrs_eq_weights.clone(),
-            fsrs_equivalent_drs: req.fsrs_dynamic_desired_retention_fsrs_eq_drs.clone(),
-            fixed_target_weights: req
-                .fsrs_dynamic_desired_retention_fixed_target_weights
-                .clone(),
-            fixed_target_drs: req.fsrs_dynamic_desired_retention_fixed_target_drs.clone(),
-            retention_min: req.fsrs_dynamic_desired_retention_min,
-            retention_max: req.fsrs_dynamic_desired_retention_max,
-            clamp_target: req.fsrs_dynamic_desired_retention_clamp,
-            max_interval_days: Some(req.max_interval as f32),
-        })?;
-    let policy = dynamic_desired_retention.policy()?;
-
-    Ok(Some(SimulationDynamicDesiredRetention {
-        dynamic_desired_retention,
-        policy,
-    }))
-}
-
-impl SimulationDynamicDesiredRetention {
-    fn from_dynamic_desired_retention(
-        dynamic_desired_retention: DynamicDesiredRetention,
-    ) -> Result<Self> {
-        let policy = dynamic_desired_retention.policy()?;
-
-        Ok(Self {
-            dynamic_desired_retention,
-            policy,
-        })
-    }
-
-    fn for_target(
-        &self,
-        desired_retention: f32,
-    ) -> Result<Option<SimulationDynamicDesiredRetentionForTarget>> {
-        let Some(target) = self
-            .dynamic_desired_retention
-            .scheduling_target(desired_retention)?
-        else {
-            return Ok(None);
-        };
-        let cost_weight = self
-            .dynamic_desired_retention
-            .cost_weight_for_average_dr(target)?;
-        Ok(Some(SimulationDynamicDesiredRetentionForTarget {
-            policy: self.policy.clone(),
-            cost_weight,
-        }))
-    }
-}
-
 impl SimulationPreset {
-    fn for_target(&self, desired_retention: f32) -> Result<SimulationPresetForTarget> {
-        Ok(SimulationPresetForTarget {
-            name: self.name.clone(),
-            parameters: self.parameters.clone(),
-            dynamic_desired_retention: self
-                .dynamic_desired_retention
-                .as_ref()
-                .map(|dynamic| dynamic.for_target(desired_retention))
-                .transpose()?
-                .flatten(),
-        })
-    }
-}
-
-impl SimulationPresetForTarget {
-    fn apply_before_memory_update(&self, card: &mut fsrs::Card, desired_retention: f32) {
+    fn apply_to_card(&self, card: &mut fsrs::Card, desired_retention: f32) {
         if let Some(parameters) = &self.parameters {
             card.parameters = parameters.clone();
         }
         card.desired_retention = desired_retention;
-    }
-
-    fn desired_retention_after_memory_update(
-        &self,
-        card: &fsrs::Card,
-        desired_retention: f32,
-    ) -> f32 {
-        self.dynamic_desired_retention
-            .as_ref()
-            .map(|dynamic| {
-                dynamic.policy.evaluate_retention(
-                    card.stability,
-                    card.difficulty,
-                    dynamic.cost_weight,
-                )
-            })
-            .unwrap_or(desired_retention)
-    }
-
-    fn apply_after_memory_update(&self, card: &mut fsrs::Card, desired_retention: f32) {
-        if let Some(parameters) = &self.parameters {
-            card.parameters = parameters.clone();
-        }
-        card.desired_retention =
-            self.desired_retention_after_memory_update(card, desired_retention);
     }
 }
 
@@ -316,46 +187,8 @@ impl SimulationPresetRoute {
         self.matches_card(card_id) && self.matches_reps(reps) && self.matches_interval(interval)
     }
 
-    fn for_target(&self, desired_retention: f32) -> Result<SimulationPresetRouteForTarget> {
-        Ok(SimulationPresetRouteForTarget {
-            card_ids: self.card_ids.clone(),
-            min_reps: self.min_reps,
-            max_reps: self.max_reps,
-            min_interval_days: self.min_interval_days,
-            max_interval_days: self.max_interval_days,
-            preset: self.preset.for_target(desired_retention)?,
-        })
-    }
-}
-
-#[derive(Clone)]
-struct SimulationPresetRouteForTarget {
-    card_ids: Option<HashSet<i64>>,
-    min_reps: Option<u32>,
-    max_reps: Option<u32>,
-    min_interval_days: Option<f32>,
-    max_interval_days: Option<f32>,
-    preset: SimulationPresetForTarget,
-}
-
-impl SimulationPresetRouteForTarget {
     fn matches(&self, card: &fsrs::Card) -> bool {
-        if (self.min_interval_days.is_some() || self.max_interval_days.is_some())
-            && !card.interval.is_finite()
-        {
-            return false;
-        }
-        self.card_ids
-            .as_ref()
-            .map_or(true, |card_ids| card_ids.contains(&card.id))
-            && self.min_reps.map_or(true, |min| card.reps >= min)
-            && self.max_reps.map_or(true, |max| card.reps <= max)
-            && self
-                .min_interval_days
-                .map_or(true, |min| card.interval >= min)
-            && self
-                .max_interval_days
-                .map_or(true, |max| card.interval <= max)
+        self.matches_state(card.id, card.reps, card.interval)
     }
 }
 
@@ -394,17 +227,9 @@ impl SimulationPresetRouter {
     }
 
     fn card_update_fn(&self, desired_retention: f32) -> Result<SimulatorCardUpdateFn> {
-        let fallback = self.fallback.for_target(desired_retention)?;
-        let presets_by_card = self
-            .presets_by_card
-            .iter()
-            .map(|(card_id, preset)| Ok((*card_id, preset.for_target(desired_retention)?)))
-            .collect::<Result<HashMap<_, _>>>()?;
-        let routes = self
-            .routes
-            .iter()
-            .map(|route| route.for_target(desired_retention))
-            .collect::<Result<Vec<_>>>()?;
+        let fallback = self.fallback.clone();
+        let presets_by_card = self.presets_by_card.clone();
+        let routes = self.routes.clone();
         Ok(SimulatorCardUpdateFn::new(move |card, phase| {
             let preset = routes
                 .iter()
@@ -413,11 +238,9 @@ impl SimulationPresetRouter {
                 .or_else(|| presets_by_card.get(&card.id))
                 .unwrap_or(&fallback);
             match phase {
-                SimulatorCardUpdatePhase::BeforeMemoryUpdate => {
-                    preset.apply_before_memory_update(card, desired_retention);
-                }
-                SimulatorCardUpdatePhase::AfterMemoryUpdate => {
-                    preset.apply_after_memory_update(card, desired_retention);
+                SimulatorCardUpdatePhase::BeforeMemoryUpdate
+                | SimulatorCardUpdatePhase::AfterMemoryUpdate => {
+                    preset.apply_to_card(card, desired_retention);
                 }
             }
         }))
@@ -428,87 +251,35 @@ impl SimulationPresetRouter {
         desired_retention: f32,
     ) -> Result<Option<SimulatorCardUpdateFn>> {
         if self.routes.is_empty() {
-            self.static_dynamic_desired_retention_card_update_fn(desired_retention)
+            Ok(None)
         } else {
             self.card_update_fn(desired_retention).map(Some)
         }
     }
-
-    fn static_dynamic_desired_retention_card_update_fn(
-        &self,
-        desired_retention: f32,
-    ) -> Result<Option<SimulatorCardUpdateFn>> {
-        let fallback = self.fallback.for_target(desired_retention)?;
-        let presets_by_card = self
-            .presets_by_card
-            .iter()
-            .map(|(card_id, preset)| Ok((*card_id, preset.for_target(desired_retention)?)))
-            .collect::<Result<HashMap<_, _>>>()?;
-        if fallback.dynamic_desired_retention.is_none()
-            && presets_by_card
-                .values()
-                .all(|preset| preset.dynamic_desired_retention.is_none())
-        {
-            return Ok(None);
-        }
-
-        Ok(Some(SimulatorCardUpdateFn::new(
-            move |card, phase| match phase {
-                SimulatorCardUpdatePhase::BeforeMemoryUpdate => {
-                    card.desired_retention = desired_retention;
-                }
-                SimulatorCardUpdatePhase::AfterMemoryUpdate => {
-                    let preset = presets_by_card.get(&card.id).unwrap_or(&fallback);
-                    card.desired_retention =
-                        preset.desired_retention_after_memory_update(card, desired_retention);
-                }
-            },
-        )))
-    }
 }
 
-fn simulation_fallback_preset(req: &SimulateFsrsReviewRequest) -> Result<SimulationPreset> {
-    Ok(SimulationPreset {
+fn simulation_fallback_preset(req: &SimulateFsrsReviewRequest) -> SimulationPreset {
+    SimulationPreset {
         name: if req.workload_preset_label.is_empty() {
             "Preset".to_string()
         } else {
             req.workload_preset_label.clone()
         },
         parameters: None,
-        dynamic_desired_retention: simulation_dynamic_desired_retention(req)?,
-    })
+    }
 }
 
-fn simulation_preset_from_fsrs_preset(
-    preset: FsrsPreset,
-    max_interval: u32,
-    apply_dynamic_desired_retention: bool,
-) -> Result<SimulationPreset> {
-    let dynamic_desired_retention = if apply_dynamic_desired_retention {
-        preset
-            .dynamic_desired_retention
-            .map(|dynamic| {
-                SimulationDynamicDesiredRetention::from_dynamic_desired_retention(
-                    dynamic.with_max_interval_days(Some(max_interval as f32)),
-                )
-            })
-            .transpose()?
-    } else {
-        None
-    };
+fn simulation_preset_from_fsrs_preset(preset: FsrsPreset) -> Result<SimulationPreset> {
     Ok(SimulationPreset {
         name: preset.name,
         parameters: Some(Arc::new(normalized_fsrs_parameters(&preset.params)?)),
-        dynamic_desired_retention,
     })
 }
 
 fn simulation_preset_route(
     rule: FsrsPresetSimulatorRule,
     preset: FsrsPreset,
-    max_interval: u32,
     card_ids: Option<HashSet<i64>>,
-    apply_dynamic_desired_retention: bool,
 ) -> Result<SimulationPresetRoute> {
     Ok(SimulationPresetRoute {
         card_ids,
@@ -516,19 +287,13 @@ fn simulation_preset_route(
         max_reps: rule.max_reps,
         min_interval_days: rule.min_interval_days,
         max_interval_days: rule.max_interval_days,
-        preset: simulation_preset_from_fsrs_preset(
-            preset,
-            max_interval,
-            apply_dynamic_desired_retention,
-        )?,
+        preset: simulation_preset_from_fsrs_preset(preset)?,
     })
 }
 
 fn simulation_addon_preset_for_card(
     card_id: CardId,
     preset: FsrsPreset,
-    max_interval: u32,
-    apply_dynamic_desired_retention: bool,
 ) -> Result<Option<(i64, SimulationPreset)>> {
     if !matches!(preset.id, FsrsPresetId::Addon(_)) {
         return Ok(None);
@@ -536,7 +301,7 @@ fn simulation_addon_preset_for_card(
 
     Ok(Some((
         card_id.0,
-        simulation_preset_from_fsrs_preset(preset, max_interval, apply_dynamic_desired_retention)?,
+        simulation_preset_from_fsrs_preset(preset)?,
     )))
 }
 
@@ -569,19 +334,12 @@ impl Collection {
         req: &SimulateFsrsReviewRequest,
         cards: &[Card],
     ) -> Result<Option<SimulationPresetRouter>> {
-        let apply_dynamic_desired_retention = req.simulate_dynamic_desired_retention;
-        let mut fallback = simulation_fallback_preset(req)?;
+        let mut fallback = simulation_fallback_preset(req);
         let presets_by_card = self
             .fsrs_presets_for_cards(cards)?
             .into_iter()
             .filter_map(|(card_id, preset)| {
-                simulation_addon_preset_for_card(
-                    card_id,
-                    preset,
-                    req.max_interval,
-                    apply_dynamic_desired_retention,
-                )
-                .transpose()
+                simulation_addon_preset_for_card(card_id, preset).transpose()
             })
             .collect::<Result<HashMap<_, _>>>()?;
         let included_card_ids = cards.iter().map(|card| card.id).collect::<HashSet<_>>();
@@ -590,21 +348,12 @@ impl Collection {
         for (rule, preset) in self.fsrs_preset_simulator_rules()? {
             let card_ids =
                 self.simulation_route_card_ids(&rule, &included_card_ids, &mut search_cache)?;
-            routes.push(simulation_preset_route(
-                rule,
-                preset,
-                req.max_interval,
-                card_ids,
-                apply_dynamic_desired_retention,
-            )?);
+            routes.push(simulation_preset_route(rule, preset, card_ids)?);
         }
         if !presets_by_card.is_empty() || !routes.is_empty() {
             fallback.parameters = Some(Arc::new(normalized_fsrs_parameters(&req.params)?));
         }
-        if fallback.dynamic_desired_retention.is_none()
-            && presets_by_card.is_empty()
-            && routes.is_empty()
-        {
+        if presets_by_card.is_empty() && routes.is_empty() {
             return Ok(None);
         }
 
@@ -1224,12 +973,8 @@ fn simulate_workload_split_summary_for_desired_retention(
     let mut cards_for_dr = cards.to_vec();
     apply_simulation_desired_retention_to_cards(&mut cards_for_dr, desired_retention);
     let preset_workload = Arc::new(Mutex::new(HashMap::<String, PresetWorkloadPoint>::new()));
-    let event_fn = preset_workload_event_fn(
-        desired_retention,
-        preset_router,
-        fallback_preset_name,
-        preset_workload.clone(),
-    )?;
+    let event_fn =
+        preset_workload_event_fn(preset_router, fallback_preset_name, preset_workload.clone())?;
     let card_update_fn = preset_router
         .map(|router| router.card_update_fn_for_simulation(desired_retention))
         .transpose()?
@@ -1261,7 +1006,6 @@ fn simulate_workload_split_summary_for_desired_retention(
 }
 
 fn preset_workload_event_fn(
-    desired_retention: f32,
     preset_router: Option<&SimulationPresetRouter>,
     fallback_preset_name: &str,
     preset_workload: Arc<Mutex<HashMap<String, PresetWorkloadPoint>>>,
@@ -1279,14 +1023,7 @@ fn preset_workload_event_fn(
         })
         .unwrap_or_default();
     let routes = preset_router
-        .map(|router| {
-            router
-                .routes
-                .iter()
-                .map(|route| route.for_target(desired_retention))
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?
+        .map(|router| router.routes.clone())
         .unwrap_or_default();
 
     Ok(SimulatorEventFn::new(
@@ -1473,8 +1210,6 @@ mod tests {
     use super::apply_simulation_desired_retention_to_cards;
     use super::create_review_priority_fn;
     use super::simulate_workload_for_desired_retention;
-    use super::simulation_dynamic_desired_retention;
-    use super::simulation_fallback_preset;
     use super::SimulationPreset;
     use super::SimulationPresetRoute;
     use super::SimulationPresetRouter;
@@ -1634,140 +1369,8 @@ mod tests {
         assert!(parallel.contains_key(&super::WORKLOAD_MAX_DR));
     }
 
-    fn dynamic_desired_retention_request() -> SimulateFsrsReviewRequest {
-        SimulateFsrsReviewRequest {
-            simulate_dynamic_desired_retention: true,
-            fsrs_dynamic_desired_retention_params: vec![0.0; 15],
-            fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
-            fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
-            fsrs_dynamic_desired_retention_min: 0.75,
-            fsrs_dynamic_desired_retention_max: 0.95,
-            max_interval: 36500,
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn dynamic_desired_retention_request_builds_simulation_policy() {
-        let request = dynamic_desired_retention_request();
-        let dynamic_desired_retention = simulation_dynamic_desired_retention(&request)
-            .unwrap()
-            .unwrap();
-
-        assert!(dynamic_desired_retention
-            .dynamic_desired_retention
-            .scheduling_target(0.85)
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn dynamic_desired_retention_empty_request_has_no_fallback_policy() {
-        let request = SimulateFsrsReviewRequest {
-            simulate_dynamic_desired_retention: true,
-            ..Default::default()
-        };
-
-        assert!(simulation_dynamic_desired_retention(&request)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn simulator_preset_router_uses_addon_overlay_dynamic_preset_for_matching_cards() -> Result<()>
-    {
-        let mut col = Collection::new();
-        let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
-        NoteAdder::basic(&mut col)
-            .fields(&["other", "back"])
-            .add(&mut col);
-        col.add_tags_to_notes(&[tagged_note.id], "adr")?;
-        col.set_config(
-            FSRS_PRESET_OVERLAY_CONFIG_KEY,
-            &FsrsPresetOverlay {
-                presets: vec![AddonFsrsPreset {
-                    id: "addon:test:adr".into(),
-                    name: "ADR".into(),
-                    fsrs_version: AddonFsrsVersion::Seven,
-                    params: DEFAULT_PARAMETERS.to_vec(),
-                    desired_retention: 0.85,
-                    historical_retention: 0.9,
-                    ignore_revlogs_before_date: String::new(),
-                    fsrs_dynamic_desired_retention_enabled: true,
-                    fsrs_dynamic_desired_retention_params: vec![0.0; 15],
-                    fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
-                    fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
-                    fsrs_dynamic_desired_retention_fsrs_eq_weights: vec![0.0, 15.0],
-                    fsrs_dynamic_desired_retention_fsrs_eq_drs: vec![0.95, 0.75],
-                    fsrs_dynamic_desired_retention_min: 0.75,
-                    fsrs_dynamic_desired_retention_max: 0.95,
-                    ..Default::default()
-                }],
-                rules: vec![FsrsPresetRule {
-                    search: "tag:adr".into(),
-                    preset_id: "addon:test:adr".into(),
-                }],
-                simulator_rules: Vec::new(),
-            },
-        )?;
-        let cards = col.all_cards_for_search("")?;
-        let request = SimulateFsrsReviewRequest {
-            simulate_dynamic_desired_retention: true,
-            params: DEFAULT_PARAMETERS.to_vec(),
-            max_interval: 36500,
-            ..Default::default()
-        };
-
-        let router = col.simulation_preset_router(&request, &cards)?.unwrap();
-        let tagged_card_id = cards
-            .iter()
-            .find(|card| card.note_id == tagged_note.id)
-            .unwrap()
-            .id
-            .0;
-
-        assert!(router.fallback.dynamic_desired_retention.is_none());
-        assert!(router.routes.is_empty());
-        assert_eq!(router.presets_by_card.len(), 1);
-        assert!(router.presets_by_card.contains_key(&tagged_card_id));
-
-        let update_fn = router.card_update_fn(0.9)?;
-        let dynamic_for_target = router
-            .presets_by_card
-            .get(&tagged_card_id)
-            .unwrap()
-            .dynamic_desired_retention
-            .as_ref()
-            .unwrap()
-            .for_target(0.9)?
-            .unwrap();
-        assert!((dynamic_for_target.cost_weight - 1.0).abs() < 1e-5);
-        let mut card = SimCard {
-            id: tagged_card_id,
-            difficulty: 5.0,
-            stability: 10.0,
-            interval: 10.0,
-            desired_retention: 0.9,
-            parameters: Arc::new(vec![0.0; DEFAULT_PARAMETERS.len()]),
-            ..Default::default()
-        };
-
-        update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
-        assert_eq!(card.parameters.as_slice(), DEFAULT_PARAMETERS.as_slice());
-
-        update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
-        let expected = dynamic_for_target.policy.evaluate_retention(
-            card.stability,
-            card.difficulty,
-            dynamic_for_target.cost_weight,
-        );
-        assert!((card.desired_retention - expected).abs() < 1e-6);
-
-        Ok(())
-    }
-
-    #[test]
-    fn simulator_preset_router_uses_addon_params_when_dynamic_dr_toggle_is_off() -> Result<()> {
+    fn simulator_preset_router_uses_addon_params_for_matching_cards() -> Result<()> {
         let mut col = Collection::new();
         let tagged_note = NoteAdder::basic(&mut col).add(&mut col);
         NoteAdder::basic(&mut col)
@@ -1786,13 +1389,6 @@ mod tests {
                     desired_retention: 0.85,
                     historical_retention: 0.9,
                     ignore_revlogs_before_date: String::new(),
-                    fsrs_dynamic_desired_retention_enabled: true,
-                    fsrs_dynamic_desired_retention_params: vec![0.0; 15],
-                    fsrs_dynamic_desired_retention_weights: vec![0.0, 15.0],
-                    fsrs_dynamic_desired_retention_avg_drs: vec![0.8, 0.9],
-                    fsrs_dynamic_desired_retention_min: 0.75,
-                    fsrs_dynamic_desired_retention_max: 0.95,
-                    ..Default::default()
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "tag:fixed".into(),
@@ -1803,7 +1399,6 @@ mod tests {
         )?;
         let cards = col.all_cards_for_search("")?;
         let request = SimulateFsrsReviewRequest {
-            simulate_dynamic_desired_retention: false,
             params: DEFAULT_PARAMETERS.to_vec(),
             max_interval: 36500,
             ..Default::default()
@@ -1819,7 +1414,6 @@ mod tests {
 
         let preset = router.presets_by_card.get(&tagged_card_id).unwrap();
         assert_eq!(preset.parameters.as_ref().unwrap().as_slice(), addon_params);
-        assert!(preset.dynamic_desired_retention.is_none());
 
         let update_fn = router.card_update_fn(0.9)?;
         let mut card = SimCard {
@@ -1861,7 +1455,6 @@ mod tests {
                     desired_retention: 0.85,
                     historical_retention: 0.9,
                     ignore_revlogs_before_date: String::new(),
-                    ..Default::default()
                 }],
                 rules: Vec::new(),
                 simulator_rules: vec![FsrsPresetSimulatorRule {
@@ -1874,7 +1467,6 @@ mod tests {
         )?;
         let cards = col.all_cards_for_search("")?;
         let request = SimulateFsrsReviewRequest {
-            simulate_dynamic_desired_retention: false,
             params: DEFAULT_PARAMETERS.to_vec(),
             max_interval: 36500,
             ..Default::default()
@@ -1912,19 +1504,13 @@ mod tests {
     }
 
     #[test]
-    fn simulator_preset_router_applies_dynamic_rule_by_reps() {
-        let request = dynamic_desired_retention_request();
-        let dynamic_desired_retention = simulation_dynamic_desired_retention(&request)
-            .unwrap()
-            .unwrap();
-        let dynamic_for_target = dynamic_desired_retention.for_target(0.85).unwrap().unwrap();
+    fn simulator_preset_router_applies_rule_by_reps_and_interval() {
         let fallback_parameters = Arc::new(vec![0.0; DEFAULT_PARAMETERS.len()]);
         let routed_parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
         let router = SimulationPresetRouter {
             fallback: SimulationPreset {
                 name: "Fallback".into(),
                 parameters: Some(fallback_parameters.clone()),
-                dynamic_desired_retention: None,
             },
             presets_by_card: HashMap::new(),
             routes: vec![SimulationPresetRoute {
@@ -1936,7 +1522,6 @@ mod tests {
                 preset: SimulationPreset {
                     name: "Routed".into(),
                     parameters: Some(routed_parameters.clone()),
-                    dynamic_desired_retention: Some(dynamic_desired_retention),
                 },
             }],
         };
@@ -1951,18 +1536,15 @@ mod tests {
 
         update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
         assert_eq!(card.desired_retention, 0.85);
+        assert!(Arc::ptr_eq(&card.parameters, &fallback_parameters));
 
         card.reps = 1;
         update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
         assert!(Arc::ptr_eq(&card.parameters, &routed_parameters));
 
         update_fn(&mut card, SimulatorCardUpdatePhase::AfterMemoryUpdate);
-        let expected = dynamic_for_target.policy.evaluate_retention(
-            card.stability,
-            card.difficulty,
-            dynamic_for_target.cost_weight,
-        );
-        assert!((card.desired_retention - expected).abs() < 1e-6);
+        assert!(Arc::ptr_eq(&card.parameters, &routed_parameters));
+        assert_eq!(card.desired_retention, 0.85);
 
         card.interval = 30.0;
         update_fn(&mut card, SimulatorCardUpdatePhase::BeforeMemoryUpdate);
@@ -2449,130 +2031,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dynamic_desired_retention_out_of_range_uses_fixed_workload_simulation() {
-        let config = SimulatorConfig {
-            deck_size: 1,
-            learn_span: 365,
-            learn_limit: 0,
-            review_limit: 9999,
-            review_rating_prob: [0.0, 1.0, 0.0],
-            ..Default::default()
-        };
-        let card = SimCard {
-            id: 1,
-            difficulty: 5.0,
-            stability: 100.0,
-            last_date: -10.0,
-            due: 0.0,
-            interval: 10.0,
-            reps: 0,
-            lapses: 0,
-            desired_retention: 0.9,
-            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
-        };
-        let cards = vec![card];
-        let request = dynamic_desired_retention_request();
-        let preset_router = SimulationPresetRouter {
-            fallback: simulation_fallback_preset(&request).unwrap(),
-            presets_by_card: HashMap::new(),
-            routes: Vec::new(),
-        };
-
-        let fixed = simulate_workload_for_desired_retention(
-            &config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            0.95,
-            None,
-        )
-        .unwrap();
-        let dynamic_fallback = simulate_workload_for_desired_retention(
-            &config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            0.95,
-            Some(&preset_router),
-        )
-        .unwrap();
-
-        assert_eq!(
-            fixed.review_cnt_per_day,
-            dynamic_fallback.review_cnt_per_day
-        );
-        assert_eq!(fixed.learn_cnt_per_day, dynamic_fallback.learn_cnt_per_day);
-        assert_eq!(fixed.cost_per_day, dynamic_fallback.cost_per_day);
-    }
-
-    #[test]
-    fn dynamic_desired_retention_toggle_changes_workload_simulation() {
-        let config = SimulatorConfig {
-            deck_size: 1,
-            learn_span: 1,
-            learn_limit: 0,
-            review_limit: 9999,
-            review_rating_prob: [0.0, 1.0, 0.0],
-            ..Default::default()
-        };
-        let card = SimCard {
-            id: 1,
-            difficulty: 5.0,
-            stability: 10.0,
-            last_date: -1.0,
-            due: 0.0,
-            interval: 1.0,
-            reps: 0,
-            lapses: 0,
-            desired_retention: 0.85,
-            parameters: std::sync::Arc::new(DEFAULT_PARAMETERS.to_vec()),
-        };
-        let cards = vec![card];
-        let request = SimulateFsrsReviewRequest {
-            fsrs_dynamic_desired_retention_fixed_target_weights: vec![1024.0],
-            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.9],
-            ..dynamic_desired_retention_request()
-        };
-        let preset_router = SimulationPresetRouter {
-            fallback: simulation_fallback_preset(&request).unwrap(),
-            presets_by_card: HashMap::new(),
-            routes: Vec::new(),
-        };
-        let dynamic_for_target = preset_router
-            .fallback
-            .dynamic_desired_retention
-            .as_ref()
-            .unwrap()
-            .for_target(0.85)
-            .unwrap()
-            .unwrap();
-        assert_eq!(dynamic_for_target.cost_weight, 1024.0);
-        assert!(
-            dynamic_for_target
-                .policy
-                .evaluate_retention(10.0, 5.0, dynamic_for_target.cost_weight)
-                < 0.85
-        );
-
-        let fixed = simulate_workload_for_desired_retention(
-            &config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            0.85,
-            None,
-        )
-        .unwrap();
-        let dynamic = simulate_workload_for_desired_retention(
-            &config,
-            &DEFAULT_PARAMETERS,
-            &cards,
-            0.85,
-            Some(&preset_router),
-        )
-        .unwrap();
-
-        assert_ne!(fixed.cards[0].interval, dynamic.cards[0].interval);
-    }
-
     fn simulate_summary_with_full_router_update_fn(
         config: &SimulatorConfig,
         params: &[f32],
@@ -2632,14 +2090,12 @@ mod tests {
             fallback: SimulationPreset {
                 name: "Fallback".into(),
                 parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
-                dynamic_desired_retention: None,
             },
             presets_by_card: HashMap::from([(
                 1,
                 SimulationPreset {
                     name: "Card preset".into(),
                     parameters: Some(parameters),
-                    dynamic_desired_retention: None,
                 },
             )]),
             routes: Vec::new(),
@@ -2659,62 +2115,6 @@ mod tests {
             &DEFAULT_PARAMETERS,
             &[card],
             0.9,
-            &router,
-        );
-
-        assert_summary_result_matches(&fast, &full);
-    }
-
-    #[test]
-    fn dynamic_no_route_preset_router_uses_static_adr_update_fn_without_changing_summary() {
-        let config = SimulatorConfig {
-            deck_size: 1,
-            learn_span: 30,
-            learn_limit: 0,
-            review_limit: 9999,
-            review_rating_prob: [0.0, 1.0, 0.0],
-            ..Default::default()
-        };
-        let card = SimCard {
-            id: 1,
-            difficulty: 5.0,
-            stability: 10.0,
-            last_date: -1.0,
-            due: 0.0,
-            interval: 1.0,
-            reps: 1,
-            lapses: 0,
-            desired_retention: 0.8,
-            parameters: Arc::new(DEFAULT_PARAMETERS.to_vec()),
-        };
-        let request = SimulateFsrsReviewRequest {
-            fsrs_dynamic_desired_retention_fixed_target_weights: vec![1024.0],
-            fsrs_dynamic_desired_retention_fixed_target_drs: vec![0.9],
-            ..dynamic_desired_retention_request()
-        };
-        let router = SimulationPresetRouter {
-            fallback: simulation_fallback_preset(&request).unwrap(),
-            presets_by_card: HashMap::new(),
-            routes: Vec::new(),
-        };
-
-        assert!(router
-            .card_update_fn_for_simulation(0.85)
-            .unwrap()
-            .is_some());
-        let fast = super::simulate_workload_summary_for_desired_retention(
-            &config,
-            &DEFAULT_PARAMETERS,
-            std::slice::from_ref(&card),
-            0.85,
-            Some(&router),
-        )
-        .unwrap();
-        let full = simulate_summary_with_full_router_update_fn(
-            &config,
-            &DEFAULT_PARAMETERS,
-            &[card],
-            0.85,
             &router,
         );
 
@@ -2747,7 +2147,6 @@ mod tests {
             fallback: SimulationPreset {
                 name: "Fallback".into(),
                 parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
-                dynamic_desired_retention: None,
             },
             presets_by_card: HashMap::new(),
             routes: vec![SimulationPresetRoute {
@@ -2759,7 +2158,6 @@ mod tests {
                 preset: SimulationPreset {
                     name: "Routed".into(),
                     parameters: Some(Arc::new(DEFAULT_PARAMETERS.to_vec())),
-                    dynamic_desired_retention: None,
                 },
             }],
         };

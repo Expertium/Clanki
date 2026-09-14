@@ -548,7 +548,7 @@ def test_clear_outdated_fsrs7_preview_params_only_removes_35_value_params() -> N
         "other": {
             "jschoreels.fsrs": {
                 "fsrs_params_7": [4.0] * 35,
-                "fsrs_dynamic_desired_retention_enabled": True,
+                "fsrs_minimum_interval_secs": 3,
             },
         },
     }
@@ -558,9 +558,7 @@ def test_clear_outdated_fsrs7_preview_params_only_removes_35_value_params() -> N
     assert config["fsrsParams7"] == []
     assert config["fsrs_params_7"] == [2.0] * 34
     assert config["jschoreels.fsrs"] == {"fsrs_minimum_interval_secs": 2}
-    assert config["other"]["jschoreels.fsrs"] == {
-        "fsrs_dynamic_desired_retention_enabled": True
-    }
+    assert config["other"]["jschoreels.fsrs"] == {"fsrs_minimum_interval_secs": 3}
 
 
 def test_clear_outdated_fsrs7_preview_params_ignores_valid_params() -> None:

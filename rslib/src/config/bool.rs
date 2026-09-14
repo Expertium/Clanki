@@ -44,6 +44,7 @@ pub enum BoolKey {
     FsrsShortTermWithStepsEnabled,
     FsrsLearningQueuesDisabled,
     ShowFuzzDeltaAboveAnswerButtons,
+    DeckOptionsAdvanced,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,
     #[strum(to_string = "dayLearnFirst")]
@@ -70,8 +71,11 @@ impl Collection {
             | BoolKey::CardCountsSeparateInactive
             | BoolKey::RestorePositionBrowser
             | BoolKey::RestorePositionReviewer
-            | BoolKey::LoadBalancerEnabled
             | BoolKey::NormalizeNoteText => self.get_config_optional(key).unwrap_or(true),
+
+            // The load balancer is always on; a stored `false` from an earlier
+            // build is ignored (spec sched.fuzz-always-on).
+            BoolKey::LoadBalancerEnabled => true,
 
             // other options default to false
             other => self.get_config_default(other),
@@ -105,6 +109,15 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pins spec/scheduling.md#sched.fuzz-always-on
+    #[test]
+    fn load_balancer_is_always_on() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::LoadBalancerEnabled, false, false)?;
+        assert!(col.get_config_bool(BoolKey::LoadBalancerEnabled));
+        Ok(())
+    }
 
     #[test]
     fn fsrs_learning_queue_bypass_defaults_to_disabled() {

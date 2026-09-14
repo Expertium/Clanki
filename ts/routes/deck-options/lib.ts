@@ -3,6 +3,7 @@
 
 import type { PlainMessage } from "@bufbuild/protobuf";
 import { OpChanges } from "@generated/anki/collection_pb";
+import { ConfigKey_Bool } from "@generated/anki/config_pb";
 import type {
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_CurrentDeck,
@@ -15,7 +16,7 @@ import {
     DeckConfigsForUpdate_CurrentDeck_Limits,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
-import { updateDeckConfigs } from "@generated/backend";
+import { setConfigBool, updateDeckConfigs } from "@generated/backend";
 import { postProto } from "@generated/post";
 import { localeCompare } from "@tslib/i18n";
 import { promiseWithResolver } from "@tslib/promise";
@@ -93,6 +94,8 @@ export class DeckOptionsState {
     readonly fsrsLearningQueuesDisabled: Writable<boolean>;
     readonly fsrsReschedule: Writable<boolean> = writable(false);
     readonly fsrsHealthCheck: Writable<boolean>;
+    /** Show the settings hidden from the simplified view; collection-wide. */
+    readonly deckOptionsAdvanced: Writable<boolean>;
     readonly reviewFuzzEnabled: Writable<boolean>;
     readonly reviewFuzzBase: Writable<number>;
     readonly reviewFuzzFactorShort: Writable<number>;
@@ -100,6 +103,19 @@ export class DeckOptionsState {
     readonly reviewFuzzFactorLong: Writable<number>;
     readonly legacyEvaluate: boolean;
     readonly daysSinceLastOptimization: Writable<number>;
+
+    /**
+     * A view preference, not a deck setting: written to the collection at
+     * once rather than on save (spec deck-options.advanced-view).
+     */
+    setDeckOptionsAdvanced(value: boolean): void {
+        this.deckOptionsAdvanced.set(value);
+        void setConfigBool({
+            key: ConfigKey_Bool.DECK_OPTIONS_ADVANCED,
+            value,
+            undoable: false,
+        });
+    }
     readonly currentPresetName: Writable<string>;
     /** Used to detect if there are any pending changes */
     readonly originalConfigsPromise: Promise<AllConfigs>;
@@ -146,6 +162,7 @@ export class DeckOptionsState {
         );
         this.fsrsLearningQueuesDisabled = writable(data.fsrsLearningQueuesDisabled);
         this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
+        this.deckOptionsAdvanced = writable(data.deckOptionsAdvanced);
         this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);
         this.reviewFuzzBase = writable(data.reviewFuzzBase);
         this.reviewFuzzFactorShort = writable(data.reviewFuzzFactorShort);

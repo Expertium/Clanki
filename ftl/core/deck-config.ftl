@@ -125,7 +125,7 @@ deck-config-bury-interday-learning-tooltip =
     Whether other `learning` cards of the same note with intervals > 1 day
     will be delayed until the next day.
 deck-config-bury-priority-tooltip =
-    When Anki gathers cards, it first gathers intraday learning cards, then
+    When Clanki gathers cards, it first gathers intraday learning cards, then
     interday learning cards, then review cards, and finally new cards. This affects
     how burying works:
     
@@ -197,7 +197,7 @@ deck-config-review-sort-order-tooltip =
     sort orders preferable.
 
 deck-config-display-order-will-use-current-deck =
-    Anki will use the display order from the deck you 
+    Clanki will use the display order from the deck you 
     select to study, and not any subdecks it may have.
 
 ## Gather order and sort order of cards – Combobox entries
@@ -292,7 +292,7 @@ deck-config-wait-for-audio-tooltip-2 = Wait for audio to finish before automatic
 deck-config-audio-title = Audio
 deck-config-disable-autoplay = Don't play audio automatically
 deck-config-disable-autoplay-tooltip =
-    When enabled, Anki will not play audio automatically.
+    When enabled, Clanki will not play audio automatically.
     It can be played manually by clicking/tapping on an audio icon, or by using the Replay action.
 deck-config-skip-question-when-replaying = Skip question when replaying answer
 deck-config-always-include-question-audio-tooltip =
@@ -317,7 +317,7 @@ deck-config-easy-bonus-tooltip =
     it `Easy`.
 deck-config-interval-modifier-tooltip =
     This multiplier is applied to all reviews, and minor adjustments can be used
-    to make Anki more conservative or aggressive in its scheduling. Please see
+    to make Clanki more conservative or aggressive in its scheduling. Please see
     the manual before changing this option.
 deck-config-hard-interval-tooltip = The multiplier applied to a review interval when answering `Hard`.
 deck-config-new-interval-tooltip = The multiplier applied to a review interval when answering `Again`.
@@ -331,7 +331,7 @@ deck-config-rwkv-review-enabled-tooltip =
 deck-config-rwkv-review-enforce-grade-order = Keep RWKV intervals in answer order
 deck-config-rwkv-review-enforce-grade-order-tooltip =
     Keep Again, Hard, Good, and Easy in a sensible interval order. When RWKV's
-    four predictions disagree, Anki gently balances the conflicting predictions
+    four predictions disagree, Clanki gently balances the conflicting predictions
     before choosing the intervals. Turn this off to use the raw RWKV-Curve
     results.
 deck-config-rwkv-review-instant-order = Use RWKV-Instant to choose review cards
@@ -356,7 +356,7 @@ deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue update
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to
     appear next. This makes queue updates faster for large decks, but other
-    cards keep an older estimate until a later update. Anki automatically bounds
+    cards keep an older estimate until a later update. Clanki automatically bounds
     the number rechecked at once.
 deck-config-rwkv-review-refresh-interval = Update the RWKV queue every
 deck-config-rwkv-review-refresh-interval-tooltip =
@@ -399,6 +399,9 @@ deck-config-custom-scheduling-tooltip = Affects the entire collection. Use at yo
 ## Easy Days section.
 
 deck-config-easy-days-title = Easy Days
+deck-config-easy-days-tooltip =
+    Reduce the number of reviews on the days you choose. Reviews due on a
+    reduced day are moved to a nearby normal day when the interval allows it.
 deck-config-easy-days-monday = Mon
 deck-config-easy-days-tuesday = Tue
 deck-config-easy-days-wednesday = Wed
@@ -473,7 +476,7 @@ deck-config-reviews-too-low =
 deck-config-learning-step-above-graduating-interval = The graduating interval should be at least as long as your final learning step.
 deck-config-good-above-easy = The easy interval should be at least as long as the graduating interval.
 deck-config-relearning-steps-above-minimum-interval = The minimum lapse interval should be at least as long as your final relearning step.
-deck-config-maximum-answer-secs-above-recommended = Anki can schedule your reviews more efficiently when you keep each question short.
+deck-config-maximum-answer-secs-above-recommended = Clanki can schedule your reviews more efficiently when you keep each question short.
 deck-config-too-short-maximum-interval = A maximum interval less than 6 months is not recommended.
 deck-config-ignore-before-info = (Approximately) { $included }/{ $totalCards } cards will be used to optimize the FSRS parameters.
 
@@ -531,9 +534,9 @@ deck-config-fsrs-tooltip =
     more material in the same amount of time. This setting is shared by all presets.
 
 deck-config-desired-retention-tooltip =
-    By default, Anki schedules cards so that you have a 90% chance of remembering them when
-    they come up for review again. If you increase this value, Anki will show cards more frequently
-    to increase the chances of you remembering them. If you decrease the value, Anki will show cards
+    By default, Clanki schedules cards so that you have a 90% chance of remembering them when
+    they come up for review again. If you increase this value, Clanki will show cards more frequently
+    to increase the chances of you remembering them. If you decrease the value, Clanki will show cards
     less frequently, and you will forget more of them. Be conservative when adjusting this - higher
     values will greatly increase your workload, and lower values can be demoralizing when you forget
     a lot of material.
@@ -553,7 +556,7 @@ deck-config-historical-retention-tooltip =
     The latter is quite rare, so unless you're using the former option, you probably don't need to adjust
     this option.
 deck-config-weights-tooltip2 =
-    FSRS parameters affect how cards are scheduled. Anki will start with default parameters. You can use 
+    FSRS parameters affect how cards are scheduled. Clanki will start with default parameters. You can use 
     the option below to optimize the parameters to best match your performance in decks using this preset.
 deck-config-reschedule-cards-on-change-tooltip =
     Affects the entire collection, and is not saved.
@@ -693,7 +696,7 @@ deck-config-bury-tooltip =
     other cloze deletions from the same text).
     
     When this option is off, multiple cards from the same note may be seen on the same
-    day. When enabled, Anki will automatically *bury* siblings, hiding them until the next
+    day. When enabled, Clanki will automatically *bury* siblings, hiding them until the next
     day. This option allows you to choose which kinds of cards may be buried when you answer
     one of their siblings.
     
@@ -717,11 +720,11 @@ deck-config-health-check-tooltip2 = Health check is performed only when using Op
 deck-config-compute-optimal-retention = Compute minimum recommended retention
 deck-config-predicted-optimal-retention = Minimum recommended retention: { $num }
 deck-config-weights-tooltip =
-    FSRS parameters affect how cards are scheduled. Anki will start with default parameters. Once
+    FSRS parameters affect how cards are scheduled. Clanki will start with default parameters. Once
     you've accumulated 1000+ reviews, you can use the option below to optimize the parameters to best
     match your performance in decks using this preset.
 deck-config-compute-optimal-weights-tooltip =
-    Once you've done 1000+ reviews in Anki, you can use the Optimize button to analyze your review history,
+    Once you've done 1000+ reviews in Clanki, you can use the Optimize button to analyze your review history,
     and automatically generate parameters that are optimal for your memory and the content you're studying.
     If you have decks that vary wildly in difficulty, it is recommended to assign them separate presets, as
     the parameters for easy decks and hard decks will be different. There is no need to optimize your parameters
@@ -749,3 +752,27 @@ deck-config-fsrs-on-all-clients =
     Please ensure all of your Anki clients are Anki(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
     not work correctly if one of your clients is older.
 deck-config-optimize-all-tip = You can optimize all presets at once by using the dropdown button next to "Save".
+
+## Scheduler choice (Clanki)
+
+deck-config-scheduler = Algorithm
+deck-config-scheduler-tooltip =
+    Which algorithm schedules this preset. FSRS-7 computes intervals from
+    your review history. RWKV-Curve uses the RWKV neural network for the
+    answer button intervals. RWKV-Instant has no intervals: after every
+    review, RWKV decides which cards are due. Only one is active at a time,
+    and FSRS stays on for the whole collection whichever you choose.
+deck-config-scheduler-choice-fsrs = FSRS-7
+deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
+deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
+deck-config-first-intervals = First intervals
+deck-config-rwkv-instant-retention-info =
+    RWKV-Instant does not use intervals. Desired retention still controls
+    your workload: a card becomes due when RWKV predicts that its retention
+    has dropped to this value. The number of due cards changes after every
+    review. If it does not, RWKV-Instant is not working as expected.
+deck-config-show-advanced-options = Show advanced options
+deck-config-show-advanced-options-tooltip =
+    Show the settings that are hidden by default. The defaults work for almost
+    everyone; change them only if you know what they do. This applies to the
+    whole collection.

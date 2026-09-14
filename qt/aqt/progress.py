@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import aqt.forms
 from anki._legacy import print_deprecation_warning
 from anki.collection import Progress
+from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.qt import sip
 from aqt.utils import disable_help_button, tr
@@ -138,7 +139,7 @@ class ProgressManager:
         label: str | None = None,
         parent: QWidget | None = None,
         immediate: bool = False,
-        title: str = "Anki",
+        title: str = APP_NAME,
     ) -> ProgressDialog | None:
         self._levels += 1
         if self._levels > 1:

@@ -18,6 +18,7 @@ from typing import Any
 
 import aqt
 from anki.collection import Progress
+from aqt.branding import APP_NAME
 from aqt.progress import ProgressUpdate
 from aqt.qt import *
 
@@ -98,7 +99,7 @@ class TaskManager(QObject):
         label: str | None = None,
         immediate: bool = False,
         uses_collection=True,
-        title: str = "Anki",
+        title: str = APP_NAME,
     ) -> None:
         "Use QueryOp()/CollectionOp() in new code."
         self.mw.progress.start(

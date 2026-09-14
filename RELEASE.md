@@ -22,6 +22,44 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The application is now called **Clanki** in window titles, dialogs, the
+  About screen, the installer and the English interface text. File-format
+  names, the `Anki2` data folder and the version string that add-ons read
+  (the official Anki release number) are unchanged.
+- Remove Dynamic Desired Retention (ADR). Every preset now schedules with its
+  fixed desired retention. Presets that still store ADR settings from an older
+  build load normally; the settings are ignored and dropped on the next save.
+  The ADR deck-option controls, the "Use Dynamic DR" simulator switch, the DR
+  plot page and the ADR add-on hooks are gone.
+- Deck options: one **Algorithm** dropdown (FSRS-7, RWKV-Curve, RWKV-Instant)
+  replaces the FSRS switch and the two RWKV switches, so only one scheduler
+  is active at a time, and FSRS is always on: SM-2 can no longer be selected
+  from deck options. Desired retention is now editable for every choice.
+- Deck options: the "New card intervals at graduation" table is now **First
+  intervals**, shows only the four first-answer rows, and appears only for
+  FSRS-7. Under RWKV-Instant the desired-retention box explains that there
+  are no intervals and that the due count changes after every review. The
+  optimize buttons and the FSRS version selector are hidden under RWKV
+  unless advanced options are on.
+- Deck options: the FSRS parameters, Optimize buttons and the FSRS advanced
+  section (Help Me Decide, search filter, Check Health, simulator) appear
+  only with FSRS-7 selected. The "Compare RWKV with FSRS" action is gone.
+  One search filter serves both optimization and evaluation. FSRS-7 now
+  always includes same-day reviews and never uses scheduling penalties;
+  the two switches are gone.
+- Deck options: **Reschedule cards on change** is shown for every
+  algorithm. With it on, saving a changed desired retention reschedules
+  RWKV-Curve presets with RWKV-Curve intervals (after the save), and
+  recomputes RWKV-Instant dueness with the new desired retention at once.
+- Deck options: the "Reschedule Cards with RWKV-Curve Intervals" button
+  moved under **Algorithm**; the RWKV section shows only for RWKV-Instant or
+  under advanced options.
+- Review fuzz and the load balancer are always on. Their switches, the
+  fuzz factors and the fuzz preview are gone from the Easy Days section;
+  only Easy Days remains.
+- Deck options: a **Show advanced options** switch at the top of the page.
+  Off by default; it hides the RWKV tuning settings and maintenance actions,
+  which keep their values and keep working.
 - "Reschedule cards with RWKV-Curve" is much faster. It now runs one forward
   pass per card against the resident RWKV state instead of five, no longer
   copies each card's state between Python and Rust, and no longer freezes the

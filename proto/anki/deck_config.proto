@@ -147,17 +147,8 @@ message DeckConfig {
     repeated float fsrs_params_6 = 6;
     repeated float fsrs_params_7 = 52;
     uint32 fsrs_minimum_interval_secs = 54;
-    bool fsrs_dynamic_desired_retention_enabled = 55;
-    repeated float fsrs_dynamic_desired_retention_params = 56;
-    repeated float fsrs_dynamic_desired_retention_weights = 57;
-    repeated float fsrs_dynamic_desired_retention_avg_drs = 58;
-    float fsrs_dynamic_desired_retention_min = 59;
-    float fsrs_dynamic_desired_retention_max = 60;
-    repeated float fsrs_dynamic_desired_retention_fsrs_eq_weights = 61;
-    repeated float fsrs_dynamic_desired_retention_fsrs_eq_drs = 62;
-    bool fsrs_dynamic_desired_retention_clamp = 63;
-    repeated float fsrs_dynamic_desired_retention_fixed_target_weights = 64;
-    repeated float fsrs_dynamic_desired_retention_fixed_target_drs = 65;
+    // 55-65 held the removed dynamic desired retention settings
+    reserved 55 to 65;
 
     // consider saving remaining ones for fsrs param changes
     reserved 7 to 8;
@@ -293,6 +284,10 @@ message DeckConfigsForUpdate {
   float review_fuzz_factor_short = 18;
   float review_fuzz_factor_mid = 19;
   float review_fuzz_factor_long = 20;
+  // Collection-wide view preference: show the settings hidden from the
+  // simplified deck-options view. Written immediately via SetConfigBool,
+  // so it is not part of UpdateDeckConfigsRequest.
+  bool deck_options_advanced = 21;
 }
 
 enum UpdateDeckConfigsMode {

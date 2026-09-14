@@ -44,3 +44,44 @@ outcome_, not of FSRS; switching the interval source must not switch them off.
 `test_fuzz_review_interval_overrides_only_sends_supplied_ratings`,
 `test_apply_review_interval_overrides_records_fuzz_deltas`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.no-dynamic-desired-retention
+
+Given a deck preset (or an add-on FSRS preset overlay) that stored dynamic
+desired retention ("ADR") settings — the `fsrs_dynamic_desired_retention_*`
+keys inside the `jschoreels.fsrs` fork-fields blob, the matching camelCase keys
+in legacy schema11 JSON, or proto fields 55-65 of `DeckConfig.Config` — the
+collection loads the preset without error, ignores those settings, and
+schedules every card with the preset's (or deck's) fixed desired retention: the
+FSRS next states for Again/Hard/Good/Easy are computed for that single
+retention, and the card's stored `desired_retention` is set to it on answer.
+The legacy keys are dropped the next time the preset is saved. The ADR controls
+in deck options, the ADR fields on the scheduling and optimizer RPCs, the ADR
+simulator mode, the ADR plot page and the ADR add-on hooks no longer exist.
+
+**Why:** plan item 6 in `CLAUDE.md` — remove Adaptive/Dynamic Desired
+Retention from Clanki (Andrew, 2026-09-14).
+
+**Pinned by:** `legacy_dynamic_desired_retention_fork_fields_are_ignored`
+(`rslib/src/deckconfig/fork_fields.rs`),
+`legacy_dynamic_desired_retention_keys_load_and_are_dropped`
+(`rslib/src/deckconfig/schema11.rs`),
+`legacy_dynamic_desired_retention_preset_schedules_with_fixed_desired_retention`
+(`rslib/src/scheduler/answering/mod.rs`).
+
+## sched.fuzz-always-on
+
+Given any collection, review fuzz and the load balancer are always active.
+The stored "review fuzz enabled" flag and the collection `loadBalancerEnabled`
+flag are ignored when read, so a `false` written by an earlier build has no
+effect; the fuzz factors (base and the three interval-band factors) keep their
+stored values but have no controls, and the deck-options Easy Days section
+shows only the Easy Days controls. Sibling dispersal and the fuzz applied to
+RWKV-Curve intervals (`sched.rwkv-curve-fuzz`) are unchanged.
+
+**Why:** Andrew, 2026-09-14: fuzz and load balancing should always be
+enabled; only Easy Days is the user's choice.
+
+**Pinned by:** `collection_review_fuzz_ignores_the_disabled_flag`
+(`rslib/src/scheduler/states/fuzz.rs`), `load_balancer_is_always_on`
+(`rslib/src/config/bool.rs`).

@@ -93,16 +93,14 @@ impl Default for StoredReviewFuzzConfig {
 }
 
 impl StoredReviewFuzzConfig {
+    /// Review fuzz is always active; the stored `enabled` flag from earlier
+    /// builds is ignored (spec sched.fuzz-always-on).
     pub fn review_fuzz_config(self) -> ReviewFuzzConfig {
-        if self.enabled {
-            ReviewFuzzConfig {
-                base: self.base,
-                factor_short: self.factor_short,
-                factor_mid: self.factor_mid,
-                factor_long: self.factor_long,
-            }
-        } else {
-            ReviewFuzzConfig::none()
+        ReviewFuzzConfig {
+            base: self.base,
+            factor_short: self.factor_short,
+            factor_mid: self.factor_mid,
+            factor_long: self.factor_long,
         }
     }
 }
@@ -384,8 +382,9 @@ mod test {
         );
     }
 
+    // Pins spec/scheduling.md#sched.fuzz-always-on
     #[test]
-    fn collection_review_fuzz_can_be_disabled() -> Result<()> {
+    fn collection_review_fuzz_ignores_the_disabled_flag() -> Result<()> {
         let mut col = Collection::new();
         let stored = StoredReviewFuzzConfig {
             enabled: false,
@@ -398,7 +397,15 @@ mod test {
         col.set_stored_review_fuzz_config(stored)?;
 
         assert_eq!(col.stored_review_fuzz_config(), stored);
-        assert_eq!(col.review_fuzz_config(), ReviewFuzzConfig::none());
+        assert_eq!(
+            col.review_fuzz_config(),
+            ReviewFuzzConfig {
+                base: 3.0,
+                factor_short: 0.4,
+                factor_mid: 0.3,
+                factor_long: 0.2,
+            }
+        );
         Ok(())
     }
 

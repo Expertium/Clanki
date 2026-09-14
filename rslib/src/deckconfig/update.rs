@@ -30,7 +30,6 @@ use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
-use crate::scheduler::fsrs::params::DynamicDesiredRetentionSimulatorOptions;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
@@ -58,39 +57,6 @@ pub struct UpdateDeckConfigsRequest {
     pub fsrs_reschedule: bool,
     pub fsrs_health_check: bool,
     pub review_fuzz_config: StoredReviewFuzzConfig,
-}
-
-#[derive(PartialEq)]
-struct DynamicDrConfig<'a> {
-    enabled: bool,
-    params: &'a [f32],
-    weights: &'a [f32],
-    avg_drs: &'a [f32],
-    retention_min: f32,
-    retention_max: f32,
-    fsrs_eq_weights: &'a [f32],
-    fsrs_eq_drs: &'a [f32],
-    fixed_target_weights: &'a [f32],
-    fixed_target_drs: &'a [f32],
-    clamp: bool,
-}
-
-fn dynamic_dr_config(config: &DeckConfig) -> DynamicDrConfig<'_> {
-    DynamicDrConfig {
-        enabled: config.inner.fsrs_dynamic_desired_retention_enabled,
-        params: &config.inner.fsrs_dynamic_desired_retention_params,
-        weights: &config.inner.fsrs_dynamic_desired_retention_weights,
-        avg_drs: &config.inner.fsrs_dynamic_desired_retention_avg_drs,
-        retention_min: config.inner.fsrs_dynamic_desired_retention_min,
-        retention_max: config.inner.fsrs_dynamic_desired_retention_max,
-        fsrs_eq_weights: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_weights,
-        fsrs_eq_drs: &config.inner.fsrs_dynamic_desired_retention_fsrs_eq_drs,
-        fixed_target_weights: &config
-            .inner
-            .fsrs_dynamic_desired_retention_fixed_target_weights,
-        fixed_target_drs: &config.inner.fsrs_dynamic_desired_retention_fixed_target_drs,
-        clamp: config.inner.fsrs_dynamic_desired_retention_clamp,
-    }
 }
 
 impl Collection {
@@ -137,6 +103,7 @@ impl Collection {
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
+            deck_options_advanced: self.get_config_bool(BoolKey::DeckOptionsAdvanced),
         })
     }
 
@@ -374,7 +341,6 @@ impl Collection {
                 let previous_deck_dr = normal.desired_retention;
                 let previous_dr = previous_deck_dr.or(previous_preset_dr);
                 let previous_easy_days = previous_config.map(|c| &c.inner.easy_days_percentages);
-                let previous_dynamic_dr = previous_config.map(dynamic_dr_config);
 
                 // if a selected (sub)deck, or its old config was removed, update deck to point
                 // to new config
@@ -404,12 +370,10 @@ impl Collection {
                 let current_preset_dr = current_config.map(|c| c.inner.desired_retention);
                 let current_dr = current_deck_dr.or(current_preset_dr);
                 let current_easy_days = current_config.map(|c| &c.inner.easy_days_percentages);
-                let current_dynamic_dr = current_config.map(dynamic_dr_config);
                 if fsrs_toggled
                     || previous_params != current_params
                     || previous_dr != current_dr
                     || (req.fsrs_reschedule && previous_easy_days != current_easy_days)
-                    || (req.fsrs_reschedule && previous_dynamic_dr != current_dynamic_dr)
                     || (req.fsrs_reschedule && review_fuzz_changed)
                 {
                     decks_needing_memory_recompute
@@ -438,7 +402,7 @@ impl Collection {
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
                                 review_fuzz_config: req.review_fuzz_config.review_fuzz_config(),
-                                reschedule: req.fsrs_reschedule,
+                                reschedule: fsrs_reschedule_for_preset(req.fsrs_reschedule, c),
                                 historical_retention: c.inner.historical_retention,
                                 deck_desired_retention: deck_desired_retention.clone(),
                             })
@@ -562,13 +526,6 @@ impl Collection {
                         _ => ComputeParametersVersion::Fsrs6,
                     },
                 ),
-                dynamic_desired_retention_enabled: config
-                    .inner
-                    .fsrs_dynamic_desired_retention_enabled,
-                historical_retention: config.inner.historical_retention,
-                desired_retention: config.inner.desired_retention,
-                dynamic_desired_retention_simulator_options:
-                    DynamicDesiredRetentionSimulatorOptions::default(),
             })?;
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
@@ -588,44 +545,6 @@ impl Collection {
                     }
                     debug!(preset = output.name, params = ?params.params, "optimized FSRS preset");
                     *selected_fsrs_params_mut(&mut req.configs[output.index]) = params.params;
-                    if !params.fsrs_dynamic_desired_retention_params.is_empty() {
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_params =
-                            params.fsrs_dynamic_desired_retention_params;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_weights =
-                            params.fsrs_dynamic_desired_retention_weights;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_avg_drs =
-                            params.fsrs_dynamic_desired_retention_avg_drs;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_fsrs_eq_weights =
-                            params.fsrs_dynamic_desired_retention_fsrs_eq_weights;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_fsrs_eq_drs =
-                            params.fsrs_dynamic_desired_retention_fsrs_eq_drs;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_fixed_target_weights =
-                            params.fsrs_dynamic_desired_retention_fixed_target_weights;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_fixed_target_drs =
-                            params.fsrs_dynamic_desired_retention_fixed_target_drs;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_min =
-                            params.fsrs_dynamic_desired_retention_min;
-                        req.configs[output.index]
-                            .inner
-                            .fsrs_dynamic_desired_retention_max =
-                            params.fsrs_dynamic_desired_retention_max;
-                    }
                 }
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
                 Err(err) => {
@@ -648,32 +567,29 @@ fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
     }
 }
 
+/// FSRS-7 always trains on same-day reviews. Earlier builds stored a
+/// `fsrs7IncludeSameDayOptimize` flag in the preset's `other` bag; it is
+/// ignored (spec deck-options.fsrs-only-controls).
 fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
     match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => {}
-        _ => return None,
+        FsrsVersion::Seven => Some(true),
+        _ => None,
     }
-
-    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
-        .ok()?
-        .get("fsrs7IncludeSameDayOptimize")?
-        .as_bool()
 }
 
-fn fsrs7_enable_scheduling_penalties(config: &DeckConfig) -> bool {
-    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => {}
-        _ => return false,
-    }
+/// Scheduling penalties are never used in optimization. The stored
+/// `fsrs7EnableSchedulingPenalties` flag is ignored (spec
+/// deck-options.fsrs-only-controls).
+fn fsrs7_enable_scheduling_penalties(_config: &DeckConfig) -> bool {
+    false
+}
 
-    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
-        .ok()
-        .and_then(|other| {
-            other
-                .get("fsrs7EnableSchedulingPenalties")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false)
+/// "Reschedule cards on change" applies FSRS intervals to a preset's cards
+/// unless the preset schedules with RWKV-Curve, whose intervals must not be
+/// overwritten; the desktop runs the RWKV-Curve reschedule after the save
+/// instead (spec deck-options.reschedule-on-change).
+fn fsrs_reschedule_for_preset(fsrs_reschedule: bool, config: &DeckConfig) -> bool {
+    fsrs_reschedule && !config.inner.rwkv_review_enabled
 }
 
 fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
@@ -726,81 +642,45 @@ mod test {
     use crate::tests::open_test_collection_with_relearning_card;
     use crate::timestamp::TimestampSecs;
 
+    // Pins spec/deck-options.md#deck-options.fsrs-only-controls
     #[test]
-    fn fsrs7_optimize_include_same_day_reviews_reads_stored_flag() -> Result<()> {
+    fn fsrs7_optimize_always_includes_same_day_reviews() -> Result<()> {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
             "fsrs7IncludeSameDayOptimize": false,
-        }))?;
-
-        assert_eq!(
-            fsrs7_optimize_include_same_day_reviews(&config),
-            Some(false)
-        );
-
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7IncludeSameDayOptimize": true,
         }))?;
         assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), Some(true));
-        Ok(())
-    }
 
-    #[test]
-    fn fsrs7_optimize_include_same_day_reviews_defaults_when_missing() {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
-
-        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
-    }
-
-    #[test]
-    fn fsrs7_optimize_include_same_day_reviews_ignores_older_versions() -> Result<()> {
-        let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Six as i32;
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7IncludeSameDayOptimize": false,
-        }))?;
-
         assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
         Ok(())
     }
 
     #[test]
-    fn fsrs7_enable_scheduling_penalties_reads_stored_flag() -> Result<()> {
+    fn fsrs7_scheduling_penalties_are_never_enabled() -> Result<()> {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
             "fsrs7EnableSchedulingPenalties": true,
         }))?;
-
-        assert!(fsrs7_enable_scheduling_penalties(&config));
-
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7EnableSchedulingPenalties": false,
-        }))?;
         assert!(!fsrs7_enable_scheduling_penalties(&config));
         Ok(())
     }
 
+    // Pins spec/deck-options.md#deck-options.reschedule-on-change
     #[test]
-    fn fsrs7_enable_scheduling_penalties_defaults_when_missing() {
+    fn fsrs_reschedule_skips_rwkv_curve_presets() {
         let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        assert!(fsrs_reschedule_for_preset(true, &config));
+        assert!(!fsrs_reschedule_for_preset(false, &config));
 
-        assert!(!fsrs7_enable_scheduling_penalties(&config));
-    }
+        config.inner.rwkv_review_enabled = true;
+        assert!(!fsrs_reschedule_for_preset(true, &config));
 
-    #[test]
-    fn fsrs7_enable_scheduling_penalties_ignores_older_versions() -> Result<()> {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Six as i32;
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7EnableSchedulingPenalties": true,
-        }))?;
-
-        assert!(!fsrs7_enable_scheduling_penalties(&config));
-        Ok(())
+        config.inner.rwkv_review_enabled = false;
+        config.inner.rwkv_review_instant_order_enabled = true;
+        assert!(fsrs_reschedule_for_preset(true, &config));
     }
 
     #[test]
@@ -909,6 +789,21 @@ mod test {
         // should have forced a full sync
         assert!(full_sync_required(&mut col));
 
+        Ok(())
+    }
+
+    #[test]
+    fn deck_options_advanced_flag_is_reported() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(
+            !col.get_deck_configs_for_update(DeckId(1))?
+                .deck_options_advanced
+        );
+        col.set_config_bool(BoolKey::DeckOptionsAdvanced, true, false)?;
+        assert!(
+            col.get_deck_configs_for_update(DeckId(1))?
+                .deck_options_advanced
+        );
         Ok(())
     }
 
