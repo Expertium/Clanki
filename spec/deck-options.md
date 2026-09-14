@@ -146,11 +146,11 @@ record of it.
 
 ## deck-options.advanced-view
 
-Given the collection flag `deckOptionsAdvanced` (default off), the deck-options
-screen hides the RWKV settings listed below and shows them only while the flag
-is on. The flag is a collection-wide view preference, written immediately when
-the switch at the top of the page changes, and is not part of the deck-options
-save. Hidden settings keep their stored values and keep taking effect.
+Given the collection flag `advancedUi` (default off; `spec/ui.md`,
+`ui.mode-switch`), the deck-options screen hides the RWKV settings listed
+below and shows them only while the flag is on. The page has no switch of
+its own; the mode is changed from the main window. Hidden settings keep
+their stored values and keep taking effect.
 
 Hidden under every algorithm: the FSRS version selector, so that the FSRS-7
 label stays true. (Under RWKV the FSRS controls are not shown at all; see
@@ -170,6 +170,6 @@ while advanced options are on under either RWKV mode.
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
 knobs have defaults that suit nearly everyone.
 
-**Pinned by:** `deck_options_advanced_flag_is_reported`
+**Pinned by:** `advanced_ui_flag_is_reported`
 (`rslib/src/deckconfig/update.rs`) for the flag plumbing. The visibility
 itself is markup and has no unit test.

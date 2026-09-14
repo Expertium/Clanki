@@ -398,11 +398,45 @@ class Toolbar:
 
     def _right_tray_content(self) -> str:
         right_tray_content: list[str] = []
+        if toggle := self._create_ui_mode_toggle():
+            right_tray_content.append(toggle)
         gui_hooks.top_toolbar_will_set_right_tray_content(right_tray_content, self)
         return self._process_tray_content(right_tray_content)
 
     def _process_tray_content(self, content: list[str]) -> str:
         return "\n".join(f"""<div class="tray-item">{item}</div>""" for item in content)
+
+    # UI mode (spec ui.mode-switch)
+    ######################################################################
+
+    def _create_ui_mode_toggle(self) -> str:
+        """A two-state Simple | Advanced control with the active side filled."""
+        if getattr(self.mw, "col", None) is None:
+            return ""
+        advanced = self.mw.advanced_ui()
+        self.link_handlers["uimode:simple"] = lambda: self.mw.set_advanced_ui(False)
+        self.link_handlers["uimode:advanced"] = lambda: self.mw.set_advanced_ui(True)
+        sync_action = getattr(self.mw, "_sync_advanced_ui_action", None)
+        if callable(sync_action):
+            sync_action()
+        tip = tr.qt_misc_ui_mode_tooltip()
+
+        def option(value: str, label: str, active: bool) -> str:
+            classes = "ui-mode-option" + (" active" if active else "")
+            pressed = "true" if active else "false"
+            return (
+                f'<a class="{classes}" tabindex="-1" href="#" role="button" '
+                f'aria-pressed="{pressed}" '
+                f"onclick=\"return pycmd('uimode:{value}')\">{label}</a>"
+            )
+
+        return (
+            f'<div class="ui-mode" id="ui-mode" role="group" title="{tip}" '
+            f'aria-label="{tr.qt_misc_ui_mode()}">'
+            + option("simple", tr.qt_misc_ui_mode_simple(), not advanced)
+            + option("advanced", tr.qt_misc_ui_mode_advanced(), advanced)
+            + "</div>"
+        )
 
     # Sync
     ######################################################################

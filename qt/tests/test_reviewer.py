@@ -11,7 +11,6 @@ import pytest
 
 import aqt.reviewer as reviewer_module
 import aqt.rwkv_scheduler
-from anki import cards_pb2
 from anki.collection import OpChanges
 from aqt.reviewer import RefreshNeeded, Reviewer, SchedulingStates
 

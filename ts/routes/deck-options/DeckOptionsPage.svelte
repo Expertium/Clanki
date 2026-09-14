@@ -8,11 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import "$lib/sveltelib/export-runtime";
 
-    import * as tr from "@generated/ftl";
-
     import Container from "$lib/components/Container.svelte";
-    import SettingTitle from "$lib/components/SettingTitle.svelte";
-    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import Row from "$lib/components/Row.svelte";
     import type { DynamicSvelteComponent } from "$lib/sveltelib/dynamicComponent";
 
@@ -25,7 +21,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import DailyLimits from "./DailyLimits.svelte";
     import DisplayOrder from "./DisplayOrder.svelte";
     import FsrsOptionsOuter from "./FsrsOptionsOuter.svelte";
-    import GlobalLabel from "./GlobalLabel.svelte";
     import HtmlAddon from "./HtmlAddon.svelte";
     import LapseOptions from "./LapseOptions.svelte";
     import type { DeckOptionsState } from "./lib";
@@ -37,11 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let state: DeckOptionsState;
     const dispatch = createEventDispatcher<{ close: void }>();
     const addons = state.addonComponents;
-    const advanced = state.deckOptionsAdvanced;
-    let advancedValue = $advanced;
-    $: if (advancedValue !== $advanced) {
-        state.setDeckOptionsAdvanced(advancedValue);
-    }
 
     export function auxData(): Writable<Record<string, unknown>> {
         return state.currentAuxData;
@@ -93,13 +83,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 />
 
 <div class="deck-options-page">
-    <div class="advanced-options-toggle">
-        <SwitchRow bind:value={advancedValue} defaultValue={false}>
-            <SettingTitle>
-                <GlobalLabel title={tr.deckConfigShowAdvancedOptions()} />
-            </SettingTitle>
-        </SwitchRow>
-    </div>
     <Container
         breakpoint="sm"
         --gutter-inline="0.25rem"
@@ -192,8 +175,5 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 gap: 20px;
             }
         }
-    }
-    .advanced-options-toggle {
-        padding: 0.25rem 0.75rem 0;
     }
 </style>

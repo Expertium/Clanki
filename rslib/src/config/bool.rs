@@ -48,7 +48,7 @@ pub enum BoolKey {
     /// (spec `sync.post-sync-reschedule-gate`).
     FsrsReschedule,
     ShowFuzzDeltaAboveAnswerButtons,
-    DeckOptionsAdvanced,
+    AdvancedUi,
     #[strum(to_string = "normalize_note_text")]
     NormalizeNoteText,
     #[strum(to_string = "dayLearnFirst")]

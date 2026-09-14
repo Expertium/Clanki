@@ -22,6 +22,11 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- A **Simple | Advanced** UI mode switch in the top-right corner of the main
+  window (also View > Advanced UI, Ctrl+Shift+U). Simple is the default. In
+  Simple mode the deck list hides the Get Shared / Create Deck / Import File
+  row, and deck options show their simplified view; the "Show advanced
+  options" switch on the deck-options page is gone.
 - Sync: after a normal sync, cards whose FSRS data was changed on this device
   while another device also changed them are repaired from the merged review
   history, so a full sync is no longer needed to get the two devices to agree

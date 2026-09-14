@@ -771,8 +771,3 @@ deck-config-rwkv-instant-retention-info =
     your workload: a card becomes due when RWKV predicts that its retention
     has dropped to this value. The number of due cards changes after every
     review. If it does not, RWKV-Instant is not working as expected.
-deck-config-show-advanced-options = Show advanced options
-deck-config-show-advanced-options-tooltip =
-    Show the settings that are hidden by default. The defaults work for almost
-    everyone; change them only if you know what they do. This applies to the
-    whole collection.

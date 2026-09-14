@@ -1968,7 +1968,6 @@ def test_unavailable_cache_restore_is_not_retried_for_same_generation(
     def restore(_reviewer: object, **_kwargs: object) -> None:
         nonlocal restore_calls
         restore_calls += 1
-        return None
 
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -2035,7 +2034,6 @@ def test_cold_answer_does_not_retry_unavailable_cache_restore(
     def restore(_reviewer: object, **_kwargs: object) -> None:
         nonlocal restore_calls
         restore_calls += 1
-        return None
 
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -5274,7 +5272,6 @@ def test_reviewer_prediction_does_not_restore_cache_during_card_render(
     def restore(_reviewer: object, **_kwargs: object) -> None:
         nonlocal restore_calls
         restore_calls += 1
-        return None
 
     monkeypatch.setattr(
         rwkv_scheduler,
