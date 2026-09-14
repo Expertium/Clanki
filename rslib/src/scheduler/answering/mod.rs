@@ -98,7 +98,7 @@ struct CardStateUpdater {
     /// Set if FSRS has a pre-answer retrievability for this review.
     fsrs_review_retrievability: Option<f32>,
     fsrs_short_term_with_steps: bool,
-    fsrs_learning_queues_disabled: bool,
+    same_day_review_limit_reached: bool,
     fsrs_allow_short_term: bool,
 }
 
@@ -161,7 +161,7 @@ impl CardStateUpdater {
             },
             fsrs_next_states: self.fsrs_next_states.clone(),
             fsrs_short_term_with_steps_enabled: self.fsrs_short_term_with_steps,
-            fsrs_learning_queues_disabled: self.fsrs_learning_queues_disabled,
+            same_day_review_limit_reached: self.same_day_review_limit_reached,
             fsrs_allow_short_term: self.fsrs_allow_short_term,
         })
     }
@@ -720,8 +720,15 @@ impl Collection {
         }
         let desired_retention = fsrs_enabled.then_some(desired_retention);
         let fsrs_short_term_with_steps = self.fsrs_short_term_with_steps_enabled();
-        let fsrs_learning_queues_disabled =
-            fsrs_enabled && self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled);
+        // spec sched.max-same-day-reviews: with k reviews logged today, an
+        // intraday answer now leads to same-day review k + 1.
+        let same_day_review_limit_reached = match config.inner.max_same_day_reviews {
+            Some(max) if fsrs_enabled => {
+                let day_start = TimestampMillis((timing.next_day_at.0 - 86_400) * 1000);
+                max == 0 || self.storage.review_count_since(card.id, day_start)? >= max
+            }
+            _ => false,
+        };
         // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals);
         // for older versions, parameters fitted without the short-term terms
         // (w17 or w18 zero) keep sub-day intervals off.
@@ -758,7 +765,7 @@ impl Collection {
             desired_retention,
             fsrs_review_retrievability,
             fsrs_short_term_with_steps,
-            fsrs_learning_queues_disabled,
+            same_day_review_limit_reached,
             fsrs_allow_short_term,
         })
     }
@@ -1683,13 +1690,56 @@ pub(crate) mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.max-same-day-reviews
+    #[test]
+    fn max_same_day_reviews_limits_intraday_answers() -> Result<()> {
+        let intraday = |state: CardState| {
+            matches!(
+                state,
+                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+            )
+        };
+        // (limit, intraday Again on the first review, and after one review)
+        for (limit, first, second) in [
+            (None, true, true),
+            (Some(2), true, true),
+            (Some(1), true, false),
+            (Some(0), false, false),
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_version = FsrsVersion::Seven as i32;
+                config.learn_steps = vec![1.0, 10.0];
+                config.max_same_day_reviews = limit;
+            });
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            let card_id = col.get_first_card().id;
+
+            let states = col.get_scheduling_states(card_id)?;
+            assert_eq!(intraday(states.again), first, "{limit:?}");
+            col.answer_again();
+            let states = col.get_scheduling_states(card_id)?;
+            assert_eq!(intraday(states.again), second, "{limit:?}");
+            if !second {
+                // no button keeps the card in today's queues
+                for state in [states.hard, states.good, states.easy] {
+                    assert!(!intraday(state), "{limit:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn fsrs_learning_queue_bypass_keeps_rwkv_relearning_answer_in_review_queue() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
         col.set_config_bool(BoolKey::FsrsShortTermWithStepsEnabled, true, false)?;
-        col.set_config_bool(BoolKey::FsrsLearningQueuesDisabled, true, false)?;
         col.update_default_deck_config(|config| {
+            config.max_same_day_reviews = Some(0);
             config.fsrs_version = FsrsVersion::Seven as i32;
             config.fsrs_params_7 = low_retention_fsrs7_params();
             config.desired_retention = 0.65;

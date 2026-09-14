@@ -84,8 +84,6 @@ export class DeckOptionsState {
     readonly loadBalancerEnabled: Writable<boolean>;
     readonly fsrs: Writable<boolean>;
     readonly fsrsShortTermWithStepsEnabled: Writable<boolean>;
-    /** Read-only here: a Preferences setting the interval preview needs. */
-    readonly fsrsLearningQueuesDisabled: Writable<boolean>;
     /** Read-only here: a Preferences setting the Easy Days warning needs. */
     readonly fsrsReschedule: Writable<boolean>;
     /** The collection-wide Advanced UI mode (spec ui.mode-switch); read-only here. */
@@ -140,7 +138,6 @@ export class DeckOptionsState {
         this.fsrsShortTermWithStepsEnabled = writable(
             data.fsrsShortTermWithStepsEnabled,
         );
-        this.fsrsLearningQueuesDisabled = writable(data.fsrsLearningQueuesDisabled);
         this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
         this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);

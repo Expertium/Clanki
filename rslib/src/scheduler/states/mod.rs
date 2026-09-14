@@ -97,7 +97,10 @@ pub(crate) struct StateContext<'a> {
     pub fuzz_factor: Option<f32>,
     pub fsrs_next_states: Option<NextStates>,
     pub fsrs_short_term_with_steps_enabled: bool,
-    pub fsrs_learning_queues_disabled: bool,
+    /// The card had its preset's maximum of same-day reviews today (spec
+    /// sched.max-same-day-reviews), so FSRS keeps it out of the learning
+    /// queues for this answer.
+    pub same_day_review_limit_reached: bool,
     pub fsrs_allow_short_term: bool,
     // learning
     pub steps: LearningSteps<'a>,
@@ -138,7 +141,7 @@ impl StateContext<'_> {
     }
 
     pub(crate) fn fsrs_uses_learning_queues(&self) -> bool {
-        self.fsrs_next_states.is_none() || !self.fsrs_learning_queues_disabled
+        self.fsrs_next_states.is_none() || !self.same_day_review_limit_reached
     }
 
     pub(crate) fn fsrs_uses_short_term_learning_queue(&self) -> bool {
@@ -176,7 +179,7 @@ impl StateContext<'_> {
             },
             fsrs_next_states: None,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
+            same_day_review_limit_reached: false,
             fsrs_allow_short_term: false,
         }
     }

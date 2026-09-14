@@ -94,8 +94,6 @@ impl Collection {
             load_balancer_enabled: self.get_config_bool(BoolKey::LoadBalancerEnabled),
             fsrs_short_term_with_steps_enabled: self
                 .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
-            fsrs_learning_queues_disabled: self
-                .get_config_bool(BoolKey::FsrsLearningQueuesDisabled),
             fsrs_health_check: self.get_config_bool(BoolKey::FsrsHealthCheck),
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
@@ -673,7 +671,6 @@ mod test {
         let mut col = Collection::new();
         col.set_config_bool_inner(BoolKey::FsrsReschedule, true)?;
         col.set_config_bool_inner(BoolKey::ApplyAllParentLimits, true)?;
-        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, true)?;
         col.set_config_string_inner(StringKey::CardStateCustomizer, "// custom")?;
         let mut input = col.get_deck_configs_for_update(DeckId(1))?;
         // the page reads the reschedule choice for its Easy Days warning
@@ -697,7 +694,6 @@ mod test {
         col.update_deck_configs(req)?;
         assert!(col.get_config_bool(BoolKey::FsrsReschedule));
         assert!(col.get_config_bool(BoolKey::ApplyAllParentLimits));
-        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         assert_eq!(
             col.get_config_string(StringKey::CardStateCustomizer),
             "// custom"
@@ -738,7 +734,6 @@ mod test {
         col.set_config_bool_inner(BoolKey::ApplyAllParentLimits, false)?;
         col.set_config_bool_inner(BoolKey::LoadBalancerEnabled, false)?;
         col.set_config_bool_inner(BoolKey::FsrsShortTermWithStepsEnabled, false)?;
-        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, false)?;
         col.set_config_bool_inner(BoolKey::FsrsHealthCheck, true)?;
 
         // pretend we're in sync
@@ -957,10 +952,8 @@ mod test {
     fn fsrs_short_term_with_steps_flag_roundtrip() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool_inner(BoolKey::FsrsShortTermWithStepsEnabled, true)?;
-        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, true)?;
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         assert!(output.fsrs_short_term_with_steps_enabled);
-        assert!(output.fsrs_learning_queues_disabled);
 
         let mut input = UpdateDeckConfigsRequest {
             target_deck_id: DeckId(1),
@@ -982,14 +975,10 @@ mod test {
         // the same-day flag is always on, whatever a save writes
         // (spec sched.same-day-steps-always-on)
         assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
-        // a Preferences setting; the deck-options save does not write it
-        // (spec deck-options.collection-wide-in-preferences)
-        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
 
         input.fsrs_short_term_with_steps_enabled = true;
         col.update_deck_configs(input)?;
         assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
-        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         Ok(())
     }
 

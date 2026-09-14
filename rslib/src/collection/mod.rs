@@ -71,7 +71,7 @@ impl CollectionBuilder {
         let media_folder = self.media_folder.clone().unwrap_or_default();
         let media_db = self.media_db.clone().unwrap_or_default();
         let storage = SqliteStorage::open_or_create(&col_path, &tr, server, self.check_integrity)?;
-        let col = Collection {
+        let mut col = Collection {
             storage,
             col_path,
             media_folder,
@@ -83,6 +83,9 @@ impl CollectionBuilder {
                 ..Default::default()
             },
         };
+        if !server {
+            col.migrate_learning_queues_switch()?;
+        }
 
         Ok(col)
     }

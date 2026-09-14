@@ -476,7 +476,6 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::GetFsrsNewCardIntervalsRequest,
     ) -> Result<generic::StringList> {
-        let requested_learning_queues_disabled = input.fsrs_learning_queues_disabled;
         let config = crate::deckconfig::DeckConfig {
             inner: input.config.unwrap_or_default(),
             ..Default::default()
@@ -491,8 +490,9 @@ impl crate::services::SchedulerService for Collection {
         // Always on (spec sched.same-day-steps-always-on); the request field
         // is kept for wire compatibility and ignored.
         let fsrs_short_term_with_steps_enabled = true;
-        let fsrs_learning_queues_disabled = requested_learning_queues_disabled
-            .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        // A new card has no reviews today, so only a limit of 0 applies
+        // (spec sched.max-same-day-reviews).
+        let same_day_review_limit_reached = config.inner.max_same_day_reviews == Some(0);
         let review_fuzz_config = self.review_fuzz_config();
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: f32|
@@ -511,7 +511,7 @@ impl crate::services::SchedulerService for Collection {
                 fuzz_factor: None,
                 fsrs_next_states: Some(fsrs_next_states),
                 fsrs_short_term_with_steps_enabled,
-                fsrs_learning_queues_disabled,
+                same_day_review_limit_reached,
                 fsrs_allow_short_term,
                 steps: crate::scheduler::states::steps::LearningSteps::new(
                     &config.inner.learn_steps,

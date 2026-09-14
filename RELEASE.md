@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- "Skip learning/relearning queues with FSRS/RWKV" is gone. Instead, each preset has "Max number of same-day reviews"
+  (Advanced mode, under Learning steps): once a card has come back that many
+  times on the day you studied it, every answer sends it to another day.
+  0 means cards never come back on the same day; the default is no limit
+  (shown as 9999). A collection that had the switch on gets 0 on every
+  preset.
 - FSRS-7 and RWKV-Curve can schedule intervals under a day for any card and
   any answer button: such an answer goes to the intraday queue with its exact
   interval. Answers of a day or more stay in whole days, and each day button
@@ -48,8 +54,8 @@ repeated here unless they materially affect a fork feature.
   retention changes" (every algorithm); the separate "Reschedule Cards with
   RWKV-Curve Intervals" button is gone.
 - Deck options holds only per-preset settings now. Limits start from top,
-  Skip learning/relearning queues, Reschedule cards when desired retention
-  changes and Custom scheduling moved to Preferences > Review (Scheduler
+  Reschedule cards when desired retention changes and Custom scheduling
+  moved to Preferences > Review (Scheduler
   group and a Custom scheduling group). The reschedule choice is shown as
   stored instead of opening off every time, and a deck-options save no
   longer overwrites these settings. The globe marker is gone with them.

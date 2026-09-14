@@ -676,7 +676,8 @@ message EvaluateParamsRequest {
 message GetFsrsNewCardIntervalsRequest {
   deck_config.DeckConfig.Config config = 1;
   optional bool fsrs_short_term_with_steps_enabled = 2;
-  optional bool fsrs_learning_queues_disabled = 3;
+  // was fsrs_learning_queues_disabled (spec sched.max-same-day-reviews)
+  reserved 3;
 }
 
 message EvaluateParamsLegacyRequest {

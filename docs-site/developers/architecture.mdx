@@ -221,11 +221,13 @@ Deck options also expose the global FSRS short-term toggle (`same-day review`
 behavior for learning/relearning paths) backed by
 `BoolKey::FsrsShortTermWithStepsEnabled`.
 
-Deck options also expose a global FSRS learning-queue bypass backed by
-`BoolKey::FsrsLearningQueuesDisabled`. It defaults to disabled. When enabled
-with FSRS active, answering cards schedules review states directly instead of
-writing learning/relearning queue states, including configured steps and FSRS
-short-term intervals below half a day.
+Each preset can limit the same-day reviews of a card
+(`max_same_day_reviews`, spec `sched.max-same-day-reviews`). Once a card has
+had that many reviews after its first one of the day, answering it with FSRS
+active schedules review states directly instead of writing
+learning/relearning queue states, skipping configured steps and FSRS sub-day
+intervals. The old collection-wide bypass (`BoolKey::FsrsLearningQueuesDisabled`)
+is migrated to a limit of 0 on every preset when the collection opens.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review
