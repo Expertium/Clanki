@@ -22,6 +22,8 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Rescheduling ("Reschedule cards on change" and the RWKV-Curve reschedule)
+  no longer adds rows to the review log. Existing rescheduled rows are kept.
 - The application is now called **Clanki** in window titles, dialogs, the
   About screen, the installer and the English interface text. File-format
   names, the `Anki2` data folder and the version string that add-ons read

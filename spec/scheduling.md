@@ -85,3 +85,19 @@ enabled; only Easy Days is the user's choice.
 **Pinned by:** `collection_review_fuzz_ignores_the_disabled_flag`
 (`rslib/src/scheduler/states/fuzz.rs`), `load_balancer_is_always_on`
 (`rslib/src/config/bool.rs`).
+
+## sched.reschedule-no-revlog
+
+Given "Reschedule cards on change" applying new FSRS intervals on a
+deck-options save, or the RWKV-Curve reschedule, the affected cards get a new
+interval, due date, memory state and desired retention, and no row is added
+to the review log. Rows of kind `Rescheduled` that older builds wrote are
+still read (statistics keep excluding them). "Set Due Date" and "Forget" are
+not rescheduling and still write their `Manual` rows.
+
+**Why:** plan item 3 (Andrew): rescheduling must not write to the card's
+history, as the FSRS Helper add-on does it. The rescheduled rows carried no
+answer and only cluttered the history and the review count.
+
+**Pinned by:** `reschedule_on_change_writes_no_revlog_rows`
+(`rslib/src/scheduler/fsrs/memory_state.rs`).
