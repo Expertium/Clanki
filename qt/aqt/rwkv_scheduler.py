@@ -13571,6 +13571,143 @@ def reschedule_rwkv_review_cards_with_progress(
     _run_on_main(mw, start_reschedule)
 
 
+@dataclass(frozen=True)
+class RwkvCurveRescheduleSnapshot:
+    """What decided RWKV-Curve due dates before a deck-options save."""
+
+    preset_desired_retention: dict[int, float]
+    preset_curve_enabled: dict[int, bool]
+    deck_desired_retention: float | None
+
+
+def _same_retention(before: float | None, after: float | None) -> bool:
+    if before is None or after is None:
+        return before is None and after is None
+    return abs(before - after) < 1e-4
+
+
+def _legacy_deck_desired_retention(deck: object) -> float | None:
+    """The deck's own desired-retention override; legacy decks store percent."""
+
+    if not isinstance(deck, dict):
+        return None
+    value = deck.get("desiredRetention")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) / 100.0
+
+
+def rwkv_curve_reschedule_snapshot(
+    mw: object,
+    request: object,
+) -> RwkvCurveRescheduleSnapshot:
+    """Record the stored presets and deck override before a deck-options save."""
+
+    col = getattr(mw, "col", None)
+    decks = getattr(col, "decks", None)
+    get_config = getattr(decks, "get_config", None)
+    get_deck = getattr(decks, "get", None)
+
+    preset_desired_retention: dict[int, float] = {}
+    preset_curve_enabled: dict[int, bool] = {}
+    for config in getattr(request, "configs", ()):
+        config_id = int(getattr(config, "id", 0))
+        stored: object = None
+        if callable(get_config):
+            try:
+                stored = get_config(config_id)
+            except Exception:
+                logger.debug("failed to read preset %s before save", config_id)
+                stored = None
+        if not isinstance(stored, dict):
+            continue
+        value = stored.get("desiredRetention")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            preset_desired_retention[config_id] = float(value)
+        preset_curve_enabled[config_id] = _rwkv_review_config_enabled(stored)
+
+    deck: object = None
+    if callable(get_deck):
+        try:
+            deck = get_deck(int(getattr(request, "target_deck_id", 0)), default=False)
+        except Exception:
+            logger.debug("failed to read target deck before save")
+            deck = None
+
+    return RwkvCurveRescheduleSnapshot(
+        preset_desired_retention=preset_desired_retention,
+        preset_curve_enabled=preset_curve_enabled,
+        deck_desired_retention=_legacy_deck_desired_retention(deck),
+    )
+
+
+def _request_deck_desired_retention(request: object) -> float | None:
+    limits = getattr(request, "limits", None)
+    has_field = getattr(limits, "HasField", None)
+    if not callable(has_field):
+        return None
+    try:
+        if not has_field("desired_retention"):
+            return None
+    except ValueError:
+        return None
+    value = getattr(limits, "desired_retention", None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def rwkv_curve_reschedule_needed(
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Whether a save must run the RWKV-Curve reschedule.
+
+    True when "Reschedule cards on change" is on and either an RWKV-Curve
+    preset in the request changed its desired retention or became RWKV-Curve,
+    or the target deck keeps an RWKV-Curve preset and its own desired-retention
+    override changed (spec deck-options.reschedule-on-change). The Rust save
+    never writes FSRS intervals onto RWKV-Curve presets, so this is the only
+    reschedule those cards get.
+    """
+
+    if not getattr(request, "fsrs_reschedule", False):
+        return False
+    configs = list(getattr(request, "configs", ()))
+    for config in configs:
+        inner = getattr(config, "config", None)
+        if not getattr(inner, "rwkv_review_enabled", False):
+            continue
+        config_id = int(getattr(config, "id", 0))
+        if not snapshot.preset_curve_enabled.get(config_id, False):
+            return True
+        if not _same_retention(
+            snapshot.preset_desired_retention.get(config_id),
+            float(getattr(inner, "desired_retention", 0.0)),
+        ):
+            return True
+    # The deck is assigned the last preset in the request.
+    if configs and getattr(configs[-1].config, "rwkv_review_enabled", False):
+        if not _same_retention(
+            snapshot.deck_desired_retention,
+            _request_deck_desired_retention(request),
+        ):
+            return True
+    return False
+
+
+def reschedule_rwkv_curve_after_save(
+    mw: object,
+    snapshot: RwkvCurveRescheduleSnapshot,
+    request: object,
+) -> bool:
+    """Run the RWKV-Curve reschedule after a deck-options save when needed."""
+
+    if not rwkv_curve_reschedule_needed(snapshot, request):
+        return False
+    logger.debug("deck options saved with reschedule on; RWKV-Curve reschedule starts")
+    reschedule_rwkv_review_cards_with_progress(mw, deck_id=None)
+    return True
+
+
 def reschedule_rwkv_review_cards(
     mw: object,
     *,

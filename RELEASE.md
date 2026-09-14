@@ -32,6 +32,16 @@ repeated here unless they materially affect a fork feature.
   are no intervals and that the due count changes after every review. The
   optimize buttons and the FSRS version selector are hidden under RWKV
   unless advanced options are on.
+- Deck options: the FSRS parameters, Optimize buttons and the FSRS advanced
+  section (Help Me Decide, search filter, Check Health, simulator) appear
+  only with FSRS-7 selected. The "Compare RWKV with FSRS" action is gone.
+  One search filter serves both optimization and evaluation. FSRS-7 now
+  always includes same-day reviews and never uses scheduling penalties;
+  the two switches are gone.
+- Deck options: **Reschedule cards on change** is shown for every
+  algorithm. With it on, saving a changed desired retention reschedules
+  RWKV-Curve presets with RWKV-Curve intervals (after the save), while
+  FSRS-7 and RWKV-Instant presets reschedule with FSRS as before.
 - Deck options: a **Show advanced options** switch at the top of the page.
   Off by default; it hides the RWKV tuning settings and maintenance actions,
   which keep their values and keep working.

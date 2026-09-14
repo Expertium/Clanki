@@ -52,6 +52,52 @@ to RWKV-Instant.
 
 **Pinned by:** markup only; no unit test.
 
+## deck-options.fsrs-only-controls
+
+Given the deck-options screen, these controls appear only while FSRS-7 is the
+selected algorithm: the FSRS parameters, the Optimize buttons, and the FSRS
+advanced section (Help Me Decide, the FSRS version selector, the search
+filter, Check Health, and the FSRS simulator). Under RWKV-Curve and
+RWKV-Instant none of them is shown, and the "Compare RWKV with FSRS" action
+is gone. One search filter serves both optimization and evaluation; the
+separate evaluation filter no longer exists, and a stored
+`fsrsEvaluationSearch` value is ignored. FSRS-7 optimization always includes
+same-day reviews and never uses scheduling penalties: the two switches and
+"Same-day reviews: Help Me Decide" are gone, and the stored
+`fsrs7IncludeSameDayOptimize` / `fsrs7EnableSchedulingPenalties` values are
+ignored, also by "Optimize all presets".
+
+**Why:** Andrew, 2026-09-14: RWKV's parameters are frozen; a proper
+RWKV-Instant simulator is out of scope; the same-day and penalty settings
+should be the defaults and never shown.
+
+**Pinned by:** `fsrs7_optimize_always_includes_same_day_reviews`,
+`fsrs7_scheduling_penalties_are_never_enabled`
+(`rslib/src/deckconfig/update.rs`). The visibility is markup.
+
+## deck-options.reschedule-on-change
+
+Given the collection-wide "Reschedule cards on change" switch, now shown for
+every algorithm, and a deck-options save with it on:
+
+- presets running FSRS-7 or RWKV-Instant reschedule with FSRS intervals as
+  before, when their parameters or desired retention changed;
+- presets running RWKV-Curve are never rescheduled with FSRS intervals (their
+  FSRS memory states are still recomputed). Instead, when such a preset's
+  desired retention changed, when a preset became RWKV-Curve, or when the
+  target deck's own desired-retention override changed while the deck keeps an
+  RWKV-Curve preset, the RWKV-Curve reschedule runs over the whole collection
+  after the save, with its own progress dialog.
+
+**Why:** Andrew, 2026-09-14: changing desired retention affects dueness for
+any algorithm. Writing FSRS intervals onto RWKV-Curve cards would undo RWKV's
+intervals, so those presets get the RWKV reschedule instead.
+
+**Pinned by:** `fsrs_reschedule_skips_rwkv_curve_presets`
+(`rslib/src/deckconfig/update.rs`); `test_rwkv_curve_reschedule_*` and
+`test_reschedule_rwkv_curve_after_save_runs_only_when_needed`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## deck-options.advanced-view
 
 Given the collection flag `deckOptionsAdvanced` (default off), the deck-options
@@ -60,17 +106,15 @@ is on. The flag is a collection-wide view preference, written immediately when
 the switch at the top of the page changes, and is not part of the deck-options
 save. Hidden settings keep their stored values and keep taking effect.
 
-Hidden under either RWKV mode: the **Optimize Current Preset** and **Save
-and Optimize All Presets** buttons (RWKV's parameters are frozen; the FSRS
-parameters only feed the intervals RWKV-Instant stores and the fallback for
-cards without an RWKV score). Hidden under every algorithm: the FSRS
-version selector, so that the FSRS-7 label stays true.
+Hidden under every algorithm: the FSRS version selector, so that the FSRS-7
+label stays true. (Under RWKV the FSRS controls are not shown at all; see
+`deck-options.fsrs-only-controls`.)
 
 Hidden: keep RWKV intervals in answer order; minimum reviews per day; faster
 approximate queue updates; queue update interval; update queue after reviewing;
 minimum other reviews and minimum seconds before a same-day repeat; predict R
 for new cards from creation time; dynamic preset add-on support; the Rebuild
-RWKV State, Recompute Calibration and Compare with FSRS actions.
+RWKV State and Recompute Calibration actions.
 
 Always visible while an RWKV mode is selected: the same-day repeat switch
 (RWKV-Instant) and the Reschedule cards action (RWKV-Curve).

@@ -21,7 +21,7 @@ from typing import Any, cast
 
 import pytest
 
-from anki import cards_pb2, collection_pb2, scheduler_pb2
+from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from aqt import rwkv_scheduler
@@ -18750,3 +18750,136 @@ def _filtered_preview_state() -> SchedulingState:
     state = SchedulingState()
     state.filtered.preview.scheduled_secs = 180
     return state
+
+
+# ---- deck-options.reschedule-on-change --------------------------------------
+
+
+def _reschedule_request(
+    *,
+    fsrs_reschedule: bool = True,
+    configs: Sequence[tuple[int, float, bool]] = (),
+    deck_desired_retention: float | None = None,
+) -> deck_config_pb2.UpdateDeckConfigsRequest:
+    request = deck_config_pb2.UpdateDeckConfigsRequest()
+    request.target_deck_id = 1
+    request.fsrs_reschedule = fsrs_reschedule
+    for config_id, desired_retention, curve in configs:
+        config = request.configs.add()
+        config.id = config_id
+        config.config.desired_retention = desired_retention
+        config.config.rwkv_review_enabled = curve
+    if deck_desired_retention is not None:
+        request.limits.desired_retention = deck_desired_retention
+    return request
+
+
+def _reschedule_snapshot(
+    presets: dict[int, tuple[float, bool]],
+    deck_desired_retention: float | None = None,
+) -> rwkv_scheduler.RwkvCurveRescheduleSnapshot:
+    return rwkv_scheduler.RwkvCurveRescheduleSnapshot(
+        preset_desired_retention={k: v[0] for k, v in presets.items()},
+        preset_curve_enabled={k: v[1] for k, v in presets.items()},
+        deck_desired_retention=deck_desired_retention,
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_curve_preset_retention_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.85, True)])
+    )
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+
+
+def test_rwkv_curve_reschedule_not_needed_without_the_switch() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(fsrs_reschedule=False, configs=[(10, 0.85, True)]),
+    )
+
+
+def test_rwkv_curve_reschedule_ignores_presets_without_curve() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False), 11: (0.9, True)})
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(configs=[(11, 0.9, True), (10, 0.8, False)]),
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_preset_becomes_curve() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, False)})
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    # A preset the collection did not know (new preset) counts as newly Curve.
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(0, 0.9, True)])
+    )
+
+
+def test_rwkv_curve_reschedule_needed_when_deck_override_changes() -> None:
+    snapshot = _reschedule_snapshot({10: (0.9, True)}, deck_desired_retention=0.9)
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot,
+        _reschedule_request(configs=[(10, 0.9, True)], deck_desired_retention=0.8),
+    )
+    assert rwkv_scheduler.rwkv_curve_reschedule_needed(
+        snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    # The override only matters for the preset the deck ends up with.
+    assert not rwkv_scheduler.rwkv_curve_reschedule_needed(
+        _reschedule_snapshot({10: (0.9, True), 11: (0.9, False)}, 0.9),
+        _reschedule_request(
+            configs=[(10, 0.9, True), (11, 0.9, False)],
+            deck_desired_retention=0.8,
+        ),
+    )
+
+
+def test_rwkv_curve_reschedule_snapshot_reads_legacy_dicts() -> None:
+    class Decks:
+        def get_config(self, config_id: int) -> dict[str, object] | None:
+            return {
+                10: {
+                    "desiredRetention": 0.9,
+                    "other": {"jschoreels.rwkv": {"rwkv_review_enabled": True}},
+                },
+                11: {"desiredRetention": 0.85},
+            }.get(config_id)
+
+        def get(self, deck_id: int, default: bool = True) -> dict[str, object] | None:
+            return {"id": deck_id, "desiredRetention": 80} if deck_id == 1 else None
+
+    mw = SimpleNamespace(col=SimpleNamespace(decks=Decks()))
+    snapshot = rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+        mw, _reschedule_request(configs=[(10, 0.9, True), (11, 0.85, False), (12, 0.9, False)])
+    )
+    assert snapshot.preset_desired_retention == {10: 0.9, 11: 0.85}
+    assert snapshot.preset_curve_enabled == {10: True, 11: False}
+    assert snapshot.deck_desired_retention == pytest.approx(0.8)
+
+
+def test_reschedule_rwkv_curve_after_save_runs_only_when_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int | None] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "reschedule_rwkv_review_cards_with_progress",
+        lambda _mw, *, deck_id=None: calls.append(deck_id),
+    )
+    mw = SimpleNamespace()
+    snapshot = _reschedule_snapshot({10: (0.9, True)})
+    assert not rwkv_scheduler.reschedule_rwkv_curve_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.9, True)])
+    )
+    assert calls == []
+    assert rwkv_scheduler.reschedule_rwkv_curve_after_save(
+        mw, snapshot, _reschedule_request(configs=[(10, 0.85, True)])
+    )
+    assert calls == [None]

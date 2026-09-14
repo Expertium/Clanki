@@ -136,7 +136,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Row>
 
             <Row class="row-columns">
-                <RwkvOptions {state} {onPresetChange} />
+                <RwkvOptions {state} />
             </Row>
         </div>
 

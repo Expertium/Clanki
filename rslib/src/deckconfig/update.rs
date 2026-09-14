@@ -439,7 +439,7 @@ impl Collection {
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
                                 review_fuzz_config: req.review_fuzz_config.review_fuzz_config(),
-                                reschedule: req.fsrs_reschedule,
+                                reschedule: fsrs_reschedule_for_preset(req.fsrs_reschedule, c),
                                 historical_retention: c.inner.historical_retention,
                                 deck_desired_retention: deck_desired_retention.clone(),
                             })
@@ -649,32 +649,29 @@ fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
     }
 }
 
+/// FSRS-7 always trains on same-day reviews. Earlier builds stored a
+/// `fsrs7IncludeSameDayOptimize` flag in the preset's `other` bag; it is
+/// ignored (spec deck-options.fsrs-only-controls).
 fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
     match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => {}
-        _ => return None,
+        FsrsVersion::Seven => Some(true),
+        _ => None,
     }
-
-    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
-        .ok()?
-        .get("fsrs7IncludeSameDayOptimize")?
-        .as_bool()
 }
 
-fn fsrs7_enable_scheduling_penalties(config: &DeckConfig) -> bool {
-    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => {}
-        _ => return false,
-    }
+/// Scheduling penalties are never used in optimization. The stored
+/// `fsrs7EnableSchedulingPenalties` flag is ignored (spec
+/// deck-options.fsrs-only-controls).
+fn fsrs7_enable_scheduling_penalties(_config: &DeckConfig) -> bool {
+    false
+}
 
-    serde_json::from_slice::<serde_json::Value>(&config.inner.other)
-        .ok()
-        .and_then(|other| {
-            other
-                .get("fsrs7EnableSchedulingPenalties")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false)
+/// "Reschedule cards on change" applies FSRS intervals to a preset's cards
+/// unless the preset schedules with RWKV-Curve, whose intervals must not be
+/// overwritten; the desktop runs the RWKV-Curve reschedule after the save
+/// instead (spec deck-options.reschedule-on-change).
+fn fsrs_reschedule_for_preset(fsrs_reschedule: bool, config: &DeckConfig) -> bool {
+    fsrs_reschedule && !config.inner.rwkv_review_enabled
 }
 
 fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
@@ -727,81 +724,45 @@ mod test {
     use crate::tests::open_test_collection_with_relearning_card;
     use crate::timestamp::TimestampSecs;
 
+    // Pins spec/deck-options.md#deck-options.fsrs-only-controls
     #[test]
-    fn fsrs7_optimize_include_same_day_reviews_reads_stored_flag() -> Result<()> {
+    fn fsrs7_optimize_always_includes_same_day_reviews() -> Result<()> {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
             "fsrs7IncludeSameDayOptimize": false,
-        }))?;
-
-        assert_eq!(
-            fsrs7_optimize_include_same_day_reviews(&config),
-            Some(false)
-        );
-
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7IncludeSameDayOptimize": true,
         }))?;
         assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), Some(true));
-        Ok(())
-    }
 
-    #[test]
-    fn fsrs7_optimize_include_same_day_reviews_defaults_when_missing() {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
-
-        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
-    }
-
-    #[test]
-    fn fsrs7_optimize_include_same_day_reviews_ignores_older_versions() -> Result<()> {
-        let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Six as i32;
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7IncludeSameDayOptimize": false,
-        }))?;
-
         assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
         Ok(())
     }
 
     #[test]
-    fn fsrs7_enable_scheduling_penalties_reads_stored_flag() -> Result<()> {
+    fn fsrs7_scheduling_penalties_are_never_enabled() -> Result<()> {
         let mut config = DeckConfig::default();
         config.inner.fsrs_version = FsrsVersion::Seven as i32;
         config.inner.other = serde_json::to_vec(&serde_json::json!({
             "fsrs7EnableSchedulingPenalties": true,
         }))?;
-
-        assert!(fsrs7_enable_scheduling_penalties(&config));
-
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7EnableSchedulingPenalties": false,
-        }))?;
         assert!(!fsrs7_enable_scheduling_penalties(&config));
         Ok(())
     }
 
+    // Pins spec/deck-options.md#deck-options.reschedule-on-change
     #[test]
-    fn fsrs7_enable_scheduling_penalties_defaults_when_missing() {
+    fn fsrs_reschedule_skips_rwkv_curve_presets() {
         let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
+        assert!(fsrs_reschedule_for_preset(true, &config));
+        assert!(!fsrs_reschedule_for_preset(false, &config));
 
-        assert!(!fsrs7_enable_scheduling_penalties(&config));
-    }
+        config.inner.rwkv_review_enabled = true;
+        assert!(!fsrs_reschedule_for_preset(true, &config));
 
-    #[test]
-    fn fsrs7_enable_scheduling_penalties_ignores_older_versions() -> Result<()> {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Six as i32;
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7EnableSchedulingPenalties": true,
-        }))?;
-
-        assert!(!fsrs7_enable_scheduling_penalties(&config));
-        Ok(())
+        config.inner.rwkv_review_enabled = false;
+        config.inner.rwkv_review_instant_order_enabled = true;
+        assert!(fsrs_reschedule_for_preset(true, &config));
     }
 
     #[test]

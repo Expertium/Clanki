@@ -19,23 +19,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
-    import { commitEditing, type DeckOptionsState, fsrsParams } from "./lib";
-    import SimulatorModal from "./SimulatorModal.svelte";
-    import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
+    import { commitEditing, type DeckOptionsState } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
 
     export let state: DeckOptionsState;
-    export let onPresetChange: () => void;
 
     const config = state.currentConfig;
     const defaults = state.defaults;
     const advanced = state.deckOptionsAdvanced;
-    const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
-    const reviewFuzzEnabled = state.reviewFuzzEnabled;
-    const reviewFuzzBase = state.reviewFuzzBase;
-    const reviewFuzzFactorShort = state.reviewFuzzFactorShort;
-    const reviewFuzzFactorMid = state.reviewFuzzFactorMid;
-    const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
@@ -100,19 +91,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let modal: Modal;
     let carousel: Carousel;
-    let rwkvWorkloadModal: Modal;
-
-    $: simulateFsrsRequest = buildSimulateFsrsRequest({
-        config: $config,
-        params: fsrsParams($config),
-        search: `preset:"${state.getCurrentNameForSearch()}" -is:suspended`,
-        newCardsIgnoreReviewLimit: $newCardsIgnoreReviewLimit,
-        reviewFuzzEnabled: $reviewFuzzEnabled,
-        reviewFuzzBase: $reviewFuzzBase,
-        reviewFuzzFactorShort: $reviewFuzzFactorShort,
-        reviewFuzzFactorMid: $reviewFuzzFactorMid,
-        reviewFuzzFactorLong: $reviewFuzzFactorLong,
-    });
 
     function openHelpModal(index: number): void {
         modal.show();
@@ -160,11 +138,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function saveRwkvDeckOptions(): Promise<void> {
         await commitEditing();
         await state.save(UpdateDeckConfigsMode.NORMAL);
-    }
-
-    function showRwkvWorkloadModal(): void {
-        simulateFsrsRequest.reviewLimit = 9999;
-        rwkvWorkloadModal?.show();
     }
 </script>
 
@@ -368,34 +341,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         {/if}
                     </button>
                 </div>
-
-                <h2 class="rwkv-subheading">Compare</h2>
-
-                <div class="d-flex flex-wrap gap-2">
-                    <button
-                        class="btn btn-outline-primary"
-                        disabled={rwkvActionInProgress}
-                        on:click={() => showRwkvWorkloadModal()}
-                    >
-                        Compare RWKV with FSRS
-                    </button>
-                </div>
             {/if}
         </DynamicallySlottable>
     </TitledContainer>
 {/if}
-
-<SimulatorModal
-    bind:modal={rwkvWorkloadModal}
-    workload
-    rwkvWorkload
-    compareWorkloads
-    {state}
-    {simulateFsrsRequest}
-    computing={rwkvActionInProgress}
-    openHelpModal={openSettingHelp}
-    {onPresetChange}
-/>
 
 <style>
     .rwkv-subheading {
