@@ -60,8 +60,6 @@ impl Collection {
             // collection-wide settings that used to sit in deck options
             // (spec deck-options.collection-wide-in-preferences)
             apply_all_parent_limits: self.get_config_bool(BoolKey::ApplyAllParentLimits),
-            fsrs_learning_queues_disabled: self
-                .get_config_bool(BoolKey::FsrsLearningQueuesDisabled),
             fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
             card_state_customizer: self.get_config_string(StringKey::CardStateCustomizer),
         })
@@ -73,10 +71,6 @@ impl Collection {
         self.set_config_bool_inner(BoolKey::ShowDayLearningCardsFirst, s.day_learn_first)?;
         self.set_learn_ahead_secs(s.learn_ahead_secs)?;
         self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, s.apply_all_parent_limits)?;
-        self.set_config_bool_inner(
-            BoolKey::FsrsLearningQueuesDisabled,
-            s.fsrs_learning_queues_disabled,
-        )?;
         self.set_config_bool_inner(BoolKey::FsrsReschedule, s.fsrs_reschedule)?;
         self.set_config_string_inner(StringKey::CardStateCustomizer, &s.card_state_customizer)?;
 
@@ -190,18 +184,15 @@ mod test {
         let mut col = Collection::new();
         let mut scheduling = col.get_scheduling_preferences()?;
         assert!(!scheduling.apply_all_parent_limits);
-        assert!(!scheduling.fsrs_learning_queues_disabled);
         assert!(!scheduling.fsrs_reschedule);
         assert_eq!(scheduling.card_state_customizer, "");
 
         scheduling.apply_all_parent_limits = true;
-        scheduling.fsrs_learning_queues_disabled = true;
         scheduling.fsrs_reschedule = true;
         scheduling.card_state_customizer = "// custom".into();
         col.set_scheduling_preferences(scheduling)?;
 
         assert!(col.get_config_bool(BoolKey::ApplyAllParentLimits));
-        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
         assert!(col.get_config_bool(BoolKey::FsrsReschedule));
         assert_eq!(
             col.get_config_string(StringKey::CardStateCustomizer),
@@ -209,7 +200,6 @@ mod test {
         );
         let scheduling = col.get_scheduling_preferences()?;
         assert!(scheduling.apply_all_parent_limits);
-        assert!(scheduling.fsrs_learning_queues_disabled);
         assert!(scheduling.fsrs_reschedule);
         assert_eq!(scheduling.card_state_customizer, "// custom");
         Ok(())

@@ -50,7 +50,9 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    (Limits start from top, Skip learning/relearning queues, the reschedule
    choice, Custom scheduling) moved to Preferences > Review
    (`deck-options.collection-wide-in-preferences`; the deck-options save
-   ignores their request fields), "Optimize Current Preset" and the
+   ignores their request fields; Skip learning/relearning queues was then
+   replaced by the per-preset "Max number of same-day reviews",
+   `sched.max-same-day-reviews`), "Optimize Current Preset" and the
    health-check switch are gone, and "Optimize All Presets" shows in both
    modes (`deck-options.fsrs-only-controls`).
 3. **Rescheduling must not write to the card's history.** Done 2026-09-14:

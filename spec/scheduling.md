@@ -79,8 +79,9 @@ between points as for later days; rounded up to whole days these unrounded
 intervals equal the whole-day intervals RWKV computed before. FSRS-7 uses
 the intraday queue whatever its parameters, and RWKV-Curve whatever the
 preset's FSRS parameters; FSRS-6 and older still need non-zero short-term
-parameters (w17, w18). With "Skip learning/relearning queues" on there is
-no intraday queue, and a sub-day interval rounds up to one day.
+parameters (w17, w18). Once a card has had its preset's maximum of
+same-day reviews for the day (`sched.max-same-day-reviews`) there is no
+intraday queue for it, and a sub-day interval rounds up to one day.
 
 **Why:** Andrew, 2026-09-15: both FSRS-7 and RWKV-Curve should freely
 schedule intervals under a day for any card and any answer button; the
@@ -100,6 +101,51 @@ minimum lapse interval first), and RWKV-Curve rounded up to whole days.
 state tests; `test_rwkv_curve_states_*` and
 `test_unrounded_interval_from_recall_curve_keeps_sub_day_crossings`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.max-same-day-reviews
+
+Given a card whose preset is scheduled by FSRS (any version, RWKV-Curve and
+RWKV-Instant included), has no learning steps, and has a "Max number of
+same-day reviews" N, and k, the number of the card's reviews logged since
+the start of the current day (answers 1-4, not counting filtered-deck
+reviews that did not reschedule):
+when k ≥ N, every answer button schedules the card as it would with no
+learning or relearning queue — remaining learning and relearning steps are
+skipped, and an interval under one day rounds up to one day — so the card
+does not come back today. When k < N the steps and sub-day intervals apply
+as usual (`sched.sub-day-intervals`). A same-day review is a review after
+the card's first review of the day, so N = 0 means a card never comes back
+on the day it was studied, and N = 1 allows one return. The start of the
+day is the day rollover ("Next day starts at"). RWKV-Curve intervals go
+through the same rule (`sched.rwkv-curve-fuzz`). A preset with learning
+steps has no limit, whatever N it stores: its steps decide the same-day
+reviews, and its relearning steps apply as usual. A preset with no stored
+value has no limit; the deck-options row, in Advanced mode under Learning
+steps, shows only while Learning steps is empty, shows the unset value as
+9999, and editing it stores the number shown. The First intervals preview
+of a new card treats only N = 0 as a limit, since a new card has no
+reviews yet. The limit is stored with the preset and syncs with it. SM-2
+presets are unaffected.
+
+The collection-wide "Skip learning/relearning queues with FSRS/RWKV"
+Preferences switch is gone. When a collection that has it on is opened,
+every preset gets a limit of 0 and the switch is cleared, so this happens
+once and a later change to a preset's limit stays. A preset with learning
+steps keeps its steps after this, where the switch skipped them.
+
+**Why:** Andrew, 2026-09-15: the switch was hard to understand; a
+per-preset limit on same-day reviews replaces it, and 0 gives the old
+behavior. The limit is for presets without learning steps, because with
+steps the steps already decide the same-day reviews; it applies to
+RWKV-Curve as well as FSRS.
+
+**Pinned by:** `max_same_day_reviews_limits_intraday_answers`,
+`max_same_day_reviews_limits_rwkv_curve_intervals`,
+`fsrs_learning_queue_bypass_keeps_rwkv_relearning_answer_in_review_queue`
+(`rslib/src/scheduler/answering/mod.rs`);
+`learning_queues_switch_becomes_a_zero_limit_on_open`,
+`max_same_day_reviews_survives_storage_and_schema11`
+(`rslib/src/deckconfig/mod.rs`); `ts/routes/deck-options/same-day-reviews.test.ts`.
 
 ## sched.no-dynamic-desired-retention
 
@@ -150,9 +196,9 @@ allowed under FSRS: the collection flag `fsrsShortTermWithStepsEnabled` reads
 as on whatever value is stored, so a `false` written by an earlier build or
 by an add-on has no effect, and the "Allow same-day review for (re)learning
 steps" switch is gone from the deck-options screen. The new-card interval
-preview also always assumes it on. The separate "Skip learning/relearning
-queues" setting is unchanged (a Preferences setting since 2026-09-14,
-`spec/deck-options.md`, `deck-options.collection-wide-in-preferences`).
+preview also always assumes it on. A preset's "Max number of same-day
+reviews" can still keep a card out of the intraday queue
+(`sched.max-same-day-reviews`).
 
 **Why:** Andrew, 2026-09-14: the setting should be on for everyone and not
 be a choice.
