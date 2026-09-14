@@ -9921,7 +9921,12 @@ def test_reviewer_rwkv_curve_only_uses_curve_prediction_for_grade_intervals() ->
 
 @pytest.mark.parametrize(
     ("curve", "instant", "instant_active"),
-    [(False, False, False), (True, False, False), (False, True, True), (True, True, False)],
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, True),
+        (True, True, False),
+    ],
 )
 def test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve(
     curve: bool, instant: bool, instant_active: bool
