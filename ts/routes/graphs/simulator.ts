@@ -42,17 +42,7 @@ export type WorkloadPoint = Point & {
     reviewless_end_memorized: number;
     reviewless_end_weighted_memorized: number;
     weightedMemorized: number;
-    comparisonEngine?: WorkloadComparisonEngine;
-    comparisonKey?: string;
-    comparisonLabel?: string;
 };
-
-export type WorkloadComparisonEngine = "fsrs" | "rwkv";
-
-export interface RwkvRelativePerformance {
-    multiplier: number;
-    change: number;
-}
 
 export enum SimulateSubgraph {
     time,
@@ -67,26 +57,6 @@ export enum SimulateWorkloadSubgraph {
     count,
     memorized,
     weightedMemorized,
-}
-
-export function rwkvRelativePerformance(
-    fsrs: number,
-    rwkv: number,
-    higherIsBetter: boolean,
-): RwkvRelativePerformance | undefined {
-    if (
-        !Number.isFinite(fsrs)
-        || !Number.isFinite(rwkv)
-        || fsrs <= 0
-        || rwkv <= 0
-    ) {
-        return undefined;
-    }
-
-    return {
-        multiplier: higherIsBetter ? rwkv / fsrs : fsrs / rwkv,
-        change: higherIsBetter ? (rwkv - fsrs) / fsrs : (fsrs - rwkv) / fsrs,
-    };
 }
 
 export function centeredMovingAverage(y: number[], windowSize: number): number[] {
@@ -285,10 +255,6 @@ export function renderWorkloadChart(
         [SimulateWorkloadSubgraph.time]: undefined,
         [SimulateWorkloadSubgraph.count]: undefined,
     }[subgraph];
-    const higherIsBetter = ![
-        SimulateWorkloadSubgraph.time,
-        SimulateWorkloadSubgraph.count,
-    ].includes(subgraph);
 
     return _renderSimulationChart(
         svgElem,
@@ -314,7 +280,6 @@ export function renderWorkloadChart(
         },
         domainBaseline ?? 0,
         domain_subgraph_data,
-        higherIsBetter,
     );
 }
 
@@ -405,9 +370,6 @@ function _renderSimulationChart<
         y: any;
         label: number;
         labelName?: string;
-        comparisonEngine?: WorkloadComparisonEngine;
-        comparisonKey?: string;
-        comparisonLabel?: string;
     },
 >(
     svgElem: SVGElement,
@@ -426,7 +388,6 @@ function _renderSimulationChart<
     ) => void,
     y_min = Infinity,
     y_domain_data: T[] = subgraph_data,
-    comparisonHigherIsBetter?: boolean,
 ): TableDatum[] {
     const svg = select(svgElem);
     svg.selectAll(".lines").remove();
@@ -492,29 +453,11 @@ function _renderSimulationChart<
         (v) => v[0]?.labelName ?? `#${v[0]?.label}`,
         (d) => d.label,
     );
-    const groupComparisonMetadata = rollup(
-        subgraph_data,
-        (values) => ({
-            engine: values[0]?.comparisonEngine,
-            key: values[0]?.comparisonKey,
-            label: values[0]?.comparisonLabel,
-        }),
-        (d) => d.label,
-    );
-
     const color = schemeCategory10;
-    const comparisonColors: Record<WorkloadComparisonEngine, string> = {
-        fsrs: color[0],
-        rwkv: color[1],
-    };
     const groupColors = new Map(
-        Array.from(groups.keys()).map((group, index) => {
-            const engine = groupComparisonMetadata.get(group)?.engine;
-            return [
-                group,
-                engine ? comparisonColors[engine] : color[index % color.length],
-            ] as const;
-        }),
+        Array.from(groups.keys()).map(
+            (group, index) => [group, color[index % color.length]] as const,
+        ),
     );
 
     svg.append("g")
@@ -579,14 +522,6 @@ function _renderSimulationChart<
         focusLine.attr("x1", d[0]).attr("x2", d[0]).style("opacity", 1);
 
         let tooltipContent = formatX(date);
-        const comparisons = new Map<
-            string,
-            {
-                fsrs?: number;
-                rwkv?: number;
-                label?: string;
-            }
-        >();
         for (const [key, value] of Object.entries(groupData)) {
             const path = svg.select(`path[data-group="${key}"]`);
             const hidden = path.classed("hidden");
@@ -599,41 +534,6 @@ function _renderSimulationChart<
                         numericKey,
                     )
                 }">■</span> ${label}: ${formatY(value)}<br>`;
-
-                const metadata = groupComparisonMetadata.get(numericKey);
-                if (metadata?.engine && metadata.key) {
-                    const comparison = comparisons.get(metadata.key) ?? {};
-                    comparison[metadata.engine] = value;
-                    comparison.label = metadata.label;
-                    comparisons.set(metadata.key, comparison);
-                }
-            }
-        }
-
-        if (comparisonHigherIsBetter !== undefined) {
-            for (const comparison of comparisons.values()) {
-                if (comparison.fsrs === undefined || comparison.rwkv === undefined) {
-                    continue;
-                }
-                const relativePerformance = rwkvRelativePerformance(
-                    comparison.fsrs,
-                    comparison.rwkv,
-                    comparisonHigherIsBetter,
-                );
-                if (!relativePerformance) {
-                    continue;
-                }
-                const sign = relativePerformance.change > 0 ? "+" : "";
-                const label = comparison.label ? ` (${comparison.label})` : "";
-                tooltipContent += `<strong>RWKV vs FSRS${label}: ${
-                    relativePerformance.multiplier.toFixed(
-                        2,
-                    )
-                }× (${sign}${
-                    (relativePerformance.change * 100).toFixed(
-                        1,
-                    )
-                }%)</strong><br>`;
             }
         }
 

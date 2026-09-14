@@ -20,10 +20,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderWorkloadChart,
         smoothPointsByLabel,
         type Point,
-        type WorkloadComparisonEngine,
         type WorkloadPoint,
     } from "../graphs/simulator";
-    import { SimulateFsrsWorkloadResponse } from "@generated/anki/scheduler_pb";
+    import type { SimulateFsrsWorkloadResponse } from "@generated/anki/scheduler_pb";
     import type {
         ComputeOptimalRetentionResponse,
         SimulateFsrsReviewResponse,
@@ -36,7 +35,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsReview,
         simulateFsrsWorkload,
     } from "@generated/backend";
-    import { postProto } from "@generated/post";
     import { runWithBackendProgress } from "@tslib/progress";
     import {
         DeckConfig_Config_LeechAction,
@@ -49,8 +47,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
     import EasyDaysInput from "./EasyDaysInput.svelte";
     import Warning from "./Warning.svelte";
-    import { ComputeRetentionProgress } from "@generated/anki/collection_pb";
-    import { Empty } from "@generated/anki/generic_pb";
+    import type { ComputeRetentionProgress } from "@generated/anki/collection_pb";
     import { workloadRequestForPreset } from "./simulator-workload";
     import Modal from "bootstrap/js/dist/modal";
     import {
@@ -66,7 +63,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT,
         HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT,
     } from "./help-me-decide-defaults";
-    import SimulatorWorkloadGraph from "./SimulatorWorkloadGraph.svelte";
     import { onMount } from "svelte";
 
     export let state: DeckOptionsState;
@@ -76,10 +72,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let onPresetChange: () => void;
     /** Do not modify this once set */
     export let workload: boolean = false;
-    /** Do not modify this once set */
-    export let rwkvWorkload: boolean = false;
-    /** Run FSRS and RWKV from the same settings and compare their charts. */
-    export let compareWorkloads: boolean = false;
 
     const config = state.currentConfig;
     let simulateSubgraph: SimulateSubgraph = SimulateSubgraph.count;
@@ -93,8 +85,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let svg: HTMLElement | SVGElement | null = null;
     let simulationNumber = 0;
     let points: (WorkloadPoint | Point)[] = [];
-    let fsrsComparisonPoints: WorkloadPoint[] = [];
-    let rwkvComparisonPoints: WorkloadPoint[] = [];
     let reviewTimeMatrix: ReviewTimeMatrix | undefined;
     let reviewTimeAgainCoeffs: number[] = [];
     let reviewTimeHardCoeffs: number[] = [];
@@ -107,10 +97,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let reviewTimeSuccessGradeCounts: number[] = [];
     let reviewTimeSampleMedian = 0;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
-    const RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT = 250;
-    const RWKV_WORKLOAD_TARGET_STEP_DEFAULT = 1;
-    const RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT = 10;
-    const RWKV_WORKLOAD_RESULT_POLL_MS = 500;
     let smooth = true;
     let suspendLeeches = $config.leechAction == DeckConfig_Config_LeechAction.SUSPEND;
     let leechThreshold = $config.leechThreshold;
@@ -118,8 +104,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let optimalRetention: null | number = null;
     let computingRetention = false;
     let computeRetentionProgress: ComputeRetentionProgress | undefined = undefined;
-    let workloadProgress: ComputeRetentionProgress | undefined = undefined;
-    let workloadProgressPollPending = false;
     let transitionBlendAlpha =
         simulateFsrsRequest.helpMeDecideTransitionBlendAlpha ??
         HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT;
@@ -127,37 +111,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs ??
         HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT;
     let splitWorkloadByPreset = simulateFsrsRequest.splitWorkloadByPreset;
-    let rwkvWorkloadSampleLimit =
-        simulateFsrsRequest.rwkvWorkloadSampleLimit ||
-        (rwkvWorkload && !compareWorkloads ? RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT : 0);
-    let rwkvWorkloadTargetStep =
-        simulateFsrsRequest.rwkvWorkloadTargetStep ||
-        (rwkvWorkload ? RWKV_WORKLOAD_TARGET_STEP_DEFAULT : 1);
-    let rwkvWorkloadStateUpdateInterval =
-        simulateFsrsRequest.rwkvWorkloadStateUpdateInterval ||
-        (rwkvWorkload && !compareWorkloads
-            ? RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT
-            : 1);
 
     $: daysToSimulate = 365;
     $: deckSize = 0;
     $: windowSize = smoothingWindowSize();
     $: processing = simulating || computingRetention;
-    $: fsrsComparisonRenderPoints = smooth
-        ? smoothPointsByLabel(fsrsComparisonPoints, windowSize)
-        : fsrsComparisonPoints;
-    $: rwkvComparisonRenderPoints = smooth
-        ? smoothPointsByLabel(rwkvComparisonPoints, windowSize)
-        : rwkvComparisonPoints;
-    $: comparisonRenderPoints = [
-        ...fsrsComparisonRenderPoints,
-        ...rwkvComparisonRenderPoints,
-    ];
 
     function smoothingWindowSize(): number {
-        if (rwkvWorkload) {
-            return 7;
-        }
         if (workload) {
             return 5;
         }
@@ -186,15 +146,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         simulateFsrsRequest.helpMeDecideEnforceMonotonicSuccessGradeProbs =
             enforceMonotonicSuccessGradeProbs;
         simulateFsrsRequest.splitWorkloadByPreset = workload && splitWorkloadByPreset;
-        simulateFsrsRequest.rwkvWorkloadSampleLimit = rwkvWorkload
-            ? rwkvWorkloadSampleLimit
-            : 0;
-        simulateFsrsRequest.rwkvWorkloadTargetStep = rwkvWorkload
-            ? rwkvWorkloadTargetStep
-            : 1;
-        simulateFsrsRequest.rwkvWorkloadStateUpdateInterval = rwkvWorkload
-            ? rwkvWorkloadStateUpdateInterval
-            : 1;
     }
 
     function subtreeConfigs(): DeckConfig[] {
@@ -204,9 +155,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             .filter((config): config is DeckConfig => config !== undefined);
     }
 
-    function workloadRequests(
-        engine: "fsrs" | "rwkv" = rwkvWorkload ? "rwkv" : "fsrs",
-    ): {
+    function workloadRequests(): {
         name: string;
         request: SimulateFsrsReviewRequest;
     }[] {
@@ -219,17 +168,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     config,
                 );
                 return {
-                    name: workloadRunName(config.name, engine),
+                    name: config.name,
                     request,
                 };
             });
-    }
-
-    function workloadRunName(presetName: string, engine: "fsrs" | "rwkv"): string {
-        if (engine === "rwkv") {
-            return `${presetName} (RWKV)`;
-        }
-        return presetName;
     }
 
     function renderRetentionProgress(
@@ -244,52 +186,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: computeRetentionProgressString = renderRetentionProgress(
         computeRetentionProgress,
     );
-    $: workloadProgressPct = renderWorkloadProgressPct(workloadProgress);
-    $: workloadProgressString = renderWorkloadProgress(
-        workloadProgress,
-        workloadProgressPct,
-    );
-
-    function renderWorkloadProgressPct(
-        val: ComputeRetentionProgress | undefined,
-    ): number | undefined {
-        if (!val || !val.total) {
-            return undefined;
-        }
-        return Math.min(100, Math.max(0, (val.current / val.total) * 100));
-    }
-
-    function renderWorkloadProgress(
-        val: ComputeRetentionProgress | undefined,
-        pct: number | undefined,
-    ): string {
-        if (!val || pct === undefined) {
-            return "";
-        }
-        return `RWKV workload: ${pct.toFixed(1)}% (${val.current}/${val.total})`;
-    }
-
-    async function updateRwkvWorkloadProgress(): Promise<void> {
-        if (workloadProgressPollPending) {
-            return;
-        }
-        workloadProgressPollPending = true;
-        try {
-            const progress = await postProto(
-                "rwkvWorkloadProgress",
-                new Empty({}),
-                ComputeRetentionProgress,
-                { alertOnError: false },
-            );
-            if (simulating && progress.total) {
-                workloadProgress = progress;
-            }
-        } catch {
-            // The simulation result request will surface real errors.
-        } finally {
-            workloadProgressPollPending = false;
-        }
-    }
 
     async function computeRetention() {
         let resp: ComputeOptimalRetentionResponse | undefined;
@@ -364,10 +260,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function workloadPointsFromResponses(
         responses: NamedWorkloadResponse[],
         runNumber: number,
-        comparisonEngine?: WorkloadComparisonEngine,
     ): WorkloadPoint[] {
         let labelOffset = 0;
-        return responses.flatMap(({ name, response }, responseIndex) => {
+        return responses.flatMap(({ name, response }) => {
             const workloads = response.presetWorkload.length
                 ? response.presetWorkload.map((preset) => ({
                       name: `${preset.name} (${name})`,
@@ -392,16 +287,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                           learnCount: {},
                       },
                   ];
-            return workloads.flatMap((workload, workloadIndex) => {
+            return workloads.flatMap((workload) => {
                 labelOffset += 1;
-                const label = comparisonEngine
-                    ? runNumber * 1000 +
-                      labelOffset * 2 +
-                      (comparisonEngine === "rwkv" ? 1 : 0)
-                    : runNumber * 1000 + labelOffset;
-                const comparisonLabel = comparisonEngine
-                    ? workload.name.replace(/\s+\((?:RWKV)\)(\))?$/, "$1")
-                    : undefined;
+                const label = runNumber * 1000 + labelOffset;
                 return Object.entries(workload.memorized)
                     .filter(
                         ([dr]) =>
@@ -426,11 +314,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         label,
                         labelName: workload.name,
                         learnSpan: simulateFsrsRequest.daysToSimulate,
-                        comparisonEngine,
-                        comparisonKey: comparisonEngine
-                            ? `${runNumber}:${responseIndex}:${workloadIndex}`
-                            : undefined,
-                        comparisonLabel,
                     }));
             });
         });
@@ -438,61 +321,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function simulateWorkload(): Promise<void> {
         const responses: NamedWorkloadResponse[] = [];
-        const fsrsResponses: NamedWorkloadResponse[] = [];
-        const rwkvResponses: NamedWorkloadResponse[] = [];
         updateRequest();
         try {
             await runWithBackendProgress(
                 async () => {
                     simulating = true;
-                    workloadProgress = undefined;
-                    if (compareWorkloads) {
-                        for (const { name, request } of workloadRequests("fsrs")) {
-                            fsrsResponses.push({
-                                name,
-                                response: await simulateFsrsWorkload(request),
-                            });
-                        }
-                        for (const { name, request } of workloadRequests("rwkv")) {
-                            rwkvResponses.push({
-                                name,
-                                response: await simulateRwkvWorkload(request),
-                            });
-                        }
-                    } else {
-                        for (const { name, request } of workloadRequests()) {
-                            const response = rwkvWorkload
-                                ? await simulateRwkvWorkload(request)
-                                : await simulateFsrsWorkload(request);
-                            responses.push({ name, response });
-                        }
+                    for (const { name, request } of workloadRequests()) {
+                        responses.push({
+                            name,
+                            response: await simulateFsrsWorkload(request),
+                        });
                     }
                 },
-                () => {
-                    if (rwkvWorkload) {
-                        void updateRwkvWorkloadProgress();
-                    }
-                },
+                () => {},
             );
         } finally {
             simulating = false;
-            if (fsrsResponses.length && rwkvResponses.length) {
-                simulationNumber += 1;
-                fsrsComparisonPoints = fsrsComparisonPoints.concat(
-                    workloadPointsFromResponses(
-                        fsrsResponses,
-                        simulationNumber,
-                        "fsrs",
-                    ),
-                );
-                rwkvComparisonPoints = rwkvComparisonPoints.concat(
-                    workloadPointsFromResponses(
-                        rwkvResponses,
-                        simulationNumber,
-                        "rwkv",
-                    ),
-                );
-            }
             if (responses.length) {
                 simulationNumber += 1;
                 const runNumber = simulationNumber;
@@ -537,70 +381,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    async function simulateRwkvWorkload(
-        request: SimulateFsrsReviewRequest,
-    ): Promise<SimulateFsrsWorkloadResponse> {
-        try {
-            await postProto("startRwkvWorkload", request, Empty, {
-                alertOnError: false,
-            });
-            let response: SimulateFsrsWorkloadResponse | undefined = undefined;
-            while (!response) {
-                await delay(RWKV_WORKLOAD_RESULT_POLL_MS);
-                response = await fetchRwkvWorkloadResult();
-            }
-            return response;
-        } catch (err) {
-            void postProto("cancelRwkvWorkload", new Empty({}), Empty, {
-                alertOnError: false,
-            }).catch(() => {});
-            alert(err);
-            throw err;
-        }
-    }
-
-    function delay(ms: number): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    async function fetchRwkvWorkloadResult(): Promise<
-        SimulateFsrsWorkloadResponse | undefined
-    > {
-        const result = await fetch("/_anki/rwkvWorkloadResult", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/binary",
-            },
-            body: new Uint8Array(),
-        });
-        if (result.status === 202) {
-            return undefined;
-        }
-        if (!result.ok) {
-            let msg = "something went wrong";
-            try {
-                msg = await result.text();
-            } catch {
-                // ignore
-            }
-            throw new Error(`${result.status}: ${msg}`);
-        }
-        return SimulateFsrsWorkloadResponse.fromBinary(
-            new Uint8Array(await result.arrayBuffer()),
-        );
-    }
-
     function clearSimulation() {
-        if (compareWorkloads) {
-            fsrsComparisonPoints = fsrsComparisonPoints.filter(
-                (point) => Math.floor(point.label / 1000) !== simulationNumber,
-            );
-            rwkvComparisonPoints = rwkvComparisonPoints.filter(
-                (point) => Math.floor(point.label / 1000) !== simulationNumber,
-            );
-            simulationNumber = Math.max(0, simulationNumber - 1);
-            return;
-        }
         points = points.filter((p) =>
             workload
                 ? Math.floor(p.label / 1000) !== simulationNumber
@@ -950,11 +731,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">
-                    {#if compareWorkloads}
-                        FSRS / RWKV Efficiency Comparison (Experimental)
-                    {:else if rwkvWorkload}
-                        RWKV Desired Retention Simulator (Experimental)
-                    {:else if workload}
+                    {#if workload}
                         {tr.deckConfigFsrsSimulateDesiredRetentionExperimental()}
                     {:else}
                         {tr.deckConfigFsrsSimulatorExperimental()}
@@ -968,7 +745,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 ></button>
             </div>
             <div class="modal-body">
-                <div class:comparison-controls={compareWorkloads}>
+                <div>
                     <SpinBoxRow
                         bind:value={daysToSimulate}
                         defaultValue={365}
@@ -982,20 +759,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </SettingTitle>
                     </SpinBoxRow>
 
-                    {#if !rwkvWorkload}
-                        <SpinBoxRow
-                            bind:value={deckSize}
-                            defaultValue={0}
-                            min={0}
-                            max={100000}
+                    <SpinBoxRow
+                        bind:value={deckSize}
+                        defaultValue={0}
+                        min={0}
+                        max={100000}
+                    >
+                        <SettingTitle
+                            on:click={() => openHelpModal("simulateFsrsReview")}
                         >
-                            <SettingTitle
-                                on:click={() => openHelpModal("simulateFsrsReview")}
-                            >
-                                {tr.deckConfigAdditionalNewCardsToSimulate()}
-                            </SettingTitle>
-                        </SpinBoxRow>
-                    {/if}
+                            {tr.deckConfigAdditionalNewCardsToSimulate()}
+                        </SettingTitle>
+                    </SpinBoxRow>
 
                     {#if !workload}
                         <SpinBoxFloatRow
@@ -1013,18 +788,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </SpinBoxFloatRow>
                     {/if}
 
-                    {#if !rwkvWorkload || compareWorkloads}
-                        <SpinBoxRow
-                            bind:value={simulateFsrsRequest.newLimit}
-                            defaultValue={$config.newPerDay}
-                            min={0}
-                            max={9999}
-                        >
-                            <SettingTitle on:click={() => openHelpModal("newLimit")}>
-                                {tr.schedulingNewCardsday()}
-                            </SettingTitle>
-                        </SpinBoxRow>
-                    {/if}
+                    <SpinBoxRow
+                        bind:value={simulateFsrsRequest.newLimit}
+                        defaultValue={$config.newPerDay}
+                        min={0}
+                        max={9999}
+                    >
+                        <SettingTitle on:click={() => openHelpModal("newLimit")}>
+                            {tr.schedulingNewCardsday()}
+                        </SettingTitle>
+                    </SpinBoxRow>
 
                     <SpinBoxRow
                         bind:value={simulateFsrsRequest.reviewLimit}
@@ -1037,180 +810,124 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </SettingTitle>
                     </SpinBoxRow>
 
-                    {#if rwkvWorkload && !compareWorkloads}
-                        <SpinBoxRow
-                            bind:value={rwkvWorkloadSampleLimit}
-                            defaultValue={compareWorkloads
-                                ? 0
-                                : RWKV_WORKLOAD_SAMPLE_LIMIT_DEFAULT}
-                            min={0}
-                            max={100000}
-                        >
-                            <SettingTitle
-                                on:click={() => openHelpModal("simulateFsrsReview")}
-                            >
-                                RWKV sample cap
-                            </SettingTitle>
-                        </SpinBoxRow>
+                    <details>
+                        <summary>{tr.deckConfigEasyDaysTitle()}</summary>
+                        {#key easyDayPercentages}
+                            <EasyDaysInput bind:values={easyDayPercentages} />
+                        {/key}
+                    </details>
 
+                    <details>
+                        <summary>{tr.deckConfigAdvancedSettings()}</summary>
                         <SpinBoxRow
-                            bind:value={rwkvWorkloadTargetStep}
-                            defaultValue={RWKV_WORKLOAD_TARGET_STEP_DEFAULT}
+                            bind:value={simulateFsrsRequest.maxInterval}
+                            defaultValue={$config.maximumReviewInterval}
                             min={1}
-                            max={70}
+                            max={36500}
                         >
                             <SettingTitle
-                                on:click={() => openHelpModal("simulateFsrsReview")}
+                                on:click={() => openHelpModal("maximumInterval")}
                             >
-                                RWKV DR step
+                                {tr.schedulingMaximumInterval()}
                             </SettingTitle>
                         </SpinBoxRow>
 
-                        <SpinBoxRow
-                            bind:value={rwkvWorkloadStateUpdateInterval}
-                            defaultValue={compareWorkloads
-                                ? 1
-                                : RWKV_WORKLOAD_STATE_UPDATE_INTERVAL_DEFAULT}
-                            min={1}
-                            max={1000}
+                        <EnumSelectorRow
+                            bind:value={simulateFsrsRequest.reviewOrder}
+                            defaultValue={$config.reviewOrder}
+                            choices={reviewOrderChoices($fsrs)}
                         >
+                            <SettingTitle
+                                on:click={() => openHelpModal("reviewSortOrder")}
+                            >
+                                {tr.deckConfigReviewSortOrder()}
+                            </SettingTitle>
+                        </EnumSelectorRow>
+
+                        <SwitchRow
+                            bind:value={simulateFsrsRequest.newCardsIgnoreReviewLimit}
+                            defaultValue={$newCardsIgnoreReviewLimit}
+                        >
+                            <SettingTitle
+                                on:click={() =>
+                                    openHelpModal("newCardsIgnoreReviewLimit")}
+                            >
+                                <GlobalLabel
+                                    title={tr.deckConfigNewCardsIgnoreReviewLimit()}
+                                />
+                            </SettingTitle>
+                        </SwitchRow>
+
+                        <SwitchRow bind:value={smooth} defaultValue={true}>
                             <SettingTitle
                                 on:click={() => openHelpModal("simulateFsrsReview")}
                             >
-                                RWKV state stride
+                                {tr.deckConfigSmoothGraph()}
                             </SettingTitle>
-                        </SpinBoxRow>
-                    {/if}
+                        </SwitchRow>
 
-                    {#if !rwkvWorkload || compareWorkloads}
-                        {#if !compareWorkloads}
-                            <details>
-                                <summary>{tr.deckConfigEasyDaysTitle()}</summary>
-                                {#key easyDayPercentages}
-                                    <EasyDaysInput bind:values={easyDayPercentages} />
-                                {/key}
-                            </details>
-                        {/if}
-
-                        <details>
-                            <summary>{tr.deckConfigAdvancedSettings()}</summary>
-                            <SpinBoxRow
-                                bind:value={simulateFsrsRequest.maxInterval}
-                                defaultValue={$config.maximumReviewInterval}
-                                min={1}
-                                max={36500}
-                            >
-                                <SettingTitle
-                                    on:click={() => openHelpModal("maximumInterval")}
-                                >
-                                    {tr.schedulingMaximumInterval()}
-                                </SettingTitle>
-                            </SpinBoxRow>
-
-                            <EnumSelectorRow
-                                bind:value={simulateFsrsRequest.reviewOrder}
-                                defaultValue={$config.reviewOrder}
-                                choices={reviewOrderChoices($fsrs)}
-                            >
-                                <SettingTitle
-                                    on:click={() => openHelpModal("reviewSortOrder")}
-                                >
-                                    {tr.deckConfigReviewSortOrder()}
-                                </SettingTitle>
-                            </EnumSelectorRow>
-
+                        {#if workload}
                             <SwitchRow
-                                bind:value={
-                                    simulateFsrsRequest.newCardsIgnoreReviewLimit
-                                }
-                                defaultValue={$newCardsIgnoreReviewLimit}
+                                bind:value={splitWorkloadByPreset}
+                                defaultValue={false}
                             >
-                                <SettingTitle
-                                    on:click={() =>
-                                        openHelpModal("newCardsIgnoreReviewLimit")}
-                                >
-                                    <GlobalLabel
-                                        title={tr.deckConfigNewCardsIgnoreReviewLimit()}
-                                    />
-                                </SettingTitle>
-                            </SwitchRow>
-
-                            <SwitchRow bind:value={smooth} defaultValue={true}>
                                 <SettingTitle
                                     on:click={() => openHelpModal("simulateFsrsReview")}
                                 >
-                                    {tr.deckConfigSmoothGraph()}
+                                    {tr.deckConfigFsrsSimulatorSplitByPreset()}
                                 </SettingTitle>
                             </SwitchRow>
 
-                            {#if workload && !compareWorkloads}
-                                <SwitchRow
-                                    bind:value={splitWorkloadByPreset}
-                                    defaultValue={false}
-                                >
-                                    <SettingTitle
-                                        on:click={() =>
-                                            openHelpModal("simulateFsrsReview")}
-                                    >
-                                        {tr.deckConfigFsrsSimulatorSplitByPreset()}
-                                    </SettingTitle>
-                                </SwitchRow>
-
-                                <SpinBoxFloatRow
-                                    bind:value={transitionBlendAlpha}
-                                    defaultValue={HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT}
-                                    min={0}
-                                    max={1}
-                                >
-                                    <SettingTitle
-                                        on:click={() =>
-                                            openHelpModal("simulateFsrsReview")}
-                                    >
-                                        Blend Alpha (R vs Prev Grade)
-                                    </SettingTitle>
-                                </SpinBoxFloatRow>
-
-                                <SwitchRow
-                                    bind:value={enforceMonotonicSuccessGradeProbs}
-                                    defaultValue={HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT}
-                                >
-                                    <SettingTitle
-                                        on:click={() =>
-                                            openHelpModal("simulateFsrsReview")}
-                                    >
-                                        Enforce monotonic H/G/E by R
-                                    </SettingTitle>
-                                </SwitchRow>
-                            {/if}
-
-                            <SwitchRow
-                                bind:value={suspendLeeches}
-                                defaultValue={$config.leechAction ==
-                                    DeckConfig_Config_LeechAction.SUSPEND}
+                            <SpinBoxFloatRow
+                                bind:value={transitionBlendAlpha}
+                                defaultValue={HELP_ME_DECIDE_TRANSITION_BLEND_ALPHA_DEFAULT}
+                                min={0}
+                                max={1}
                             >
                                 <SettingTitle
-                                    on:click={() => openHelpModal("leechAction")}
+                                    on:click={() => openHelpModal("simulateFsrsReview")}
                                 >
-                                    {tr.deckConfigSuspendLeeches()}
+                                    Blend Alpha (R vs Prev Grade)
+                                </SettingTitle>
+                            </SpinBoxFloatRow>
+
+                            <SwitchRow
+                                bind:value={enforceMonotonicSuccessGradeProbs}
+                                defaultValue={HELP_ME_DECIDE_ENFORCE_MONOTONIC_SUCCESS_GRADE_PROBS_DEFAULT}
+                            >
+                                <SettingTitle
+                                    on:click={() => openHelpModal("simulateFsrsReview")}
+                                >
+                                    Enforce monotonic H/G/E by R
                                 </SettingTitle>
                             </SwitchRow>
+                        {/if}
 
-                            {#if suspendLeeches}
-                                <SpinBoxRow
-                                    bind:value={leechThreshold}
-                                    defaultValue={$config.leechThreshold}
-                                    min={1}
-                                    max={9999}
+                        <SwitchRow
+                            bind:value={suspendLeeches}
+                            defaultValue={$config.leechAction ==
+                                DeckConfig_Config_LeechAction.SUSPEND}
+                        >
+                            <SettingTitle on:click={() => openHelpModal("leechAction")}>
+                                {tr.deckConfigSuspendLeeches()}
+                            </SettingTitle>
+                        </SwitchRow>
+
+                        {#if suspendLeeches}
+                            <SpinBoxRow
+                                bind:value={leechThreshold}
+                                defaultValue={$config.leechThreshold}
+                                min={1}
+                                max={9999}
+                            >
+                                <SettingTitle
+                                    on:click={() => openHelpModal("leechThreshold")}
                                 >
-                                    <SettingTitle
-                                        on:click={() => openHelpModal("leechThreshold")}
-                                    >
-                                        {tr.schedulingLeechThreshold()}
-                                    </SettingTitle>
-                                </SpinBoxRow>
-                            {/if}
-                        </details>
-                    {/if}
+                                    {tr.schedulingLeechThreshold()}
+                                </SettingTitle>
+                            </SpinBoxRow>
+                        {/if}
+                    </details>
 
                     <div style="display:none;">
                         <details>
@@ -1272,26 +989,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
                         {#if processing}
                             {tr.actionsProcessing()}
-                        {/if}
-
-                        {#if rwkvWorkload && simulating && workloadProgressString}
-                            <div class="simulator-progress">
-                                <div>{workloadProgressString}</div>
-                                {#if workloadProgressPct !== undefined}
-                                    <div
-                                        class="progress"
-                                        role="progressbar"
-                                        aria-valuenow={workloadProgressPct}
-                                        aria-valuemin="0"
-                                        aria-valuemax="100"
-                                    >
-                                        <div
-                                            class="progress-bar"
-                                            style={`width: ${workloadProgressPct}%`}
-                                        ></div>
-                                    </div>
-                                {/if}
-                            </div>
                         {/if}
                     </div>
                 </div>
@@ -1377,30 +1074,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </InputBox>
                     </div>
 
-                    {#if compareWorkloads}
-                        <SimulatorWorkloadGraph
-                            points={comparisonRenderPoints}
-                            subgraph={simulateWorkloadSubgraph}
-                        />
-                    {:else}
-                        <div class="svg-container">
-                            <svg
-                                bind:this={svg}
-                                viewBox={`0 0 ${bounds.width} ${bounds.height}`}
-                                style:--font-scale={font_scale}
-                            >
-                                <CumulativeOverlay />
-                                <HoverColumns />
-                                <AxisTicks {bounds} />
-                                <NoDataOverlay {bounds} />
-                            </svg>
-                        </div>
+                    <div class="svg-container">
+                        <svg
+                            bind:this={svg}
+                            viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+                            style:--font-scale={font_scale}
+                        >
+                            <CumulativeOverlay />
+                            <HoverColumns />
+                            <AxisTicks {bounds} />
+                            <NoDataOverlay {bounds} />
+                        </svg>
+                    </div>
 
-                        <TableData {tableData} />
-                    {/if}
+                    <TableData {tableData} />
                 </Graph>
 
-                {#if workload && reviewTimeMatrix && !compareWorkloads}
+                {#if workload && reviewTimeMatrix}
                     <details class="review-time-matrix mt-2">
                         <summary>
                             {tr.statisticsReviewsTimeCheckbox()} Matrix (R/S, Again/Hard/Good/Easy)
@@ -1851,24 +1541,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         margin: 0.5em;
     }
 
-    .comparison-controls {
-        width: min(42rem, 100%);
-        margin-inline: auto;
-    }
-
     .btn {
         margin-bottom: 0.375rem;
-    }
-
-    .simulator-progress {
-        width: min(24rem, 100%);
-        margin-top: 0.25rem;
-        font-size: 0.875rem;
-    }
-
-    .simulator-progress .progress {
-        height: 0.5rem;
-        margin-top: 0.35rem;
     }
 
     summary {
