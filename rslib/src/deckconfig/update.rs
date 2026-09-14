@@ -445,6 +445,11 @@ impl Collection {
             req.fsrs_learning_queues_disabled,
         )?;
         self.set_config_bool_inner(BoolKey::FsrsHealthCheck, req.fsrs_health_check)?;
+        // remembered for the post-sync reconcile pass (spec
+        // deck-options.reschedule-choice-remembered)
+        if self.get_config_bool(BoolKey::FsrsReschedule) != req.fsrs_reschedule {
+            self.set_config_bool_inner(BoolKey::FsrsReschedule, req.fsrs_reschedule)?;
+        }
 
         Ok(())
     }
@@ -669,6 +674,41 @@ mod test {
     }
 
     // Pins spec/deck-options.md#deck-options.reschedule-on-change
+    #[test]
+    fn deck_options_save_remembers_reschedule_on_change_choice() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(!col.get_config_bool(BoolKey::FsrsReschedule));
+        let mut input = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut req = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: input
+                .all_config
+                .drain(..)
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            card_state_customizer: "".to_string(),
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            apply_all_parent_limits: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs_learning_queues_disabled: false,
+            fsrs_reschedule: true,
+            fsrs_health_check: false,
+            review_fuzz_config: Default::default(),
+        };
+        col.update_deck_configs(req.clone())?;
+        assert!(col.get_config_bool(BoolKey::FsrsReschedule));
+
+        req.fsrs_reschedule = false;
+        col.update_deck_configs(req)?;
+        assert!(!col.get_config_bool(BoolKey::FsrsReschedule));
+        Ok(())
+    }
+
     #[test]
     fn fsrs_reschedule_skips_rwkv_curve_presets() {
         let mut config = DeckConfig::default();

@@ -50,29 +50,20 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    assume: `rslib/src/scheduler/fsrs/simulator.rs` imports
    `scheduler::rwkv::relative_overdueness`. Confirm whether that is RWKV
    simulation or just a shared helper before deleting it.
-7. **Port upstream PR 4717 (FSRS sync reconciliation) with the 2026-06-20
-   fixes.** https://github.com/ankitects/anki/pull/4717 by JSchoreels, open
-   since 2026-04-18 and stalled: only dae reviews sync code. It reconciles FSRS
-   memory state on the client after a normal sync instead of forcing a full
-   sync. It is wire-transparent (the server path passes an empty map), so
-   AnkiWeb keeps working. A `git apply --check` against Clanki: the sync-layer
-   hunks apply; `rslib/src/scheduler/fsrs/memory_state.rs` and
-   `rslib/src/sync/collection/tests.rs` conflict with the fork's own edits, so
-   those two need a manual merge. Land Andrew's review findings from the PR
-   thread at the same time, as behavior with tests, not as follow-ups:
-   - the reschedule half must respect the "reschedule cards on change" opt-out,
-     must not fire on pure deck moves, and should reuse
-     `LastRevlogInfo.previous_interval` instead of recomputing via
-     `next_interval`;
-   - `reconcile_itemless_cards_after_sync` must not null an agreed
-     `memory_state` on a momentary `last_review_time` difference;
-   - add a forget/reset test so a sync cannot un-forget a card;
-   - build `Rescheduler` once and call `update_due_cnt_per_day` per placement,
-     not once per card (currently O(K·D), should be O(D+K)).
-8. Many smaller changes and tweaks.
+7. Many smaller changes and tweaks.
 
 ## Changes already made in Clanki
 
+- Ported upstream PR 4717 (FSRS sync reconciliation, JSchoreels) with
+  Andrew's 2026-06-20 review fixes (2026-09-14): after a normal sync the
+  client rebuilds the FSRS data of conflicting cards from the merged review
+  log (`spec/sync.md`). The schedule half is gated by the remembered
+  "Reschedule cards on change" choice (`BoolKey::FsrsReschedule`, written on
+  deck-options save — the switch itself was never persisted), never fires on
+  a pure deck move, and restores the last real review's interval instead of
+  recomputing with `next_interval`, so it needs no `Rescheduler` at all;
+  agreed memory state survives an itemless reconcile; a forgotten card stays
+  forgotten; no review-log rows are written. Wire protocol unchanged.
 - Branding (2026-09-14): the visible product name is `aqt.APP_NAME` =
   "Clanki" (window titles, dialogs, About, installer `formal_name`, English
   ftl strings about the running app). The version string add-ons read stays

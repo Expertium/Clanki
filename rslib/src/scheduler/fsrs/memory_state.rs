@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anki_proto::scheduler::ComputeMemoryStateResponse;
 use fsrs::FSRSItem;
@@ -19,6 +20,7 @@ use crate::card::FsrsMemoryState;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
@@ -27,10 +29,12 @@ use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
+use crate::scheduler::timing::SchedTimingToday;
 use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::StateKind;
+use crate::storage::comma_separated_ids;
 
 #[cfg(test)]
 const S_MIN: f32 = 0.0001;
@@ -246,6 +250,30 @@ impl<T> ChunkIntoVecs<T> for Vec<T> {
         std::iter::from_fn(move || {
             (!self.is_empty()).then(|| self.drain(..chunk_size.min(self.len())).collect())
         })
+    }
+}
+
+/// What differed between a locally modified card row and the row the server
+/// sent for it, recorded while a sync chunk was merged. The post-sync
+/// reconcile pass uses it to decide how much of the card to rebuild.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FsrsSyncConflict {
+    /// `interval`, `due` or `original_due` differed. Deck, type and queue
+    /// changes alone do not count: a card that only moved deck must keep its
+    /// schedule.
+    pub(crate) schedule_differs: bool,
+    /// Both rows carried the same memory state (or both had none).
+    pub(crate) memory_state_agreed: bool,
+    /// Both rows carried the same last review time (or both had none).
+    pub(crate) last_review_time_agreed: bool,
+}
+
+impl FsrsSyncConflict {
+    /// Fold a second observation of the same card into this one.
+    pub(crate) fn merge(&mut self, other: FsrsSyncConflict) {
+        self.schedule_differs |= other.schedule_differs;
+        self.memory_state_agreed &= other.memory_state_agreed;
+        self.last_review_time_agreed &= other.last_review_time_agreed;
     }
 }
 
@@ -468,6 +496,216 @@ impl Collection {
             )?;
             Self::finish_memory_progress_entry(&mut preset_progress, entry_index, item_count);
         }
+        Ok(())
+    }
+
+    /// After a normal sync has merged the server's rows, rebuild the FSRS data
+    /// of every card whose local pending row conflicted with the server's row
+    /// (spec `sync.fsrs-reconcile-after-sync`). Memory state, desired
+    /// retention, decay and last review time are recomputed from the merged
+    /// review log with the card's current preset. The schedule is only
+    /// restored from the last real review when the user's remembered
+    /// "Reschedule cards on change" choice is on
+    /// (spec `sync.post-sync-reschedule-gate`). Nothing here writes a review
+    /// log row (spec `sync.no-revlog-rows-from-post-sync-reschedule`).
+    ///
+    /// Runs inside the sync transaction, before the local changes are sent, so
+    /// the repaired rows are uploaded by the same sync.
+    pub(crate) fn reconcile_fsrs_state_after_sync(
+        &mut self,
+        conflicts: HashMap<CardId, FsrsSyncConflict>,
+    ) -> Result<()> {
+        if conflicts.is_empty() || !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(());
+        }
+        let restore_schedule = self.get_config_bool(BoolKey::FsrsReschedule);
+
+        let mut card_ids_by_config: HashMap<DeckConfigId, Vec<CardId>> = HashMap::new();
+        let mut deck_desired_retention: HashMap<DeckId, f32> = HashMap::new();
+        for &card_id in conflicts.keys() {
+            let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+            let deck_id = card.original_or_current_deck_id();
+            let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
+            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+            card_ids_by_config
+                .entry(config_id)
+                .or_default()
+                .push(card_id);
+            if let Ok(normal) = deck.normal() {
+                if let Some(desired_retention) = normal.desired_retention {
+                    deck_desired_retention.insert(deck_id, desired_retention);
+                }
+            }
+        }
+
+        let timing = self.timing_today()?;
+        let usn = self.usn()?;
+        for (config_id, card_ids) in card_ids_by_config {
+            let config = self
+                .storage
+                .get_deck_config(config_id)?
+                .or_not_found(config_id)?;
+            let revlog =
+                self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
+            let params = config.fsrs_params();
+            let fsrs = FSRS::new(params)?;
+            let last_revlog_info = get_last_revlog_info(&revlog);
+            let items = fsrs_items_for_memory_states(
+                &fsrs,
+                params,
+                revlog,
+                timing.next_day_at,
+                config.inner.historical_retention,
+                ignore_revlogs_before_ms_from_config(&config)?,
+            )?;
+
+            let (items, mut cards_without_items): (
+                Vec<(CardId, FsrsItemForMemoryState)>,
+                Vec<CardId>,
+            ) = items.into_iter().partition_map(|(card_id, item)| {
+                if let Some(item) = item {
+                    Either::Left((card_id, item))
+                } else {
+                    Either::Right(card_id)
+                }
+            });
+            // a card without any review log row is missing from `items`
+            let seen: HashSet<CardId> = items
+                .iter()
+                .map(|(card_id, _)| *card_id)
+                .chain(cards_without_items.iter().copied())
+                .collect();
+            cards_without_items.extend(card_ids.iter().copied().filter(|id| !seen.contains(id)));
+
+            let decay = get_decay_from_params(params);
+            let preset_desired_retention = config.inner.desired_retention;
+            let set_decay_and_desired_retention = |card: &mut Card| {
+                let deck_id = card.original_or_current_deck_id();
+                let desired_retention = *deck_desired_retention
+                    .get(&deck_id)
+                    .unwrap_or(&preset_desired_retention);
+                card.desired_retention = Some(desired_retention);
+                card.decay = Some(decay);
+            };
+            tracing::debug!(
+                config_id = config_id.0,
+                cards = card_ids.len(),
+                cards_with_items = items.len(),
+                itemless_cards = cards_without_items.len(),
+                restore_schedule,
+                "recomputing fsrs state after sync"
+            );
+
+            self.reconcile_itemless_cards_after_sync(
+                cards_without_items,
+                &conflicts,
+                &last_revlog_info,
+                set_decay_and_desired_retention,
+                usn,
+            )?;
+            self.reconcile_cards_with_items_after_sync(
+                items,
+                &fsrs,
+                &conflicts,
+                &last_revlog_info,
+                restore_schedule,
+                timing,
+                set_decay_and_desired_retention,
+                usn,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Marks the card as changed locally so the running sync uploads it. No
+    /// undo entry: a sync cannot be undone.
+    fn update_reconciled_card_after_sync(&mut self, card: &mut Card, usn: Usn) -> Result<()> {
+        card.set_modified(usn);
+        self.storage.update_card(card)
+    }
+
+    /// Cards whose merged review log holds no real review. Their memory state
+    /// cannot be derived, so it is cleared - unless both devices already held
+    /// the same state, which the conflict then gives no reason to touch (spec
+    /// `sync.fsrs-reconcile-after-sync`).
+    fn reconcile_itemless_cards_after_sync(
+        &mut self,
+        cards: Vec<CardId>,
+        conflicts: &HashMap<CardId, FsrsSyncConflict>,
+        last_revlog_info: &HashMap<CardId, LastRevlogInfo>,
+        mut set_decay_and_desired_retention: impl FnMut(&mut Card),
+        usn: Usn,
+    ) -> Result<()> {
+        for card_id in cards {
+            let conflict = conflicts.get(&card_id).copied().unwrap_or_default();
+            let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+            set_decay_and_desired_retention(&mut card);
+            if !conflict.memory_state_agreed {
+                card.memory_state = None;
+            }
+            if !conflict.last_review_time_agreed {
+                card.last_review_time = last_revlog_info
+                    .get(&card_id)
+                    .and_then(|info| info.last_reviewed_at);
+            }
+            self.update_reconciled_card_after_sync(&mut card, usn)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_cards_with_items_after_sync(
+        &mut self,
+        items: Vec<(CardId, FsrsItemForMemoryState)>,
+        fsrs: &FSRS,
+        conflicts: &HashMap<CardId, FsrsSyncConflict>,
+        last_revlog_info: &HashMap<CardId, LastRevlogInfo>,
+        restore_schedule: bool,
+        timing: SchedTimingToday,
+        mut set_decay_and_desired_retention: impl FnMut(&mut Card),
+        usn: Usn,
+    ) -> Result<()> {
+        const FSRS_BATCH_SIZE: usize = 1000;
+
+        let mut to_update = Vec::new();
+        let mut fsrs_items = Vec::new();
+        let mut starting_states = Vec::new();
+
+        for (card_id, item) in items.into_iter() {
+            to_update.push(card_id);
+            fsrs_items.push(item.item);
+            starting_states.push(item.starting_state);
+        }
+
+        let mut p = permutation::sort_unstable_by_key(&fsrs_items, |item| item.reviews.len());
+        p.apply_slice_in_place(&mut to_update);
+        p.apply_slice_in_place(&mut fsrs_items);
+        p.apply_slice_in_place(&mut starting_states);
+
+        for ((to_update, fsrs_items), starting_states) in to_update
+            .chunk_into_vecs(FSRS_BATCH_SIZE)
+            .zip_eq(fsrs_items.chunk_into_vecs(FSRS_BATCH_SIZE))
+            .zip_eq(starting_states.chunk_into_vecs(FSRS_BATCH_SIZE))
+        {
+            let memory_states = fsrs.memory_state_batch(fsrs_items, starting_states)?;
+
+            for (card_id, memory_state) in to_update.into_iter().zip_eq(memory_states) {
+                let conflict = conflicts.get(&card_id).copied().unwrap_or_default();
+                let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+                set_decay_and_desired_retention(&mut card);
+                card.memory_state = Some(fsrs_memory_state_for_fsrs(fsrs, memory_state));
+                let last_info = last_revlog_info.get(&card_id);
+                if !conflict.last_review_time_agreed {
+                    card.last_review_time = last_info.and_then(|info| info.last_reviewed_at);
+                }
+                if restore_schedule && conflict.schedule_differs {
+                    restore_review_schedule_after_sync(&mut card, last_info, timing);
+                }
+                self.update_reconciled_card_after_sync(&mut card, usn)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -944,6 +1182,9 @@ pub(crate) struct LastRevlogInfo {
     /// The interval before the latest review. Used to prevent fuzz from going
     /// backwards when rescheduling the card
     pub(crate) previous_interval: Option<u32>,
+    /// The interval in days that the latest review scheduled. None when that
+    /// review left the card in (re)learning, or after a reset.
+    pub(crate) scheduled_interval: Option<u32>,
 }
 
 /// Return a map of cards to info about last review.
@@ -956,6 +1197,7 @@ pub(crate) fn get_last_revlog_info(revlogs: &[RevlogEntry]) -> HashMap<CardId, L
         .for_each(|(card_id, group)| {
             let mut last_reviewed_at = None;
             let mut previous_interval = None;
+            let mut scheduled_interval = None;
             for e in group.into_iter() {
                 if e.has_rating_and_affects_scheduling() {
                     last_reviewed_at = Some(e.id.as_secs());
@@ -964,9 +1206,11 @@ pub(crate) fn get_last_revlog_info(revlogs: &[RevlogEntry]) -> HashMap<CardId, L
                     } else {
                         None
                     };
+                    scheduled_interval = (e.interval > 0).then_some(e.interval as u32);
                 } else if e.is_reset() {
                     last_reviewed_at = None;
                     previous_interval = None;
+                    scheduled_interval = None;
                 }
             }
             out.insert(
@@ -974,10 +1218,49 @@ pub(crate) fn get_last_revlog_info(revlogs: &[RevlogEntry]) -> HashMap<CardId, L
                 LastRevlogInfo {
                     last_reviewed_at,
                     previous_interval,
+                    scheduled_interval,
                 },
             );
         });
     out
+}
+
+/// Give a review card back the schedule its latest real review produced:
+/// the interval that review scheduled, due on the review's day plus that
+/// interval (written to `original_due` while the card sits in a filtered
+/// deck). Used after a sync when the surviving card row did not reflect the
+/// merged review log (spec `sync.post-sync-reschedule-gate`). Nothing is
+/// recomputed with FSRS and no fuzz or load balancing is applied, so the card
+/// ends up exactly where the reviewing device put it. Returns whether the
+/// card changed. Cards that are not in the review queue, suspended cards, and
+/// cards whose latest review left them in (re)learning are left alone.
+pub(crate) fn restore_review_schedule_after_sync(
+    card: &mut Card,
+    last_revlog_info: Option<&LastRevlogInfo>,
+    timing: SchedTimingToday,
+) -> bool {
+    let Some(last_info) = last_revlog_info else {
+        return false;
+    };
+    let (Some(last_review), Some(interval)) =
+        (last_info.last_reviewed_at, last_info.scheduled_interval)
+    else {
+        return false;
+    };
+    if !(card.ctype == CardType::Review && card.queue != CardQueue::Suspended) {
+        return false;
+    }
+    let days_since_review = timing.next_day_at.elapsed_days_since(last_review) as i32;
+    let new_due = timing.days_elapsed as i32 - days_since_review + interval as i32;
+    let due = if card.original_due != 0 {
+        &mut card.original_due
+    } else {
+        &mut card.due
+    };
+    let changed = card.interval != interval || *due != new_due;
+    *due = new_due;
+    card.interval = interval;
+    changed
 }
 
 /// When calculating memory state, only the last FSRSItem is required. If the
@@ -1192,6 +1475,172 @@ mod tests {
         col.update_deck_configs(input)?;
         let deck = col.get_deck(deck_id)?.or_not_found(deck_id)?;
         Ok(DeckConfigId(deck.normal()?.config_id))
+    }
+
+    fn review_entry(days_ago: i64, interval: i32, last_interval: i32) -> RevlogEntry {
+        RevlogEntry {
+            cid: CardId(1),
+            interval,
+            last_interval,
+            ..revlog(RevlogReviewKind::Review, days_ago)
+        }
+    }
+
+    #[test]
+    fn last_revlog_info_reports_interval_scheduled_by_latest_review() {
+        let entries = vec![review_entry(10, 4, 1), review_entry(3, 12, 4)];
+        let info = get_last_revlog_info(&entries);
+        let info = info.get(&CardId(1)).unwrap();
+        assert_eq!(info.scheduled_interval, Some(12));
+        assert_eq!(info.previous_interval, Some(4));
+        assert_eq!(info.last_reviewed_at, Some(entries[1].id.as_secs()));
+    }
+
+    #[test]
+    fn last_revlog_info_has_no_scheduled_interval_when_latest_review_is_a_learning_step() {
+        let entries = vec![
+            review_entry(10, 4, 1),
+            RevlogEntry {
+                cid: CardId(1),
+                button_chosen: 1,
+                interval: -600,
+                last_interval: 4,
+                ..revlog(RevlogReviewKind::Relearning, 3)
+            },
+        ];
+        let info = get_last_revlog_info(&entries);
+        assert_eq!(info.get(&CardId(1)).unwrap().scheduled_interval, None);
+    }
+
+    #[test]
+    fn last_revlog_info_has_no_scheduled_interval_after_a_reset() {
+        let entries = vec![
+            review_entry(10, 4, 1),
+            RevlogEntry {
+                cid: CardId(1),
+                ease_factor: 0,
+                ..revlog(RevlogReviewKind::Manual, 3)
+            },
+        ];
+        let info = get_last_revlog_info(&entries);
+        let info = info.get(&CardId(1)).unwrap();
+        assert_eq!(info.scheduled_interval, None);
+        assert_eq!(info.last_reviewed_at, None);
+    }
+
+    fn timing_for_restore_tests() -> SchedTimingToday {
+        let now = TimestampSecs::now();
+        SchedTimingToday {
+            now,
+            days_elapsed: 100,
+            next_day_at: now.adding_secs(3600),
+        }
+    }
+
+    fn info_reviewed_days_ago(days_ago: i64, scheduled_interval: Option<u32>) -> LastRevlogInfo {
+        LastRevlogInfo {
+            last_reviewed_at: Some(TimestampSecs::now().adding_secs(-days_ago * 86_400)),
+            previous_interval: Some(2),
+            scheduled_interval,
+        }
+    }
+
+    #[test]
+    fn restore_review_schedule_after_sync_puts_card_where_last_review_did() {
+        let mut card = Card {
+            ctype: CardType::Review,
+            queue: CardQueue::Review,
+            interval: 5,
+            due: 103,
+            ..Default::default()
+        };
+        let timing = timing_for_restore_tests();
+        assert!(restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(3, Some(12))),
+            timing
+        ));
+        assert_eq!(card.interval, 12);
+        // reviewed on day 97, so due on day 97 + 12
+        assert_eq!(card.due, 109);
+        // idempotent
+        assert!(!restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(3, Some(12))),
+            timing
+        ));
+    }
+
+    #[test]
+    fn restore_review_schedule_after_sync_writes_original_due_in_filtered_deck() {
+        let mut card = Card {
+            ctype: CardType::Review,
+            queue: CardQueue::Review,
+            interval: 5,
+            due: -100_000,
+            original_due: 103,
+            original_deck_id: DeckId(1),
+            deck_id: DeckId(2),
+            ..Default::default()
+        };
+        let timing = timing_for_restore_tests();
+        assert!(restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(0, Some(7))),
+            timing
+        ));
+        assert_eq!(card.interval, 7);
+        assert_eq!(card.original_due, 107);
+        assert_eq!(card.due, -100_000);
+    }
+
+    #[test]
+    fn restore_review_schedule_after_sync_skips_cards_it_cannot_place() {
+        let timing = timing_for_restore_tests();
+        let review_card = Card {
+            ctype: CardType::Review,
+            queue: CardQueue::Review,
+            interval: 5,
+            due: 103,
+            ..Default::default()
+        };
+        // no review information at all
+        let mut card = review_card.clone();
+        assert!(!restore_review_schedule_after_sync(&mut card, None, timing));
+        assert_eq!(card, review_card);
+        // the latest review left the card in (re)learning
+        let mut card = review_card.clone();
+        assert!(!restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(1, None)),
+            timing
+        ));
+        assert_eq!(card, review_card);
+        // suspended
+        let mut card = Card {
+            queue: CardQueue::Suspended,
+            ..review_card.clone()
+        };
+        let before = card.clone();
+        assert!(!restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(1, Some(9))),
+            timing
+        ));
+        assert_eq!(card, before);
+        // not a review card
+        let mut card = Card {
+            ctype: CardType::Relearn,
+            queue: CardQueue::Learn,
+            ..review_card.clone()
+        };
+        let before = card.clone();
+        assert!(!restore_review_schedule_after_sync(
+            &mut card,
+            Some(&info_reviewed_days_ago(1, Some(9))),
+            timing
+        ));
+        assert_eq!(card, before);
     }
 
     // Pins spec/scheduling.md#sched.reschedule-no-revlog
