@@ -236,6 +236,17 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   so any future prompt fails fast instead of hanging silently. Judge a detached
   build by **CPU time deltas**, not by whether the processes still exist — a
   hung build looks alive.
+- **Never run `./ninja` from the Claude Code Bash or PowerShell tool.** Inside
+  the tool sandbox n2 cannot spawn `out/rust/release/runner.exe` by its
+  forward-slash relative path and every build dies at `build:configure` with
+  "CreateProcessA: The system cannot find the file specified". Run builds and
+  `./ninja check:*` targets only through a detached `.cmd` wrapper
+  (`C:\Users\Andrew\clanki-logs\buildNN.cmd`, one new number per run,
+  launched with `rwkv-anki-autoresearch\scratchpad\detach.ps1`) and wait for
+  the `DONE_EXIT_` line in its log. `cargo test`/`clippy`/`fmt`, `pytest`,
+  `ruff` and `mypy` run fine from the tool directly. Run `format:prettier` in
+  its own wrapper before `check:format:prettier`: in one ninja run the check
+  races the formatter and fails on files it is about to rewrite.
 
 ---
 
