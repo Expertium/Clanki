@@ -284,6 +284,10 @@ deck-config-stop-timer-on-answer-tooltip =
     This doesn't affect statistics.
 # The Simple-mode switch that shows the timer and stops it on answer together
 deck-config-on-screen-timer = On-screen timer
+# Help text of the Simple-mode "On-screen timer" switch, shown before the
+# two per-setting explanations.
+deck-config-on-screen-timer-simple-tooltip =
+    In Simple mode this one switch stands for the two timer settings of Advanced mode (Show on-screen timer, Stop on-screen timer on answer). Turning it on turns both on; turning it off turns both off. The two settings are explained below.
 
 ## Auto Advance section
 
