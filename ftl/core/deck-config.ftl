@@ -95,6 +95,9 @@ deck-config-max-same-day-reviews-tooltip =
     reaches this number, every answer, Again included, shows it again on
     another day, and its remaining learning or relearning steps are skipped.
     0 means a card never comes back on the same day. 9999 means no limit.
+    It applies to FSRS, RWKV-Curve and RWKV-Instant. It shows, and applies,
+    only while Learning steps is empty; with learning steps, the steps decide
+    the same-day reviews.
 deck-config-relearning-steps = Relearning steps
 deck-config-relearning-steps-tooltip =
     Zero or more delays, separated by spaces. By default, pressing the `Again`

@@ -105,9 +105,10 @@ state tests; `test_rwkv_curve_states_*` and
 ## sched.max-same-day-reviews
 
 Given a card whose preset is scheduled by FSRS (any version, RWKV-Curve and
-RWKV-Instant included) and has a "Max number of same-day reviews" N, and k,
-the number of the card's reviews logged since the start of the current day
-(answers 1-4, not counting filtered-deck reviews that did not reschedule):
+RWKV-Instant included), has no learning steps, and has a "Max number of
+same-day reviews" N, and k, the number of the card's reviews logged since
+the start of the current day (answers 1-4, not counting filtered-deck
+reviews that did not reschedule):
 when k ≥ N, every answer button schedules the card as it would with no
 learning or relearning queue — remaining learning and relearning steps are
 skipped, and an interval under one day rounds up to one day — so the card
@@ -115,23 +116,31 @@ does not come back today. When k < N the steps and sub-day intervals apply
 as usual (`sched.sub-day-intervals`). A same-day review is a review after
 the card's first review of the day, so N = 0 means a card never comes back
 on the day it was studied, and N = 1 allows one return. The start of the
-day is the day rollover ("Next day starts at"). A preset with no stored
+day is the day rollover ("Next day starts at"). RWKV-Curve intervals go
+through the same rule (`sched.rwkv-curve-fuzz`). A preset with learning
+steps has no limit, whatever N it stores: its steps decide the same-day
+reviews, and its relearning steps apply as usual. A preset with no stored
 value has no limit; the deck-options row, in Advanced mode under Learning
-steps, shows that as 9999, and editing it stores the number shown. The
-First intervals preview of a new card treats only N = 0 as a limit, since
-a new card has no reviews yet. The limit is stored with the preset and
-syncs with it. SM-2 presets are unaffected.
+steps, shows only while Learning steps is empty, shows the unset value as
+9999, and editing it stores the number shown. The First intervals preview
+of a new card treats only N = 0 as a limit, since a new card has no
+reviews yet. The limit is stored with the preset and syncs with it. SM-2
+presets are unaffected.
 
 The collection-wide "Skip learning/relearning queues with FSRS/RWKV"
 Preferences switch is gone. When a collection that has it on is opened,
 every preset gets a limit of 0 and the switch is cleared, so this happens
-once and a later change to a preset's limit stays.
+once and a later change to a preset's limit stays. A preset with learning
+steps keeps its steps after this, where the switch skipped them.
 
 **Why:** Andrew, 2026-09-15: the switch was hard to understand; a
 per-preset limit on same-day reviews replaces it, and 0 gives the old
-behavior.
+behavior. The limit is for presets without learning steps, because with
+steps the steps already decide the same-day reviews; it applies to
+RWKV-Curve as well as FSRS.
 
 **Pinned by:** `max_same_day_reviews_limits_intraday_answers`,
+`max_same_day_reviews_limits_rwkv_curve_intervals`,
 `fsrs_learning_queue_bypass_keeps_rwkv_relearning_answer_in_review_queue`
 (`rslib/src/scheduler/answering/mod.rs`);
 `learning_queues_switch_becomes_a_zero_limit_on_open`,

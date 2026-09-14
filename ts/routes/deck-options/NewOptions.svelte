@@ -23,6 +23,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         applyMaxSameDayReviews,
         MAX_SAME_DAY_REVIEWS_NO_LIMIT,
         maxSameDayReviewsFromConfig,
+        maxSameDayReviewsShown,
     } from "./same-day-reviews";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
@@ -144,7 +145,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <Warning warning={stepsTooLargeForFsrs} />
         </Item>
 
-        {#if $fsrs}
+        {#if $fsrs && maxSameDayReviewsShown($config)}
             <Item>
                 <SpinBoxRow
                     bind:value={maxSameDayReviews}

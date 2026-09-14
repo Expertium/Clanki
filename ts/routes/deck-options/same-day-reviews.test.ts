@@ -7,6 +7,7 @@ import {
     applyMaxSameDayReviews,
     MAX_SAME_DAY_REVIEWS_NO_LIMIT,
     maxSameDayReviewsFromConfig,
+    maxSameDayReviewsShown,
     type SameDayReviewsSettings,
 } from "./same-day-reviews";
 
@@ -25,4 +26,10 @@ test("editing writes the number, 0 included", () => {
     applyMaxSameDayReviews(config, 0);
     expect(config.maxSameDayReviews).toBe(0);
     expect(maxSameDayReviewsFromConfig(config)).toBe(0);
+});
+
+test("the row shows only while the preset has no learning steps", () => {
+    expect(maxSameDayReviewsShown({ learnSteps: [] })).toBe(true);
+    expect(maxSameDayReviewsShown({ learnSteps: [1] })).toBe(false);
+    expect(maxSameDayReviewsShown({ learnSteps: [1, 10] })).toBe(false);
 });

@@ -491,7 +491,7 @@ impl crate::services::SchedulerService for Collection {
         let fsrs_short_term_with_steps_enabled = true;
         // A new card has no reviews today, so only a limit of 0 applies
         // (spec sched.max-same-day-reviews).
-        let same_day_review_limit_reached = config.inner.max_same_day_reviews == Some(0);
+        let same_day_review_limit_reached = config.effective_max_same_day_reviews() == Some(0);
         let review_fuzz_config = self.review_fuzz_config();
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: f32|

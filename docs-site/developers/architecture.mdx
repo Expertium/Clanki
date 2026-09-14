@@ -226,8 +226,10 @@ Each preset can limit the same-day reviews of a card
 had that many reviews after its first one of the day, answering it with FSRS
 active schedules review states directly instead of writing
 learning/relearning queue states, skipping configured steps and FSRS sub-day
-intervals. The old collection-wide bypass (`BoolKey::FsrsLearningQueuesDisabled`)
-is migrated to a limit of 0 on every preset when the collection opens.
+intervals. The limit applies only to presets without learning steps
+(`DeckConfig::effective_max_same_day_reviews`). The old collection-wide bypass
+(`BoolKey::FsrsLearningQueuesDisabled`) is migrated to a limit of 0 on every
+preset when the collection opens.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review

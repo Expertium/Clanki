@@ -27,8 +27,9 @@ repeated here unless they materially affect a fork feature.
   steps): once a card has come back that many times on the day you studied
   it, every answer sends it to another day.
   0 means cards never come back on the same day; the default is no limit
-  (shown as 9999). A collection that had the switch on gets 0 on every
-  preset.
+  (shown as 9999). It applies to FSRS and RWKV-Curve alike, and only to
+  presets without learning steps; the row shows only then. A collection
+  that had the switch on gets 0 on every preset.
 - FSRS-7 and RWKV-Curve can schedule intervals under a day for any card and
   any answer button: such an answer goes to the intraday queue with its exact
   interval. Answers of a day or more stay in whole days, and each day button

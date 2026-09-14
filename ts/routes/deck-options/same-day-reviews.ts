@@ -14,6 +14,13 @@ export function maxSameDayReviewsFromConfig(config: SameDayReviewsSettings): num
     return config.maxSameDayReviews ?? MAX_SAME_DAY_REVIEWS_NO_LIMIT;
 }
 
+/** The row shows only while the preset has no learning steps, because the
+ * limit applies only then; with steps, the steps decide the same-day
+ * reviews. */
+export function maxSameDayReviewsShown(config: { learnSteps: number[] }): boolean {
+    return config.learnSteps.length === 0;
+}
+
 /** The config with the limit set to `value`; the same object when it already
  * reads as `value`, so showing a preset writes nothing. */
 export function applyMaxSameDayReviews<T extends SameDayReviewsSettings>(

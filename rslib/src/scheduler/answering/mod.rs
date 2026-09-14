@@ -722,7 +722,7 @@ impl Collection {
         let fsrs_short_term_with_steps = self.fsrs_short_term_with_steps_enabled();
         // spec sched.max-same-day-reviews: with k reviews logged today, an
         // intraday answer now leads to same-day review k + 1.
-        let same_day_review_limit_reached = match config.inner.max_same_day_reviews {
+        let same_day_review_limit_reached = match config.effective_max_same_day_reviews() {
             Some(max) if fsrs_enabled => {
                 let day_start = TimestampMillis((timing.next_day_at.0 - 86_400) * 1000);
                 max == 0 || self.storage.review_count_since(card.id, day_start)? >= max
@@ -1690,27 +1690,31 @@ pub(crate) mod test {
         Ok(())
     }
 
+    fn is_intraday(state: CardState) -> bool {
+        matches!(
+            state,
+            CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+        )
+    }
+
     // Pins spec/scheduling.md#sched.max-same-day-reviews
     #[test]
     fn max_same_day_reviews_limits_intraday_answers() -> Result<()> {
-        let intraday = |state: CardState| {
-            matches!(
-                state,
-                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
-            )
-        };
-        // (limit, intraday Again on the first review, and after one review)
-        for (limit, first, second) in [
-            (None, true, true),
-            (Some(2), true, true),
-            (Some(1), true, false),
-            (Some(0), false, false),
+        // (learning steps, limit, intraday Again on the first review, and
+        // after one review)
+        for (steps, limit, first, second) in [
+            (vec![], None, true, true),
+            (vec![], Some(2), true, true),
+            (vec![], Some(1), true, false),
+            (vec![], Some(0), false, false),
+            // with learning steps the steps decide, whatever the limit
+            (vec![1.0, 10.0], Some(0), true, true),
         ] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
             col.update_default_deck_config(|config| {
                 config.fsrs_version = FsrsVersion::Seven as i32;
-                config.learn_steps = vec![1.0, 10.0];
+                config.learn_steps = steps.clone();
                 config.max_same_day_reviews = limit;
             });
             let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -1719,16 +1723,42 @@ pub(crate) mod test {
             let card_id = col.get_first_card().id;
 
             let states = col.get_scheduling_states(card_id)?;
-            assert_eq!(intraday(states.again), first, "{limit:?}");
+            assert_eq!(is_intraday(states.again), first, "{steps:?} {limit:?}");
             col.answer_again();
             let states = col.get_scheduling_states(card_id)?;
-            assert_eq!(intraday(states.again), second, "{limit:?}");
+            assert_eq!(is_intraday(states.again), second, "{steps:?} {limit:?}");
             if !second {
                 // no button keeps the card in today's queues
                 for state in [states.hard, states.good, states.easy] {
-                    assert!(!intraday(state), "{limit:?}");
+                    assert!(!is_intraday(state), "{steps:?} {limit:?}");
                 }
             }
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.max-same-day-reviews (RWKV-Curve)
+    #[test]
+    fn max_same_day_reviews_limits_rwkv_curve_intervals() -> Result<()> {
+        // sub-day RWKV-Curve intervals for Again and Hard
+        let intervals = [Some(0.01), Some(0.5), Some(2.0), Some(5.0)];
+        for (limit, intraday) in [(None, true), (Some(0), false)] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.fsrs_version = FsrsVersion::Seven as i32;
+                config.learn_steps = vec![];
+                config.max_same_day_reviews = limit;
+            });
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            let card_id = col.get_first_card().id;
+
+            let states = col.scheduling_states_with_intervals(card_id, intervals)?;
+            assert_eq!(is_intraday(states.again), intraday, "{limit:?}");
+            assert_eq!(is_intraday(states.hard), intraday, "{limit:?}");
+            assert!(!is_intraday(states.good), "{limit:?}");
         }
         Ok(())
     }
@@ -1743,7 +1773,8 @@ pub(crate) mod test {
             config.fsrs_version = FsrsVersion::Seven as i32;
             config.fsrs_params_7 = low_retention_fsrs7_params();
             config.desired_retention = 0.65;
-            config.learn_steps = vec![1.0, 10.0];
+            // the limit applies only without learning steps
+            config.learn_steps = vec![];
             config.relearn_steps = vec![10.0];
         });
 

@@ -185,6 +185,17 @@ impl DeckConfig {
         }
     }
 
+    /// The preset's "Max number of same-day reviews". It applies only while
+    /// the preset has no learning steps; with steps, the steps decide the
+    /// same-day reviews (spec sched.max-same-day-reviews).
+    pub(crate) fn effective_max_same_day_reviews(&self) -> Option<u32> {
+        if self.inner.learn_steps.is_empty() {
+            self.inner.max_same_day_reviews
+        } else {
+            None
+        }
+    }
+
     /// Clear the FSRS 6.0 params, along with the 5.0 and 4.x fallbacks.
     pub(crate) fn clear_fsrs_params(&mut self) {
         self.inner.fsrs_params_4.clear();
