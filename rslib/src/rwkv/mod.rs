@@ -435,6 +435,15 @@ pub struct ReviewPredictionOutput {
     pub s90s: [Option<u32>; 4],
 }
 
+/// The subset of `ReviewPredictionOutput` that rescheduling needs, computed
+/// from a single query pass against the resident warm-up state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReviewIntervalPrediction {
+    pub retrievability: f32,
+    pub current_interval: Option<u32>,
+    pub current_s90: Option<u32>,
+}
+
 pub struct RwkvInference {
     model: Arc<SrsModel>,
     features: FeatureState,
@@ -766,6 +775,56 @@ impl RwkvInference {
             .collect::<Vec<_>>();
 
         Ok(self.model.review_retrievability_many_borrowed(&work_items))
+    }
+
+    /// Current interval and S90 for each query input, straight from the
+    /// resident warm-up state.
+    ///
+    /// This is what "Reschedule cards with RWKV-Curve" needs. `predict_many`
+    /// also runs the four simulated-answer passes and requires the caller to
+    /// ship each card's serialized state across the Python bridge; here the
+    /// state is borrowed in place and only the query pass runs, so the result
+    /// is identical to `predict_many`'s `retrievability` / `current_interval`
+    /// / `current_s90` at a fifth of the compute and none of the copying.
+    pub fn predict_current_intervals_many_from_warm_up(
+        &mut self,
+        inputs: Vec<ReviewInput>,
+    ) -> io::Result<Vec<ReviewIntervalPrediction>> {
+        for input in &inputs {
+            if !input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV batched interval prediction only supports query inputs",
+                ));
+            }
+        }
+
+        let features = inputs
+            .iter()
+            .map(|input| self.features.features_for(input))
+            .collect::<Vec<_>>();
+        let work_items = inputs
+            .iter()
+            .zip(features)
+            .map(|(input, features)| ReviewPredictionBorrowedWorkItem {
+                features,
+                state: self.warm_up_states.state_ref(input),
+            })
+            .collect::<Vec<_>>();
+
+        let heads = self.model.review_many_borrowed(&work_items);
+        Ok(inputs
+            .iter()
+            .zip(heads)
+            .map(|(input, heads)| {
+                let (current_interval, current_s90) = self.current_intervals(input, &heads);
+                ReviewIntervalPrediction {
+                    retrievability: heads.retrievability,
+                    current_interval,
+                    current_s90,
+                }
+            })
+            .collect())
     }
 
     pub fn predict_retrievability_many_after_review(
@@ -3100,6 +3159,16 @@ impl SrsModel {
         items
             .par_iter()
             .map(|item| self.review_features(&item.features, item.state.as_ref()))
+            .collect()
+    }
+
+    fn review_many_borrowed(
+        &self,
+        items: &[ReviewPredictionBorrowedWorkItem<'_>],
+    ) -> Vec<ReviewHeads> {
+        items
+            .par_iter()
+            .map(|item| self.review_features(&item.features, item.state))
             .collect()
     }
 
@@ -8800,6 +8869,58 @@ order by e.id, e.cid
             .map(|(index, _)| reviews[*index].ease != Some(1))
             .collect::<Vec<_>>();
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
+    }
+
+    /// Pins the fast "Reschedule cards with RWKV-Curve" path: the query-only,
+    /// resident-state prediction must return exactly the retrievability,
+    /// current interval and S90 that the full `predict_many` path returns.
+    #[test]
+    fn current_intervals_from_warm_up_match_predict_many() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews = bulk_parity_reviews(120);
+        inference
+            .warm_up_reviews_sequential(reviews.clone(), false)
+            .unwrap();
+
+        // one query per card, built from that card's most recent review
+        let mut seen = std::collections::HashSet::new();
+        let queries = reviews
+            .iter()
+            .rev()
+            .filter(|review| seen.insert(review.card_id))
+            .map(|review| ReviewInput {
+                is_query: true,
+                ease: None,
+                ..review.clone()
+            })
+            .collect::<Vec<_>>();
+        assert!(queries.len() > 10, "fixture should cover many cards");
+
+        let requests = queries
+            .iter()
+            .map(|input| ReviewPredictionRequest {
+                input: input.clone(),
+                state: inference.warm_up_state(input),
+            })
+            .collect::<Vec<_>>();
+        let expected = inference.predict_many(requests).unwrap();
+        let actual = inference
+            .predict_current_intervals_many_from_warm_up(queries)
+            .unwrap();
+
+        assert_eq!(expected.len(), actual.len());
+        let mut with_interval = 0;
+        for (expected, actual) in expected.iter().zip(&actual) {
+            assert_eq!(expected.retrievability, actual.retrievability);
+            assert_eq!(expected.current_interval, actual.current_interval);
+            assert_eq!(expected.current_s90, actual.current_s90);
+            with_interval += usize::from(actual.current_interval.is_some());
+        }
+        assert!(with_interval > 0, "fixture should produce intervals");
     }
 
     #[test]
