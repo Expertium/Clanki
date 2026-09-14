@@ -40,12 +40,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const fsrs = state.fsrs;
     const config = state.currentConfig;
-    const advanced = state.deckOptionsAdvanced;
     let newlyEnabled = false;
 
     // A stored preset with both RWKV modes on cannot be represented by the
-    // dropdown: RWKV-Curve wins. Every RWKV mode implies FSRS on. Both are
-    // normalized on load (spec deck-options.scheduler-choice). Store writes
+    // dropdown: RWKV-Curve wins. FSRS is always on; SM-2 is not selectable
+    // here. Both are normalized on load (spec deck-options.scheduler-choice).
+    // Store writes
     // happen inside plain functions so no reactive declaration depends on
     // another one that it also writes to.
     function normalizeSchedulerFlags(
@@ -58,10 +58,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 return c;
             });
         }
-        if (
-            (current.rwkvReviewEnabled || current.rwkvReviewInstantOrderEnabled) &&
-            !fsrsOn
-        ) {
+        if (!fsrsOn) {
             fsrs.set(true);
         }
     }
@@ -95,10 +92,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         });
     }
     $: applySchedulerChoice(schedulerChoice);
-    $: schedulerChoiceList = schedulerChoices({
-        advanced: $advanced,
-        current: schedulerChoice,
-    });
+    const schedulerChoiceList = schedulerChoices();
     $: if (!$fsrs) {
         newlyEnabled = true;
     }

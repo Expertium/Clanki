@@ -7,7 +7,6 @@ vi.mock("@generated/ftl", () => ({
     deckConfigSchedulerChoiceFsrs: () => "FSRS",
     deckConfigSchedulerChoiceRwkvCurve: () => "RWKV-Curve",
     deckConfigSchedulerChoiceRwkvInstant: () => "RWKV-Instant",
-    deckConfigSchedulerChoiceSm2: () => "SM-2",
 }));
 
 import {
@@ -19,7 +18,9 @@ import {
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice
 
-test("each dropdown value writes exactly one active scheduler", () => {
+const ALL = [SchedulerChoice.FSRS, SchedulerChoice.RWKV_CURVE, SchedulerChoice.RWKV_INSTANT];
+
+test("each dropdown value writes exactly one active scheduler, with FSRS on", () => {
     expect(flagsFromSchedulerChoice(SchedulerChoice.FSRS)).toEqual({
         fsrs: true,
         rwkvCurve: false,
@@ -35,22 +36,10 @@ test("each dropdown value writes exactly one active scheduler", () => {
         rwkvCurve: false,
         rwkvInstant: true,
     });
-    expect(flagsFromSchedulerChoice(SchedulerChoice.SM2)).toEqual({
-        fsrs: false,
-        rwkvCurve: false,
-        rwkvInstant: false,
-    });
 });
 
 test("flags round-trip through the dropdown value", () => {
-    for (
-        const choice of [
-            SchedulerChoice.FSRS,
-            SchedulerChoice.RWKV_CURVE,
-            SchedulerChoice.RWKV_INSTANT,
-            SchedulerChoice.SM2,
-        ]
-    ) {
+    for (const choice of ALL) {
         expect(schedulerChoiceFromFlags(flagsFromSchedulerChoice(choice))).toBe(choice);
     }
 });
@@ -59,21 +48,14 @@ test("a preset with both RWKV modes on reads as RWKV-Curve", () => {
     expect(
         schedulerChoiceFromFlags({ fsrs: true, rwkvCurve: true, rwkvInstant: true }),
     ).toBe(SchedulerChoice.RWKV_CURVE);
-    // RWKV flags win over the FSRS switch, which they imply
+});
+
+test("the FSRS switch never changes the value: SM-2 is not selectable", () => {
+    expect(
+        schedulerChoiceFromFlags({ fsrs: false, rwkvCurve: false, rwkvInstant: false }),
+    ).toBe(SchedulerChoice.FSRS);
     expect(
         schedulerChoiceFromFlags({ fsrs: false, rwkvCurve: false, rwkvInstant: true }),
     ).toBe(SchedulerChoice.RWKV_INSTANT);
-});
-
-test("SM-2 is offered only behind advanced options or when already selected", () => {
-    const values = (advanced: boolean, current: SchedulerChoice) =>
-        schedulerChoices({ advanced, current }).map((choice) => choice.value);
-
-    expect(values(false, SchedulerChoice.FSRS)).toEqual([
-        SchedulerChoice.FSRS,
-        SchedulerChoice.RWKV_CURVE,
-        SchedulerChoice.RWKV_INSTANT,
-    ]);
-    expect(values(true, SchedulerChoice.FSRS)).toContain(SchedulerChoice.SM2);
-    expect(values(false, SchedulerChoice.SM2)).toContain(SchedulerChoice.SM2);
+    expect(schedulerChoices().map((choice) => choice.value)).toEqual(ALL);
 });

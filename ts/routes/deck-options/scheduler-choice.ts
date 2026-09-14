@@ -8,14 +8,13 @@ import * as tr from "@generated/ftl";
  *
  * It maps onto three stored flags: the collection-wide FSRS switch and the
  * per-preset RWKV-Curve / RWKV-Instant switches. Exactly one scheduler is
- * active at a time (spec/deck-options.md, `deck-options.scheduler-choice`).
+ * active at a time, and FSRS is always on: SM-2 is not selectable from this
+ * screen (spec/deck-options.md, `deck-options.scheduler-choice`).
  */
 export enum SchedulerChoice {
     FSRS = 0,
     RWKV_CURVE = 1,
     RWKV_INSTANT = 2,
-    /** FSRS off. Only offered behind "Show advanced options". */
-    SM2 = 3,
 }
 
 export interface SchedulerFlags {
@@ -27,7 +26,8 @@ export interface SchedulerFlags {
 /**
  * Derive the dropdown value from the stored flags. A preset with both RWKV
  * modes on cannot be represented; it reads as RWKV-Curve, the mode that
- * decides intervals.
+ * decides intervals. The FSRS switch does not influence the value: a
+ * collection with it off still reads as FSRS, and the screen turns it on.
  */
 export function schedulerChoiceFromFlags(flags: SchedulerFlags): SchedulerChoice {
     if (flags.rwkvCurve) {
@@ -36,13 +36,13 @@ export function schedulerChoiceFromFlags(flags: SchedulerFlags): SchedulerChoice
     if (flags.rwkvInstant) {
         return SchedulerChoice.RWKV_INSTANT;
     }
-    return flags.fsrs ? SchedulerChoice.FSRS : SchedulerChoice.SM2;
+    return SchedulerChoice.FSRS;
 }
 
-/** The flags a dropdown value writes. Every RWKV mode requires FSRS on. */
+/** The flags a dropdown value writes. FSRS is on for every value. */
 export function flagsFromSchedulerChoice(choice: SchedulerChoice): SchedulerFlags {
     return {
-        fsrs: choice !== SchedulerChoice.SM2,
+        fsrs: true,
         rwkvCurve: choice === SchedulerChoice.RWKV_CURVE,
         rwkvInstant: choice === SchedulerChoice.RWKV_INSTANT,
     };
@@ -53,15 +53,9 @@ export interface SchedulerChoiceOption {
     value: SchedulerChoice;
 }
 
-/**
- * The dropdown entries. SM-2 is listed only when advanced options are shown,
- * or when it is the current value so the selection stays representable.
- */
-export function schedulerChoices(options: {
-    advanced: boolean;
-    current: SchedulerChoice;
-}): SchedulerChoiceOption[] {
-    const choices: SchedulerChoiceOption[] = [
+/** The dropdown entries, in display order. */
+export function schedulerChoices(): SchedulerChoiceOption[] {
+    return [
         { label: tr.deckConfigSchedulerChoiceFsrs(), value: SchedulerChoice.FSRS },
         {
             label: tr.deckConfigSchedulerChoiceRwkvCurve(),
@@ -72,11 +66,4 @@ export function schedulerChoices(options: {
             value: SchedulerChoice.RWKV_INSTANT,
         },
     ];
-    if (options.advanced || options.current === SchedulerChoice.SM2) {
-        choices.push({
-            label: tr.deckConfigSchedulerChoiceSm2(),
-            value: SchedulerChoice.SM2,
-        });
-    }
-    return choices;
 }

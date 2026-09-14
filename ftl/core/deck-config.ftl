@@ -757,14 +757,11 @@ deck-config-scheduler-tooltip =
     Which algorithm schedules this preset. FSRS computes intervals from your
     review history. RWKV-Curve uses the RWKV neural network for the answer
     button intervals. RWKV-Instant keeps FSRS intervals but lets RWKV decide
-    which cards are ready to review. Only one is active at a time. Choosing any
-    of the three turns FSRS on for the whole collection; SM-2, Anki's classic
-    scheduler, is available under advanced options and turns FSRS off for the
-    whole collection.
+    which cards are ready to review. Only one is active at a time, and FSRS
+    stays on for the whole collection whichever you choose.
 deck-config-scheduler-choice-fsrs = FSRS
 deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
 deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
-deck-config-scheduler-choice-sm2 = SM-2 (legacy)
 deck-config-show-advanced-options = Show advanced options
 deck-config-show-advanced-options-tooltip =
     Show the settings that are hidden by default. The defaults work for almost
