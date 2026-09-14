@@ -11,6 +11,10 @@
 
     export let tabs: ValueTab[];
     export let value: number;
+    /* Simple mode hides the tab strip (spec deck-options.simple-view); the
+    value logic is unchanged, so the box edits the level that is in effect
+    (the last tab with a value) and no override is written or cleared. */
+    export let showTabs = true;
 
     let activeTab = lastSetTab();
     $: onTabChanged(activeTab);
@@ -42,13 +46,15 @@
     const handleClick = (tabValue: number) => () => (activeTab = tabValue);
 </script>
 
-<ul>
-    {#each tabs as tab, idx}
-        <li class:active={activeTab === idx}>
-            <button on:click={handleClick(idx)}>{tab.title}</button>
-        </li>
-    {/each}
-</ul>
+{#if showTabs}
+    <ul>
+        {#each tabs as tab, idx}
+            <li class:active={activeTab === idx}>
+                <button on:click={handleClick(idx)}>{tab.title}</button>
+            </li>
+        {/each}
+    </ul>
+{/if}
 
 <style lang="scss">
     ul {

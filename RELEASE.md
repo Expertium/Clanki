@@ -33,13 +33,36 @@ repeated here unless they materially affect a fork feature.
   retention without it (new presets run RWKV-Curve). The Easy Days sliders
   are collapsed behind an "Easy Days" expander in both modes.
 - "Reschedule cards on change" is now "Reschedule cards when desired
-  retention changes" (Advanced only, every algorithm); the separate
-  "Reschedule Cards with RWKV-Curve Intervals" button is gone.
+  retention changes" (every algorithm); the separate "Reschedule Cards with
+  RWKV-Curve Intervals" button is gone.
+- Deck options holds only per-preset settings now. Limits start from top,
+  Skip learning/relearning queues, Reschedule cards when desired retention
+  changes and Custom scheduling moved to Preferences > Review (Scheduler
+  group and a Custom scheduling group). The reschedule choice is shown as
+  stored instead of opening off every time, and a deck-options save no
+  longer overwrites these settings. The globe marker is gone with them.
+- "Skip question when replaying answer" is Advanced-only now (it stays off
+  by default).
+- Simple mode hides the "This deck" and "Today only" tabs of the daily
+  limits and the "This deck" tab of desired retention; each box edits the
+  limit that is in effect. The "Easy Days" expander title is no longer bold,
+  and a "?" next to it opens the Easy Days help; clicking the name only
+  opens or closes the expander.
+- The Desired retention help no longer ends with the note about the info
+  box being an approximation and the simulator being more accurate.
+- The Simple-mode "Bury siblings" help now explains what siblings and
+  burying are, and that the one switch stands for the three burying settings
+  of Advanced mode.
+- Simple mode hides the RWKV submenu of the deck menu (Reschedule With
+  RWKV-Curve, Reschedule All Decks) and shows Tools > Add-ons only while at
+  least one add-on is installed.
+- "Optimize All Presets" is the one optimize action, and it appears in
+  Simple mode too. "Optimize Current Preset", its result comparison, the
+  custom decay table and the "Check health when optimizing" switch are gone
+  (Check Health stays).
 - The Simple | Advanced switch now appears in the toolbar as soon as a
   profile is open (it was drawn before the collection loaded and so was
   missing).
-- Collection-wide settings are marked with a blue meridian globe instead of
-  the old earth glyph, in deck options and in their help entries.
 - Answer buttons have coloured borders (red Again, green otherwise; from
   upstream PR 4371) and, by default, only **Again** and **Good** are shown.
   Both can be switched off in Preferences > Review. In two-button mode key

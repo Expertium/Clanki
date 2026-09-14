@@ -15,7 +15,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
-    import CardStateCustomizer from "./CardStateCustomizer.svelte";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import MinimumIntervalInputRow from "./MinimumIntervalInputRow.svelte";
@@ -30,7 +29,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const cardStateCustomizer = state.cardStateCustomizer;
     const fsrs = state.fsrs;
 
     const settings = {
@@ -78,12 +76,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigNewIntervalTooltip(),
             url: HelpPage.DeckOptions.newInterval,
             sched: HelpItemScheduler.SM2,
-        },
-        customScheduling: {
-            title: tr.deckConfigCustomScheduling(),
-            help: tr.deckConfigCustomSchedulingTooltip(),
-            url: "https://faqs.ankiweb.net/the-2021-scheduler.html#add-ons-and-custom-scheduling",
-            global: true,
         },
     };
     const helpSections: HelpItem[] = Object.values(settings);
@@ -328,13 +320,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
         {/if}
 
-        <Item>
-            <CardStateCustomizer
-                title={settings.customScheduling.title}
-                on:click={() =>
-                    openHelpModal(Object.keys(settings).indexOf("customScheduling"))}
-                bind:value={$cardStateCustomizer}
-            />
-        </Item>
+        <!-- Custom scheduling is a Preferences setting
+             (spec deck-options.collection-wide-in-preferences). -->
     </DynamicallySlottable>
 </TitledContainer>

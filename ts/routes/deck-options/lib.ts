@@ -1,7 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import type { PlainMessage } from "@bufbuild/protobuf";
+import type { PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { OpChanges } from "@generated/anki/collection_pb";
 import type {
     DeckConfigsForUpdate,
@@ -44,7 +44,7 @@ export interface ConfigListEntry {
 }
 
 async function updateDeckConfigsAndClose(
-    input: PlainMessage<UpdateDeckConfigsRequest>,
+    input: PartialMessage<UpdateDeckConfigsRequest>,
 ): Promise<void> {
     await postProto(
         "updateDeckConfigsAndClose",
@@ -58,15 +58,11 @@ type AllConfigs =
         Pick<
             PlainMessage<UpdateDeckConfigsRequest>,
             | "configs"
-            | "cardStateCustomizer"
             | "limits"
             | "newCardsIgnoreReviewLimit"
             | "loadBalancerEnabled"
             | "fsrsShortTermWithStepsEnabled"
-            | "fsrsLearningQueuesDisabled"
-            | "applyAllParentLimits"
             | "fsrs"
-            | "fsrsReschedule"
             | "reviewFuzzEnabled"
             | "reviewFuzzBase"
             | "reviewFuzzFactorShort"
@@ -80,19 +76,18 @@ export class DeckOptionsState {
     readonly currentConfig: Writable<DeckConfig_Config>;
     readonly currentAuxData: Writable<Record<string, unknown>>;
     readonly configList: Readable<ConfigListEntry[]>;
-    readonly cardStateCustomizer: Writable<string>;
     readonly currentDeck: DeckConfigsForUpdate_CurrentDeck;
     readonly deckLimits: Writable<DeckConfigsForUpdate_CurrentDeck_Limits>;
     readonly defaults: DeckConfig_Config;
     readonly addonComponents: Writable<DynamicSvelteComponent[]>;
     readonly newCardsIgnoreReviewLimit: Writable<boolean>;
     readonly loadBalancerEnabled: Writable<boolean>;
-    readonly applyAllParentLimits: Writable<boolean>;
     readonly fsrs: Writable<boolean>;
     readonly fsrsShortTermWithStepsEnabled: Writable<boolean>;
+    /** Read-only here: a Preferences setting the interval preview needs. */
     readonly fsrsLearningQueuesDisabled: Writable<boolean>;
-    readonly fsrsReschedule: Writable<boolean> = writable(false);
-    readonly fsrsHealthCheck: Writable<boolean>;
+    /** Read-only here: a Preferences setting the Easy Days warning needs. */
+    readonly fsrsReschedule: Writable<boolean>;
     /** The collection-wide Advanced UI mode (spec ui.mode-switch); read-only here. */
     readonly advancedUi: Writable<boolean>;
     readonly reviewFuzzEnabled: Writable<boolean>;
@@ -138,17 +133,15 @@ export class DeckOptionsState {
             this.configs.findIndex((c) => c.config.id === this.currentDeck.configId),
         );
         this.sortConfigs();
-        this.cardStateCustomizer = writable(data.cardStateCustomizer);
         this.deckLimits = writable(data.currentDeck?.limits ?? createLimits());
         this.newCardsIgnoreReviewLimit = writable(data.newCardsIgnoreReviewLimit);
         this.loadBalancerEnabled = writable(data.loadBalancerEnabled);
-        this.applyAllParentLimits = writable(data.applyAllParentLimits);
         this.fsrs = writable(data.fsrs);
         this.fsrsShortTermWithStepsEnabled = writable(
             data.fsrsShortTermWithStepsEnabled,
         );
         this.fsrsLearningQueuesDisabled = writable(data.fsrsLearningQueuesDisabled);
-        this.fsrsHealthCheck = writable(data.fsrsHealthCheck);
+        this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
         this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);
         this.reviewFuzzBase = writable(data.reviewFuzzBase);
@@ -348,7 +341,9 @@ export class DeckOptionsState {
         this.setCurrentIndex(newIdx);
     }
 
-    dataForSaving(mode: UpdateDeckConfigsMode): PlainMessage<UpdateDeckConfigsRequest> {
+    // A partial message: the collection-wide settings are left out (spec
+    // deck-options.collection-wide-in-preferences).
+    dataForSaving(mode: UpdateDeckConfigsMode): PartialMessage<UpdateDeckConfigsRequest> {
         const modifiedConfigsExcludingCurrent = this.configs
             .map((c) => c.config)
             .filter((c, idx) => {
@@ -367,16 +362,13 @@ export class DeckOptionsState {
             removedConfigIds: this.removedConfigs,
             configs,
             mode,
-            cardStateCustomizer: get(this.cardStateCustomizer),
+            // the collection-wide settings are not sent: they are Preferences
+            // settings (spec deck-options.collection-wide-in-preferences)
             limits: get(this.deckLimits),
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
             loadBalancerEnabled: get(this.loadBalancerEnabled),
-            applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
             fsrsShortTermWithStepsEnabled: get(this.fsrsShortTermWithStepsEnabled),
-            fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
-            fsrsReschedule: get(this.fsrsReschedule),
-            fsrsHealthCheck: get(this.fsrsHealthCheck),
             reviewFuzzEnabled: get(this.reviewFuzzEnabled),
             reviewFuzzBase: get(this.reviewFuzzBase),
             reviewFuzzFactorShort: get(this.reviewFuzzFactorShort),
@@ -394,7 +386,7 @@ export class DeckOptionsState {
         if (closeOnSuccess) {
             await updateDeckConfigsAndClose(request);
         } else {
-            await updateDeckConfigs(request);
+            await updateDeckConfigs(new UpdateDeckConfigsRequest(request));
         }
     }
 
@@ -473,15 +465,11 @@ export class DeckOptionsState {
     private getAllConfigs(): AllConfigs {
         return cloneDeep({
             configs: this.configs.map((c) => c.config),
-            cardStateCustomizer: get(this.cardStateCustomizer),
             limits: get(this.deckLimits),
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
             loadBalancerEnabled: get(this.loadBalancerEnabled),
-            applyAllParentLimits: get(this.applyAllParentLimits),
             fsrs: get(this.fsrs),
             fsrsShortTermWithStepsEnabled: get(this.fsrsShortTermWithStepsEnabled),
-            fsrsLearningQueuesDisabled: get(this.fsrsLearningQueuesDisabled),
-            fsrsReschedule: get(this.fsrsReschedule),
             reviewFuzzEnabled: get(this.reviewFuzzEnabled),
             reviewFuzzBase: get(this.reviewFuzzBase),
             reviewFuzzFactorShort: get(this.reviewFuzzFactorShort),

@@ -287,6 +287,10 @@ message DeckConfigsForUpdate {
   // The collection-wide Advanced UI mode (spec ui.mode-switch); the page
   // follows it and never writes it.
   bool advanced_ui = 21;
+  // The "Reschedule cards when desired retention changes" Preferences
+  // setting; the page only reads it, for the Easy Days warning (spec
+  // deck-options.collection-wide-in-preferences).
+  bool fsrs_reschedule = 22;
 }
 
 enum UpdateDeckConfigsMode {
@@ -302,6 +306,9 @@ message UpdateDeckConfigsRequest {
   repeated DeckConfig configs = 2;
   repeated int64 removed_config_ids = 3;
   UpdateDeckConfigsMode mode = 4;
+  // Fields 5, 9, 10, 11 and 14 are ignored: those settings are Preferences
+  // settings now (spec deck-options.collection-wide-in-preferences). They
+  // stay for wire compatibility.
   string card_state_customizer = 5;
   DeckConfigsForUpdate.CurrentDeck.Limits limits = 6;
   bool new_cards_ignore_review_limit = 7;

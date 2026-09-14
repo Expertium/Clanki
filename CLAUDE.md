@@ -31,8 +31,8 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    `deck-options.simple-view`): New cards/day, Maximum reviews/day, Algorithm
    with desired retention (plus the FSRS-7 First intervals table, the
    RWKV-Instant box and the RWKV-Curve reschedule button), one Bury siblings
-   switch (all three bury settings), Don't play audio automatically, Skip
-   question when replaying answer, one On-screen timer switch (show + stop on
+   switch (all three bury settings), Don't play audio automatically, one
+   On-screen timer switch (show + stop on
    answer), Easy Days. Advanced mode keeps the per-topic sections. Alongside:
    new presets have empty steps and run RWKV-Curve
    (`deck-options.new-preset-defaults`; the Rust and Python test fixtures
@@ -44,9 +44,15 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    (`spec/scheduling.md`, `sched.same-day-steps-always-on`,
    `sched.new-cards-never-ignore-review-limit`); the Algorithm dropdown is
    Advanced-only, the Easy Days sliders sit behind a collapsed expander, and
-   the one rescheduling control is the "Reschedule cards when changing
-   desired retention" switch (Advanced, every algorithm; the manual
-   RWKV-Curve reschedule button is gone).
+   the one rescheduling control is the "Reschedule cards when desired
+   retention changes" setting (every algorithm; the manual RWKV-Curve
+   reschedule button is gone). Then: the four collection-wide settings
+   (Limits start from top, Skip learning/relearning queues, the reschedule
+   choice, Custom scheduling) moved to Preferences > Review
+   (`deck-options.collection-wide-in-preferences`; the deck-options save
+   ignores their request fields), "Optimize Current Preset" and the
+   health-check switch are gone, and "Optimize All Presets" shows in both
+   modes (`deck-options.fsrs-only-controls`).
 3. **Rescheduling must not write to the card's history.** Done 2026-09-14:
    the FSRS "reschedule cards on change" path no longer logs a `Rescheduled`
    review-log row (the RWKV-Curve reschedule never did). See

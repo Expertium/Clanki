@@ -178,16 +178,11 @@ impl From<anki_proto::deck_config::UpdateDeckConfigsRequest> for UpdateDeckConfi
             configs: c.configs.into_iter().map(Into::into).collect(),
             removed_config_ids: c.removed_config_ids.into_iter().map(Into::into).collect(),
             mode,
-            card_state_customizer: c.card_state_customizer,
             limits: c.limits.unwrap_or_default(),
             new_cards_ignore_review_limit: c.new_cards_ignore_review_limit,
             load_balancer_enabled: c.load_balancer_enabled,
             fsrs_short_term_with_steps_enabled: c.fsrs_short_term_with_steps_enabled,
-            fsrs_learning_queues_disabled: c.fsrs_learning_queues_disabled,
-            apply_all_parent_limits: c.apply_all_parent_limits,
             fsrs: c.fsrs,
-            fsrs_reschedule: c.fsrs_reschedule,
-            fsrs_health_check: c.fsrs_health_check,
             review_fuzz_config: {
                 let defaults = StoredReviewFuzzConfig::default();
                 StoredReviewFuzzConfig {

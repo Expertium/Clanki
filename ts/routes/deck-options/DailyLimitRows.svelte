@@ -16,9 +16,10 @@
 
     /**
      * New cards/day and Maximum reviews/day, with their preset / deck / today
-     * tabs. Hosted by the Advanced-mode Daily Limits section (DailyLimits)
-     * and by the Simple-mode page (SimpleOptions), which own the help modal
-     * and receive the help key to open.
+     * tabs (Advanced mode only; spec deck-options.simple-view). Hosted by the
+     * Advanced-mode Daily Limits section (DailyLimits) and by the Simple-mode
+     * page (SimpleOptions), which own the help modal and receive the help key
+     * to open.
      */
     export let state: DeckOptionsState;
     export let openHelp: (key: "newLimit" | "reviewLimit") => void;
@@ -43,6 +44,7 @@
     const config = state.currentConfig;
     const limits = state.deckLimits;
     const defaults = state.defaults;
+    const advancedUi = state.advancedUi;
 
     $: reviewsTooLow =
         Math.min(9999, newValue * 10) > reviewsValue
@@ -106,7 +108,12 @@
 
 <Item>
     <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
-        <TabbedValue slot="tabs" tabs={newTabs} bind:value={newValue} />
+        <TabbedValue
+            slot="tabs"
+            tabs={newTabs}
+            bind:value={newValue}
+            showTabs={$advancedUi}
+        />
         <SettingTitle on:click={() => openHelp("newLimit")}>
             {tr.schedulingNewCardsday()}
         </SettingTitle>
@@ -115,7 +122,12 @@
 
 <Item>
     <SpinBoxRow bind:value={reviewsValue} defaultValue={defaults.reviewsPerDay}>
-        <TabbedValue slot="tabs" tabs={reviewTabs} bind:value={reviewsValue} />
+        <TabbedValue
+            slot="tabs"
+            tabs={reviewTabs}
+            bind:value={reviewsValue}
+            showTabs={$advancedUi}
+        />
         <SettingTitle on:click={() => openHelp("reviewLimit")}>
             {tr.schedulingMaximumReviewsday()}
         </SettingTitle>

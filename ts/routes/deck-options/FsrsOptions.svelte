@@ -8,7 +8,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         type ComputeParamsProgress,
     } from "@generated/anki/collection_pb";
     import {
-        computeFsrsParams,
         evaluateParams,
         evaluateParamsLegacy,
         getFsrsNewCardIntervals,
@@ -19,9 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { runWithBackendProgress } from "@tslib/progress";
 
     import SettingTitle from "$lib/components/SettingTitle.svelte";
-    import SwitchRow from "$lib/components/SwitchRow.svelte";
 
-    import GlobalLabel from "./GlobalLabel.svelte";
     import {
         commitEditing,
         type DeckOptionsState,
@@ -34,23 +31,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
-        deltaClass,
-        formatDelta,
-        formatMetric,
-        formatPercentDelta,
-        metricDelta,
-        metricDeltaPercent,
-    } from "./optimize-comparison";
-    import {
-        customDecayCandidates,
-        formatDecay,
-        supportsCustomDecayTable,
-        withLastParam,
-    } from "./custom-decay-table";
-    import {
         fsrsParamDiagnostics,
         fsrsParamsSupportSameDayEvaluation,
-        fsrsSameDayEvaluationOverrideForComparison,
         OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
         type FsrsParamDiagnostics,
     } from "./fsrs-param-diagnostics";
@@ -85,7 +67,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const fsrsReschedule = state.fsrsReschedule;
     const fsrsShortTermWithStepsEnabled = state.fsrsShortTermWithStepsEnabled;
     const fsrsLearningQueuesDisabled = state.fsrsLearningQueuesDisabled;
     const reviewFuzzEnabled = state.reviewFuzzEnabled;
@@ -99,11 +80,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     // Which value the Algorithm dropdown holds for this preset (spec
     // deck-options.scheduler-choice). The interval preview and the interval
-    // warnings only describe FSRS. The reschedule switch, the optimize
-    // buttons and the FSRS advanced section (parameters, version selector,
-    // search filter, health check, simulator) are Advanced-only (spec
-    // deck-options.simple-view) and hidden under either RWKV mode (spec
-    // deck-options.fsrs-only-controls).
+    // warnings only describe FSRS. "Optimize All Presets" shows in both
+    // modes; the FSRS advanced section (parameters, version selector,
+    // search filter, Check Health, simulator) is Advanced-only (spec
+    // deck-options.simple-view). All of them are hidden under either RWKV
+    // mode (spec deck-options.fsrs-only-controls). The collection-wide
+    // settings live in Preferences (spec
+    // deck-options.collection-wide-in-preferences).
     $: rwkvCurve = $config.rwkvReviewEnabled;
     $: rwkvInstant = $config.rwkvReviewInstantOrderEnabled && !rwkvCurve;
     $: rwkvMode = rwkvCurve || rwkvInstant;
@@ -112,46 +95,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $daysSinceLastOptimization > 30 ? tr.deckConfigTimeToOptimize() : "";
     let desiredRetentionFocused = false;
     let desiredRetentionEverFocused = false;
-    let optimized = false;
     const initialParams = [...selectedFsrsParams($config)];
     $: if (desiredRetentionFocused) {
         desiredRetentionEverFocused = true;
     }
-    $: showDesiredRetentionTooltip =
-        newlyEnabled || desiredRetentionEverFocused || optimized;
+    $: showDesiredRetentionTooltip = newlyEnabled || desiredRetentionEverFocused;
 
     let computeParamsProgress: ComputeParamsProgress | undefined;
-    let computingParams = false;
     let checkingParams = false;
     let checkingHealth = false;
-    type OptimizationMetrics = {
-        logLoss: number;
-        rmseBins: number;
-    };
-    type OptimizationComparison = {
-        optimizedParams: number[];
-        search: string;
-        ignoreRevlogsBeforeMs: bigint;
-        includeSameDayReviews: boolean | undefined;
-        current: OptimizationMetrics;
-        optimized: OptimizationMetrics;
-    };
-    type DecayRow = {
-        decay: number;
-        isBaseline: boolean;
-        logLoss: number;
-        rmseBins: number;
-        logLossDelta: number;
-        logLossDeltaPercent: number | undefined;
-        rmseDelta: number;
-        rmseDeltaPercent: number | undefined;
-    };
     type FsrsParamRole = "current" | "optimized";
 
     class FsrsOptimizationFeedbackError extends Error {}
-    let optimizationComparison: OptimizationComparison | undefined;
-    let customDecayRows: DecayRow[] = [];
-    let loadingCustomDecayTable = false;
     const fsrsVersionChoices = [
         {
             value: DeckConfig_Config_FsrsVersion.SEVEN,
@@ -182,10 +137,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             default:
                 return config.fsrsParams7;
         }
-    }
-
-    function setSelectedFsrsParams(params: number[]): void {
-        config.update((current) => withSelectedFsrsParams(current, params));
     }
 
     function errorMessage(err: unknown): string {
@@ -282,28 +233,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         );
     }
 
-    async function evaluateParamsLegacyForOptimization(
-        role: FsrsParamRole,
-        input: Parameters<typeof evaluateParamsLegacy>[0],
-    ): ReturnType<typeof evaluateParamsLegacy> {
-        requireValidFsrsParams(role, input.params);
-        try {
-            return await evaluateParamsLegacy(input, { alertOnError: false });
-        } catch (err) {
-            logFsrsParamProblem("backend evaluation failed", role, input.params, err);
-            if (isInvalidFsrsParametersError(err)) {
-                throw new FsrsOptimizationFeedbackError(
-                    invalidFsrsParamsFeedback(
-                        role,
-                        fsrsParamDiagnostics(input.params),
-                        true,
-                    ),
-                );
-            }
-            throw err;
-        }
-    }
-
     function optimizationFailureFeedback(err: unknown, params: number[]): string {
         if (err instanceof FsrsOptimizationFeedbackError) {
             return err.message;
@@ -338,9 +267,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return `FSRS optimization failed. Details have been logged to the console.\n\n${errorMessage(err)}`;
     }
 
-    const healthCheck = state.fsrsHealthCheck;
-
-    $: computing = computingParams || checkingParams || checkingHealth;
+    $: computing = checkingParams || checkingHealth;
     $: defaultparamSearch = `preset:"${state.getCurrentNameForSearch()}" -is:suspended`;
     $: roundedRetention = Number(effectiveDesiredRetention.toFixed(2));
     $: desiredRetentionWarning = getRetentionLongShortWarning(roundedRetention);
@@ -638,212 +565,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             : undefined;
     }
 
-    function includeSameDayOverrideForComparison(
-        currentParams: number[],
-        optimizedParams: number[],
-    ): boolean | undefined {
-        return fsrsSameDayEvaluationOverrideForComparison(
-            currentParams,
-            optimizedParams,
-            includeSameDayOverride(),
-        );
-    }
-
-    async function computeParams(): Promise<void> {
-        if (computingParams) {
-            await setWantsAbort({});
-            return;
-        }
-        if (state.presetAssignmentsChanged()) {
-            alert(tr.deckConfigPleaseSaveYourChangesFirst());
-            return;
-        }
-        await commitEditing();
-        computingParams = true;
-        computeParamsProgress = undefined;
-        const params = selectedFsrsParams($config);
-        try {
-            requireValidFsrsParams("current", params);
-            await runWithBackendProgress(
-                async () => {
-                    const search = optimizeSearchFilter();
-                    const evaluateSearch = evaluateSearchFilter();
-                    const resp = await computeFsrsParams(
-                        {
-                            search,
-                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                            currentParams: params,
-                            numOfRelearningSteps: getNumOfRelearningStepsInDay(),
-                            healthCheck: $healthCheck,
-                            includeSameDayReviews: includeSameDayOverride(),
-                            enableSchedulingPenalties:
-                                enableSchedulingPenaltiesOverride(),
-                            fsrsVersion: $config.fsrsVersion,
-                        },
-                        { alertOnError: false },
-                    );
-                    requireValidFsrsParams("optimized", resp.params);
-
-                    const alreadyOptimal =
-                        (params.length &&
-                            params.every(
-                                (n, i) => n.toFixed(4) === resp.params[i].toFixed(4),
-                            )) ||
-                        resp.params.length === 0;
-
-                    let healthCheckMessage = "";
-                    if (resp.healthCheckPassed !== undefined) {
-                        healthCheckMessage = resp.healthCheckPassed
-                            ? tr.deckConfigFsrsGoodFit()
-                            : "";
-                    }
-                    let alreadyOptimalMessage = "";
-                    if (alreadyOptimal) {
-                        alreadyOptimalMessage = resp.fsrsItems
-                            ? tr.deckConfigFsrsParamsOptimal()
-                            : tr.deckConfigFsrsParamsNoReviews();
-                    }
-                    const message = [alreadyOptimalMessage, healthCheckMessage]
-                        .filter((a) => a)
-                        .join("\n\n");
-
-                    if (message) {
-                        setTimeout(() => alert(message), 200);
-                    }
-
-                    if (!alreadyOptimal) {
-                        const comparisonIncludeSameDayReviews =
-                            includeSameDayOverrideForComparison(params, resp.params);
-                        const currentMetrics =
-                            await evaluateParamsLegacyForOptimization("current", {
-                                search: evaluateSearch,
-                                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                                params,
-                                includeSameDayReviews: comparisonIncludeSameDayReviews,
-                            });
-                        const optimizedMetrics =
-                            await evaluateParamsLegacyForOptimization("optimized", {
-                                search: evaluateSearch,
-                                ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                                params: resp.params,
-                                includeSameDayReviews: comparisonIncludeSameDayReviews,
-                            });
-                        optimizationComparison = {
-                            optimizedParams: [...resp.params],
-                            search: evaluateSearch,
-                            ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
-                            includeSameDayReviews: comparisonIncludeSameDayReviews,
-                            current: {
-                                logLoss: currentMetrics.logLoss,
-                                rmseBins: currentMetrics.rmseBins,
-                            },
-                            optimized: {
-                                logLoss: optimizedMetrics.logLoss,
-                                rmseBins: optimizedMetrics.rmseBins,
-                            },
-                        };
-                    }
-                    if (computeParamsProgress) {
-                        computeParamsProgress.current = computeParamsProgress.total;
-                    }
-                },
-                (progress) => {
-                    if (progress.value.case === "computeParams") {
-                        computeParamsProgress = progress.value.value;
-                    }
-                },
-            );
-        } catch (err) {
-            if (!isInterrupted(err)) {
-                alert(optimizationFailureFeedback(err, params));
-            }
-        } finally {
-            computingParams = false;
-        }
-    }
-
-    function closeOptimizationComparison(): void {
-        optimizationComparison = undefined;
-        customDecayRows = [];
-        loadingCustomDecayTable = false;
-    }
-
-    function keepCurrentParams(): void {
-        closeOptimizationComparison();
-    }
-
-    function applyOptimizedParams(): void {
-        if (!optimizationComparison) {
-            return;
-        }
-        setSelectedFsrsParams(optimizationComparison.optimizedParams);
-        optimized = true;
-        closeOptimizationComparison();
-    }
-
-    async function loadCustomDecayTable(): Promise<void> {
-        if (
-            !optimizationComparison ||
-            loadingCustomDecayTable ||
-            !supportsCustomDecayTable(optimizationComparison.optimizedParams)
-        ) {
-            return;
-        }
-        loadingCustomDecayTable = true;
-        try {
-            const comparison = optimizationComparison;
-            const rows = await Promise.all(
-                customDecayCandidates.map(async (decay) => {
-                    const resp = await evaluateParamsLegacy({
-                        search: comparison.search,
-                        ignoreRevlogsBeforeMs: comparison.ignoreRevlogsBeforeMs,
-                        params: withLastParam(comparison.optimizedParams, decay),
-                        includeSameDayReviews: comparison.includeSameDayReviews,
-                    });
-                    return {
-                        decay,
-                        isBaseline: false,
-                        logLoss: resp.logLoss,
-                        rmseBins: resp.rmseBins,
-                        logLossDelta: metricDelta(
-                            comparison.optimized.logLoss,
-                            resp.logLoss,
-                        ),
-                        logLossDeltaPercent: metricDeltaPercent(
-                            comparison.optimized.logLoss,
-                            resp.logLoss,
-                        ),
-                        rmseDelta: metricDelta(
-                            comparison.optimized.rmseBins,
-                            resp.rmseBins,
-                        ),
-                        rmseDeltaPercent: metricDeltaPercent(
-                            comparison.optimized.rmseBins,
-                            resp.rmseBins,
-                        ),
-                    };
-                }),
-            );
-            const optimizedDecay =
-                comparison.optimizedParams[comparison.optimizedParams.length - 1] ?? 0;
-            customDecayRows = [
-                {
-                    decay: optimizedDecay,
-                    isBaseline: true,
-                    logLoss: optimizationComparison.optimized.logLoss,
-                    rmseBins: optimizationComparison.optimized.rmseBins,
-                    logLossDelta: 0,
-                    logLossDeltaPercent: 0,
-                    rmseDelta: 0,
-                    rmseDeltaPercent: 0,
-                },
-                ...rows,
-            ];
-        } finally {
-            loadingCustomDecayTable = false;
-        }
-    }
-
     async function checkParams(): Promise<void> {
         if (checkingParams) {
             await setWantsAbort({});
@@ -1056,6 +777,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 slot="tabs"
                 tabs={desiredRetentionTabs}
                 bind:value={effectiveDesiredRetention}
+                showTabs={$advanced}
             />
             <SettingTitle on:click={() => openHelpModal("desiredRetention")}>
                 {tr.deckConfigDesiredRetention()}
@@ -1113,59 +835,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {/if}
 <Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
 
-<!-- Changing desired retention moves due dates under every algorithm, so
-     the switch is not FSRS-only (spec deck-options.reschedule-on-change).
-     It is Advanced-only, like the optimize buttons and the FSRS advanced
-     section below (spec deck-options.simple-view). -->
-{#if $advanced}
-    <SwitchRow bind:value={$fsrsReschedule} defaultValue={false}>
-        <SettingTitle on:click={() => openHelpModal("rescheduleCardsOnChange")}>
-            <GlobalLabel title={tr.deckConfigRescheduleCardsOnChange()} />
-        </SettingTitle>
-    </SwitchRow>
+<!-- "Reschedule cards when desired retention changes" is a Preferences
+     setting (spec deck-options.collection-wide-in-preferences). -->
 
-    {#if $fsrsReschedule}
-        <Warning warning={tr.deckConfigRescheduleCardsWarning()} />
-    {/if}
-{/if}
-
-{#if !rwkvMode && $advanced}
+<!-- One optimize action for every preset, shown in both modes (spec
+     deck-options.fsrs-only-controls). -->
+{#if !rwkvMode}
     <div class="ms-1 me-1">
-        <button
-            class="btn {computingParams ? 'btn-warning' : 'btn-primary'}"
-            disabled={!computingParams && computing}
-            on:click={() => computeParams()}
-        >
-            {#if computingParams}
-                {tr.actionsCancel()}
-            {:else}
-                {tr.deckConfigOptimizeButton()}
-            {/if}
-        </button>
         <button class="btn btn-primary" on:click={() => computeAllParams()}>
             {tr.deckConfigSaveAndOptimize()}
         </button>
-        <div>
-            {#if computingParams || checkingParams || checkingHealth}
-                {computeParamsProgressString}
-                {#if computeParamsProgressPct !== undefined}
-                    <div
-                        class="progress fsrs-progress"
-                        role="progressbar"
-                        aria-valuenow={computeParamsProgressPct}
-                        aria-valuemin="0"
-                        aria-valuemax="100"
-                    >
-                        <div
-                            class="progress-bar"
-                            style={`width: ${computeParamsProgressPct}%`}
-                        ></div>
-                    </div>
-                {/if}
-            {:else if totalReviews !== undefined}
-                {tr.statisticsReviews({ reviews: totalReviews })}
-            {/if}
-        </div>
     </div>
 {/if}
 
@@ -1229,16 +908,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <SettingTitle>Search Filter</SettingTitle>
         </ParamsSearchRow>
 
-        <SwitchRow bind:value={$healthCheck} defaultValue={false}>
-            <SettingTitle on:click={() => openHelpModal("healthCheck")}>
-                <GlobalLabel
-                    title={tr.deckConfigSlowSuffix({
-                        text: tr.deckConfigHealthCheck(),
-                    })}
-                />
-            </SettingTitle>
-        </SwitchRow>
-
         <button
             class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
             disabled={!checkingHealth && computing}
@@ -1263,6 +932,27 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {/if}
             </button>
         {/if}
+        <div>
+            {#if checkingParams || checkingHealth}
+                {computeParamsProgressString}
+                {#if computeParamsProgressPct !== undefined}
+                    <div
+                        class="progress fsrs-progress"
+                        role="progressbar"
+                        aria-valuenow={computeParamsProgressPct}
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                    >
+                        <div
+                            class="progress-bar"
+                            style={`width: ${computeParamsProgressPct}%`}
+                        ></div>
+                    </div>
+                {/if}
+            {:else if totalReviews !== undefined}
+                {tr.statisticsReviews({ reviews: totalReviews })}
+            {/if}
+        </div>
         <button
             class="btn btn-primary"
             on:click={() => showSimulatorModal(simulatorModal)}
@@ -1290,129 +980,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {openHelpModal}
     {onPresetChange}
 />
-
-{#if optimizationComparison}
-    {@const logLossDelta = metricDelta(
-        optimizationComparison.current.logLoss,
-        optimizationComparison.optimized.logLoss,
-    )}
-    {@const rmseDelta = metricDelta(
-        optimizationComparison.current.rmseBins,
-        optimizationComparison.optimized.rmseBins,
-    )}
-    {@const logLossDeltaPercent = metricDeltaPercent(
-        optimizationComparison.current.logLoss,
-        optimizationComparison.optimized.logLoss,
-    )}
-    {@const rmseDeltaPercent = metricDeltaPercent(
-        optimizationComparison.current.rmseBins,
-        optimizationComparison.optimized.rmseBins,
-    )}
-    <div class="optimization-popup-backdrop">
-        <div class="optimization-popup">
-            <div class="optimization-popup-header">Optimization Result</div>
-            <table class="optimization-popup-table">
-                <thead>
-                    <tr>
-                        <th>Metric</th>
-                        <th>Current</th>
-                        <th>Optimized</th>
-                        <th>Delta</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <th>Log loss</th>
-                        <td>{formatMetric(optimizationComparison.current.logLoss)}</td>
-                        <td>
-                            {formatMetric(optimizationComparison.optimized.logLoss)}
-                        </td>
-                        <td class={`optimize-delta ${deltaClass(logLossDelta)}`}>
-                            {formatDelta(logLossDelta)}
-                            ({formatPercentDelta(logLossDeltaPercent)})
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>RMSE (bins)</th>
-                        <td>{formatMetric(optimizationComparison.current.rmseBins)}</td>
-                        <td>
-                            {formatMetric(optimizationComparison.optimized.rmseBins)}
-                        </td>
-                        <td class={`optimize-delta ${deltaClass(rmseDelta)}`}>
-                            {formatDelta(rmseDelta)}
-                            ({formatPercentDelta(rmseDeltaPercent)})
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-            <div class="optimization-popup-actions">
-                <button
-                    class="btn btn-outline-primary"
-                    disabled={loadingCustomDecayTable ||
-                        !supportsCustomDecayTable(
-                            optimizationComparison.optimizedParams,
-                        )}
-                    on:click={loadCustomDecayTable}
-                >
-                    {#if !supportsCustomDecayTable(optimizationComparison.optimizedParams)}
-                        Custom Decay Table (FSRS-7 unsupported)
-                    {:else if loadingCustomDecayTable}
-                        {tr.actionsProcessing()}
-                    {:else}
-                        Load Custom Decay Table
-                    {/if}
-                </button>
-            </div>
-            {#if customDecayRows.length}
-                <table class="optimization-popup-table">
-                    <thead>
-                        <tr>
-                            <th>Decay</th>
-                            <th>Log loss</th>
-                            <th>Delta</th>
-                            <th>RMSE (bins)</th>
-                            <th>Delta</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {#each customDecayRows as row}
-                            <tr>
-                                <th>
-                                    {formatDecay(row.decay)}
-                                    {#if row.isBaseline}
-                                        (optimized)
-                                    {/if}
-                                </th>
-                                <td>{formatMetric(row.logLoss)}</td>
-                                <td
-                                    class={`optimize-delta ${deltaClass(row.logLossDelta)}`}
-                                >
-                                    {formatDelta(row.logLossDelta)}
-                                    ({formatPercentDelta(row.logLossDeltaPercent)})
-                                </td>
-                                <td>{formatMetric(row.rmseBins)}</td>
-                                <td
-                                    class={`optimize-delta ${deltaClass(row.rmseDelta)}`}
-                                >
-                                    {formatDelta(row.rmseDelta)}
-                                    ({formatPercentDelta(row.rmseDeltaPercent)})
-                                </td>
-                            </tr>
-                        {/each}
-                    </tbody>
-                </table>
-            {/if}
-            <div class="optimization-popup-footer">
-                <button class="btn btn-secondary" on:click={keepCurrentParams}>
-                    Keep Current
-                </button>
-                <button class="btn btn-primary" on:click={applyOptimizedParams}>
-                    Use Optimized
-                </button>
-            </div>
-        </div>
-    </div>
-{/if}
 
 <style>
     .btn {
@@ -1487,80 +1054,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         flex-wrap: wrap;
     }
 
-    .optimization-popup-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        z-index: 1060;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1rem;
-    }
-
-    .optimization-popup {
-        width: min(760px, 95vw);
-        max-width: calc(100vw - 2rem);
-        background: var(--canvas);
-        border: 1px solid var(--border);
-        border-radius: 0.5rem;
-        box-shadow: 0 0.75rem 2.25rem rgba(0, 0, 0, 0.2);
-        overflow-x: auto;
-    }
-
-    .optimization-popup-header {
-        font-weight: 700;
-        padding: 0.75rem 1rem 0.5rem;
-    }
-
-    .optimization-popup-table {
-        width: calc(100% - 2rem);
-        margin: 0 1rem 0.75rem;
-        border-collapse: collapse;
-        font-size: 0.9rem;
-    }
-
-    .optimization-popup-table th,
-    .optimization-popup-table td {
-        border: 1px solid var(--border);
-        padding: 0.35rem 0.5rem;
-        text-align: right;
-        white-space: nowrap;
-    }
-
-    .optimization-popup-table th:first-child,
-    .optimization-popup-table td:first-child {
-        text-align: left;
-    }
-
-    .optimization-popup-footer {
-        display: flex;
-        justify-content: flex-end;
-        gap: 0.5rem;
-        padding: 0 1rem 1rem;
-    }
-
-    .optimization-popup-actions {
-        padding: 0 1rem 0.25rem;
-    }
-
     .fsrs-progress {
         width: min(24rem, 100%);
         height: 0.5rem;
         margin-top: 0.35rem;
-    }
-
-    .optimize-delta.better {
-        color: var(--fg-green, #027a48);
-        font-weight: 600;
-    }
-
-    .optimize-delta.worse {
-        color: var(--fg-red, #b42318);
-        font-weight: 600;
-    }
-
-    .optimize-delta.equal {
-        color: var(--fg, inherit);
     }
 </style>

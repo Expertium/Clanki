@@ -20,6 +20,7 @@ preferences-please-restart-anki-to-complete-language = Please restart Clanki to 
 preferences-preferences = Preferences
 preferences-scheduling = Scheduling
 preferences-show-learning-cards-with-larger-steps = Show learning cards with larger steps before reviews
+preferences-skip-learning-queues = Skip learning/relearning queues with FSRS/RWKV
 preferences-show-next-review-time-above-answer = Show next review time above answer buttons
 preferences-show-colored-buttons = Show colored border on answer buttons
 preferences-two-button-mode = Show only Again and Good answer buttons

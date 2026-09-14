@@ -95,7 +95,8 @@ as on whatever value is stored, so a `false` written by an earlier build or
 by an add-on has no effect, and the "Allow same-day review for (re)learning
 steps" switch is gone from the deck-options screen. The new-card interval
 preview also always assumes it on. The separate "Skip learning/relearning
-queues" switch is unchanged.
+queues" setting is unchanged (a Preferences setting since 2026-09-14,
+`spec/deck-options.md`, `deck-options.collection-wide-in-preferences`).
 
 **Why:** Andrew, 2026-09-14: the setting should be on for everyone and not
 be a choice.

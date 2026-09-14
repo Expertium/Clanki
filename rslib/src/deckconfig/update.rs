@@ -47,16 +47,11 @@ pub struct UpdateDeckConfigsRequest {
     pub configs: Vec<DeckConfig>,
     pub removed_config_ids: Vec<DeckConfigId>,
     pub mode: UpdateDeckConfigsMode,
-    pub card_state_customizer: String,
     pub limits: Limits,
     pub new_cards_ignore_review_limit: bool,
-    pub apply_all_parent_limits: bool,
     pub fsrs: bool,
     pub load_balancer_enabled: bool,
     pub fsrs_short_term_with_steps_enabled: bool,
-    pub fsrs_learning_queues_disabled: bool,
-    pub fsrs_reschedule: bool,
-    pub fsrs_health_check: bool,
     pub review_fuzz_config: StoredReviewFuzzConfig,
 }
 
@@ -105,6 +100,7 @@ impl Collection {
             fsrs_legacy_evaluate: self.get_config_bool(BoolKey::FsrsLegacyEvaluate),
             days_since_last_fsrs_optimize,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
+            fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
         })
     }
 
@@ -221,6 +217,9 @@ impl Collection {
         let mut configs_after_update = configs_before_update.clone();
         let previous_review_fuzz = self.stored_review_fuzz_config();
         let review_fuzz_changed = previous_review_fuzz != req.review_fuzz_config;
+        // a Preferences setting, read here rather than sent with the save
+        // (spec deck-options.collection-wide-in-preferences)
+        let fsrs_reschedule = self.get_config_bool(BoolKey::FsrsReschedule);
         let today = self
             .timing_today()?
             .next_day_at
@@ -374,8 +373,8 @@ impl Collection {
                 if fsrs_toggled
                     || previous_params != current_params
                     || previous_dr != current_dr
-                    || (req.fsrs_reschedule && previous_easy_days != current_easy_days)
-                    || (req.fsrs_reschedule && review_fuzz_changed)
+                    || (fsrs_reschedule && previous_easy_days != current_easy_days)
+                    || (fsrs_reschedule && review_fuzz_changed)
                 {
                     decks_needing_memory_recompute
                         .entry(current_config_id)
@@ -403,7 +402,7 @@ impl Collection {
                                 preset_desired_retention: c.inner.desired_retention,
                                 max_interval: c.inner.maximum_review_interval,
                                 review_fuzz_config: req.review_fuzz_config.review_fuzz_config(),
-                                reschedule: fsrs_reschedule_for_preset(req.fsrs_reschedule, c),
+                                reschedule: fsrs_reschedule_for_preset(fsrs_reschedule, c),
                                 historical_retention: HISTORICAL_RETENTION,
                                 deck_desired_retention: deck_desired_retention.clone(),
                             })
@@ -430,27 +429,20 @@ impl Collection {
             self.update_memory_state(input)?;
         }
 
-        self.set_config_string_inner(StringKey::CardStateCustomizer, &req.card_state_customizer)?;
+        // Limits start from top, Skip learning/relearning queues, the
+        // reschedule choice, Custom scheduling and the health-check flag are
+        // not written here: the first four are Preferences settings (spec
+        // deck-options.collection-wide-in-preferences) and the last has no
+        // control any more.
         self.set_config_bool_inner(
             BoolKey::NewCardsIgnoreReviewLimit,
             req.new_cards_ignore_review_limit,
         )?;
-        self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, req.apply_all_parent_limits)?;
         self.set_config_bool_inner(BoolKey::LoadBalancerEnabled, req.load_balancer_enabled)?;
         self.set_config_bool_inner(
             BoolKey::FsrsShortTermWithStepsEnabled,
             req.fsrs_short_term_with_steps_enabled,
         )?;
-        self.set_config_bool_inner(
-            BoolKey::FsrsLearningQueuesDisabled,
-            req.fsrs_learning_queues_disabled,
-        )?;
-        self.set_config_bool_inner(BoolKey::FsrsHealthCheck, req.fsrs_health_check)?;
-        // remembered for the post-sync reconcile pass (spec
-        // deck-options.reschedule-choice-remembered)
-        if self.get_config_bool(BoolKey::FsrsReschedule) != req.fsrs_reschedule {
-            self.set_config_bool_inner(BoolKey::FsrsReschedule, req.fsrs_reschedule)?;
-        }
 
         Ok(())
     }
@@ -675,13 +667,18 @@ mod test {
         Ok(())
     }
 
-    // Pins spec/deck-options.md#deck-options.reschedule-on-change
+    // Pins spec/deck-options.md#deck-options.collection-wide-in-preferences
     #[test]
-    fn deck_options_save_remembers_reschedule_on_change_choice() -> Result<()> {
+    fn deck_options_save_leaves_the_collection_wide_settings_alone() -> Result<()> {
         let mut col = Collection::new();
-        assert!(!col.get_config_bool(BoolKey::FsrsReschedule));
+        col.set_config_bool_inner(BoolKey::FsrsReschedule, true)?;
+        col.set_config_bool_inner(BoolKey::ApplyAllParentLimits, true)?;
+        col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, true)?;
+        col.set_config_string_inner(StringKey::CardStateCustomizer, "// custom")?;
         let mut input = col.get_deck_configs_for_update(DeckId(1))?;
-        let mut req = UpdateDeckConfigsRequest {
+        // the page reads the reschedule choice for its Easy Days warning
+        assert!(input.fsrs_reschedule);
+        let req = UpdateDeckConfigsRequest {
             target_deck_id: DeckId(1),
             configs: input
                 .all_config
@@ -690,24 +687,21 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
-            apply_all_parent_limits: false,
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            fsrs_reschedule: true,
-            fsrs_health_check: false,
             review_fuzz_config: Default::default(),
         };
-        col.update_deck_configs(req.clone())?;
-        assert!(col.get_config_bool(BoolKey::FsrsReschedule));
-
-        req.fsrs_reschedule = false;
         col.update_deck_configs(req)?;
-        assert!(!col.get_config_bool(BoolKey::FsrsReschedule));
+        assert!(col.get_config_bool(BoolKey::FsrsReschedule));
+        assert!(col.get_config_bool(BoolKey::ApplyAllParentLimits));
+        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        assert_eq!(
+            col.get_config_string(StringKey::CardStateCustomizer),
+            "// custom"
+        );
         Ok(())
     }
 
@@ -776,16 +770,11 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         assert!(!col.update_deck_configs(input.clone())?.changes.had_change());
@@ -885,16 +874,11 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         let expected = vec![0.1, 0.2, 0.3];
@@ -919,16 +903,11 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         let expected = vec![
@@ -957,16 +936,11 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         let expected: Vec<f32> = (0..34).map(|i| 0.1 + i as f32 * 0.01).collect();
@@ -997,26 +971,22 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         col.update_deck_configs(input.clone())?;
         // the same-day flag is always on, whatever a save writes
         // (spec sched.same-day-steps-always-on)
         assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
-        assert!(!col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        // a Preferences setting; the deck-options save does not write it
+        // (spec deck-options.collection-wide-in-preferences)
+        assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
 
         input.fsrs_short_term_with_steps_enabled = true;
-        input.fsrs_learning_queues_disabled = true;
         col.update_deck_configs(input)?;
         assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
         assert!(col.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
@@ -1104,16 +1074,11 @@ mod test {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: "".to_string(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            apply_all_parent_limits: false,
             fsrs: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
 

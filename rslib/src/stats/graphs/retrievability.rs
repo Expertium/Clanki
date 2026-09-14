@@ -128,16 +128,11 @@ mod tests {
                 .collect(),
             removed_config_ids: vec![],
             mode: UpdateDeckConfigsMode::Normal,
-            card_state_customizer: String::new(),
             limits: Limits::default(),
             new_cards_ignore_review_limit: false,
-            apply_all_parent_limits: false,
             fsrs: true,
             load_balancer_enabled: false,
             fsrs_short_term_with_steps_enabled: false,
-            fsrs_learning_queues_disabled: false,
-            fsrs_reschedule: false,
-            fsrs_health_check: true,
             review_fuzz_config: Default::default(),
         };
         input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
