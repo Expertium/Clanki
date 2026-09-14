@@ -1761,8 +1761,9 @@ mod test {
     fn rwkv_due_states_use_explicit_model_definitions() -> Result<()> {
         let mut col = Collection::new();
         let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        // RWKV-Instant first; RWKV-Curve below (one algorithm per preset)
+        config.inner.rwkv_review_enabled = false;
         config.inner.rwkv_review_instant_order_enabled = true;
-        config.inner.rwkv_review_enabled = true;
         col.add_or_update_deck_config(&mut config)?;
 
         let timing = col.timing_today()?;
@@ -1831,6 +1832,16 @@ mod test {
             col.search_cards("is:rwkv:due", SortMode::NoOrder)?,
             vec![instant_due.id]
         );
+        assert!(col
+            .search_cards("is:rwkv-curve:due", SortMode::NoOrder)?
+            .is_empty());
+
+        config.inner.rwkv_review_instant_order_enabled = false;
+        config.inner.rwkv_review_enabled = true;
+        col.add_or_update_deck_config(&mut config)?;
+        assert!(col
+            .search_cards("is:rwkv:due", SortMode::NoOrder)?
+            .is_empty());
         assert_eq!(
             col.search_cards("is:rwkv-curve:due", SortMode::NoOrder)?,
             vec![curve_due.id]
