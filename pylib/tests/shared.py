@@ -56,14 +56,17 @@ def getEmptyCol():
 def _restore_upstream_preset_defaults(col) -> None:
     """Give the default preset the upstream SM-2 defaults.
 
-    A fresh collection now starts with no learning steps and RWKV-Curve
-    (spec/deck-options.md, deck-options.new-preset-defaults). The tests built
-    on getEmptyCol() were written against the upstream values (learning steps
-    1m 10m, relearning step 10m, no RWKV), so they are restated here.
+    A fresh collection now starts with no learning steps, RWKV-Curve, 9999
+    reviews/day and ascending retrievability (spec/deck-options.md,
+    deck-options.new-preset-defaults). The tests built on getEmptyCol() were
+    written against the upstream values (learning steps 1m 10m, relearning
+    step 10m, no RWKV, 200 reviews/day by due date), so they are restated here.
     """
     conf = col.decks.get_config(1)
     conf["new"]["delays"] = [1, 10]
     conf["lapse"]["delays"] = [10]
+    conf["rev"]["perDay"] = 200
+    conf["reviewOrder"] = 0
     conf["rwkvReviewEnabled"] = False
     # the stored RWKV flag lives in this bag and wins over the top-level key
     conf.pop("jschoreels.rwkv", None)
