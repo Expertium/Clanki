@@ -580,8 +580,9 @@ mod test {
     /// note id is supplied (i.e. "bury review siblings" is on).
     #[test]
     fn external_intervals_are_dispersed_away_from_siblings() {
-        use crate::scheduler::states::interval_overrides::fuzz_review_interval_overrides;
-        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
+        use crate::scheduler::states::button_intervals::button_intervals;
+        use crate::scheduler::states::button_intervals::ButtonInterval;
+        use crate::scheduler::states::button_intervals::DayRule;
 
         let dcid = DeckConfigId(1);
         let nid = NoteId(1);
@@ -604,9 +605,20 @@ mod test {
             review_fuzz_config: ReviewFuzzConfig::default(),
             next_day_at: TimestampSecs(0),
         };
-        let overrides = ReviewIntervalOverrides {
-            good: Some(sibling_day),
-            ..Default::default()
+        let good_only = [None, None, Some(sibling_day as f32), None];
+        let good_days = |ctx: &StateContext| match button_intervals(
+            ctx,
+            good_only,
+            DayRule::Review {
+                previous_interval: 0,
+            },
+        )[2]
+        {
+            Some(ButtonInterval::Days {
+                days,
+                fuzz_delta_days,
+            }) => (days, fuzz_delta_days),
+            other => panic!("expected days, got {other:?}"),
         };
 
         let mut landed_on_sibling_without_dispersal = false;
@@ -619,17 +631,12 @@ mod test {
                     .review_context(Some(nid), dcid)
                     .set_fuzz_seed(Some(seed)),
             );
-            let good = fuzz_review_interval_overrides(&ctx, 0, overrides)
-                .good
-                .unwrap();
+            let (good, fuzz_delta_days) = good_days(&ctx);
             assert_ne!(
-                good.scheduled_days, sibling_day,
+                good, sibling_day,
                 "seed {seed} placed the card on its sibling's day"
             );
-            assert_eq!(
-                good.fuzz_delta_days,
-                good.scheduled_days as i32 - sibling_day as i32
-            );
+            assert_eq!(fuzz_delta_days, good as i32 - sibling_day as i32);
 
             // bury review siblings off: no note id, so no dispersal
             let mut ctx = StateContext::defaults_for_testing();
@@ -639,10 +646,7 @@ mod test {
                     .review_context(None, dcid)
                     .set_fuzz_seed(Some(seed)),
             );
-            let good = fuzz_review_interval_overrides(&ctx, 0, overrides)
-                .good
-                .unwrap();
-            landed_on_sibling_without_dispersal |= good.scheduled_days == sibling_day;
+            landed_on_sibling_without_dispersal |= good_days(&ctx).0 == sibling_day;
         }
         assert!(
             landed_on_sibling_without_dispersal,

@@ -403,7 +403,9 @@ pub struct ReviewOutput {
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
-    pub intervals: [Option<u32>; 4],
+    /// Unrounded answer intervals in days, possibly under one day (spec
+    /// sched.sub-day-intervals).
+    pub intervals: [Option<f32>; 4],
     pub s90s: [Option<u32>; 4],
     pub card_state: Vec<u8>,
     pub deck_state: Vec<u8>,
@@ -431,7 +433,9 @@ pub struct ReviewPredictionOutput {
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
     pub current_s90: Option<u32>,
-    pub intervals: [Option<u32>; 4],
+    /// Unrounded answer intervals in days, possibly under one day (spec
+    /// sched.sub-day-intervals).
+    pub intervals: [Option<f32>; 4],
     pub s90s: [Option<u32>; 4],
 }
 
@@ -1390,14 +1394,14 @@ insert into segments (
         &self,
         input: &ReviewInput,
         answer_heads: &[ReviewHeads],
-    ) -> ([Option<u32>; 4], [Option<u32>; 4]) {
+    ) -> ([Option<f32>; 4], [Option<u32>; 4]) {
         let curves = std::array::from_fn(|index| &answer_heads[index].curve);
         let target_retentions = std::array::from_fn(|index| {
             input.target_retentions[index].unwrap_or(self.target_retention)
         });
 
         (
-            intervals_for_answer_curves(
+            unrounded_intervals_for_answer_curves(
                 curves,
                 target_retentions,
                 self.max_interval_days,
@@ -4701,6 +4705,97 @@ fn intervals_for_pava_adjusted_samples(
     }
 
     std::array::from_fn(|index| Some(intervals[index].unwrap_or(max_interval_days)))
+}
+
+/// Points (days) searched inside the first day when an answer curve reaches
+/// its target before day 1 (spec sched.sub-day-intervals).
+const SUB_DAY_SEARCH_POINTS: [f32; 14] = [
+    1.0 / 1440.0,
+    5.0 / 1440.0,
+    10.0 / 1440.0,
+    20.0 / 1440.0,
+    30.0 / 1440.0,
+    1.0 / 24.0,
+    2.0 / 24.0,
+    3.0 / 24.0,
+    4.0 / 24.0,
+    6.0 / 24.0,
+    8.0 / 24.0,
+    12.0 / 24.0,
+    16.0 / 24.0,
+    20.0 / 24.0,
+];
+
+/// Unrounded answer intervals in days, for the reviewer (spec
+/// sched.sub-day-intervals). A crossing inside the first day is searched on
+/// `SUB_DAY_SEARCH_POINTS`; later crossings use the same day grid and linear
+/// interpolation as `intervals_for_answer_curves`, whose whole-day results
+/// equal these rounded up. With grade order enforced, the distance to each
+/// grade's target is pooled across grades at every point, as there.
+fn unrounded_intervals_for_answer_curves(
+    curves: [&ReviewCurve; 4],
+    target_retentions: [f32; 4],
+    max_interval_days: u32,
+    enforce_grade_order: bool,
+) -> [Option<f32>; 4] {
+    let valid = target_retentions.map(|target| (0.0..=1.0).contains(&target));
+    if max_interval_days < 1 || (enforce_grade_order && valid.iter().any(|valid| !valid)) {
+        return [None; 4];
+    }
+    let margins_at = |days: f32| -> [f32; 4] {
+        let margins = std::array::from_fn(|index| {
+            predict_curve(curves[index], days * SECONDS_PER_DAY as f32) - target_retentions[index]
+        });
+        if enforce_grade_order {
+            pava_non_decreasing(margins)
+        } else {
+            margins
+        }
+    };
+
+    let mut points = Vec::new();
+    if margins_at(1.0).iter().any(|margin| *margin <= 0.0) {
+        points.extend(SUB_DAY_SEARCH_POINTS);
+    }
+    points.extend(
+        interval_search_days(max_interval_days)
+            .into_iter()
+            .map(|day| day as f32),
+    );
+
+    let maximum = max_interval_days as f32;
+    let mut intervals: [Option<f32>; 4] = [None; 4];
+    let mut previous: [Option<(f32, f32)>; 4] = [None; 4];
+    for point in points {
+        let margins = margins_at(point);
+        for index in 0..4 {
+            if intervals[index].is_some() {
+                continue;
+            }
+            let margin = margins[index];
+            if margin <= 0.0 {
+                let crossing = match previous[index] {
+                    Some((previous_point, previous_margin)) => {
+                        let denominator = previous_margin - margin;
+                        if denominator <= 0.0 {
+                            point
+                        } else {
+                            previous_point
+                                + (point - previous_point) * previous_margin / denominator
+                        }
+                    }
+                    None => point,
+                };
+                intervals[index] = Some(crossing.min(maximum));
+            }
+            previous[index] = Some((point, margin));
+        }
+        if intervals.iter().all(Option::is_some) {
+            break;
+        }
+    }
+
+    std::array::from_fn(|index| valid[index].then(|| intervals[index].unwrap_or(maximum)))
 }
 
 fn interpolated_crossing_interval(
@@ -9327,6 +9422,81 @@ order by e.id, e.cid
         });
 
         assert_eq!(intervals, [Some(50), Some(50), Some(60), Some(90)]);
+    }
+
+    fn basis_curve(basis_index: usize) -> ReviewCurve {
+        let mut weights = vec![0.0; basis_index + 1];
+        weights[basis_index] = 1.0;
+        ReviewCurve {
+            ahead_logits: vec![0.0],
+            weights,
+        }
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: the unrounded answer
+    // intervals round up to exactly the whole-day intervals, with and
+    // without grade order.
+    #[test]
+    fn unrounded_answer_intervals_round_up_to_the_day_intervals() {
+        for bases in [
+            [3, 10, 20, 30],
+            [40, 60, 80, 100],
+            [100, 80, 90, 110],
+            [1, 2, 3, 4],
+        ] {
+            let curves = bases.map(basis_curve);
+            let refs = std::array::from_fn(|index| &curves[index]);
+            for enforce in [false, true] {
+                let unrounded =
+                    unrounded_intervals_for_answer_curves(refs, [0.9; 4], 36_500, enforce);
+                let days = intervals_for_answer_curves(refs, [0.9; 4], 36_500, enforce);
+                let rounded = unrounded.map(|interval| {
+                    interval.map(|interval| clamped_interval_days(interval, 36_500))
+                });
+                assert_eq!(rounded, days, "bases {bases:?} enforce {enforce}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fast_forgetting_curve_gives_a_sub_day_interval() {
+        // basis 32 has a stability of about an hour (R = 0.9 at t = s), so
+        // the curve meets 0.9 a little after 0.04 days
+        let curves = [
+            basis_curve(32),
+            basis_curve(32),
+            basis_curve(32),
+            basis_curve(32),
+        ];
+        let refs = std::array::from_fn(|index| &curves[index]);
+        let intervals = unrounded_intervals_for_answer_curves(refs, [0.9; 4], 36_500, true);
+        for interval in intervals {
+            let interval = interval.unwrap();
+            assert!(interval > 0.03 && interval < 0.05, "{interval}");
+        }
+        // and the sub-day crossing is where the curve meets the target
+        let crossing = intervals[0].unwrap();
+        let retrievability = predict_curve(&curves[0], crossing * SECONDS_PER_DAY as f32);
+        assert!((retrievability - 0.9).abs() < 0.02, "{retrievability}");
+    }
+
+    #[test]
+    fn unrounded_intervals_are_not_rounded_after_the_first_day() {
+        let curves = [
+            basis_curve(60),
+            basis_curve(60),
+            basis_curve(60),
+            basis_curve(60),
+        ];
+        let refs = std::array::from_fn(|index| &curves[index]);
+        let interval =
+            unrounded_intervals_for_answer_curves(refs, [0.9; 4], 36_500, false)[2].unwrap();
+        assert!(interval >= 1.0);
+        assert_ne!(
+            interval,
+            interval.round(),
+            "{interval} should keep its fraction"
+        );
     }
 
     #[test]

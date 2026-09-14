@@ -264,18 +264,17 @@ mode). The section layout itself is markup.
 ## deck-options.collection-wide-in-preferences
 
 Given the deck-options screen, every setting on it belongs to one preset
-(or, for the limit tabs, to the current deck). The four settings that apply
-to the whole collection live in Preferences > Review, in the Scheduler group
-and a "Custom scheduling" group, and nowhere else: Limits start from top
-(`applyAllParentLimits`), Skip learning/relearning queues with FSRS/RWKV
-(`fsrsLearningQueuesDisabled`), Reschedule cards when desired retention
+(or, for the limit tabs, to the current deck). The three settings that
+apply to the whole collection live in Preferences > Review, in the Scheduler
+group and a "Custom scheduling" group, and nowhere else: Limits start from
+top (`applyAllParentLimits`), Reschedule cards when desired retention
 changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
 and Custom scheduling (`cardStateCustomizer`). They are read and written
 through the `Preferences.Scheduling` message; the matching fields of the
 deck-options save request are ignored, so a deck-options save never
-overwrites a Preferences change. The deck-options page still reads two of
-them: Skip learning/relearning queues for the First intervals preview and
-the reschedule choice for the Easy Days warning. With no collection-wide
+overwrites a Preferences change. The deck-options page still reads one of
+them: the reschedule choice, for the Easy Days warning. With no
+collection-wide
 setting left on the page, the globe marker and the "affects the entire
 collection" help icon are gone.
 

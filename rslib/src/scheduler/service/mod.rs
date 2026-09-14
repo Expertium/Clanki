@@ -30,8 +30,6 @@ use anki_proto::scheduler::FsrsPresetForCardResponse;
 use anki_proto::scheduler::FsrsPresetIdsForCardsResponse;
 use anki_proto::scheduler::FuzzDeltaRequest;
 use anki_proto::scheduler::FuzzDeltaResponse;
-use anki_proto::scheduler::FuzzReviewIntervalsRequest;
-use anki_proto::scheduler::FuzzReviewIntervalsResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
@@ -47,6 +45,7 @@ use anki_proto::scheduler::RwkvReviewQueueScoresRequest;
 use anki_proto::scheduler::RwkvReviewRescheduleRequest;
 use anki_proto::scheduler::RwkvReviewRetrievabilityCacheRowsRequest;
 use anki_proto::scheduler::RwkvStatsGraphScoresRequest;
+use anki_proto::scheduler::SchedulingStatesWithIntervalsRequest;
 use anki_proto::scheduler::SimulateFsrsReviewRequest;
 use anki_proto::scheduler::SimulateFsrsReviewResponse;
 use anki_proto::scheduler::SimulateFsrsWorkloadResponse;
@@ -61,7 +60,6 @@ use fsrs::FSRS;
 use crate::backend::Backend;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::collection::RwkvStatsGraphScoreEntry;
-use crate::config::BoolKey;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
@@ -477,7 +475,6 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::GetFsrsNewCardIntervalsRequest,
     ) -> Result<generic::StringList> {
-        let requested_learning_queues_disabled = input.fsrs_learning_queues_disabled;
         let config = crate::deckconfig::DeckConfig {
             inner: input.config.unwrap_or_default(),
             ..Default::default()
@@ -492,8 +489,9 @@ impl crate::services::SchedulerService for Collection {
         // Always on (spec sched.same-day-steps-always-on); the request field
         // is kept for wire compatibility and ignored.
         let fsrs_short_term_with_steps_enabled = true;
-        let fsrs_learning_queues_disabled = requested_learning_queues_disabled
-            .unwrap_or_else(|| self.get_config_bool(BoolKey::FsrsLearningQueuesDisabled));
+        // A new card has no reviews today, so only a limit of 0 applies
+        // (spec sched.max-same-day-reviews).
+        let same_day_review_limit_reached = config.effective_max_same_day_reviews() == Some(0);
         let review_fuzz_config = self.review_fuzz_config();
         let make_ctx = |memory_state: Option<fsrs::MemoryState>,
                         days_elapsed: f32|
@@ -512,7 +510,7 @@ impl crate::services::SchedulerService for Collection {
                 fuzz_factor: None,
                 fsrs_next_states: Some(fsrs_next_states),
                 fsrs_short_term_with_steps_enabled,
-                fsrs_learning_queues_disabled,
+                same_day_review_limit_reached,
                 fsrs_allow_short_term,
                 steps: crate::scheduler::states::steps::LearningSteps::new(
                     &config.inner.learn_steps,
@@ -704,36 +702,15 @@ impl crate::services::SchedulerService for Collection {
         })
     }
 
-    fn fuzz_review_intervals(
+    fn scheduling_states_with_intervals(
         &mut self,
-        input: FuzzReviewIntervalsRequest,
-    ) -> Result<FuzzReviewIntervalsResponse> {
-        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
-
-        use crate::scheduler::states::interval_overrides::FuzzedInterval;
-        use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
-
-        let fuzzed = self.fuzz_review_intervals(
+        input: SchedulingStatesWithIntervalsRequest,
+    ) -> Result<anki_proto::scheduler::SchedulingStates> {
+        self.scheduling_states_with_intervals(
             CardId(input.card_id),
-            ReviewIntervalOverrides {
-                again: input.again,
-                hard: input.hard,
-                good: input.good,
-                easy: input.easy,
-            },
-        )?;
-        let convert = |interval: Option<FuzzedInterval>| {
-            interval.map(|interval| Interval {
-                scheduled_days: interval.scheduled_days,
-                fuzz_delta_days: interval.fuzz_delta_days,
-            })
-        };
-        Ok(FuzzReviewIntervalsResponse {
-            again: convert(fuzzed.again),
-            hard: convert(fuzzed.hard),
-            good: convert(fuzzed.good),
-            easy: convert(fuzzed.easy),
-        })
+            [input.again, input.hard, input.good, input.easy],
+        )
+        .map(Into::into)
     }
 
     fn fsrs_current_retrievability(

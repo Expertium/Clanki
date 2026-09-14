@@ -8,6 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { HelpPage } from "@tslib/help-page";
     import type Carousel from "bootstrap/js/dist/carousel";
     import type Modal from "bootstrap/js/dist/modal";
+    import { get } from "svelte/store";
 
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
@@ -18,6 +19,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     import { newInsertOrderChoices } from "./choices";
+    import {
+        applyMaxSameDayReviews,
+        MAX_SAME_DAY_REVIEWS_NO_LIMIT,
+        maxSameDayReviewsFromConfig,
+        maxSameDayReviewsShown,
+    } from "./same-day-reviews";
     import type { DeckOptionsState } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
@@ -56,10 +63,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             ? tr.deckConfigNewInsertionOrderRandomWithV3()
             : "";
 
+    // Unset (no limit) shows as 9999; editing writes the number (spec
+    // sched.max-same-day-reviews).
+    let maxSameDayReviews = maxSameDayReviewsFromConfig($config);
+    $: maxSameDayReviews = maxSameDayReviewsFromConfig($config);
+    function setMaxSameDayReviews(value: number): void {
+        if (maxSameDayReviewsFromConfig(get(config)) !== value) {
+            config.update((current) => applyMaxSameDayReviews(current, value));
+        }
+    }
+    $: setMaxSameDayReviews(maxSameDayReviews);
+
     const settings = {
         learningSteps: {
             title: tr.deckConfigLearningSteps(),
             help: tr.deckConfigLearningStepsTooltip(),
+            url: HelpPage.DeckOptions.learningSteps,
+        },
+        maxSameDayReviews: {
+            title: tr.deckConfigMaxSameDayReviews(),
+            help: tr.deckConfigMaxSameDayReviewsTooltip(),
             url: HelpPage.DeckOptions.learningSteps,
         },
         graduatingInterval: {
@@ -121,6 +144,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Item>
             <Warning warning={stepsTooLargeForFsrs} />
         </Item>
+
+        {#if $fsrs && maxSameDayReviewsShown($config)}
+            <Item>
+                <SpinBoxRow
+                    bind:value={maxSameDayReviews}
+                    defaultValue={MAX_SAME_DAY_REVIEWS_NO_LIMIT}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("maxSameDayReviews"),
+                            )}
+                    >
+                        {settings.maxSameDayReviews.title}
+                    </SettingTitle>
+                </SpinBoxRow>
+            </Item>
+        {/if}
 
         {#if !$fsrs}
             <Item>
