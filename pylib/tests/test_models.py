@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 # coding: utf-8
+import copy
 import html
 import re
 import time
@@ -88,6 +89,57 @@ def test_fields():
     # move 0 -> 1
     col.models.moveField(m, m["flds"][0], 1)
     assert col.get_note(col.models.nids(m)[0]).fields == ["", "2", "1"]
+
+
+def test_field_map_tracks_unsaved_edits_and_isolates_callers():
+    col = getEmptyCol()
+    model = col.models.current()
+    initial = col.models.field_map(model)
+    again = col.models.field_map(model)
+    assert again == initial
+    assert again is not initial
+    # Field entries can be reused, while caller changes to the map stay local.
+    assert again["Front"] is initial["Front"]
+    again.clear()
+    assert "Front" in col.models.field_map(model)
+
+    front = model["flds"][0]
+    front["name"] = "Renamed"
+    renamed = col.models.field_map(model)
+    assert "Front" not in renamed
+    assert renamed["Renamed"] == (0, front)
+    front["ord"] = 1
+    assert col.models.field_map(model)["Renamed"][0] == 1
+
+    # A replacement dict must be returned even with identical field metadata.
+    replacement = dict(front)
+    model["flds"][0] = replacement
+    assert col.models.field_map(model)["Renamed"][1] is replacement
+    model["flds"].reverse()
+    assert list(col.models.field_map(model)) == ["Back", "Renamed"]
+    model["flds"].pop()
+    assert list(col.models.field_map(model)) == ["Back"]
+    model["flds"].append(replacement)
+    assert list(col.models.field_map(model)) == ["Back", "Renamed"]
+
+
+def test_field_map_refreshes_after_notetype_update_and_undo():
+    col = getEmptyCol()
+    model = col.models.current()
+    note = col.new_note(model)
+    note["Front"] = "front"
+    note["Back"] = "back"
+    col.add_note(note, col.decks.current()["id"])
+    assert col.get_note(note.id)["Front"] == "front"
+
+    updated = copy.deepcopy(model)
+    updated["flds"][0]["name"] = "Renamed"
+    col.models.update_dict(updated)
+    assert col.get_note(note.id)["Renamed"] == "front"
+    col.undo()
+    restored = col.get_note(note.id)
+    assert restored["Front"] == "front"
+    assert "Renamed" not in restored
 
 
 def test_templates():

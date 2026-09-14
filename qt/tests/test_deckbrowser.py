@@ -1,0 +1,82 @@
+# Copyright: Ankitects Pty Ltd and contributors
+# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+from types import SimpleNamespace
+
+import pytest
+
+from anki.decks import DeckTreeNode
+
+
+@pytest.fixture
+def browser(monkeypatch: pytest.MonkeyPatch):
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        tr,
+        "decks_review_limit_tooltip",
+        lambda *, total, count: f'{total} due; limit allows {count} "reviews".',
+    )
+    from aqt.deckbrowser import DeckBrowser
+
+    browser = DeckBrowser.__new__(DeckBrowser)
+    browser._rwkv_pending_deck_ids = set()
+    return browser
+
+
+def test_review_limit_totals_include_collapsed_children(browser):
+    child = DeckTreeNode(deck_id=2, review_count=40, review_uncapped=100, level=2)
+    parent = DeckTreeNode(
+        deck_id=1,
+        review_count=65,
+        review_uncapped=42,
+        children=[child],
+        collapsed=True,
+        level=1,
+    )
+    tree = DeckTreeNode(children=[parent])
+    browser._render_data = SimpleNamespace(tree=tree, current_deck_id=1)
+
+    labels = browser._review_limit_labels(tree)
+    assert labels[1] == (" (/142)", '142 due; limit allows 65 "reviews".')
+    assert labels[2][0] == " (/100)"
+    rendered = browser._renderDeckTree(tree)
+    assert 'class="review-count">65</span>' in rendered
+    assert (
+        'title="142 due; limit allows 65 &quot;reviews&quot;."> (/142)</span>'
+        in rendered
+    )
+    assert 'id="deck-2-review-limit"' not in rendered
+
+
+@pytest.mark.parametrize(
+    "count,total,expected", [(0, 10, " (/10)"), (10, 10, ""), (0, 0, "")]
+)
+def test_review_limit_only_shown_when_count_reduced(browser, count, total, expected):
+    tree = DeckTreeNode(
+        children=[DeckTreeNode(deck_id=1, review_count=count, review_uncapped=total)]
+    )
+    assert browser._review_limit_labels(tree)[1][0] == expected
+
+
+def test_review_limit_refresh_clears_pending_and_unlimited_labels(browser):
+    import json
+
+    node = DeckTreeNode(deck_id=1, review_count=5, review_uncapped=10)
+    tree = DeckTreeNode(children=[node])
+    scripts = []
+    browser.web = SimpleNamespace(eval=scripts.append)
+    browser._render_data = SimpleNamespace(tree=tree)
+
+    def refresh_labels():
+        browser._render_rwkv_deck_counts()
+        encoded = scripts[-1].split("const limitLabels = ", 1)[1].split(";\n", 1)[0]
+        return json.loads(encoded)["1"]
+
+    browser._rwkv_pending_deck_ids = {1}
+    assert refresh_labels() == ["", ""]
+    browser._rwkv_pending_deck_ids.clear()
+    assert refresh_labels()[0] == " (/10)"
+    tree.children[0].review_count = 10
+    assert refresh_labels() == ["", ""]

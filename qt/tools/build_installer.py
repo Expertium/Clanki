@@ -28,6 +28,34 @@ PORTABLE_DATA_DIR = "Anki Portable Data"
 # Anki disk-lang codes whose Chromium .pak filename differs from the disk lang.
 _CHROMIUM_PAK_LANG_REMAP = {"tl": "fil"}
 
+_SUPPORT_PYTHON_TAG = "3.13"
+
+_MAC_SUPPORT_HASHES = {
+    "support_package_hash": "sha256:1e4630ba00f90bde7e44e54386bc5b2b860dce473d70c2cef9fe651642820bc1",
+    "stub_binary_hash": "sha256:879b015bceb9260da6062ff39c70dcf87652380d1d9a0a2a0038875cec348022",
+}
+
+# Hashes of the support packages/stub binaries pinned by support_revision and
+# stub_binary_revision in pyproject.toml
+_SUPPORT_HASHES: dict[tuple[str, str], dict[str, str]] = {
+    ("win32", "AMD64"): {
+        "support_package_hash": "sha256:791ada5e20aba24524f8d939cdeb069976d632a699fe5cb65274b23f4545e68a",
+        "stub_binary_hash": "sha256:7a8d544123450499ce408e8bd0c7b17c664f32e3b1dcde72c4b885e33cd43bbb",
+    },
+    ("win32", "ARM64"): {
+        "support_package_hash": "sha256:1ab59dce63c61e780b6448bf38ad1b66d5428be831e42d1f09fc11258a4eab4f",
+        "stub_binary_hash": "sha256:bd57e168ccfd18add46d4e328eb7d956f26e75e5a2b6a177c3254fa89deeb643",
+    },
+    ("darwin", "arm64"): _MAC_SUPPORT_HASHES,
+    ("darwin", "x86_64"): _MAC_SUPPORT_HASHES,
+    ("linux", "x86_64"): {
+        "support_package_hash": "sha256:8a689a077337bea6d1c4bc0b7df1d52fcaa28f5f67e50df8bf417c1e3f9d8874",
+    },
+    ("linux", "aarch64"): {
+        "support_package_hash": "sha256:01ce0ce9189feaead3298abf10d4efe998c55a489b3d5d38ca4f83dda7e7977e",
+    },
+}
+
 
 def normalize_wheel_path(path: str | Path) -> str:
     return Path(path).absolute().as_posix()
@@ -93,6 +121,24 @@ def get_briefcase_sources_path(out_dir: Path, portable: bool = False) -> Path:
     return path
 
 
+def get_support_hash_args() -> list[str]:
+    python_tag = "{}.{}".format(*sys.version_info[:2])
+    if python_tag != _SUPPORT_PYTHON_TAG:
+        raise RuntimeError(
+            f"Support package hashes are pinned for Python {_SUPPORT_PYTHON_TAG}, "
+            f"but the installer is being built with Python {python_tag}"
+        )
+    key = (sys.platform, platform.machine())
+    try:
+        hashes = _SUPPORT_HASHES[key]
+    except KeyError:
+        raise RuntimeError(f"No support package hashes pinned for {key}") from None
+    config_args = []
+    for name, value in hashes.items():
+        config_args.extend(["-C", f'{name}="{value}"'])
+    return config_args
+
+
 def get_briefcase_config_args(args: argparse.Namespace) -> list[str]:
     version = args.version
     if aqt_wheel := getattr(args, "aqt_wheel", None):
@@ -125,6 +171,7 @@ def get_briefcase_config_args(args: argparse.Namespace) -> list[str]:
             ["-C", "requires=[" + ",".join(f'"{dep}"' for dep in requires) + "]"]
         )
     config_args.extend(["-C", f'template="{template_path.absolute().as_posix()}"'])
+    config_args.extend(get_support_hash_args())
     if sys.platform == "win32":
         compression_level = (
             "high" if os.environ.get("RELEASE") in ("1", "2") else "none"
@@ -132,6 +179,25 @@ def get_briefcase_config_args(args: argparse.Namespace) -> list[str]:
         config_args.extend(["-C", f'compression_level="{compression_level}"'])
 
     return config_args
+
+
+def get_uv_binary() -> Path:
+    if uv_path := os.environ.get("UV_BINARY"):
+        return Path(uv_path)
+    name = "uv.exe" if sys.platform == "win32" else "uv"
+    return Path("out/extracted/uv") / name
+
+
+def get_briefcase_environ() -> dict[str, str]:
+    """Get environment variables to pass to Briefcase calls."""
+    uv_binary = get_uv_binary().resolve()
+    if not uv_binary.is_file():
+        raise RuntimeError(f"uv not found at {uv_binary}")
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join(
+        filter(None, [str(uv_binary.parent), env.get("PATH", "")])
+    )
+    return env
 
 
 def compile_sources(out_dir: Path, version: str, portable: bool = False) -> bool:
@@ -241,6 +307,7 @@ def build(args: argparse.Namespace) -> None:
             "--log",
         ],
         cwd=output_dir,
+        env=get_briefcase_environ(),
     )
     prune_webengine_locales(output_dir)
     repair_macos_anki_audio_layout(output_dir, portable=args.portable)
@@ -276,22 +343,48 @@ def get_output_dir(args: argparse.Namespace) -> Path:
     return portable_out_dir if getattr(args, "portable", False) else out_dir
 
 
+def get_artifact_version(app_version: str) -> str:
+    return os.environ.get("ANKI_ARTIFACT_VERSION") or app_version
+
+
+def get_portable_archive_path(output_dir: Path, version: str) -> Path:
+    platform_suffix = get_platform_suffix()
+    if sys.platform == "linux":
+        extension = ".zst"
+    elif sys.platform in ("darwin", "win32"):
+        extension = ".zip"
+    else:  # pragma: no cover
+        raise RuntimeError(f"Unsupported portable platform: {sys.platform}")
+    return output_dir / "dist" / f"anki-{version}-portable{platform_suffix}{extension}"
+
+
 def package_portable_archive(output_dir: Path, version: str) -> Path:
     dist_dir = output_dir / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
     generated_artifacts = list(dist_dir.iterdir())
     staging_dir = output_dir / "portable-package"
     distribution_dir = staging_dir / PORTABLE_FORMAL_NAME
-    archive_path = dist_dir / f"anki-{version}-portable{get_platform_suffix()}.zip"
+    archive_path = get_portable_archive_path(output_dir, version)
 
     shutil.rmtree(staging_dir, ignore_errors=True)
     distribution_dir.mkdir(parents=True)
-    app_bundle = get_briefcase_sources_path(output_dir, portable=True).parents[1]
-    shutil.copytree(
-        app_bundle,
-        distribution_dir / app_bundle.name,
-        copy_function=shutil.copy2,
-        symlinks=True,
-    )
+    sources = get_briefcase_sources_path(output_dir, portable=True)
+    if sys.platform == "darwin":
+        app_bundle = sources.parents[1]
+        shutil.copytree(
+            app_bundle,
+            distribution_dir / app_bundle.name,
+            copy_function=shutil.copy2,
+            symlinks=True,
+        )
+    else:
+        shutil.copytree(
+            sources,
+            distribution_dir,
+            copy_function=shutil.copy2,
+            dirs_exist_ok=True,
+            symlinks=True,
+        )
     (distribution_dir / PORTABLE_DATA_DIR).mkdir()
     shutil.copy2(installer_dir / "portable-readme.txt", distribution_dir / "README.txt")
     shutil.copy2("LICENSE", distribution_dir / "LICENSE.txt")
@@ -303,17 +396,40 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
             artifact.unlink()
 
     try:
-        subprocess.check_call(
-            [
-                "ditto",
-                "-c",
-                "-k",
-                "--sequesterRsrc",
-                "--keepParent",
-                str(distribution_dir),
-                str(archive_path),
-            ]
-        )
+        if sys.platform == "darwin":
+            subprocess.check_call(
+                [
+                    "ditto",
+                    "-c",
+                    "-k",
+                    "--sequesterRsrc",
+                    "--keepParent",
+                    str(distribution_dir),
+                    str(archive_path),
+                ]
+            )
+        elif sys.platform == "win32":
+            shutil.make_archive(
+                str(archive_path.with_suffix("")),
+                "zip",
+                root_dir=staging_dir,
+                base_dir=distribution_dir.name,
+            )
+        elif sys.platform == "linux":
+            subprocess.check_call(
+                [
+                    "tar",
+                    "-I",
+                    "zstd -c --long -T0 -18",
+                    "-cf",
+                    str(archive_path),
+                    "-C",
+                    str(staging_dir),
+                    distribution_dir.name,
+                ]
+            )
+        else:  # pragma: no cover
+            raise RuntimeError(f"Unsupported portable platform: {sys.platform}")
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -322,9 +438,14 @@ def package_portable_archive(output_dir: Path, version: str) -> Path:
 
 def package(args: argparse.Namespace) -> None:
     version = args.version
+    artifact_version = get_artifact_version(version)
     output_dir = get_output_dir(args)
-    config_args = get_briefcase_config_args(args)
     shutil.rmtree(output_dir / "dist", ignore_errors=True)
+    if args.portable and sys.platform != "darwin":
+        package_portable_archive(output_dir, artifact_version)
+        return
+
+    config_args = get_briefcase_config_args(args)
     subprocess.check_call(
         [
             sys.executable,
@@ -337,14 +458,15 @@ def package(args: argparse.Namespace) -> None:
             *get_signing_args(),
         ],
         cwd=output_dir,
+        env=get_briefcase_environ(),
     )
     if args.portable:
-        package_portable_archive(output_dir, version)
+        package_portable_archive(output_dir, artifact_version)
         return
 
     package_path = next((output_dir / "dist").iterdir())
     package_path.rename(
-        package_path.with_stem(f"anki-{version}{get_platform_suffix()}")
+        package_path.with_stem(f"anki-{artifact_version}{get_platform_suffix()}")
     )
 
 
@@ -356,7 +478,7 @@ def main(args: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--portable",
         action="store_true",
-        help="Build an isolated macOS portable application archive",
+        help="Build an isolated portable application archive",
     )
     subparsers = parser.add_subparsers(help="Briefcase command (build/package)")
     build_parser = subparsers.add_parser("build", help="Compile/build app")
@@ -370,8 +492,6 @@ def main(args: Sequence[str] | None = None) -> argparse.Namespace:
     package_parser.set_defaults(func=package)
 
     parsed = parser.parse_args(args)
-    if parsed.portable and sys.platform != "darwin":
-        parser.error("--portable is currently supported only on macOS")
     get_output_dir(parsed).mkdir(parents=True, exist_ok=True)
     parsed.func(parsed)
 

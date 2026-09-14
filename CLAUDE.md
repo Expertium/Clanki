@@ -143,6 +143,7 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
 
   ```markdown
   ## sched.fuzz-interval
+
   When the scheduler computes an interval of 3 days or more, it applies a random
   fuzz of ±5% (minimum ±1 day), seeded per card. Intervals under 3 days get no fuzz.
   **Why:** cards introduced together would otherwise stay synchronized forever.
@@ -211,6 +212,24 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   JSchoreels build is often running and holding that collection open.
 - The section below ends with a reference to `@.claude/user.md`, which does not
   exist in this repo.
+- **`./ninja check` has two steps that fail on this PC for reasons unrelated
+  to the code.** `check:format:dprint` fetches plugins from plugins.dprint.dev
+  (Cloudflare) on first run and can sit for 30+ minutes with open sockets and
+  zero CPU on this connection; run the check without it and format Rust with
+  `check:format:rust` (which uses the repo's pinned _nightly_ rustfmt — stable
+  `cargo fmt` ignores `group_imports` and passes code that nightly rejects).
+  `check:vitest` fails two ADR tests in `ts/routes/graphs/simulator.test.ts`
+  because this PC's locale is ru-RU and `Intl` formats `20.0%` as `20,0 %`;
+  upstream CI is en-US. Pre-existing, not a regression signal.
+- **The installer templates are git submodules.** `qt/installer/windows-template`
+  and `mac-template` are empty in a fresh clone until
+  `git submodule update --init -- qt/installer/windows-template qt/installer/mac-template`.
+  Without them `qt/tests/test_installer.py` fails inside Briefcase with
+  "Unable to clone application template" (exit status 200). The `ftl/*-repo`
+  submodules are handled by the build itself.
+- **Close the running Clanki before a build that touches PyQt.** `uv sync`
+  cannot replace `out/pyenv/.../PyQt6/Qt6/resources/*.bin` while the app holds
+  them, and the `pyenv` step fails with "used by another process" (os error 32).
 - **Detached builds must never be able to prompt.** The first build here hung for
   two hours at the `node_modules` step: corepack wanted to ask "download
   yarn@4.11.0?" and waited forever on a stdin that a detached process does not
@@ -317,6 +336,11 @@ Anki SQLite safety workflow.
 
 Be mindful that some changes (such as modifications to .proto files) may
 need a full build with `just check` first.
+
+## Testing guidance
+
+Before adding or changing unit or component tests, read and follow the
+[Writing Unit Tests for Anki](docs-site/developers/unit-testing.mdx).
 
 ## Build tooling
 

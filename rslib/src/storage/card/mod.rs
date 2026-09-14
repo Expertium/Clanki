@@ -1202,7 +1202,10 @@ fn review_order_sql(order: ReviewCardOrder, timing: SchedTimingToday, fsrs: bool
         ReviewCardOrder::RelativeOverdueness => {
             vec![ReviewOrderSubclause::RelativeOverdueness { fsrs, timing }]
         }
-        ReviewCardOrder::Random => vec![],
+        // Draw from the entire pool before queue gathering applies eligibility
+        // and deck limits. A stable id/mtime hash lets recently answered cards
+        // jump ahead of a backlog whose low hashes have already been consumed.
+        ReviewCardOrder::Random => return "random()".into(),
         ReviewCardOrder::Added => vec![ReviewOrderSubclause::Added],
         ReviewCardOrder::ReverseAdded => vec![ReviewOrderSubclause::ReverseAdded],
     };

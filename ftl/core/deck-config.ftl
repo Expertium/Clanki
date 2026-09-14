@@ -452,7 +452,7 @@ deck-config-revert-button-tooltip = Restore this setting to its default value?
 ## These strings are shown via the Description button at the bottom of the
 ## overview screen.
 
-deck-config-description-new-handling = Anki 2.1.41+ handling
+deck-config-description-new-handling2 = Interpret as Markdown
 deck-config-description-new-handling-hint =
     Treats input as markdown, and cleans HTML input. When enabled, the
     description will also be shown on the congratulations screen.
@@ -659,6 +659,7 @@ deck-config-fsrs-good-fit = Health Check:
 
 ## NO NEED TO TRANSLATE. This text is no longer used by Anki, and will be removed in the future.
 
+deck-config-description-new-handling = Anki 2.1.41+ handling
 deck-config-unable-to-determine-desired-retention =
     Unable to determine a minimum recommended retention.
 deck-config-predicted-minimum-recommended-retention = Minimum recommended retention: { $num }

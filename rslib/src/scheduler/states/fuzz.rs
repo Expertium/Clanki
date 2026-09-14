@@ -213,10 +213,10 @@ pub(crate) fn minimum_review_fuzz_interval(
     interval: f32,
     previous_interval: u32,
     maximum_interval: u32,
+    review_fuzz_config: ReviewFuzzConfig,
 ) -> u32 {
     let rounded = interval.round() as u32;
-    let (_, upper) =
-        constrained_fuzz_bounds(interval, 1, maximum_interval, ReviewFuzzConfig::default());
+    let (_, upper) = constrained_fuzz_bounds(interval, 1, maximum_interval, review_fuzz_config);
 
     if rounded > previous_interval {
         previous_interval + 1
@@ -404,8 +404,17 @@ mod test {
 
     #[test]
     fn minimum_review_fuzz_interval_preserves_previous_only_within_range() {
-        assert_eq!(minimum_review_fuzz_interval(2.7269483, 4, 36500), 4);
-        assert_eq!(minimum_review_fuzz_interval(2.7269483, 5, 36500), 0);
-        assert_eq!(minimum_review_fuzz_interval(4.591988, 4, 36500), 5);
+        assert_eq!(
+            minimum_review_fuzz_interval(2.7269483, 4, 36500, ReviewFuzzConfig::default()),
+            4
+        );
+        assert_eq!(
+            minimum_review_fuzz_interval(2.7269483, 5, 36500, ReviewFuzzConfig::default()),
+            0
+        );
+        assert_eq!(
+            minimum_review_fuzz_interval(4.591988, 4, 36500, ReviewFuzzConfig::default()),
+            5
+        );
     }
 }

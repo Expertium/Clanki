@@ -282,7 +282,10 @@ class Reviewer:
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed is RefreshNeeded.QUEUES:
-            if aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self):
+            if getattr(
+                self, "_undo_refresh_pending", False
+            ) or aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self):
+                self._undo_refresh_pending = False
                 self.nextCard()
                 self.mw.fade_in_webview()
                 self._refresh_needed = None
@@ -342,7 +345,8 @@ class Reviewer:
         should_refresh = focused or (
             self._refresh_needed is RefreshNeeded.QUEUES
             and (
-                aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self)
+                getattr(self, "_undo_refresh_pending", False)
+                or aqt.rwkv_scheduler.reviewer_has_undo_card_ids(self)
                 or self._current_card_is_rwkv_undo_restored()
             )
         )
@@ -431,9 +435,31 @@ class Reviewer:
         self._review_actions_block_id = getattr(self, "_review_actions_block_id", 0) + 1
         self._review_actions_blocked = blocked
 
+    def begin_undo(self) -> None:
+        self._undo_operation_pending = True
+        self._clear_auto_advance_timers()
+        self.set_review_actions_blocked(True)
+        self._set_qa_interaction_enabled(False)
+        self._set_bottom_transition_active(True)
+
+    def finish_undo(self, changes: OpChanges | None) -> None:
+        self._undo_operation_pending = False
+        self._undo_refresh_pending = bool(
+            changes and changes.study_queues and self.mw.state == "review"
+        )
+        self.set_review_actions_blocked(self._undo_refresh_pending)
+        if self._undo_refresh_pending:
+            self._begin_qa_transition()
+        elif not getattr(self, "_qa_transition_active", False):
+            self._set_qa_interaction_enabled(True)
+            self._set_bottom_transition_active(False)
+
     def _review_actions_are_blocked(self) -> bool:
-        return getattr(self, "_review_actions_blocked", False) or getattr(
-            self, "_qa_transition_active", False
+        return (
+            getattr(self, "_undo_operation_pending", False)
+            or getattr(self, "_undo_refresh_pending", False)
+            or getattr(self, "_review_actions_blocked", False)
+            or getattr(self, "_qa_transition_active", False)
         )
 
     def _set_review_answer_actions_blocked(self, blocked: bool) -> None:
@@ -2320,18 +2346,20 @@ timeboxReps = 0;
         bury_notes(
             parent=self.mw,
             note_ids=[self.card.nid],
-        ).success(
-            lambda res: tooltip(tr.studying_cards_buried(count=res.count))
-        ).run_in_background()
+        ).success(self._on_bury_current_succeeded).run_in_background()
 
     def bury_current_card(self) -> None:
         gui_hooks.reviewer_will_bury_card(self.card.id)
         bury_cards(
             parent=self.mw,
             card_ids=[self.card.id],
-        ).success(
-            lambda res: tooltip(tr.studying_cards_buried(count=res.count))
-        ).run_in_background()
+        ).success(self._on_bury_current_succeeded).run_in_background()
+
+    def _on_bury_current_succeeded(self, result: OpChangesWithCount) -> None:
+        # The operation hook runs after this callback. Allow its queue refresh to
+        # advance past a card restored by RWKV-aware undo.
+        self._rwkv_undo_restored_card_active = False
+        tooltip(tr.studying_cards_buried(count=result.count))
 
     def forget_current_card(self) -> None:
         if op := forget_cards(

@@ -103,7 +103,7 @@ test("renderWorkloadChart labels workload curves by preset name", () => {
 
     renderWorkloadChart(svg, bounds, points, SimulateWorkloadSubgraph.memorized);
 
-    expect(svg.querySelector(".legend text")?.textContent).toBe("Child preset");
+    expect(svg.querySelector(".legend text")?.textContent).toBe("■ Child preset");
 });
 
 test("renderWorkloadChart handles weighted workload metrics", () => {

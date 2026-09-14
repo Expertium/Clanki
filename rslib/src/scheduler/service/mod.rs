@@ -741,9 +741,10 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: FuzzReviewIntervalsRequest,
     ) -> Result<FuzzReviewIntervalsResponse> {
+        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
+
         use crate::scheduler::states::interval_overrides::FuzzedInterval;
         use crate::scheduler::states::interval_overrides::ReviewIntervalOverrides;
-        use anki_proto::scheduler::fuzz_review_intervals_response::Interval;
 
         let fuzzed = self.fuzz_review_intervals(
             CardId(input.card_id),
@@ -1228,6 +1229,7 @@ impl crate::services::BackendSchedulerService for Backend {
     ) -> Result<scheduler::ComputeFsrsParamsResponse> {
         let fsrs_items = req.items.len() as u32;
         let params = compute_parameters(ComputeParametersInput {
+            training_config: None,
             train_set: req.items.into_iter().map(fsrs_item_proto_to_fsrs).collect(),
             card_ids: None,
             progress: None,
@@ -1262,6 +1264,7 @@ impl crate::services::BackendSchedulerService for Backend {
             .map(fsrs_item_proto_to_fsrs)
             .collect();
         let params = benchmark(ComputeParametersInput {
+            training_config: None,
             train_set,
             card_ids: None,
             progress: None,
@@ -1418,3 +1421,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod upstream_tests;

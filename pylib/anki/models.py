@@ -86,6 +86,10 @@ class ModelManager(DeprecatedNamesMixin):
         self.models = ModelsDictProxy(col)
         # do not access this directly!
         self._cache = {}
+        self._field_map_cache: dict[
+            NotetypeId,
+            tuple[list[tuple[FieldDict, str, int]], dict[str, tuple[int, FieldDict]]],
+        ] = {}
 
     def __repr__(self) -> str:
         attrs = dict(self.__dict__)
@@ -105,6 +109,7 @@ class ModelManager(DeprecatedNamesMixin):
         self._cache[notetype["id"]] = notetype
 
     def _remove_from_cache(self, ntid: NotetypeId) -> None:
+        self._field_map_cache.pop(ntid, None)
         if ntid in self._cache:
             del self._cache[ntid]
 
@@ -113,6 +118,7 @@ class ModelManager(DeprecatedNamesMixin):
 
     def _clear_cache(self) -> None:
         self._cache = {}
+        self._field_map_cache.clear()
 
     # Listing note types
     #############################################################
@@ -273,7 +279,24 @@ class ModelManager(DeprecatedNamesMixin):
 
     def field_map(self, notetype: NotetypeDict) -> dict[str, tuple[int, FieldDict]]:
         "Mapping of field name -> (ord, field)."
-        return {f["name"]: (f["ord"], f) for f in notetype["flds"]}
+        fields = notetype["flds"]
+        cached = self._field_map_cache.get(notetype["id"])
+        if cached is not None:
+            snapshot, mapping = cached
+            # Legacy callers may edit a notetype in place before saving it.
+            if len(fields) == len(snapshot) and all(
+                field is previous and field["name"] == name and field["ord"] == ordinal
+                for field, (previous, name, ordinal) in zip(fields, snapshot)
+            ):
+                return mapping.copy()
+
+        mapping = {f["name"]: (f["ord"], f) for f in fields}
+        self._field_map_cache[notetype["id"]] = (
+            [(f, f["name"], f["ord"]) for f in fields],
+            mapping,
+        )
+        # Each Note and public caller retains an independently mutable mapping.
+        return mapping.copy()
 
     def field_names(self, notetype: NotetypeDict) -> list[str]:
         return [f["name"] for f in notetype["flds"]]

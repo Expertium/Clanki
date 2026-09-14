@@ -34,6 +34,7 @@ from aqt.addcards import NewAddCards
 from aqt.addcards_legacy import AddCards
 from aqt.errors import show_exception
 from aqt.import_export.exporting import ExportDialog
+from aqt.operations import QueryOp
 from aqt.operations.card import set_card_deck, set_card_flag
 from aqt.operations.collection import redo, undo
 from aqt.operations.note import remove_notes
@@ -135,6 +136,7 @@ class Browser(QMainWindow):
         self._previewer: Previewer | None = None
         self._card_info = BrowserCardInfo(self.mw)
         self._closeEventHasCleanedUp = False
+        self._rwkv_search_generation = 0
         self.auto_layout = True
         self.aspect_ratio = 0.0
         self.form = aqt.forms.browser.Ui_Dialog()
@@ -529,8 +531,37 @@ class Browser(QMainWindow):
     def search(self) -> None:
         """Search triggered programmatically. Caller must have saved note first."""
 
+        self._rwkv_search_generation += 1
+        generation = self._rwkv_search_generation
+        search = self._lastSearchTxt
+
+        from aqt import rwkv_scheduler
+
+        if rwkv_scheduler.search_uses_rwkv_retrievability(search):
+
+            def prepared(_: object) -> None:
+                if (
+                    not self._closeEventHasCleanedUp
+                    and generation == self._rwkv_search_generation
+                    and search == self._lastSearchTxt
+                ):
+                    self._search_table(search)
+
+            QueryOp(
+                parent=self,
+                op=lambda _: rwkv_scheduler.prepare_browser_retrievability_scores(
+                    self.mw,
+                    search,
+                ),
+                success=prepared,
+            ).with_progress().run_in_background()
+            return
+
+        self._search_table(search)
+
+    def _search_table(self, search: str) -> None:
         try:
-            self.table.search(self._lastSearchTxt)
+            self.table.search(search)
         except Exception as err:
             showWarning(str(err))
 

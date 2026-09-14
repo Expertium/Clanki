@@ -12,6 +12,25 @@ pub(crate) enum UndoableConfigChange {
 }
 
 impl Collection {
+    fn refresh_cached_scheduler_config(&mut self, key: &str) {
+        if self.state.card_queues.is_none() {
+            return;
+        }
+        let config_key = match key {
+            "fsrs" => BoolKey::Fsrs,
+            "fsrsShortTermWithStepsEnabled" => BoolKey::FsrsShortTermWithStepsEnabled,
+            _ => return,
+        };
+        let value = self.get_config_bool(config_key);
+        if let Some(queues) = self.state.card_queues.as_mut() {
+            match config_key {
+                BoolKey::Fsrs => queues.fsrs_enabled = value,
+                BoolKey::FsrsShortTermWithStepsEnabled => queues.fsrs_short_term_with_steps = value,
+                _ => unreachable!(),
+            }
+        }
+    }
+
     pub(crate) fn undo_config_change(&mut self, change: UndoableConfigChange) -> Result<()> {
         match change {
             UndoableConfigChange::Added(entry) => self.remove_config_undoable(&entry.key),
@@ -41,6 +60,7 @@ impl Collection {
         if let Some(current) = self.storage.get_config_entry(key)? {
             self.save_undo(UndoableConfigChange::Removed(current));
             self.storage.remove_config(key)?;
+            self.refresh_cached_scheduler_config(key);
         }
 
         Ok(())
@@ -48,6 +68,7 @@ impl Collection {
 
     fn add_config_entry_undoable(&mut self, entry: Box<ConfigEntry>) -> Result<()> {
         self.storage.set_config_entry(&entry)?;
+        self.refresh_cached_scheduler_config(&entry.key);
         self.save_undo(UndoableConfigChange::Added(entry));
         Ok(())
     }
@@ -61,6 +82,7 @@ impl Collection {
         if entry.value != original.value {
             self.save_undo(UndoableConfigChange::Updated(original));
             self.storage.set_config_entry(&entry)?;
+            self.refresh_cached_scheduler_config(&entry.key);
             Ok(true)
         } else {
             Ok(false)
