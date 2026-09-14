@@ -18,6 +18,7 @@ from anki.collection import HelpPage
 from anki.errors import BackendError, CardTypeError, Interrupted
 from anki.utils import is_win
 from aqt.addons import AddonManager, AddonMeta
+from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.utils import openHelp, showWarning, supportText, tooltip, tr
 
@@ -191,7 +192,7 @@ def _init_message_box(
     global _mbox
 
     _mbox = QMessageBox(parent=parent)
-    _mbox.setWindowTitle("Anki")
+    _mbox.setWindowTitle(APP_NAME)
     _mbox.setText(user_text)
     _mbox.setIcon(QMessageBox.Icon.Warning)
     _mbox.setTextFormat(text_format)

@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The application is now called **Clanki** in window titles, dialogs, the
+  About screen, the installer and the English interface text. File-format
+  names, the `Anki2` data folder and the version string that add-ons read
+  (the official Anki release number) are unchanged.
 - Remove Dynamic Desired Retention (ADR). Every preset now schedules with its
   fixed desired retention. Presets that still store ADR settings from an older
   build load normally; the settings are ignored and dropped on the next save.

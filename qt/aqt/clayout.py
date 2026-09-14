@@ -19,6 +19,7 @@ from anki.lang import with_collapsed_whitespace, without_unicode_isolation
 from anki.notes import Note
 from anki.notetypes_pb2 import StockNotetype
 from aqt import AnkiQt, gui_hooks
+from aqt.branding import APP_NAME
 from aqt.forms import browserdisp
 from aqt.operations.notetype import restore_notetype_to_stock, update_notetype_legacy
 from aqt.qt import *
@@ -862,7 +863,7 @@ class CardLayout(QDialog):
 
         t = self.current_template()
         d = QDialog(self)
-        d.setWindowTitle("Anki")
+        d.setWindowTitle(APP_NAME)
         disable_help_button(d)
         d.setMinimumWidth(400)
         l = QVBoxLayout()
@@ -991,7 +992,7 @@ class SelectStockNotetype(QDialog):
         QDialog.__init__(self, parent, Qt.WindowType.Window)
         self.dialog = aqt.forms.addmodel.Ui_Dialog()
         self.dialog.setupUi(self)
-        self.setWindowTitle("Anki")
+        self.setWindowTitle(APP_NAME)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         disable_help_button(self)
         stock_types = stdmodels.get_stock_notetypes(mw.col)

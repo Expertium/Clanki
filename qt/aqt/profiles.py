@@ -24,6 +24,7 @@ from anki.lang import without_unicode_isolation
 from anki.sync import SyncAuth
 from anki.utils import int_time, int_version, is_mac, is_win
 from aqt import appHelpSite, gui_hooks
+from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.qt import sip
 from aqt.theme import Theme, WidgetStyle, theme_manager
@@ -492,7 +493,7 @@ create table if not exists profiles
         name = obj[0]
         r = QMessageBox.question(
             None,
-            "Anki",
+            APP_NAME,
             tr.profiles_confirm_lang_choice(lang=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,  # type: ignore

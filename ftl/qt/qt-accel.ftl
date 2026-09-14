@@ -1,5 +1,5 @@
 qt-accel-about = &About
-qt-accel-about-mac = About Anki...
+qt-accel-about-mac = About Clanki...
 qt-accel-cards = &Cards
 qt-accel-check-database = &Check Database
 qt-accel-check-media = Check &Media

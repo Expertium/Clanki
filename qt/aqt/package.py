@@ -179,7 +179,7 @@ def _fix_win_taskbar_pinning() -> None:
     if sys.platform == "win32" and os.environ.get("ANKI_LAUNCHER"):
         from win32com.shell import shell
 
-        shell.SetCurrentProcessExplicitAppUserModelID("Ankitects.Anki")
+        shell.SetCurrentProcessExplicitAppUserModelID("Expertium.Clanki")
 
 
 def download_github_update_and_install(release: GithubRelease) -> None:

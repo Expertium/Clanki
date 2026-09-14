@@ -29,6 +29,7 @@ from anki.sound import AV_REF_RE, AVTag, SoundOrVideoTag
 from anki.utils import is_lin, is_mac, is_win, namedtmp
 from aqt import gui_hooks
 from aqt._macos_helper import macos_helper
+from aqt.branding import APP_NAME
 from aqt.mpv import MPV, MPVBase, MPVCommandError
 from aqt.qt import *
 from aqt.taskman import TaskManager
@@ -787,7 +788,7 @@ class RecordDialog(QDialog):
         self._setup_dialog()
 
     def _setup_dialog(self) -> None:
-        self.setWindowTitle("Anki")
+        self.setWindowTitle(APP_NAME)
         icon = QLabel()
         qicon = theme_manager.icon_from_resources("icons:media-record.svg")
         icon.setPixmap(qicon.pixmap(60, 60))

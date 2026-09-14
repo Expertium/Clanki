@@ -88,12 +88,17 @@ appUpdate = "https://ankiweb.net/update/desktop"
 appHelpSite = HELP_SITE
 
 
+# The product name shown in window titles, dialogs and the installer
+# (spec branding.app-name); see aqt.branding.
+from aqt.branding import APP_NAME  # noqa: E402
+
+
 def is_portable() -> bool:
     return os.environ.get("ANKI_PORTABLE") == "1"
 
 
 def application_name() -> str:
-    return "Anki Portable" if is_portable() else "Anki"
+    return f"{APP_NAME} Portable" if is_portable() else APP_NAME
 
 
 from aqt.main import AnkiQt  # isort:skip

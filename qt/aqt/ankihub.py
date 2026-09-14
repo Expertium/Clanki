@@ -15,6 +15,7 @@ from aqt.addons import (
     install_or_update_addon,
     show_log_to_user,
 )
+from aqt.branding import APP_NAME
 from aqt.qt import (
     QDialog,
     QDialogButtonBox,
@@ -92,7 +93,7 @@ def get_id_and_pass_from_user(
     password: str = "",
 ) -> None:
     diag = QDialog(mw)
-    diag.setWindowTitle("Anki")
+    diag.setWindowTitle(APP_NAME)
     disable_help_button(diag)
     diag.setWindowModality(Qt.WindowModality.WindowModal)
     diag.setMinimumWidth(600)

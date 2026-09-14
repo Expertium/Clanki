@@ -74,13 +74,20 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
 
 ## Changes already made in Clanki
 
+- Branding (2026-09-14): the visible product name is `aqt.APP_NAME` =
+  "Clanki" (window titles, dialogs, About, installer `formal_name`, English
+  ftl strings about the running app). The version string add-ons read stays
+  the official Anki release number, and the data folder stays `Anki2`
+  (`spec/branding.md`). When merging upstream, re-run the ftl rename rule in
+  the spec rather than hand-editing strings.
 - Removed Dynamic Desired Retention (ADR) end to end (2026-09-14): proto
   fields reserved, `rslib/src/scheduler/fsrs/dynamic_desired_retention.rs`,
   the deck-options controls, the simulator mode, the plot page and the add-on
   hooks are gone. Legacy presets still load (`spec/scheduling.md`,
   `sched.no-dynamic-desired-retention`). The `fsrs` crate dependency stays.
-- Removed `+fsrs7` from the version name. `.version` is now `26.09b1`
-  (was `26.09b1+fsrs7`). Note: `qt/tests/test_update.py` still hardcodes
+- Removed `+fsrs7` from the version name. `.version` now tracks the official
+  Anki release (`26.09` since the 26.09 merge; it was `26.09b1+fsrs7`).
+  Note: `qt/tests/test_update.py` still hardcodes
   `26.09b1+fsrs7` in its own fixtures. That test does not read `.version`, so it
   still passes. The fork's release tags used the `+fsrs7.build.N` form.
 

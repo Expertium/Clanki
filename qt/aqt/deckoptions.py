@@ -10,6 +10,7 @@ from anki.cards import Card
 from anki.decks import DeckDict, DeckId
 from anki.lang import without_unicode_isolation
 from aqt import gui_hooks
+from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.utils import (
     KeyboardModifiersPressed,
@@ -101,7 +102,7 @@ def confirm_deck_then_display_options(active_card: Card | None = None) -> None:
 
 def _deck_prompt_dialog(decks: list[DeckDict]) -> None:
     diag = QDialog(aqt.mw.app.activeWindow())
-    diag.setWindowTitle("Anki")
+    diag.setWindowTitle(APP_NAME)
     box = QVBoxLayout()
     box.addWidget(QLabel(tr.deck_config_which_deck()))
     for deck in decks:

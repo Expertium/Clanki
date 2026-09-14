@@ -1,6 +1,6 @@
 -errors-support-site = [support site](https://help.ankiweb.net)
 errors-standard-popup2 =
-    Anki encountered a problem. Please follow the troubleshooting steps.
+    Clanki encountered a problem. Please follow the troubleshooting steps.
 errors-may-be-addon = The problem may be caused by an add-on.
 errors-troubleshooting-button = Troubleshooting
 errors-copy-debug-info-button = Copy Debug Info
@@ -16,11 +16,11 @@ errors-standard-popup =
 errors-addons-active-popup =
     # Error
     
-    An error occurred. Please start Anki while holding down the shift key,
+    An error occurred. Please start Clanki while holding down the shift key,
     which will temporarily disable the add-ons you have installed.
     
     If the issue only occurs when add-ons are enabled, please use the
-    Tools > Add-ons menu item to disable some add-ons and restart Anki,
+    Tools > Add-ons menu item to disable some add-ons and restart Clanki,
     repeating until you discover the add-on that is causing the problem.
     
     When you've discovered the add-on that is causing the problem, please
@@ -33,7 +33,7 @@ errors-accessing-db =
     Possible causes:
     
     - Antivirus, firewall, backup, or synchronization software may be
-    interfering with Anki. Try disabling such software and see if the
+    interfering with Clanki. Try disabling such software and see if the
     problem goes away.
     - Your disk may be full.
     - The Documents/Anki folder may be on a network drive.
@@ -42,7 +42,7 @@ errors-accessing-db =
     
     It's a good idea to run Tools>Check Database to ensure your collection is not corrupt.
 errors-unable-open-collection =
-    Anki was unable to open your collection file. If problems persist after restarting your computer, please use the Open Backup button in the profile manager.
+    Clanki was unable to open your collection file. If problems persist after restarting your computer, please use the Open Backup button in the profile manager.
     
     Debug info:
 errors-windows-tts-runtime-error = The TTS service failed. Please ensure Windows updates are installed, try restarting your computer, or try a different voice.
