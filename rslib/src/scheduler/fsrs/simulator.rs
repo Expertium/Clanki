@@ -39,6 +39,7 @@ use crate::scheduler::fsrs::review_time_model::install_review_time_cost_fn;
 use crate::scheduler::fsrs::review_time_model::HelpMeDecideReviewTimeModel;
 use crate::scheduler::fsrs::review_time_model::R_BUCKET_COUNT;
 use crate::scheduler::fsrs::review_time_model::S_BUCKET_COUNT_FOR_UI;
+use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::scheduler::rwkv::relative_overdueness;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::parse_easy_days_percentages;
@@ -455,7 +456,7 @@ impl Collection {
                             &card_parameters,
                             c.ease_factor(),
                             c.interval as f32,
-                            req.historical_retention,
+                            HISTORICAL_RETENTION,
                         )
                         .ok()?
                         .into()

@@ -54,12 +54,13 @@ to RWKV-Instant.
 
 ## deck-options.fsrs-only-controls
 
-Given the deck-options screen, these controls appear only while FSRS-7 is the
-selected algorithm: the FSRS parameters, the Optimize buttons, and the FSRS
-advanced section (Help Me Decide, the FSRS version selector, the search
-filter, Check Health, and the FSRS simulator). Under RWKV-Curve and
-RWKV-Instant none of them is shown, and the "Compare RWKV with FSRS" action
-is gone. One search filter serves both optimization and evaluation; the
+Given the deck-options screen in Advanced mode (`deck-options.simple-view`),
+these controls appear only while FSRS-7 is the selected algorithm: the FSRS
+parameters, the Optimize buttons, and the FSRS advanced section (Help Me
+Decide, the FSRS version selector, the search filter, Check Health, and the
+FSRS simulator). Under RWKV-Curve and RWKV-Instant none of them is shown, in
+Simple mode none of them is shown under any algorithm, and the "Compare RWKV
+with FSRS" action is gone. One search filter serves both optimization and evaluation; the
 separate evaluation filter no longer exists, and a stored
 `fsrsEvaluationSearch` value is ignored. FSRS-7 optimization always includes
 same-day reviews and never uses scheduling penalties: the two switches and
@@ -77,8 +78,9 @@ should be the defaults and never shown.
 
 ## deck-options.reschedule-on-change
 
-Given the collection-wide "Reschedule cards on change" switch, now shown for
-every algorithm, and a deck-options save with it on:
+Given the collection-wide "Reschedule cards on change" switch, shown for
+every algorithm in Advanced mode (`deck-options.simple-view`), and a
+deck-options save with it on:
 
 - presets running FSRS-7 or RWKV-Instant reschedule with FSRS intervals as
   before, when their parameters or desired retention changed;
@@ -112,7 +114,9 @@ Given the collection flag `advancedUi` (default off; `spec/ui.md`,
 `ui.mode-switch`), the deck-options screen hides the RWKV settings listed
 below and shows them only while the flag is on. The page has no switch of
 its own; the mode is changed from the main window. Hidden settings keep
-their stored values and keep taking effect.
+their stored values and keep taking effect. With the flag off the whole page
+is one section (`deck-options.simple-view`); this entry lists what the RWKV
+section shows once the flag is on.
 
 Hidden under every algorithm: the FSRS version selector, so that the FSRS-7
 label stays true. (Under RWKV the FSRS controls are not shown at all; see
@@ -125,9 +129,9 @@ for new cards from creation time; dynamic preset add-on support; the Rebuild
 RWKV State and Recompute Calibration actions.
 
 The "Reschedule Cards with RWKV-Curve Intervals" action sits in the
-Algorithm section while RWKV-Curve is selected. The RWKV section itself is
-shown only while RWKV-Instant is selected (the same-day repeat switch) or
-while advanced options are on under either RWKV mode.
+Algorithm block while RWKV-Curve is selected, in both modes. The RWKV
+section itself exists only in Advanced mode, under either RWKV mode; the
+same-day repeat switch in it shows while RWKV-Instant is selected.
 
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
 knobs have defaults that suit nearly everyone.
@@ -135,3 +139,101 @@ knobs have defaults that suit nearly everyone.
 **Pinned by:** `advanced_ui_flag_is_reported`
 (`rslib/src/deckconfig/update.rs`) for the flag plumbing. The visibility
 itself is markup and has no unit test.
+
+## deck-options.simple-view
+
+Given the collection flag `advancedUi` off (Simple mode, the default;
+`spec/ui.md`, `ui.mode-switch`), the deck-options screen is one section,
+titled "Deck Options", with exactly these controls in this order:
+
+1. New cards/day and Maximum reviews/day, each with the preset / deck /
+   today tabs;
+2. Algorithm, then Desired retention and, as in Advanced mode, the First
+   intervals table for FSRS-7, the RWKV-Instant information box and the
+   "Reschedule Cards with RWKV-Curve Intervals" action
+   (`deck-options.first-intervals`);
+3. Bury siblings — one switch;
+4. Don't play audio automatically;
+5. Skip question when replaying answer;
+6. On-screen timer — one switch;
+7. the Easy Days sliders.
+
+Add-on components render after the section, in both modes.
+
+The two combined switches stand for several stored settings. Bury siblings
+reads as on only while `buryNew`, `buryReviews` and `buryInterdayLearning`
+are all on; turning it on or off writes all three. On-screen timer reads as
+on while `showTimer` is on; turning it on or off writes `showTimer` and
+`stopTimerOnAnswer` together. Showing a preset writes nothing: a preset
+whose stored settings do not match its switch value (some bury settings on,
+or the timer shown without stopping on answer) keeps them until the switch
+is toggled. The revert button of each combined switch restores off.
+
+Given the flag on (Advanced mode), the screen has the per-topic sections
+(Daily limits, New cards, Lapses, Display order, Algorithm, RWKV, Burying,
+Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
+bury switches and the two separate timer settings, and it alone shows: New
+cards ignore review limit, Limits start from top, Learning steps, Insertion
+order, Relearning steps, Allow same-day review for (re)learning steps, Skip
+learning/relearning queues, Leech threshold, Leech action, the whole Display
+order section, Reschedule cards on change, the FSRS Optimize buttons and the
+FSRS advanced section (`deck-options.fsrs-only-controls`), Maximum answer
+seconds, the whole Auto advance section, Maximum interval, Minimum interval,
+Ignore cards reviewed before, Custom scheduling, and the RWKV settings of
+`deck-options.advanced-view`. Hidden settings keep their stored values and
+keep taking effect.
+
+**Why:** Andrew, 2026-09-14, plan item 2: Simple mode is one short list of
+the settings a new user needs; everything else belongs to Advanced mode.
+One bury switch and one timer switch are enough there, because the split
+settings only matter to power users.
+
+**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts`,
+`ts/routes/deck-options/timer-switch.test.ts` (the combined switches);
+`ts/tests/e2e/deck-options.test.ts` (the FSRS parameters exist only in
+Advanced mode; the Algorithm dropdown and Bury siblings are visible in
+Simple mode). The section layout itself is markup.
+
+## deck-options.new-preset-defaults
+
+Given a new preset — added on the deck-options screen, created by
+`col.decks.add_config()` without a source, or reset with "Restore
+defaults" — its learning steps and relearning steps are empty and its
+algorithm is RWKV-Curve (`rwkv_review_enabled` on,
+`rwkv_review_instant_order_enabled` off); the revert buttons for the steps
+restore empty. Given a new collection, its default preset has these values,
+so the collection starts on RWKV-Curve, and the collection-wide "Allow
+same-day review for (re)learning steps" switch starts on; its revert button
+restores on. Existing presets and collections keep their stored values: a
+stored preset without the RWKV flag still reads as FSRS-7, a collection that
+never stored the same-day switch keeps it off, and scheduling outcomes for
+existing presets do not change.
+
+**Why:** Andrew, 2026-09-14: RWKV-Curve is the algorithm new users should
+get, and it needs no learning steps; the same-day switch on is the setting
+that goes with steps when a user adds them. Existing presets must keep the
+assumptions their review histories were built on.
+
+**Pinned by:** `new_preset_has_no_steps_and_runs_rwkv_curve`,
+`fresh_collection_starts_with_new_preset_defaults`,
+`stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`).
+
+## deck-options.historical-retention-fixed
+
+Given any preset, historical retention is 0.9. A memory state inferred from
+SM-2 data (a card with no review log, or a truncated one) uses 0.9 whatever
+`historical_retention` the preset stores; the FSRS simulator and add-on
+preset overlays use 0.9 as well, and the value reported for a preset
+(`fsrs_preset_for_card`) is 0.9. Only FSRS-4/5/6 presets ever read the
+value: FSRS-7 infers a state from the interval alone. The control is gone
+from the screen; the proto field and the stored value stay, and are ignored.
+
+**Why:** Andrew, 2026-09-14: one setting less. The stored value only shaped
+memory states inferred from SM-2 data under the older FSRS versions, and
+0.9 is the value nearly every preset had.
+
+**Pinned by:** `stored_historical_retention_is_ignored`
+(`rslib/src/scheduler/fsrs/memory_state.rs`),
+`fsrs_preset_is_derived_from_deck_config`,
+`fsrs_preset_overlay_uses_first_matching_rule`
+(`rslib/src/scheduler/fsrs/preset.rs`).

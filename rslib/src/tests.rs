@@ -46,8 +46,25 @@ pub(crate) fn open_test_collection_with_relearning_card() -> Collection {
 }
 
 impl Collection {
+    /// A test collection whose default preset carries the upstream SM-2
+    /// defaults (learning steps 1m 10m, relearning step 10m, FSRS-7 with no
+    /// RWKV). A fresh collection now starts with no steps and RWKV-Curve
+    /// (spec deck-options.new-preset-defaults); the tests built on this helper
+    /// were written against the upstream values, so they are restated here.
+    /// `fresh_collection_starts_with_new_preset_defaults` covers the real
+    /// fresh-collection defaults.
     pub(crate) fn new() -> Collection {
-        CollectionBuilder::default().build().unwrap()
+        let col = CollectionBuilder::default().build().unwrap();
+        let mut config = col
+            .storage
+            .get_deck_config(DeckConfigId(1))
+            .unwrap()
+            .unwrap();
+        config.inner.learn_steps = vec![1.0, 10.0];
+        config.inner.relearn_steps = vec![10.0];
+        config.inner.rwkv_review_enabled = false;
+        col.storage.update_deck_conf(&config).unwrap();
+        col
     }
 
     pub(crate) fn add_media(&self, media: &[(&str, &[u8])]) {

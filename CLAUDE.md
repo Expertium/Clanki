@@ -26,6 +26,19 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    the default.** Many settings get hidden. The current deck-options UI is far
    too complex, even by the standards of Anki power users. Hiding a setting is a
    UI change, not a behavior change — the underlying setting keeps working.
+   Done 2026-09-14: the deck-options page in Simple mode is one section
+   (`ts/routes/deck-options/SimpleOptions.svelte`; `spec/deck-options.md`,
+   `deck-options.simple-view`): New cards/day, Maximum reviews/day, Algorithm
+   with desired retention (plus the FSRS-7 First intervals table, the
+   RWKV-Instant box and the RWKV-Curve reschedule button), one Bury siblings
+   switch (all three bury settings), Don't play audio automatically, Skip
+   question when replaying answer, one On-screen timer switch (show + stop on
+   answer), Easy Days. Advanced mode keeps the per-topic sections. Alongside:
+   new presets have empty steps and run RWKV-Curve
+   (`deck-options.new-preset-defaults`; the Rust and Python test fixtures
+   `Collection::new()` / `getEmptyCol()` restate the upstream SM-2 preset so
+   the upstream tests keep their assumptions), and historical retention is
+   fixed at 0.9 (`deck-options.historical-retention-fixed`).
 3. **Rescheduling must not write to the card's history.** Today, FSRS/RWKV
    rescheduling adds an entry to the card's review log. It should not. Working
    reference implementation: the rescheduling in the **FSRS Helper** add-on.

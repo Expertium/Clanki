@@ -55,6 +55,10 @@ pub struct DeckConfig {
 }
 
 /// NOTE: this does not set the default steps
+// A new preset has no learning or relearning steps and runs RWKV-Curve
+// (spec deck-options.new-preset-defaults). Stored presets keep their own
+// values: the RWKV flag is only ever read from the stored `jschoreels.rwkv`
+// bag, never from this default (`fork_fields.rs`).
 const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     learn_steps: Vec::new(),
     relearn_steps: Vec::new(),
@@ -79,7 +83,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     leech_action: LeechAction::TagOnly as i32,
     leech_threshold: 8,
     leech_only_if_young: false,
-    rwkv_review_enabled: false,
+    rwkv_review_enabled: true,
     rwkv_review_batch_size: DEFAULT_RWKV_REVIEW_BATCH_SIZE,
     rwkv_review_refresh_interval: DEFAULT_RWKV_REVIEW_REFRESH_INTERVAL,
     rwkv_review_refresh_on_exit: false,
@@ -133,8 +137,6 @@ impl Default for DeckConfig {
             mtime_secs: Default::default(),
             usn: Default::default(),
             inner: DeckConfigInner {
-                learn_steps: vec![1.0, 10.0],
-                relearn_steps: vec![10.0],
                 easy_days_percentages: vec![1.0; 7],
                 ..DEFAULT_DECK_CONFIG_INNER
             },
@@ -427,6 +429,54 @@ fn ensure_u32_valid(val: &mut u32, default: u32, min: u32, max: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collection::CollectionBuilder;
+
+    // Pins spec/deck-options.md#deck-options.new-preset-defaults
+    #[test]
+    fn new_preset_has_no_steps_and_runs_rwkv_curve() {
+        let config = DeckConfig::default();
+        assert!(config.inner.learn_steps.is_empty());
+        assert!(config.inner.relearn_steps.is_empty());
+        assert!(config.inner.rwkv_review_enabled);
+        assert!(!config.inner.rwkv_review_instant_order_enabled);
+    }
+
+    // Pins spec/deck-options.md#deck-options.new-preset-defaults: a fresh
+    // collection's default preset gets the new-preset defaults, and the
+    // collection-wide same-day switch starts on.
+    #[test]
+    fn fresh_collection_starts_with_new_preset_defaults() -> Result<()> {
+        let col = CollectionBuilder::default().build()?;
+        let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert!(config.inner.learn_steps.is_empty());
+        assert!(config.inner.relearn_steps.is_empty());
+        assert!(config.inner.rwkv_review_enabled);
+        assert!(col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled));
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.new-preset-defaults: a stored
+    // preset without the RWKV flag keeps reading as FSRS, whatever the
+    // default for new presets is.
+    #[test]
+    fn stored_preset_without_rwkv_flag_stays_off() -> Result<()> {
+        let mut legacy = serde_json::to_value(DeckConfSchema11::default())?;
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("rwkvReviewEnabled");
+        object.remove("jschoreels.rwkv");
+        object.insert(
+            "new".into(),
+            serde_json::json!({
+                "bury": false, "delays": [1.0, 10.0], "initialFactor": 2500,
+                "ints": [1, 4, 0], "order": 1, "perDay": 20,
+            }),
+        );
+        let legacy: DeckConfSchema11 = serde_json::from_value(legacy)?;
+        let config = DeckConfig::from(legacy);
+        assert!(!config.inner.rwkv_review_enabled);
+        assert_eq!(config.inner.learn_steps, vec![1.0, 10.0]);
+        Ok(())
+    }
 
     #[test]
     fn fsrs_params_respects_selected_version_when_usable() {

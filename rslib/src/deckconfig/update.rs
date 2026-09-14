@@ -31,6 +31,7 @@ use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
+use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
 use crate::search::Negated;
@@ -403,7 +404,7 @@ impl Collection {
                                 max_interval: c.inner.maximum_review_interval,
                                 review_fuzz_config: req.review_fuzz_config.review_fuzz_config(),
                                 reschedule: fsrs_reschedule_for_preset(req.fsrs_reschedule, c),
-                                historical_retention: c.inner.historical_retention,
+                                historical_retention: HISTORICAL_RETENTION,
                                 deck_desired_retention: deck_desired_retention.clone(),
                             })
                         } else {
@@ -672,6 +673,7 @@ mod test {
     #[test]
     fn fsrs_reschedule_skips_rwkv_curve_presets() {
         let mut config = DeckConfig::default();
+        config.inner.rwkv_review_enabled = false;
         assert!(fsrs_reschedule_for_preset(true, &config));
         assert!(!fsrs_reschedule_for_preset(false, &config));
 

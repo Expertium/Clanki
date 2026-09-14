@@ -44,11 +44,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigFsrsMinimumIntervalTooltip(),
             sched: HelpItemScheduler.FSRS,
         },
-        historicalRetention: {
-            title: tr.deckConfigHistoricalRetention(),
-            help: tr.deckConfigHistoricalRetentionTooltip(),
-            sched: HelpItemScheduler.FSRS,
-        },
         ignoreRevlogsBeforeMs: {
             title: tr.deckConfigIgnoreBefore(),
             help: tr.deckConfigIgnoreBeforeTooltip2(),
@@ -307,23 +302,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </SpinBoxFloatRow>
             </Item>
         {:else}
-            <SpinBoxFloatRow
-                bind:value={$config.historicalRetention}
-                defaultValue={defaults.historicalRetention}
-                min={0.5}
-                max={1.0}
-                percentage={true}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("historicalRetention"),
-                        )}
-                >
-                    {tr.deckConfigHistoricalRetention()}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-
+            <!-- Historical retention has no control: it is fixed at 0.9
+                 (spec deck-options.historical-retention-fixed). -->
             <Item>
                 <DateInput
                     bind:date={$config.ignoreRevlogsBeforeDate}
