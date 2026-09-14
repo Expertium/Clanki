@@ -63,7 +63,9 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     learn_steps: Vec::new(),
     relearn_steps: Vec::new(),
     new_per_day: 20,
-    reviews_per_day: 200,
+    // no practical review cap for new presets; the control is Advanced-only
+    // (spec deck-options.new-preset-defaults)
+    reviews_per_day: 9999,
     new_per_day_minimum: 0,
     initial_ease: 2.5,
     easy_multiplier: 1.3,
@@ -77,7 +79,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     new_card_insert_order: NewCardInsertOrder::Due as i32,
     new_card_gather_priority: NewCardGatherPriority::Deck as i32,
     new_card_sort_order: NewCardSortOrder::Template as i32,
-    review_order: ReviewCardOrder::Day as i32,
+    // least likely to be recalled first (spec deck-options.new-preset-defaults)
+    review_order: ReviewCardOrder::RetrievabilityAscending as i32,
     new_mix: ReviewMix::MixWithReviews as i32,
     interday_learning_mix: ReviewMix::MixWithReviews as i32,
     leech_action: LeechAction::TagOnly as i32,
@@ -440,13 +443,19 @@ mod tests {
         assert!(config.inner.rwkv_review_enabled);
         assert!(!config.inner.rwkv_review_instant_order_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(config.inner.reviews_per_day, 9999);
+        assert_eq!(
+            config.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
+        );
         // the legacy JSON default (Python add_config / restore_to_default)
         // agrees
+        let legacy = DeckConfig::from(DeckConfSchema11::default());
+        assert_eq!(legacy.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(legacy.inner.reviews_per_day, 9999);
         assert_eq!(
-            DeckConfig::from(DeckConfSchema11::default())
-                .inner
-                .leech_action,
-            LeechAction::TagOnly as i32
+            legacy.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
         );
     }
 
@@ -460,6 +469,11 @@ mod tests {
         assert!(config.inner.relearn_steps.is_empty());
         assert!(config.inner.rwkv_review_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
+        assert_eq!(config.inner.reviews_per_day, 9999);
+        assert_eq!(
+            config.inner.review_order,
+            ReviewCardOrder::RetrievabilityAscending as i32
+        );
         Ok(())
     }
 

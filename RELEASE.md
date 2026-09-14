@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- New presets get 9999 maximum reviews/day and sort reviews by ascending
+  retrievability (least likely to be recalled first). Maximum reviews/day is
+  Advanced-only; Simple mode keeps the stored value.
+- Under RWKV-Curve and RWKV-Instant the review sort order no longer offers
+  "Easy cards first" or "Difficult cards first" (difficulty is an FSRS
+  variable); a preset that had one of them uses ascending retrievability.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".

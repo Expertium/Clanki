@@ -34,6 +34,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    $: rwkv = $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled;
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
 
@@ -193,7 +194,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <EnumSelectorRow
                 bind:value={$config.reviewOrder}
                 defaultValue={defaults.reviewOrder}
-                choices={reviewOrderChoices($fsrs)}
+                choices={reviewOrderChoices($fsrs, rwkv)}
             >
                 <SettingTitle
                     on:click={() =>
