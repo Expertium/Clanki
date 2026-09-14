@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import anki.lang
+from anki.config import Config
 
 # aqt.deckbrowser reads translated strings at import time
 anki.lang.set_lang("en")
@@ -129,3 +130,51 @@ def test_addons_menu_entry_follows_the_mode_unless_addons_are_installed() -> Non
     assert shown(True, ["some_addon"])
     assert not shown(False, [])
     assert shown(False, ["some_addon"])
+
+
+def test_switching_the_mode_redraws_without_a_full_reset() -> None:
+    def switch(state: str) -> Any:
+        mw = cast(
+            Any,
+            SimpleNamespace(
+                col=MagicMock(),
+                state=state,
+                advanced_ui=lambda: False,
+                _sync_advanced_ui_action=lambda: None,
+                _sync_addons_action=lambda: None,
+                toolbar=MagicMock(),
+                deckBrowser=MagicMock(),
+                reset=MagicMock(),
+            ),
+        )
+        AnkiQt.set_advanced_ui(mw, True)
+        mw.col.set_config_bool.assert_called_once_with(Config.Bool.ADVANCED_UI, True)
+        mw.toolbar.draw.assert_called_once()
+        # a full reset would recompute the RWKV due counts
+        mw.reset.assert_not_called()
+        return mw
+
+    mw = switch("deckBrowser")
+    mw.deckBrowser.redraw_for_ui_mode.assert_called_once()
+    mw = switch("review")
+    mw.deckBrowser.redraw_for_ui_mode.assert_not_called()
+
+
+def test_deck_browser_mode_redraw_reuses_the_tree_on_screen() -> None:
+    browser = cast(
+        Any,
+        SimpleNamespace(
+            _render_data=object(),
+            _renderPage=MagicMock(),
+            refresh=MagicMock(),
+        ),
+    )
+    DeckBrowser.redraw_for_ui_mode(browser)
+    browser._renderPage.assert_called_once_with(reuse=True)
+    browser.refresh.assert_not_called()
+
+    # nothing rendered yet: a normal refresh
+    browser = cast(Any, SimpleNamespace(_renderPage=MagicMock(), refresh=MagicMock()))
+    DeckBrowser.redraw_for_ui_mode(browser)
+    browser._renderPage.assert_not_called()
+    browser.refresh.assert_called_once()

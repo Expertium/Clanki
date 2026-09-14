@@ -94,6 +94,14 @@ class DeckBrowser:
         if self._refresh_needed:
             self.refresh()
 
+    def redraw_for_ui_mode(self) -> None:
+        """Redraw after a Simple/Advanced switch without touching the due
+        counts (spec ui.mode-switch): the tree already on screen is reused."""
+        if hasattr(self, "_render_data"):
+            self._renderPage(reuse=True)
+        else:
+            self.refresh()
+
     def cancel_rwkv_count_refresh(self) -> None:
         self._rwkv_count_generation += 1
 

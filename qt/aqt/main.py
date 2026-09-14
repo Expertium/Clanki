@@ -1710,7 +1710,12 @@ title="{}" {}>{}</button>""".format(
         self._sync_advanced_ui_action()
         self._sync_addons_action()
         self.toolbar.draw()
-        self.reset()
+        # Only the deck list's bottom row depends on the mode, so it is
+        # redrawn from the data already on screen. A full reset() would
+        # recompute the RWKV due counts (slow, and "..." meanwhile) for a
+        # change that does not affect dueness (spec ui.mode-switch).
+        if self.state == "deckBrowser":
+            self.deckBrowser.redraw_for_ui_mode()
 
     def _sync_advanced_ui_action(self) -> None:
         action = self.form.actionAdvancedUi
