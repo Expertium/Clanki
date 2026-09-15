@@ -63,6 +63,13 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    https://github.com/JSchoreels/anki-connect into the core, so it does not need
    to be installed as an add-on. Its HTTP API surface is a hard compatibility
    boundary: existing AnkiConnect clients must keep working.
+   Done 2026-09-16: `qt/aqt/ankiconnect.py` (actions, settings, add-on
+   takeover), `ankiconnect_server.py` (HTTP, off the main thread),
+   `ankiconnect_edit.py`, `ankiconnect_prefs.py` (Preferences > AnkiConnect,
+   off by default; settings in the profile manager's global meta under
+   `ankiConnect`); every action of the add-on (AnkiWeb 2055492159) and of
+   the JSchoreels fork; an enabled add-on is disabled at start-up and the
+   built-in one turned on (`spec/ankiconnect.md`).
 5. **A few Search Stats Extended graphs.** Port a **handful** of the graphs from
    https://github.com/JSchoreels/Anki-Search-Stats-Extended — deliberately **not**
    all of them. Ask which ones before porting; picking the subset is a product
