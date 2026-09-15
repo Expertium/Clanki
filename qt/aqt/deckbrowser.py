@@ -11,6 +11,7 @@ from typing import Any
 
 import aqt
 import aqt.operations
+import aqt.review_heatmap
 import aqt.rwkv_scheduler
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckCollapseScope, DeckId, DeckTreeNode
@@ -26,6 +27,7 @@ from aqt.operations.deck import (
     set_deck_collapsed,
 )
 from aqt.qt import *
+from aqt.review_heatmap import HeatmapView
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
@@ -183,7 +185,7 @@ class DeckBrowser:
             def get_data(col: Collection) -> RenderData:
                 aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores(self.mw)
                 tree = col.sched.deck_due_tree()
-                return RenderData(
+                data = RenderData(
                     tree=tree,
                     current_deck_id=col.decks.get_current_id(),
                     studied_today=col.studied_today(),
@@ -195,6 +197,11 @@ class DeckBrowser:
                         )
                     ),
                 )
+                # the heatmap under the tree, computed here rather than on
+                # the main thread when the page is drawn
+                if heatmap := aqt.review_heatmap.instance():
+                    heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
+                return data
 
             def success(output: RenderData) -> None:
                 if generation != self._rwkv_count_generation:

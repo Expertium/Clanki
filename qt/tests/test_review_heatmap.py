@@ -292,6 +292,175 @@ def test_older_reviews_are_counted_once_and_newer_ones_every_time(
         col.close(downgrade=False)
 
 
+def test_reviews_are_grouped_by_day_ranges_exactly_as_one_by_one(
+    tmp_path: Any,
+) -> None:
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "heatmap.anki2"))
+    try:
+        other = col.decks.id("Other")
+        assert other is not None
+        card_ids = []
+        for deck in (DeckId(1), other):
+            note = col.new_note(col.models.current())
+            note.fields[0] = f"front {deck}"
+            col.add_note(note, deck)
+            card_ids += note.card_ids()
+        # reviews on every side of midnight and of the rollover hour, over
+        # two years (daylight saving changes included, where the local time
+        # zone has them), a manual reschedule, and a card deleted later
+        base = 1_600_000_000_000
+        review_ids = []
+        for day in range(0, 730, 3):
+            for minutes in (-61, -1, 0, 1, 59, 179, 180, 181, 239, 240, 241, 719):
+                review_ids.append(base + day * DAY * 1000 + minutes * 60_000)
+        for step, review_id in enumerate(sorted(review_ids)):
+            col.db.execute(
+                "INSERT INTO revlog VALUES (?, ?, -1, ?, 1, 0, 2500, 1000, 1)",
+                review_id + step % 1000,
+                card_ids[step % 2],
+                0 if step % 17 == 0 else 3,
+            )
+        col.db.execute(
+            "INSERT INTO revlog VALUES (?, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            base + 5,
+            999,  # no such card
+        )
+        col.decks.select(other)
+        for rollover in (0, 4, 23):
+            col.set_config("rollover", rollover)
+            for settings in (
+                HeatmapSettings(),
+                HeatmapSettings(
+                    exclude_deleted_cards=True, exclude_manual_reschedules=False
+                ),
+            ):
+                for current_deck_only in (False, True):
+                    reporter = ActivityReporter(col, settings)
+                    assert reporter._cards_done(
+                        current_deck_only, None
+                    ) == _reviews_per_day_in_one_query(col, settings, current_deck_only)
+        # the day ranges were used, not the one-by-one grouping
+        reporter = ActivityReporter(col, HeatmapSettings())
+        assert reporter._review_days_by_day_ranges("id >= 0", "id >= 0") is not None
+        # a review dated before 1970 leaves the grouping to one by one
+        col.db.execute(
+            "INSERT INTO revlog VALUES (-5000, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            card_ids[0],
+        )
+        assert reporter._review_days_by_day_ranges("id < 0", "id < 0") is None
+        assert reporter._cards_done(False, None) == _reviews_per_day_in_one_query(
+            col, HeatmapSettings(), False
+        )
+    finally:
+        col.close(downgrade=False)
+
+
+def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> None:
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "heatmap.anki2"))
+    try:
+        note = col.new_note(col.models.current())
+        note.fields[0] = "front"
+        col.add_note(note, DeckId(1))
+        heatmap = ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+        scans: list[str] = []
+
+        def fingerprint() -> tuple[Any, ...]:
+            reporter = ActivityReporter(
+                col, HeatmapSettings(), heatmap._older_reviews, heatmap._contents
+            )
+            first = col.db.first
+
+            def counting_first(sql: str, *args: Any) -> Any:
+                if "FROM cards" in sql:
+                    scans.append(sql)
+                return first(sql, *args)
+
+            with patch.object(col.db, "first", counting_first):
+                return reporter.input_fingerprint(current_deck_only=False)
+
+        base = fingerprint()
+        assert fingerprint() == base and len(scans) == 1
+        # a write through SQL, which does not touch the modified time
+        col.db.execute("UPDATE cards SET due = due + 1")
+        changed = fingerprint()
+        assert changed != base and len(scans) == 2
+        # a write that changes nothing the report reads still reads again
+        col.set_config("someUnrelatedKey", 1)
+        assert fingerprint() == changed and len(scans) == 3
+        assert fingerprint() == changed and len(scans) == 3
+        # reopening gives a new connection with its own write count
+        col.close(downgrade=False)
+        col.reopen()
+        assert fingerprint() == changed and len(scans) == 4
+    finally:
+        col.close(downgrade=False)
+
+
+def test_prepare_draws_into_the_cache_and_leaves_errors_to_the_draw() -> None:
+    heatmap = _heatmap(enabled=True)
+    with patch.object(review_heatmap, "ActivityReporter") as reporter:
+        reporter.return_value.get_report.return_value = None
+        reporter.return_value.input_fingerprint.return_value = ("inputs", 1)
+        heatmap.prepare(HeatmapView.overview, current_deck_only=True)
+        assert reporter.return_value.get_report.call_count == 1
+        html = heatmap.render(HeatmapView.overview, current_deck_only=True)
+        assert "rh-view-overview" in html
+        assert reporter.return_value.get_report.call_count == 1
+        reporter.return_value.input_fingerprint.side_effect = RuntimeError("db")
+        heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
+
+
+def test_the_deck_list_and_overview_prepare_their_heatmap_in_the_background(
+    monkeypatch: Any,
+) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    from aqt.deckbrowser import DeckBrowser
+    from aqt.overview import Overview
+
+    heatmap = MagicMock()
+    mw = MagicMock()
+    mw.col.sched._is_finished.return_value = False
+    ops: list[Any] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append(op)
+
+        def run_in_background(self) -> None:
+            pass
+
+    with (
+        patch.object(review_heatmap, "instance", return_value=heatmap),
+        patch("aqt.deckbrowser.QueryOp", FakeQueryOp),
+        patch("aqt.overview.QueryOp", FakeQueryOp),
+        patch("aqt.rwkv_scheduler.rwkv_state_cache_loading", return_value=False),
+        patch("aqt.rwkv_scheduler.rwkv_review_scores_pending", return_value=False),
+        patch("aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores"),
+        patch("aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores"),
+        patch("aqt.rwkv_scheduler.deck_browser_rwkv_count_scope_ids", return_value=()),
+    ):
+        DeckBrowser(mw).refresh()
+        ops[-1](mw.col)
+        heatmap.prepare.assert_called_with(
+            HeatmapView.deckbrowser, current_deck_only=False
+        )
+        Overview(mw).refresh()
+        ops[-1](mw.col)
+        heatmap.prepare.assert_called_with(HeatmapView.overview, current_deck_only=True)
+        # the congratulations screen has no heatmap
+        heatmap.prepare.reset_mock()
+        mw.col.sched._is_finished.return_value = True
+        Overview(mw).refresh()
+        ops[-1](mw.col)
+        heatmap.prepare.assert_not_called()
+
+
 def test_clicking_a_day_opens_the_browser_with_the_search() -> None:
     heatmap = _heatmap(enabled=True)
     with patch("aqt.dialogs.open") as open_dialog:
