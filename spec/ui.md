@@ -172,3 +172,21 @@ curve's points", "an RWKV-Curve card's chart starts at its last review: no
 FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
 curve and S90", "without an RWKV curve yet the chart stops at the last
 review" (`ts/routes/card-info/forgetting-curve.test.ts`).
+
+## ui.fsrs7-no-rwkv-values
+
+Given a collection whose algorithm is FSRS-7 (`sched.one-global-algorithm`),
+nothing on screen comes from RWKV, even with an RWKV model loaded: the
+reviewer runs no RWKV prediction for its cards, their card info has no RWKV
+rows ("RWKV computed R", "Retrievability source", the answer-button
+probabilities, "RWKV : R After Review"), and the Stats page prepares no RWKV
+scores, so its Retrievability graph has no RWKV series (any scores left
+from an earlier algorithm are dropped). Opening the Stats page does not
+load the model.
+
+**Why:** Andrew, 2026-09-15: never mix two scheduling algorithms in one
+display; every place shows only the active algorithm's values.
+
+**Pinned by:** `test_fsrs7_card_gets_no_rwkv_prediction_and_no_card_info_rows`,
+`test_fsrs7_collection_prepares_no_rwkv_stats_scores`
+(`qt/tests/test_rwkv_scheduler.py`).

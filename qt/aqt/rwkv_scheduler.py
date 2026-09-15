@@ -3746,7 +3746,11 @@ def update_reviewer_scheduling_states(
     try:
         curve_enabled = rwkv_review_enabled(reviewer, card)
         review_active = rwkv_review_active(reviewer, card)
-        if review_active and not _reviewer_backend_ready_for_review(reviewer):
+        if not review_active:
+            # an FSRS-7 card gets no RWKV prediction at all (spec
+            # ui.fsrs7-no-rwkv-values)
+            return states
+        if not _reviewer_backend_ready_for_review(reviewer):
             logger.debug(
                 "RWKV scheduling prediction skipped: resident state unavailable"
             )
@@ -3758,7 +3762,7 @@ def update_reviewer_scheduling_states(
             if current_backend is None:
                 logger.debug("RWKV scheduling prediction skipped: backend busy")
                 return states
-            if review_active and not _reviewer_backend_warmed_up(reviewer):
+            if not _reviewer_backend_warmed_up(reviewer):
                 logger.debug(
                     "RWKV scheduling prediction skipped: state changed before access"
                 )
@@ -3806,8 +3810,7 @@ def update_reviewer_scheduling_states(
                     _reviewer_backend is not current_backend
                     or _reviewer_backend_state_generation(current_backend)
                     != state_generation
-                    or review_active
-                    and not _reviewer_backend_warmed_up(reviewer)
+                    or not _reviewer_backend_warmed_up(reviewer)
                 ):
                     logger.debug(
                         "RWKV scheduling prediction discarded: backend state changed"
@@ -3821,7 +3824,7 @@ def update_reviewer_scheduling_states(
                     reviewer,
                     card,
                     prediction,
-                    review_enabled=review_active,
+                    review_enabled=True,
                     interval_override_used=curve_enabled and has_interval_overrides,
                 )
                 if curve_enabled and has_interval_overrides:
@@ -5757,6 +5760,11 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
+    if not rwkv_collection_active(reviewer):
+        # an FSRS-7 collection has no RWKV values to prepare (spec
+        # ui.fsrs7-no-rwkv-values)
+        _set_rwkv_stats_graph_scores(reviewer, search, [])
+        return RwkvStatsPreparationStatus.READY
     prepare_instant_due = prepare_instant_due or _search_uses_rwkv_instant_due(search)
     prepare_curve_due = prepare_curve_due or _search_uses_rwkv_curve_due(search)
     prepare_curve_retrievability = (
@@ -7315,12 +7323,6 @@ def current_reviewer_diagnostics(
     )
 
 
-def has_reviewer_prediction(reviewer: object) -> bool:
-    return isinstance(
-        getattr(reviewer, _REVIEWER_PREDICTION_ATTR, None), RwkvReviewerPrediction
-    )
-
-
 def has_reviewer_backend() -> bool:
     return configure_reviewer_backend_from_environment()
 
@@ -7334,15 +7336,7 @@ def rwkv_card_info_rows(
 ) -> list[tuple[str, str]]:
     card_id = _card_id(card)
     if not rwkv_review_active(reviewer, card):
-        diagnostics = current_reviewer_diagnostics(
-            reviewer,
-            card,
-            fallback_source=fallback_source,
-        )
-        if diagnostics is not None:
-            if card_id is not None:
-                _set_rwkv_card_info_score(reviewer, card_id, None)
-            return _card_info_diagnostic_rows(diagnostics)
+        # FSRS-7's card info has no RWKV rows (spec ui.fsrs7-no-rwkv-values)
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
@@ -7673,6 +7667,21 @@ def _rwkv_collection_config_state(
         review_enabled=review_enabled,
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     )
+
+
+def rwkv_collection_active(reviewer: object) -> bool:
+    """False when the collection runs FSRS-7 (its one algorithm, the
+    `schedulingAlgorithm` key, spec sched.one-global-algorithm). A
+    collection without the key, or one that cannot be read, counts as RWKV,
+    so nothing is hidden by mistake."""
+    get_config = getattr(_collection(reviewer), "get_config", None)
+    if not callable(get_config):
+        return True
+    try:
+        return get_config("schedulingAlgorithm", None) != "fsrs7"
+    except Exception:
+        logger.debug("failed to read the collection's scheduling algorithm")
+        return True
 
 
 def _rwkv_review_active_deck_config(
@@ -8713,11 +8722,9 @@ def _retrievability_source(
     prediction: RwkvReviewerPrediction,
     fallback_source: str,
 ) -> str:
-    if prediction.review_enabled and _valid_probability(prediction.retrievability):
+    if _valid_probability(prediction.retrievability):
         return "RWKV"
-    if prediction.review_enabled:
-        return f"{fallback_source} (RWKV unavailable)"
-    return f"{fallback_source} (RWKV disabled)"
+    return f"{fallback_source} (RWKV unavailable)"
 
 
 def _unavailable_retrievability_source(fallback_source: str) -> str:
