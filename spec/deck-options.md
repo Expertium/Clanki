@@ -335,8 +335,8 @@ Given a new preset — added on the deck-options screen, created by
 defaults" — its learning steps and relearning steps are empty and its
 algorithm is RWKV-Curve (`rwkv_review_enabled` on,
 `rwkv_review_instant_order_enabled` off), its leech action is Tag Only, its
-maximum reviews/day is 9999 and its review sort order is ascending
-retrievability (least likely to be recalled first); the revert buttons
+maximum reviews/day is 9999 and its review sort order is descending
+retrievability (most likely to be recalled first); the revert buttons
 restore these values. Given a new collection, its default preset has these values,
 so the collection starts on RWKV-Curve. Existing presets keep their stored
 values: a stored preset without the RWKV flag still reads as FSRS-7, and
@@ -345,7 +345,9 @@ scheduling outcomes for existing presets do not change. (Same-day reviews for
 
 **Why:** Andrew, 2026-09-14: RWKV-Curve is the algorithm new users should
 get, and it needs no learning steps. Andrew, 2026-09-15: no practical review
-cap by default, and the reviews most at risk of being forgotten first.
+cap by default; descending retrievability keeps retention closest to the
+desired retention when not every due card gets done (a backlog, a session
+stopped early).
 Existing presets must keep the assumptions their review histories were
 built on.
 
@@ -358,8 +360,9 @@ built on.
 Given a preset whose algorithm is RWKV-Curve or RWKV-Instant, the review
 sort order dropdown does not offer "Easy cards first" or "Difficult cards
 first" (the difficulty orders, stored as `EASE_ASCENDING` /
-`EASE_DESCENDING`). A preset that stores one of them reads as ascending
-retrievability when the deck-options screen shows it under RWKV, in either
+`EASE_DESCENDING`). A preset that stores one of them reads as the default
+order, descending retrievability (`deck-options.new-preset-defaults`), when
+the deck-options screen shows it under RWKV, in either
 mode, and saving writes that value. Under FSRS-7 both orders stay available.
 
 **Why:** Andrew, 2026-09-15: difficulty is an FSRS state variable, so
