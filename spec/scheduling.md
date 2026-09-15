@@ -77,6 +77,30 @@ to whole days, at least 1.
 `intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`);
 `preview` (`rslib/src/scheduler/answering/preview.rs`).
 
+## sched.rwkv-curve-s90-kept
+
+Given a card of an RWKV-Curve preset that has a memory state, when FSRS-7
+computes its memory state again — a move to another deck whose preset runs
+RWKV-Curve, or a change of the preset's FSRS parameters, desired retention,
+Easy Days or fuzz in deck options — the card keeps the S90 stored in
+its memory state (the one RWKV-Curve wrote, `sched.rwkv-curve-s90`); only
+the FSRS-7 fields (internal and fast stability, difficulty) and the stored
+decay and desired retention change. A card moved to a deck whose preset runs
+FSRS-7, and every card when the collection switches to FSRS-7
+(`sched.one-global-algorithm`), gets FSRS-7's own S90. Three passes still
+rebuild the whole state, S90 included: the one-time FSRS-7 migration of a
+preset's parameters (`sched.fsrs7-only`), whose stored S90 may predate
+RWKV-Curve, the post-sync rebuild of conflicting
+cards (`sync.fsrs-reconcile-after-sync`) and the repair of cards last
+reviewed in another client (`sync.fsrs7-state-of-foreign-cards`).
+
+**Why:** Andrew, 2026-09-15: a deck move or a preset change must not replace
+RWKV-Curve's S90 with FSRS-7's; one algorithm's values must not mix into the
+other's.
+
+**Pinned by:** `rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes`
+(`rslib/src/scheduler/fsrs/memory_state.rs`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`

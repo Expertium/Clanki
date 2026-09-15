@@ -529,6 +529,7 @@ fn recompute_memory_state(
         review_fuzz_config,
         reschedule: false,
         deck_desired_retention,
+        keep_stability: false,
     };
     let search = SearchNode::CardIds(
         cards
