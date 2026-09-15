@@ -50,7 +50,7 @@ from anki.consts import (
 from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
-from aqt.qt import QMessageBox, QWidget
+from aqt.qt import QWidget
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -266,7 +266,7 @@ _rwkv_stats_prepare_in_flight: dict[
 ] = {}
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
-_rwkv_startup_prompt_shown = False
+_rwkv_startup_build_started = False
 _rwkv_model_cache_lock = threading.Lock()
 _rwkv_model_cache_signature: tuple[str, str, int, int, int, int, int] | None = None
 _rwkv_model_cache_value: dict[str, object] | None = None
@@ -3222,11 +3222,11 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
 
 
 def _invalidate_reviewer_backend_runtime_state_for_profile_open() -> None:
-    global _rwkv_startup_prompt_shown
+    global _rwkv_startup_build_started
 
     with _reviewer_backend_state_lock:
         _invalidate_all_reviewer_backend_runtime_state_locked()
-        _rwkv_startup_prompt_shown = False
+        _rwkv_startup_build_started = False
 
 
 def _finish_reviewer_backend_warmup(
@@ -3720,6 +3720,14 @@ def configure_reviewer_backend_from_environment() -> bool:
     except Exception:
         logger.exception("failed to configure RWKV scheduler backend")
         return False
+
+
+def rwkv_model_available() -> bool:
+    """Whether RWKV can run: its backend is configured, or can be configured
+    now (the model file is there and loads). When it cannot, RWKV screens say
+    so instead of waiting or falling back to FSRS-7 (spec
+    sched.rwkv-no-model-error)."""
+    return configure_reviewer_backend_from_environment()
 
 
 def embedded_rwkv_model_path() -> Path | None:
@@ -7359,14 +7367,17 @@ def rwkv_card_info_rows(
     retrievability = diagnostics.retrievability if diagnostics else None
     if diagnostics is None and card_id is not None:
         _set_rwkv_card_info_score(reviewer, card_id, None)
-    return [
-        (
-            RWKV_CARD_INFO_R_LABEL,
-            "Calculating…"
-            if retrievability is None
-            else _format_retrievability(retrievability),
-        )
-    ]
+    if retrievability is not None:
+        value = _format_retrievability(retrievability)
+    elif _reviewer_backend is None:
+        # no model: RWKV will never have the value (spec
+        # sched.rwkv-no-model-error)
+        from aqt.utils import tr
+
+        value = tr.qt_misc_rwkv_model_not_found()
+    else:
+        value = "Calculating…"
+    return [(RWKV_CARD_INFO_R_LABEL, value)]
 
 
 def rwkv_card_info_after_review_row(
@@ -7617,6 +7628,19 @@ def rwkv_collection_active(reviewer: object) -> bool:
     except Exception:
         logger.debug("failed to read the collection's scheduling algorithm")
         return True
+
+
+def rwkv_curve_collection_active(reviewer: object) -> bool:
+    """True when the collection runs RWKV-Curve (its ``schedulingAlgorithm``
+    key, spec sched.one-global-algorithm): its R is the Curve's."""
+    get_config = getattr(_collection(reviewer), "get_config", None)
+    if not callable(get_config):
+        return False
+    try:
+        return get_config("schedulingAlgorithm", None) == "rwkvCurve"
+    except Exception:
+        logger.debug("failed to read the collection's scheduling algorithm")
+        return False
 
 
 def _rwkv_review_active_deck_config(
@@ -10717,7 +10741,7 @@ def rwkv_state_cache_usable(
 
 
 def prepare_rwkv_state_cache_on_startup(mw: object) -> None:
-    """Restore or prompt for RWKV state cache preparation after profile open."""
+    """Restore or build the RWKV state cache after profile open."""
 
     begin_rwkv_state_cache_startup(mw)
     finish_rwkv_state_cache_startup(mw)
@@ -10731,34 +10755,29 @@ def begin_rwkv_state_cache_startup(mw: object) -> None:
 
 
 def finish_rwkv_state_cache_startup(mw: object) -> None:
-    """Restore or prompt after any automatic startup sync has completed."""
+    """Restore or build after any automatic startup sync has completed."""
 
     config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
     if not config_state.review_enabled:
         _set_rwkv_state_cache_loading(mw, False)
         return
+    if not rwkv_model_available():
+        # no state to build or restore without a model: say what is wrong
+        # rather than offering to build it (spec sched.rwkv-no-model-error)
+        _set_rwkv_state_cache_loading(mw, False)
+        _show_rwkv_model_missing(mw)
+        return
 
     load_rwkv_state_cache_with_progress(
         mw,
-        prompt_if_unavailable=True,
+        build_if_unavailable=True,
     )
 
 
-def maybe_prompt_for_rwkv_state_cache(mw: object) -> None:
-    """Prompt once per session to build the local RWKV state cache if needed."""
+def _show_rwkv_model_missing(mw: object) -> None:
+    from aqt.utils import showWarning, tr
 
-    if _rwkv_startup_prompt_shown:
-        return
-    config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
-    if not config_state.review_enabled:
-        return
-    if rwkv_state_cache_usable(
-        mw,
-        dynamic_preset_replay_enabled=config_state.dynamic_preset_replay_enabled,
-    ):
-        return
-
-    _show_rwkv_state_cache_prompt(mw)
+    showWarning(tr.qt_misc_rwkv_model_missing(), parent=cast(Any, mw))
 
 
 def _rwkv_resident_state_ready(mw: object) -> bool:
@@ -10768,61 +10787,31 @@ def _rwkv_resident_state_ready(mw: object) -> bool:
     ) is not None and _reviewer_backend_warmed_up(reviewer)
 
 
-def _show_rwkv_state_cache_prompt(mw: object) -> None:
-    global _rwkv_startup_prompt_shown
+def _start_rwkv_state_cache_build(mw: object) -> None:
+    """Build the state cache and the calibration data at once, once per
+    profile open, without asking (spec sched.rwkv-state-cache-startup-build)."""
+    global _rwkv_startup_build_started
 
-    if _rwkv_startup_prompt_shown:
+    if _rwkv_startup_build_started:
         return
     if not configure_reviewer_backend_from_environment():
         return
     if _rwkv_resident_state_ready(mw):
         return
 
-    _rwkv_startup_prompt_shown = True
-    parent = cast(QWidget | None, mw)
+    _rwkv_startup_build_started = True
 
-    def prompt() -> None:
+    def build() -> None:
         if _rwkv_resident_state_ready(mw):
             return
-
-        from aqt.utils import ask_user_dialog
-
-        def on_choice(choice: int) -> None:
-            if choice not in (0, 1) or _rwkv_resident_state_ready(mw):
-                return
-            if choice == 0:
-                build_rwkv_state_cache_with_progress(
-                    mw,
-                    record_retrievability_cache=False,
-                )
-            elif choice == 1:
-                build_rwkv_state_cache_with_progress(
-                    mw,
-                    record_retrievability_cache=True,
-                )
-
-        ask_user_dialog(
-            "RWKV review is enabled, but the local RWKV state cache is not ready.\n\n"
-            "Build the state cache only to start reviewing sooner. Build with "
-            "calibration data if you also want historical RWKV predictions prepared "
-            "for calibration/stat features.",
-            callback=on_choice,
-            buttons=[
-                "Build State Only",
-                "Build State + Calibration Data",
-                QMessageBox.StandardButton.Cancel,
-            ],
-            default_button=1,
-            parent=parent,
-            title="RWKV State Cache",
-        )
+        build_rwkv_state_cache_with_progress(mw, record_retrievability_cache=True)
 
     taskman = getattr(mw, "taskman", None)
     run_on_main = getattr(taskman, "run_on_main", None)
     if callable(run_on_main):
-        run_on_main(prompt)
+        run_on_main(build)
     else:
-        prompt()
+        build()
 
 
 def rwkv_state_cache_loading(mw: object) -> bool:
@@ -10867,14 +10856,14 @@ def _finish_rwkv_state_cache_operation(
 def load_rwkv_state_cache_with_progress(
     mw: object,
     *,
-    prompt_if_unavailable: bool = False,
+    build_if_unavailable: bool = False,
 ) -> None:
     """Restore the local RWKV state cache with a lightweight progress dialog."""
 
     def finish(loaded: bool) -> None:
-        if prompt_if_unavailable and not loaded:
+        if build_if_unavailable and not loaded:
             _set_rwkv_state_cache_loading(mw, False)
-            _show_rwkv_state_cache_prompt(mw)
+            _start_rwkv_state_cache_build(mw)
             return
         _finish_rwkv_state_cache_operation(
             mw,
@@ -10890,7 +10879,7 @@ def load_rwkv_state_cache_with_progress(
             loaded = load_rwkv_state_cache(mw)
         except Exception:
             finish(False)
-            if prompt_if_unavailable:
+            if build_if_unavailable:
                 logger.exception("RWKV state cache startup load failed")
                 return
             raise
@@ -10950,7 +10939,7 @@ def load_rwkv_state_cache_with_progress(
             )
         except Exception:
             finish(False)
-            if prompt_if_unavailable:
+            if build_if_unavailable:
                 logger.exception("failed to start RWKV state cache load")
                 return
             raise
@@ -17028,39 +17017,19 @@ def _rwkv_replay_semantics_key(
 
 
 def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_dynamic_preset_replay")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewDynamicPresetReplay",
-        "rwkv_review_dynamic_preset_replay",
-    )
-    return value if isinstance(value, bool) else False
+    """Always off: the setting is gone from deck options, and a stored value
+    is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return False
 
 
 def _rwkv_review_first_review_elapsed_from_card_creation(
     deck_config: dict[str, object],
 ) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_first_review_elapsed_from_card_creation")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewFirstReviewElapsedFromCardCreation",
-        "rwkv_review_first_review_elapsed_from_card_creation",
-    )
-    return (
-        value
-        if isinstance(value, bool)
-        else _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
-    )
+    """Always the default (on): the setting is gone from deck options, and a
+    stored value is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:

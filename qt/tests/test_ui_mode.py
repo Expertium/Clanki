@@ -167,3 +167,26 @@ def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
     browser._renderPage.assert_not_called()
     browser._drawButtons.assert_not_called()
     browser.refresh.assert_called_once()
+
+
+def test_deck_options_mode_switch_sets_the_main_window_mode(
+    monkeypatch: Any,
+) -> None:
+    """The deck-options switch writes the same flag through the main window,
+    which redraws its own switch (spec ui.mode-switch)."""
+    import aqt
+    from anki import generic_pb2
+    from aqt import mediasrv
+
+    calls: list[bool] = []
+    mw = SimpleNamespace(
+        set_advanced_ui=calls.append,
+        taskman=SimpleNamespace(run_on_main=lambda fn: fn()),
+    )
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+    for value in (True, False):
+        request = SimpleNamespace(data=generic_pb2.Bool(val=value).SerializeToString())
+        monkeypatch.setattr(mediasrv, "request", request)
+        assert mediasrv.set_advanced_ui() == b""
+    assert calls == [True, False]
+    assert mediasrv.set_advanced_ui in mediasrv.post_handler_list

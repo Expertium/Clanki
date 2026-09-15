@@ -36,12 +36,19 @@ deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown in both modes,
 and the
 deck-options screen shows its simplified view
-(`spec/deck-options.md`, `deck-options.advanced-view`) with no switch of its
-own. Hidden settings keep their stored values and keep taking effect.
+(`spec/deck-options.md`, `deck-options.advanced-view`). The deck-options
+screen has the same "Simple | Advanced" control at the right end of its top
+bar: a click switches the page between its two views at once, keeping any
+unsaved changes, and writes the same flag through the main window, which
+redraws as above; it does not wait for Save, and closing without saving
+keeps the new mode. Hidden settings keep their stored values and keep
+taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
-active side filled. The RWKV reschedule actions are power-user tools. A user
+active side filled. 2026-09-15: deck options get the switch too, always in
+step with the main window's, so switching needs no closing and reopening of
+deck options. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
 installed).
@@ -49,7 +56,10 @@ installed).
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
 reset),
-`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`).
+`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
+`test_deck_options_mode_switch_sets_the_main_window_mode`
+(`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
+once" (`ts/tests/e2e/deck-options.test.ts`).
 
 ## ui.review-heatmap
 
@@ -88,17 +98,24 @@ where neither the calendar nor the figures show, nothing is computed.
 Given the Review Heatmap add-on installed and enabled at start-up, Clanki
 disables it before add-ons load (both would draw a heatmap) and, the first
 time only, tells the user so once the profile is open; the notice is never
-shown again (a flag in the profile manager's global meta).
+shown again (a flag in the profile manager's global meta). Given the user
+enables that add-on in Tools > Add-ons, or installs it, a message says that
+Clanki already has the Review Heatmap built in (settings in Preferences >
+Review Heatmap), and the add-on stays disabled; other add-ons enable as
+before.
 
 **Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
 settings, in a Preferences tab of their own, magenta by default, and retire
-the add-on with a one-time notice.
+the add-on with a one-time notice. Later the same day: a user who tries to
+enable the add-on must be told that Clanki has this built in.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
 colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
-link, disabling the add-on, the one-time notice);
+link, disabling the add-on, the one-time notice,
+`test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
+`test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`
 (`qt/tests/test_preferences.py`);
 `review_heatmap_is_on_by_default_and_a_reviewing_preference`
@@ -225,3 +242,34 @@ retrievability", "Simple mode shows no difficulty, stability or
 retrievability", "an RWKV-Curve card shows its curve's S90 and R, and no
 difficulty", "an RWKV-Instant card shows only RWKV's R, once, and no
 forgetting curve" (`ts/routes/card-info/lib.test.ts`).
+
+## ui.stats-one-algorithm
+
+Given the Stats page, its graphs draw only the collection's algorithm
+(`sched.one-global-algorithm`):
+
+| Algorithm    | Retrievability graph      | Difficulty graph | Stability graph |
+| ------------ | ------------------------- | ---------------- | --------------- |
+| FSRS-7       | FSRS-7's R                | shown            | shown           |
+| RWKV-Curve   | the RWKV-Curve head's R   | none             | shown (S90)     |
+| RWKV-Instant | RWKV-Instant's R          | none             | none            |
+
+Under RWKV there is no FSRS-7 series beside RWKV's and no FSRS-7 value for
+a card RWKV has not scored. While RWKV has not scored the page's search yet
+(its state loading or warming up), the Retrievability graph shows
+"Calculating…" instead of values, and the page asks again every 2 seconds
+until the scores arrive; under FSRS-7 no RWKV score is prepared at all
+(`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
+each card now, while card info evaluates the curve stored at the card's
+last review (`ui.card-info-one-algorithm`); the two can differ slightly.
+
+**Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
+RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
+RWKV has no difficulty and RWKV-Instant no stability.
+
+**Pinned by:** `retrievability_graph_uses_rwkv_scores_for_matching_search`,
+`fsrs7_stats_show_no_rwkv_values_and_rwkv_curve_uses_the_curve`
+(`rslib/src/stats/graphs/retrievability.rs`);
+`test_rwkv_curve_collection_active_reads_the_algorithm`
+(`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
+and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).

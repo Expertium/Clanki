@@ -8,8 +8,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { GraphBounds } from "./graph-helpers";
 
     export let bounds: GraphBounds;
+    /** Shown instead of "No data", e.g. while RWKV is calculating. */
+    export let text: string | undefined = undefined;
 
-    const noData = tr.statisticsNoData();
+    $: noData = text ?? tr.statisticsNoData();
 </script>
 
 <g class="no-data">

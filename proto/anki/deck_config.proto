@@ -296,8 +296,8 @@ message DeckConfigsForUpdate {
   float review_fuzz_factor_short = 18;
   float review_fuzz_factor_mid = 19;
   float review_fuzz_factor_long = 20;
-  // The collection-wide Advanced UI mode (spec ui.mode-switch); the page
-  // follows it and never writes it.
+  // The collection-wide Advanced UI mode (spec ui.mode-switch); the page's
+  // switch changes it through the main window, not through this message.
   bool advanced_ui = 21;
   // The "Reschedule cards when desired retention changes" Preferences
   // setting; the page only reads it, for the Easy Days warning (spec

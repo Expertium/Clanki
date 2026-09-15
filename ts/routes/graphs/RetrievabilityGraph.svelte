@@ -19,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         prepareData,
         type RetrievabilityHistogramData,
         retrievabilityHistogramGraph,
+        rwkvScoresPending,
         shouldShowRetrievabilityGraph,
     } from "./retrievability";
     import TableData from "./TableData.svelte";
@@ -73,7 +74,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <g class="bars" />
             <HoverColumns />
             <AxisTicks {bounds} />
-            <NoDataOverlay {bounds} />
+            <NoDataOverlay
+                {bounds}
+                text={rwkvScoresPending(sourceData)
+                    ? tr.cardStatsCalculating()
+                    : undefined}
+            />
         </svg>
 
         <TableData {tableData} />

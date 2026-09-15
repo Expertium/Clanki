@@ -27,11 +27,13 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_minimum_reviews_per_day`, which defaults to `0`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
-`rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
-`rwkv_review_first_review_elapsed_from_card_creation`, which defaults to
-`true`, and `rwkv_review_enforce_grade_order`, which defaults to `true`.
-Legacy configs may also contain `rwkv_review_batch_size`. It is retained for
-compatibility but is no longer exposed in Deck Options.
+`rwkv_review_enforce_grade_order`, which defaults to `true`.
+Legacy configs may also contain `rwkv_review_batch_size`,
+`rwkv_review_dynamic_preset_replay` and
+`rwkv_review_first_review_elapsed_from_card_creation`. They are retained for
+compatibility but are no longer exposed in Deck Options; Clanki ignores the
+last two and runs as if they were `false` and `true`
+(`deck-options.rwkv-fixed-settings`).
 
 Development code that reads deck configs through the legacy Python
 `DeckConfigDict` API should tolerate both shapes:
@@ -385,8 +387,7 @@ processed with elapsed time unknown, so creation time does not enter recurrent
 state or affect later predictions. Historical calibration replay uses the same
 split: its query sees creation time, while its answer-state update does not.
 Cards whose retained history does not start with Learning do not use creation
-time. Disable `rwkv_review_first_review_elapsed_from_card_creation` to treat
-elapsed time as unknown for the initial prediction as well.
+time. This is always on: the setting that turned it off is gone.
 
 If RWKV-Curve is enabled but `rwkv_review_instant_order_enabled` is disabled,
 review-order retrievability settings do not use FSRS exact retrievability as a
@@ -674,13 +675,10 @@ revlogs, so stats and Card Info can use RWKV without waiting for their first
 on-demand query. When a local cache load finishes successfully, Anki prewarms
 only the current deck scope to keep automatic startup work bounded. An explicit
 cache build also prewarms the closest parent deck scope. When no usable local
-cache exists, desktop Anki prompts once per session after profile open and any
-automatic startup sync to build the RWKV state cache. This startup build, and
-the same manual
-build from the RWKV section of deck options, run as a modal progress operation.
-When the startup prompt appears, users can choose a faster state-only build or
-the slower state build that also records historical retrievability rows for
-calibration/stat consumers. The expensive replay work runs off
+cache exists, desktop Anki builds the RWKV state cache once per session after
+profile open and any automatic startup sync, without asking. This startup build
+runs as a modal progress operation and also records the historical
+retrievability rows for calibration/stat consumers. The expensive replay work runs off
 the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied
@@ -1224,10 +1222,14 @@ card's retained review history. This approximates the card as staying in its
 currently resolved preset for its lifetime without repeatedly evaluating add-on
 routing rules.
 
-If `rwkv_review_dynamic_preset_replay` is enabled on any RWKV-enabled preset,
-and the current FSRS preset overlay includes structured `simulator_rules`, as
+Clanki no longer replays dynamic preset rules: the setting
+`rwkv_review_dynamic_preset_replay` is ignored and always off. The paragraph
+below describes the replay as it worked while the setting could be on.
+
+If `rwkv_review_dynamic_preset_replay` was enabled on any RWKV-enabled preset,
+and the current FSRS preset overlay included structured `simulator_rules`, as
 produced by the dynamic preset add-on for interval-split presets, RWKV
-re-evaluates those rules against historical replay facts for every review. In
+re-evaluated those rules against historical replay facts for every review. In
 particular, interval bounds use the card's previous historical interval at the
 time of the review, so a card that crosses an `ivl` threshold during replay can
 move from the young preset stream to the mature preset stream. Rules that depend

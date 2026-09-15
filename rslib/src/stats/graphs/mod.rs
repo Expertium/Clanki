@@ -15,10 +15,12 @@ mod today;
 
 use std::collections::HashMap;
 
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use fsrs::FSRS;
 
 use crate::config::BoolKey;
 use crate::config::Weekday;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
@@ -29,7 +31,11 @@ struct GraphsContext {
     cards: Vec<Card>,
     fsrs_by_preset: HashMap<FsrsPresetId, FSRS>,
     fsrs_preset_by_card: HashMap<CardId, FsrsPresetId>,
+    /// The active algorithm's RWKV R per card (RWKV-Curve's curve R or
+    /// RWKV-Instant's R); None under FSRS-7 and while RWKV has not scored
+    /// the search yet (spec ui.stats-one-algorithm).
     rwkv_retrievability_scores: Option<HashMap<CardId, f32>>,
+    algorithm: SchedulingAlgorithm,
     next_day_start: TimestampSecs,
     days_elapsed: u32,
     local_offset_secs: i64,
@@ -73,8 +79,23 @@ impl Collection {
                 .get_revlog_entries_for_searched_cards_after_stamp(revlog_start)?
         };
         let cards = self.storage.all_searched_cards()?;
-        let rwkv_retrievability_scores =
-            self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some(search));
+        let algorithm = self.effective_scheduling_algorithm()?;
+        let rwkv_retrievability_scores = match algorithm {
+            SchedulingAlgorithm::Fsrs7 => None,
+            SchedulingAlgorithm::RwkvInstant => {
+                self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some(search))
+            }
+            SchedulingAlgorithm::RwkvCurve => self
+                .rwkv_stats_graph_score_entries_for_search(timing.days_elapsed, Some(search))
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .filter_map(|(card_id, entry)| {
+                            entry.curve_retrievability.map(|r| (card_id, r))
+                        })
+                        .collect()
+                }),
+        };
         let fsrs_cards: Vec<Card> = cards
             .iter()
             .filter(|card| card.memory_state.is_some())
@@ -117,6 +138,7 @@ impl Collection {
             fsrs_by_preset,
             fsrs_preset_by_card,
             rwkv_retrievability_scores,
+            algorithm,
             next_day_start: timing.next_day_at,
             local_offset_secs,
         };
@@ -127,9 +149,10 @@ impl Collection {
             true_retention: Some(ctx.calculate_true_retention()),
             future_due: Some(ctx.future_due()),
             intervals: Some(ctx.intervals()),
-            stability: Some(ctx.stability()),
+            // RWKV-Instant has no stability, RWKV no difficulty
+            stability: (algorithm != SchedulingAlgorithm::RwkvInstant).then(|| ctx.stability()),
             eases: Some(eases),
-            difficulty: Some(difficulty),
+            difficulty: (algorithm == SchedulingAlgorithm::Fsrs7).then_some(difficulty),
             today: Some(ctx.today()),
             hours: Some(ctx.hours()),
             buttons: Some(ctx.buttons()),
@@ -137,6 +160,7 @@ impl Collection {
             rollover_hour: self.rollover_for_current_scheduler()? as u32,
             retrievability: Some(ctx.retrievability()),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
+            scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
         };
         Ok(resp)
     }

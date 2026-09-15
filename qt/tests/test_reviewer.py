@@ -555,6 +555,7 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     shots: list[tuple[int, Callable[[], None]]] = []
     evals: list[str] = []
     pending = [True]
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "answer_intervals_pending",
@@ -602,6 +603,35 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     assert len(shots) == 2
     assert evals[-1] == 'showAnswer("BUTTONS 1d 3d");'
     assert reviewer._rwkv_intervals_retry_ms == 0
+
+
+def test_answer_buttons_say_the_rwkv_model_is_missing(monkeypatch) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-no-model-error"""
+    shots: list[object] = []
+    evals: list[str] = []
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: True
+    )
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: False)
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(
+        progress=SimpleNamespace(single_shot=lambda *args: shots.append(args))
+    )
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=evals.append))
+    reviewer.card = SimpleNamespace(id=7, current_deck_id=lambda: 1)
+    reviewer.state = "answer"
+    reviewer._answer_update_id = 3
+    reviewer._states_mutated = True
+    reviewer._scheduling_states_pending = False
+    reviewer._v3 = SimpleNamespace(states=scheduling_states_with_review_current())
+    reviewer._answerButtons = lambda: "BUTTONS 1d 3d"
+
+    reviewer._showEaseButtons()
+
+    # no endless wait: the reason, no buttons and no retry
+    assert shots == []
+    assert json.dumps(tr.qt_misc_rwkv_model_not_found())[1:-1] in evals[0]
+    assert "BUTTONS" not in evals[0]
 
 
 def test_answers_are_ignored_while_rwkv_curve_intervals_are_pending(

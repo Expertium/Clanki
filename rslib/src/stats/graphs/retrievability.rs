@@ -4,6 +4,7 @@
 use anki_proto::stats::graphs_response::retrievability::Series;
 use anki_proto::stats::graphs_response::Retrievability;
 
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::TimestampSecs;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::stats::graphs::eases::percent_to_bin;
@@ -49,8 +50,10 @@ impl RetrievabilitySeries {
 }
 
 impl GraphsContext {
-    /// (SM-2, FSRS)
+    /// The collection's algorithm only (spec ui.stats-one-algorithm): FSRS-7's
+    /// R under FSRS-7; under RWKV, RWKV's R and no FSRS-7 series or fallback.
     pub(super) fn retrievability(&self) -> Retrievability {
+        let rwkv_algorithm = self.algorithm != SchedulingAlgorithm::Fsrs7;
         let mut active = RetrievabilitySeries::default();
         let mut fsrs_series = RetrievabilitySeries::default();
         let mut rwkv_series = RetrievabilitySeries::default();
@@ -73,9 +76,13 @@ impl GraphsContext {
                 Some(fsrs.current_retrievability(state.into(), elapsed_seconds as f32 / 86_400.0))
             });
 
-            fsrs_series.record(card.note_id.0, fsrs_retrievability);
-            rwkv_series.record(card.note_id.0, rwkv_retrievability);
-            active.record(card.note_id.0, rwkv_retrievability.or(fsrs_retrievability));
+            if rwkv_algorithm {
+                rwkv_series.record(card.note_id.0, rwkv_retrievability);
+                active.record(card.note_id.0, rwkv_retrievability);
+            } else {
+                fsrs_series.record(card.note_id.0, fsrs_retrievability);
+                active.record(card.note_id.0, fsrs_retrievability);
+            }
         }
 
         let (active, _) = active.finish();
@@ -89,6 +96,7 @@ impl GraphsContext {
             sum_by_note: active.sum_by_note,
             fsrs: has_fsrs.then_some(fsrs),
             rwkv: has_rwkv.then_some(rwkv),
+            rwkv_pending: rwkv_algorithm && self.rwkv_retrievability_scores.is_none(),
         }
     }
 }
@@ -181,9 +189,11 @@ mod tests {
         Ok(())
     }
 
+    // Pins spec/ui.md#ui.stats-one-algorithm
     #[test]
     fn retrievability_graph_uses_rwkv_scores_for_matching_search() -> Result<()> {
         let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note = nt.new_note();
@@ -204,21 +214,85 @@ mod tests {
 
         let graphs = col.graph_data_for_search("", 365)?;
         let retrievability = graphs.retrievability.unwrap();
-        let fsrs_retrievability = retrievability.fsrs.as_ref().unwrap();
         let rwkv_retrievability = retrievability.rwkv.as_ref().unwrap();
 
         assert_eq!(format!("{:.1}", retrievability.average), "25.0");
         assert_eq!(retrievability.retrievability.get(&25), Some(&1));
         assert_eq!(format!("{:.1}", rwkv_retrievability.average), "25.0");
         assert_eq!(rwkv_retrievability.retrievability.get(&25), Some(&1));
-        assert_eq!(format!("{:.1}", fsrs_retrievability.average), "100.0");
-        assert_eq!(fsrs_retrievability.retrievability.get(&99), Some(&1));
+        // no FSRS-7 series beside RWKV's, and no FSRS-7 difficulty;
+        // RWKV-Instant has no stability either
+        assert!(retrievability.fsrs.is_none());
+        assert!(!retrievability.rwkv_pending);
+        assert!(graphs.difficulty.is_none());
+        assert!(graphs.stability.is_none());
+        Ok(())
+    }
+
+    fn card_with_memory_state(col: &mut Collection) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 42.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(col.timing_today()?.now);
+        col.storage.update_card(&card)?;
+        Ok(cid)
+    }
+
+    // Pins spec/ui.md#ui.stats-one-algorithm
+    #[test]
+    fn fsrs7_stats_show_no_rwkv_values_and_rwkv_curve_uses_the_curve() -> Result<()> {
+        let mut col = Collection::new();
+        let cid = card_with_memory_state(&mut col)?;
+        col.set_rwkv_stats_graph_score_entries(
+            "".into(),
+            HashMap::from([(
+                cid,
+                crate::collection::RwkvStatsGraphScoreEntry {
+                    retrievability: 0.25,
+                    curve_retrievability: Some(0.6),
+                    intervening_reviews: None,
+                    target_retention: None,
+                    curve_due: false,
+                },
+            )]),
+        )?;
+
+        // FSRS-7: its own R only, whatever RWKV scored
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        assert!(retrievability.rwkv.is_none() && !retrievability.rwkv_pending);
+        assert_eq!(format!("{:.1}", retrievability.average), "100.0");
+        assert!(graphs.difficulty.is_some() && graphs.stability.is_some());
+
+        // RWKV-Curve: the curve's R, not RWKV-Instant's; its S90 stays
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let graphs = col.graph_data_for_search("", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        assert_eq!(format!("{:.1}", retrievability.average), "60.0");
+        assert!(retrievability.fsrs.is_none());
+        assert!(graphs.difficulty.is_none() && graphs.stability.is_some());
+
+        // before RWKV has scored the search: no values, a pending flag
+        let graphs = col.graph_data_for_search("deck:none", 365)?;
+        let retrievability = graphs.retrievability.unwrap();
+        assert!(retrievability.rwkv_pending);
+        assert!(retrievability.rwkv.is_none() && retrievability.fsrs.is_none());
+        assert!(retrievability.retrievability.is_empty());
         Ok(())
     }
 
     #[test]
     fn retrievability_graph_keeps_rwkv_scores_isolated_by_search() -> Result<()> {
         let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note = nt.new_note();
@@ -286,6 +360,7 @@ mod tests {
     #[test]
     fn retrievability_graph_filters_with_matching_rwkv_search_scores() -> Result<()> {
         let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note1 = nt.new_note();

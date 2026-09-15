@@ -48,6 +48,7 @@ preferences-heatmap-excluded-decks-tooltip = These decks and their subdecks are 
 preferences-heatmap-add-deck = Add...
 preferences-heatmap-remove-deck = Remove
 preferences-heatmap-addon-disabled = The Review Heatmap add-on has been disabled, because Clanki now shows the review heatmap itself. Its settings are in Preferences > Review Heatmap.
+preferences-heatmap-addon-blocked = Clanki already has the Review Heatmap built in, so the add-on stays disabled. Its settings are in Preferences > Review Heatmap.
 preferences-spacebar-rates-card = Spacebar (or enter) also answers card
 preferences-show-play-buttons-on-cards-with = Show play buttons on cards with audio
 preferences-show-remaining-card-count = Show remaining card count

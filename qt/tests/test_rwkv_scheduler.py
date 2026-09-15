@@ -105,7 +105,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_stats_prepare = dict(rwkv_scheduler._rwkv_stats_prepare_in_flight)
     previous_score_prewarm = set(rwkv_scheduler._rwkv_score_prewarm_in_flight)
     previous_memorised_job = rwkv_scheduler._rwkv_memorised_history_job
-    previous_startup_prompt_shown = rwkv_scheduler._rwkv_startup_prompt_shown
+    previous_startup_build_started = rwkv_scheduler._rwkv_startup_build_started
     previous_model_cache_signature = rwkv_scheduler._rwkv_model_cache_signature
     previous_model_cache_value = rwkv_scheduler._rwkv_model_cache_value
     rwkv_scheduler._reviewer_backend_warmup_states.clear()
@@ -125,7 +125,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
-    rwkv_scheduler._rwkv_startup_prompt_shown = False
+    rwkv_scheduler._rwkv_startup_build_started = False
     rwkv_scheduler._rwkv_model_cache_signature = None
     rwkv_scheduler._rwkv_model_cache_value = None
     rwkv_scheduler._rwkv_memorised_history_job = None
@@ -182,7 +182,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_stats_prepare_in_flight.update(previous_stats_prepare)
         rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
         rwkv_scheduler._rwkv_score_prewarm_in_flight.update(previous_score_prewarm)
-        rwkv_scheduler._rwkv_startup_prompt_shown = previous_startup_prompt_shown
+        rwkv_scheduler._rwkv_startup_build_started = previous_startup_build_started
 
 
 def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
@@ -213,23 +213,22 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
     assert rwkv_scheduler.reviewer_queue_order_refresh_due(reviewer)
 
 
-def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": True}
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_rwkv_first_review_elapsed_from_card_creation_is_always_on() -> None:
+    for config in (
+        {},
+        {"rwkvReviewFirstReviewElapsedFromCardCreation": False},
         {
             "other": {
                 "jschoreels.rwkv": {
-                    "rwkv_review_first_review_elapsed_from_card_creation": True,
+                    "rwkv_review_first_review_elapsed_from_card_creation": False,
                 }
             }
-        }
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation({})
-    assert not rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": False}
-    )
+        },
+    ):
+        assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+            config
+        )
 
 
 def test_rwkv_min_intervening_reviews_defaults_to_five_and_allows_zero() -> None:
@@ -245,51 +244,6 @@ def test_rwkv_min_intervening_reviews_defaults_to_five_and_allows_zero() -> None
 def test_rwkv_review_batch_size_accepts_8192_and_rejects_larger_values() -> None:
     assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8192}) == 8192
     assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8193}) == 512
-
-
-def test_rwkv_review_input_batch_cache_key_includes_first_review_elapsed_mode() -> None:
-    missing_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=False
-    )
-    card_creation_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=True
-    )
-
-    missing_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
-        reviewer=missing_elapsed,
-        deck_id=100,
-        batch_size_override=512,
-        include_new_cards=True,
-    )
-    card_creation_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
-        reviewer=card_creation_elapsed,
-        deck_id=100,
-        batch_size_override=512,
-        include_new_cards=True,
-    )
-
-    assert missing_key is not None
-    assert card_creation_key is not None
-    assert missing_key != card_creation_key
-
-
-def test_rwkv_review_queue_score_config_key_includes_first_review_elapsed_mode() -> (
-    None
-):
-    missing_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=False
-    )
-    card_creation_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=True
-    )
-
-    assert rwkv_scheduler._rwkv_review_queue_score_config_key(
-        missing_elapsed,
-        100,
-    ) != rwkv_scheduler._rwkv_review_queue_score_config_key(
-        card_creation_elapsed,
-        100,
-    )
 
 
 def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
@@ -2317,7 +2271,7 @@ def test_profile_open_reset_preserves_in_flight_warmup_tombstone() -> None:
     reviewer.mw.col.db = SimpleNamespace()
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None
-    rwkv_scheduler._rwkv_startup_prompt_shown = True
+    rwkv_scheduler._rwkv_startup_build_started = True
     with rwkv_scheduler._reviewer_backend_state_lock:
         rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] = 7
         rwkv_scheduler._reviewer_backend_warmup_pending_generations[warmup_key] = 7
@@ -2336,7 +2290,7 @@ def test_profile_open_reset_preserves_in_flight_warmup_tombstone() -> None:
         assert (
             rwkv_scheduler._reviewer_backend_warmup_pending_generations[warmup_key] == 8
         )
-    assert rwkv_scheduler._rwkv_startup_prompt_shown is False
+    assert rwkv_scheduler._rwkv_startup_build_started is False
 
 
 def test_cache_prepare_uses_the_backend_captured_at_begin(
@@ -4043,8 +3997,9 @@ def test_rwkv_later_learning_answer_preserves_elapsed_time() -> None:
     assert rwkv_scheduler._rwkv_state_update_input(answer) is answer
 
 
-def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
-    reviewer = _rwkv_reviewer()
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_rwkv_review_input_uses_card_creation_even_if_stored_off() -> None:
+    reviewer = _rwkv_reviewer(rwkv_review_first_review_elapsed_from_card_creation=False)
     reviewer._v3.states.current.normal.new.SetInParent()
     card = _rwkv_card(
         card_id=(42 * 86_400 + 100 - 90_000) * 1000,
@@ -4067,8 +4022,9 @@ def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
     )
 
     assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
+    # the time since the card was created, although the preset stores off
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 90_000
 
 
 def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
@@ -4137,45 +4093,6 @@ def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -
     assert review_input.current_normal_state_kind == "new"
     assert review_input.current_elapsed_days == 1
     assert review_input.current_elapsed_seconds == 90_000
-
-
-def test_rwkv_stats_graph_new_card_creation_elapsed_can_be_disabled() -> None:
-    now = 42 * 86_400 + 100
-    card = rwkv_scheduler.RwkvStatsGraphCard(
-        id=(now - 90_000) * 1000,
-        nid=10,
-        did=100,
-        odid=0,
-        type=0,
-        queue=0,
-        due=50,
-        odue=0,
-        ivl=0,
-        factor=0,
-        reps=0,
-        lapses=0,
-        last_review_time=None,
-    )
-
-    review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
-        card=card,
-        deck_config={
-            "id": 1000,
-            "rwkvReviewEnabled": True,
-            "rwkvReviewFirstReviewElapsedFromCardCreation": False,
-        },
-        timing=SimpleNamespace(
-            now=now,
-            days_elapsed=42,
-            next_day_at=43 * 86_400,
-        ),
-    )
-
-    assert review_input is not None
-    assert review_input.current_state_kind == "normal"
-    assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
 
 
 def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
@@ -5151,8 +5068,10 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
         )
     )
 
-    assert missing.reviews[0].current_elapsed_seconds == -1
-    assert missing.reviews[0].current_elapsed_days == -1
+    # the fixture stores the setting off; it is ignored (spec
+    # deck-options.rwkv-fixed-settings)
+    assert missing.reviews[0].current_elapsed_seconds == 3 * 86_400
+    assert missing.reviews[0].current_elapsed_days == 3
     assert card_creation.reviews[0].current_elapsed_seconds == 3 * 86_400
     assert card_creation.reviews[0].current_elapsed_days == 3
     assert card_creation.reviews[1].current_elapsed_seconds == 90_000
@@ -5287,7 +5206,8 @@ def test_stateful_warmup_uses_creation_elapsed_only_for_initial_query() -> None:
     assert answer.current_elapsed_seconds == -1
 
 
-def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_reviewer_rwkv_warmup_ignores_stored_dynamic_preset_replay() -> None:
     first_review = (39 * 86_400 + 100) * 1000
     second_review = (40 * 86_400 + 100) * 1000
     third_review = (41 * 86_400 + 100) * 1000
@@ -5318,11 +5238,11 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
+    # the add-on's rules are not replayed per review: every review keeps the
+    # card's current preset
     assert [item.identity.preset_id for item in runtime.answered_inputs] == [
-        _expected_preset_hash("addon:test:young"),
-        _expected_preset_hash("addon:test:young"),
-        _expected_preset_hash("addon:test:mature"),
-    ]
+        _expected_preset_hash("addon:test:current"),
+    ] * 3
 
 
 def test_reviewer_rwkv_warmup_pins_resolved_preset_without_dynamic_replay() -> None:
@@ -6892,7 +6812,8 @@ def test_rwkv_historical_fingerprint_passes_stable_addon_preset_ids(
                     "addon:simulator",
                 )
             },
-            "first_review_uses_creation_by_config_id": {123: False, 456: True},
+            # a stored off value is ignored (spec deck-options.rwkv-fixed-settings)
+            "first_review_uses_creation_by_config_id": {123: True, 456: True},
             "expected_identity": scheduler_pb2.RwkvHistoricalReviewIdentity(
                 last_review_id=2_000,
                 review_count=2,
@@ -7115,7 +7036,8 @@ def test_reviewer_rwkv_cache_rebuilds_when_cached_prefix_contents_change(
     assert rebuilt_runtime.reviewed == [(1, 1), (1, 3)]
 
 
-def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_reviewer_rwkv_cache_survives_a_stored_creation_elapsed_change(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -7144,8 +7066,9 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     set_reviewer_backend(RwkvStatefulReviewerBackend(rebuilt_runtime))
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-    assert rebuilt_runtime.reviewed == [(card_id, 2)]
-    assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
+    # the stored value is ignored, so the replay semantics are the same and
+    # the saved state is restored instead of replayed
+    assert rebuilt_runtime.reviewed == []
 
 
 def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
@@ -9194,9 +9117,9 @@ def test_startup_load_skips_full_cache_preflight(monkeypatch) -> None:
     def load(
         mw: object,
         *,
-        prompt_if_unavailable: bool = False,
+        build_if_unavailable: bool = False,
     ) -> None:
-        load_calls.append((mw, prompt_if_unavailable))
+        load_calls.append((mw, build_if_unavailable))
 
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -9230,8 +9153,8 @@ def test_startup_cache_load_can_wait_until_after_sync(
     monkeypatch.setattr(
         rwkv_scheduler,
         "load_rwkv_state_cache_with_progress",
-        lambda _mw, *, prompt_if_unavailable=False: events.append(
-            f"load:{prompt_if_unavailable}"
+        lambda _mw, *, build_if_unavailable=False: events.append(
+            f"load:{build_if_unavailable}"
         ),
     )
 
@@ -9262,10 +9185,10 @@ def test_disabled_rwkv_clears_deferred_startup_loading(
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_startup_load_launch_failure_prompts_for_rebuild(
+def test_startup_load_launch_failure_builds_the_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prompts: list[object] = []
+    builds: list[object] = []
 
     class Taskman:
         def run_on_main(self, callback: Callable[[], None]) -> None:
@@ -9277,20 +9200,20 @@ def test_startup_load_launch_failure_prompts_for_rebuild(
     mw = SimpleNamespace(taskman=Taskman())
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_show_rwkv_state_cache_prompt",
-        prompts.append,
+        "_start_rwkv_state_cache_build",
+        builds.append,
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(
         mw,
-        prompt_if_unavailable=True,
+        build_if_unavailable=True,
     )
 
-    assert prompts == [mw]
+    assert builds == [mw]
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_startup_cache_miss_prompts_before_refreshing_active_counts(
+def test_startup_cache_miss_builds_before_refreshing_active_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -9306,32 +9229,25 @@ def test_startup_cache_miss_prompts_before_refreshing_active_counts(
     )
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_show_rwkv_state_cache_prompt",
-        lambda _mw: events.append("prompt"),
+        "_start_rwkv_state_cache_build",
+        lambda _mw: events.append("build"),
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(
         mw,
-        prompt_if_unavailable=True,
+        build_if_unavailable=True,
     )
 
-    assert events == ["prompt"]
+    assert events == ["build"]
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_stale_startup_prompt_choice_does_not_rebuild_ready_state(
+def test_queued_startup_build_skips_a_state_that_became_ready(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    prompt_callbacks: list[Callable[[int], None]] = []
+    queued: list[Callable[[], None]] = []
     build_calls: list[dict[str, object]] = []
-
-    def ask_user_dialog(_text: str, **kwargs: object) -> None:
-        callback = kwargs["callback"]
-        assert callable(callback)
-        prompt_callbacks.append(callback)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
     monkeypatch.setattr(
         rwkv_scheduler,
         "build_rwkv_state_cache_with_progress",
@@ -9341,22 +9257,23 @@ def test_stale_startup_prompt_choice_does_not_rebuild_ready_state(
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
     set_reviewer_backend(backend)
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
-    _attach_progress_taskman(reviewer.mw)
+    reviewer.mw.taskman = SimpleNamespace(run_on_main=queued.append)
 
-    rwkv_scheduler._show_rwkv_state_cache_prompt(reviewer.mw)
+    rwkv_scheduler._start_rwkv_state_cache_build(reviewer.mw)
 
-    assert len(prompt_callbacks) == 1
+    assert len(queued) == 1
     key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert key is not None
     with rwkv_scheduler._reviewer_backend_state_lock:
         rwkv_scheduler._reviewer_backend_warmup_states[key] = _rwkv_resident_identity()
 
-    prompt_callbacks[0](1)
+    queued[0]()
 
     assert build_calls == []
 
 
-def test_startup_prompt_can_build_rwkv_state_cache_only(
+# Pins spec/scheduling.md#sched.rwkv-state-cache-startup-build
+def test_startup_builds_the_state_and_the_calibration_data_without_asking(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -9372,16 +9289,10 @@ def test_startup_prompt_can_build_rwkv_state_cache_only(
         lambda: {"model": "test"},
     )
     monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
-    prompt_calls: list[dict[str, object]] = []
-
-    def ask_user_dialog(text: str, **kwargs: object) -> None:
-        assert "state cache" in text
-        prompt_calls.append(kwargs)
-        callback = kwargs["callback"]
-        assert callable(callback)
-        callback(0)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
+    monkeypatch.setattr(
+        "aqt.utils.ask_user_dialog",
+        lambda *args, **kwargs: pytest.fail("the startup build must not ask"),
+    )
 
     runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
@@ -9390,48 +9301,9 @@ def test_startup_prompt_can_build_rwkv_state_cache_only(
 
     rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
 
-    assert len(prompt_calls) == 1
-    assert prompt_calls[0]["default_button"] == 1
-    assert prompt_calls[0]["title"] == "RWKV State Cache"
+    assert taskman.with_progress_kwargs is not None
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert rwkv_scheduler.rwkv_state_cache_usable(reviewer.mw) is True
-    assert reviewer.mw.col.rwkv_retrievability_rows == []
-    assert taskman.with_progress_kwargs is not None
-
-
-def test_startup_prompt_can_build_rwkv_state_cache_with_calibration_data(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
-    ]
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_model_cache_key",
-        lambda: {"model": "test"},
-    )
-    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
-
-    def ask_user_dialog(text: str, **kwargs: object) -> None:
-        assert "state cache" in text
-        callback = kwargs["callback"]
-        assert callable(callback)
-        callback(1)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
-
-    runtime = _CacheRuntime()
-    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
-    _attach_progress_taskman(reviewer.mw)
-
-    rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
-
-    assert runtime.reviewed == [(1, 2), (1, 3)]
     assert [
         (review_id, prediction, source)
         for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows
@@ -9959,6 +9831,69 @@ def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
 
     algorithm["schedulingAlgorithm"] = "rwkvCurve"
     assert rwkv_scheduler.rwkv_collection_active(reviewer)
+
+
+# Pins spec/scheduling.md#sched.rwkv-no-model-error
+def test_startup_without_a_model_warns_instead_of_offering_a_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda reviewer: rwkv_scheduler._RwkvCollectionConfigState(True, False),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: False)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_state_cache_loading",
+        lambda mw, loading: events.append(f"loading={loading}"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_show_rwkv_model_missing", lambda mw: events.append("warn")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache_with_progress",
+        lambda *args, **kwargs: pytest.fail("no state to load without a model"),
+    )
+
+    rwkv_scheduler.finish_rwkv_state_cache_startup(SimpleNamespace())
+
+    assert events == ["loading=False", "warn"]
+
+
+# Pins spec/scheduling.md#sched.rwkv-no-model-error
+def test_rwkv_instant_card_info_says_the_model_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_reviewer_backend(None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: False
+    )
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    rows = rwkv_card_info_rows(reviewer=reviewer, card=card, fallback_source="FSRS")
+
+    from aqt.utils import tr
+
+    assert rows == [("RWKV computed R", tr.qt_misc_rwkv_model_not_found())]
+
+
+# Pins spec/ui.md#ui.stats-one-algorithm
+def test_rwkv_curve_collection_active_reads_the_algorithm() -> None:
+    def reviewer(algorithm: str | None) -> SimpleNamespace:
+        values = {"schedulingAlgorithm": algorithm}
+        col = SimpleNamespace(get_config=lambda key, default=None: values.get(key))
+        return SimpleNamespace(mw=SimpleNamespace(col=col))
+
+    assert rwkv_scheduler.rwkv_curve_collection_active(reviewer("rwkvCurve"))
+    for other in ("rwkvInstant", "fsrs7", None):
+        assert not rwkv_scheduler.rwkv_curve_collection_active(reviewer(other))
+    assert not rwkv_scheduler.rwkv_curve_collection_active(SimpleNamespace())
 
 
 def test_rwkv_review_enabled_reads_legacy_fsrs_other_key() -> None:
