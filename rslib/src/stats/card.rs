@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
+
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::prelude::*;
@@ -107,6 +109,10 @@ impl Collection {
             desired_retention: card.desired_retention,
             extra_rows: vec![],
             rwkv_curve: None,
+            scheduling_algorithm: SchedulingAlgorithmProto::from(
+                self.effective_scheduling_algorithm()?,
+            ) as i32,
+            advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
         })
     }
 
@@ -325,6 +331,30 @@ mod test {
         let (mut col, cid) = test_collection()?;
         let _report = col.card_stats(cid)?;
 
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.card-info-one-algorithm
+    #[test]
+    fn card_stats_report_the_algorithm_and_the_mode() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        let stats = col.card_stats(cid)?;
+        // the test collection's Default preset runs FSRS-7; Simple mode is
+        // the default
+        assert_eq!(
+            stats.scheduling_algorithm(),
+            SchedulingAlgorithmProto::Fsrs7
+        );
+        assert!(!stats.advanced_ui);
+
+        col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        let stats = col.card_stats(cid)?;
+        assert_eq!(
+            stats.scheduling_algorithm(),
+            SchedulingAlgorithmProto::RwkvInstant
+        );
+        assert!(stats.advanced_ui);
         Ok(())
     }
 

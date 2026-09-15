@@ -508,21 +508,16 @@ normal review rows; reset rows, reschedule rows, and other non-answer rows are
 not used as the last review. If neither source exists, the query leaves current
 elapsed unknown instead of inferring it from `due - ivl`.
 
-Card Info also simulates Again, Hard, Good, and Easy independently from one
-shared RWKV baseline state. The embedded runtime branches directly from the
-locked resident state and restores the card's feature state after each answer,
-so this one-card operation does not serialize the collection-wide cache.
-**R After Review** queries the simulated state with zero elapsed days and
-seconds. **R After 10min** queries the same simulated state with zero elapsed
-days and 600 elapsed seconds. These rows report RWKV-Instant predictions after
-each hypothetical answer; they are separate from the RWKV-Curve predictions
-used for answer-button intervals.
-
-For RWKV-Curve-enabled cards, **RWKV Curve Next S90** reports the Curve S90
-predicted for each hypothetical answer; card info shows no FSRS-7 values for
-them (`ui.card-info-rwkv-curve`).
-Learning and relearning steps may therefore show a short answer-button delay
-even when their underlying next S90 is much longer.
+Card info shows one retrievability per card, from the collection's algorithm
+only (ui.card-info-one-algorithm): an RWKV-Instant card's is the query above
+("Calculating…" until RWKV has it); an RWKV-Curve card's is its stored curve
+at the time since its last answered review. Card info no longer shows the
+per-button rows (answer-button probabilities, next S90, R After Review, R After
+10min). 
+wkv_card_info_after_review_rows still simulates Again, Hard, Good,
+and Easy from one shared baseline state for other callers: **R After Review**
+queries the simulated state with zero elapsed time, **R After 10min** with 600
+elapsed seconds.
 
 Search Stats Extended can also request an isolated historical RWKV Memorised
 build through `aqt.rwkv_scheduler`. The build uses a separate embedded runtime,

@@ -7334,104 +7334,39 @@ def rwkv_card_info_rows(
     fallback_source: str,
     include_after_review: bool = True,
 ) -> list[tuple[str, str]]:
+    """Card info's one RWKV row, for an RWKV-Instant card: RWKV's R, which
+    card info shows as the card's retrievability ("Calculating…" until RWKV
+    has it). An RWKV-Curve card's R comes from its curve (mediasrv
+    _add_rwkv_curve) and an FSRS-7 card has no RWKV values, so both get no
+    rows (spec ui.card-info-one-algorithm, ui.fsrs7-no-rwkv-values).
+    `include_after_review` is ignored: card info no longer shows those rows.
+    """
+    del include_after_review
     card_id = _card_id(card)
-    if not rwkv_review_active(reviewer, card):
-        # FSRS-7's card info has no RWKV rows (spec ui.fsrs7-no-rwkv-values)
+    if not rwkv_review_active(reviewer, card) or rwkv_review_enabled(reviewer, card):
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
 
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
-    candidate = _card_info_review_candidate(reviewer, card)
-    queried_diagnostics = _queried_card_info_diagnostics(
+    diagnostics = _queried_card_info_diagnostics(
         reviewer,
         card,
         fallback_source=fallback_source,
-        _candidate=candidate,
+        _candidate=_card_info_review_candidate(reviewer, card),
     )
-    if queried_diagnostics is None:
-        diagnostics = RwkvReviewerDiagnostics(
-            retrievability=None,
-            retrievability_source=_unavailable_retrievability_source(fallback_source),
+    retrievability = diagnostics.retrievability if diagnostics else None
+    if diagnostics is None and card_id is not None:
+        _set_rwkv_card_info_score(reviewer, card_id, None)
+    return [
+        (
+            RWKV_CARD_INFO_R_LABEL,
+            "Calculating…"
+            if retrievability is None
+            else _format_retrievability(retrievability),
         )
-        if card_id is not None:
-            _set_rwkv_card_info_score(reviewer, card_id, None)
-    else:
-        diagnostics = queried_diagnostics
-
-    diagnostics = _with_card_info_prediction_details(diagnostics)
-
-    rows = _card_info_diagnostic_rows(diagnostics)
-    if rwkv_review_enabled(reviewer, card):
-        # RWKV-Curve's values only: no FSRS-7 S90 beside them
-        # (spec ui.card-info-rwkv-curve)
-        s90s = [
-            getattr(diagnostics.s90_overrides, rating) for rating in _RWKV_RATING_FIELDS
-        ]
-        rows.append(("RWKV Curve Next S90", _format_next_s90_values(s90s)))
-    if include_after_review and rwkv_review_active(reviewer, card):
-        rows.extend(
-            rwkv_card_info_after_review_rows(
-                reviewer,
-                card,
-                _candidate=candidate,
-            )
-        )
-    return rows
-
-
-def _card_info_diagnostic_rows(
-    diagnostics: RwkvReviewerDiagnostics,
-) -> list[tuple[str, str]]:
-    rows = [
-        ("RWKV computed R", _format_retrievability(diagnostics.retrievability)),
     ]
-    if diagnostics.button_probabilities is not None:
-        rows.append(
-            (
-                "RWKV : Answer Button Probability",
-                _format_button_probabilities(diagnostics.button_probabilities),
-            )
-        )
-    rows.append(("Retrievability source", diagnostics.retrievability_source))
-    return rows
-
-
-def _with_card_info_prediction_details(
-    diagnostics: RwkvReviewerDiagnostics,
-) -> RwkvReviewerDiagnostics:
-    button_probabilities = diagnostics.button_probabilities
-    if button_probabilities is not None and diagnostics.retrievability is not None:
-        button_probabilities = _rwkv_button_probabilities_with_retrievability(
-            button_probabilities,
-            diagnostics.retrievability,
-        )
-
-    return RwkvReviewerDiagnostics(
-        retrievability=diagnostics.retrievability,
-        retrievability_source=diagnostics.retrievability_source,
-        button_probabilities=button_probabilities,
-        s90_overrides=diagnostics.s90_overrides,
-    )
-
-
-def _format_next_s90_values(values: Sequence[float | int | None]) -> str:
-    return " ".join(
-        f"{label}:{_format_s90_days(value)}"
-        for label, value in zip(
-            ("Again", "Hard", "Good", "Easy"),
-            values,
-            strict=True,
-        )
-    )
-
-
-def _format_s90_days(value: float | int | None) -> str:
-    if value is None or not math.isfinite(value) or value <= 0:
-        return "Unavailable"
-    amount = f"{value:.2f}".rstrip("0").rstrip(".")
-    return f"{amount}d"
 
 
 def rwkv_card_info_after_review_row(
@@ -8589,6 +8524,10 @@ def _queried_card_info_diagnostics(
 # Card info samples RWKV-Curve's stored curve at 0 and at 300 times spaced
 # evenly in log time from one minute to 100 years, whatever range the chart
 # shows (spec ui.card-info-rwkv-curve).
+# The card-info row that carries an RWKV-Instant card's R; card info shows it
+# as the card's retrievability.
+RWKV_CARD_INFO_R_LABEL = "RWKV computed R"
+
 RWKV_CARD_INFO_CURVE_DAYS: tuple[float, ...] = (0.0,) + tuple(
     (60 / 86_400) * (36_500 * 1440) ** (step / 299) for step in range(300)
 )
@@ -8599,11 +8538,17 @@ class RwkvCardCurve:
     elapsed_days: tuple[float, ...]
     recall: tuple[float, ...]
     s90: float
+    # the recall at the requested elapsed time (the card's R now)
+    current_recall: float | None = None
 
 
-def rwkv_card_info_curve(reviewer: object, card: object) -> RwkvCardCurve | None:
+def rwkv_card_info_curve(
+    reviewer: object, card: object, *, elapsed_days: float | None = None
+) -> RwkvCardCurve | None:
     """RWKV-Curve's forgetting curve for card info: the curve RWKV stored for
-    the card at its last answered review, and that curve's S90. None for a
+    the card at its last answered review, and that curve's S90; with
+    `elapsed_days` (the time since that review), also the curve's recall
+    then, the card's retrievability (spec ui.card-info-one-algorithm). None for a
     card whose preset does not run RWKV-Curve, and while RWKV has no curve
     for the card (state loading, busy, no review yet) (spec
     ui.card-info-rwkv-curve)."""
@@ -8626,17 +8571,23 @@ def rwkv_card_info_curve(reviewer: object, card: object) -> RwkvCardCurve | None
             card_curve = getattr(current_backend, "card_curve", None)
             if not callable(card_curve):
                 return None
-            result = card_curve(card_id, RWKV_CARD_INFO_CURVE_DAYS)
+            days = RWKV_CARD_INFO_CURVE_DAYS
+            if elapsed_days is not None:
+                days = (*days, elapsed_days)
+            result = card_curve(card_id, days)
     except Exception:
         logger.exception("RWKV card info curve failed")
         return None
     if result is None:
         return None
     recall, s90 = result
+    values = tuple(float(value) for value in recall)
+    grid_size = len(RWKV_CARD_INFO_CURVE_DAYS)
     return RwkvCardCurve(
         elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
-        recall=tuple(float(value) for value in recall),
+        recall=values[:grid_size],
         s90=float(s90),
+        current_recall=values[grid_size] if len(values) > grid_size else None,
     )
 
 
@@ -8738,37 +8689,6 @@ def _format_retrievability(retrievability: float | None) -> str:
         return "Unavailable"
 
     return f"{retrievability * 100:.0f}%"
-
-
-def _format_button_probabilities(probabilities: RwkvButtonProbabilities) -> str:
-    return " ".join(
-        f"{label}:{_format_retrievability(probability)}"
-        for label, probability in zip(
-            ("Again", "Hard", "Good", "Easy"),
-            probabilities,
-            strict=True,
-        )
-    )
-
-
-def _rwkv_button_probabilities_with_retrievability(
-    probabilities: RwkvButtonProbabilities | None,
-    retrievability: float,
-) -> RwkvButtonProbabilities | None:
-    if probabilities is None or not _valid_probability(retrievability):
-        return probabilities
-
-    successful = probabilities[1] + probabilities[2] + probabilities[3]
-    if successful <= 0:
-        return probabilities
-
-    scale = retrievability / successful
-    return (
-        1.0 - retrievability,
-        probabilities[1] * scale,
-        probabilities[2] * scale,
-        probabilities[3] * scale,
-    )
 
 
 def _valid_button_probabilities(value: object) -> bool:

@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import { FsrsMemoryState } from "@generated/anki/cards_pb";
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import {
     CardStatsResponse,
     CardStatsResponse_CardInfoRow,
@@ -11,7 +12,7 @@ import * as tr2 from "@generated/ftl";
 import { timeSpan } from "@tslib/time";
 import { expect, test } from "vitest";
 
-import { rowsFromStats } from "./lib";
+import { rowsFromStats, showsForgettingCurve } from "./lib";
 
 function baseStats(overrides?: Partial<CardStatsResponse>): CardStatsResponse {
     return new CardStatsResponse({
@@ -28,6 +29,7 @@ function baseStats(overrides?: Partial<CardStatsResponse>): CardStatsResponse {
         notetype: "Basic",
         customData: "",
         preset: "Default",
+        advancedUi: true,
         ...overrides,
     });
 }
@@ -83,72 +85,114 @@ test("with memoryState and desiredRetention, shows FSRS rows and hides ease", ()
     expect(rows.find((row) => row.label === tr2.cardStatsEase())).toBeUndefined();
 });
 
-test("keeps RWKV comparison rows together after FSRS retrievability", () => {
+// Pins spec/ui.md#ui.card-info-one-algorithm
+const fsrs7State = new FsrsMemoryState({ stability: 20, difficulty: 7.3 });
+
+function labelsOf(rows: { label: string }[]): string[] {
+    return rows.map((row) => row.label);
+}
+
+test("FSRS-7 shows stability, difficulty and one retrievability", () => {
     const rows = rowsFromStats(
-        baseStats({
-            desiredRetention: 0.9,
-            fsrsRetrievability: 0.8,
-            memoryState: new FsrsMemoryState({ stability: 20, difficulty: 7.3 }),
-            extraRows: [
-                new CardStatsResponse_CardInfoRow({ label: "Other", value: "last" }),
-                new CardStatsResponse_CardInfoRow({
-                    label: "Retrievability source",
-                    value: "RWKV",
-                }),
-                new CardStatsResponse_CardInfoRow({ label: "RWKV computed R", value: "79%" }),
-                new CardStatsResponse_CardInfoRow({
-                    label: "RWKV : Answer Button Probability",
-                    value: "Again 5%",
-                }),
-            ],
-        }),
+        baseStats({ desiredRetention: 0.9, fsrsRetrievability: 0.8, memoryState: fsrs7State }),
     );
 
-    const labels = rows.map((row) => row.label);
-    const fsrsIndex = labels.indexOf(tr2.cardStatsFsrsComputedR());
-    expect(labels.slice(fsrsIndex, fsrsIndex + 4)).toEqual([
-        tr2.cardStatsFsrsComputedR(),
-        "RWKV computed R",
-        "RWKV : Answer Button Probability",
-        "Retrievability source",
-    ]);
-    expect(labels.indexOf("Other")).toBeGreaterThan(labels.indexOf("Retrievability source"));
+    expect(rows).toContainEqual({ label: tr2.cardStatsFsrsRetrievability(), value: "80%" });
+    const labels = labelsOf(rows);
+    expect(labels).toContain(tr2.cardStatsFsrsStability());
+    expect(labels).toContain(tr2.cardStatsFsrsDifficulty());
+    expect(labels.filter((label) => label === tr2.cardStatsFsrsRetrievability())).toHaveLength(1);
 });
 
-function rwkvCurveStats(s90?: number): CardStatsResponse {
+test("Simple mode shows no difficulty, stability or retrievability", () => {
+    for (const schedulingAlgorithm of [SchedulingAlgorithm.FSRS7, SchedulingAlgorithm.RWKV_INSTANT]) {
+        const labels = labelsOf(
+            rowsFromStats(
+                baseStats({
+                    advancedUi: false,
+                    schedulingAlgorithm,
+                    desiredRetention: 0.9,
+                    fsrsRetrievability: 0.8,
+                    memoryState: fsrs7State,
+                    extraRows: [new CardStatsResponse_CardInfoRow({ label: "RWKV computed R", value: "79%" })],
+                }),
+            ),
+        );
+        for (
+            const hidden of [
+                tr2.cardStatsFsrsStability(),
+                tr2.cardStatsFsrsDifficulty(),
+                tr2.cardStatsFsrsRetrievability(),
+                "RWKV computed R",
+            ]
+        ) {
+            expect(labels).not.toContain(hidden);
+        }
+    }
+});
+
+function rwkvCurveStats(curve: Partial<CardStatsResponse_RwkvCurve>): CardStatsResponse {
     return baseStats({
+        schedulingAlgorithm: SchedulingAlgorithm.RWKV_CURVE,
         desiredRetention: 0.9,
         fsrsRetrievability: 0.8,
-        memoryState: new FsrsMemoryState({ stability: 20, difficulty: 7.3 }),
-        rwkvCurve: new CardStatsResponse_RwkvCurve(
-            s90 === undefined ? {} : { elapsedDays: [0, 1], recall: [1, 0.9], s90 },
-        ),
-        extraRows: [
-            new CardStatsResponse_CardInfoRow({ label: "RWKV computed R", value: "79%" }),
-            new CardStatsResponse_CardInfoRow({ label: "Retrievability source", value: "RWKV" }),
-        ],
+        memoryState: fsrs7State,
+        rwkvCurve: new CardStatsResponse_RwkvCurve(curve),
     });
 }
 
-test("an RWKV-Curve card shows its curve's S90 and no FSRS-7 difficulty or retrievability", () => {
-    // spec ui.card-info-rwkv-curve
-    const rows = rowsFromStats(rwkvCurveStats(1.5));
+test("an RWKV-Curve card shows its curve's S90 and R, and no difficulty", () => {
+    // also spec ui.card-info-rwkv-curve
+    const rows = rowsFromStats(
+        rwkvCurveStats({ elapsedDays: [0, 1], recall: [1, 0.9], s90: 1.5, currentRecall: 0.93 }),
+    );
 
-    const labels = rows.map((row) => row.label);
-    const stabilityIndex = labels.indexOf(tr2.cardStatsFsrsStability());
-    expect(rows[stabilityIndex].value).toBe(timeSpan(1.5 * 86400, false, false));
-    expect(labels.slice(stabilityIndex + 1, stabilityIndex + 3)).toEqual([
-        "RWKV computed R",
-        "Retrievability source",
-    ]);
-    expect(labels).not.toContain(tr2.cardStatsFsrsDifficulty());
-    expect(labels).not.toContain(tr2.cardStatsFsrsComputedR());
+    expect(rows).toContainEqual({
+        label: tr2.cardStatsFsrsStability(),
+        value: timeSpan(1.5 * 86400, false, false),
+    });
+    // the curve's R, not FSRS-7's 80%
+    expect(rows).toContainEqual({ label: tr2.cardStatsFsrsRetrievability(), value: "93%" });
+    expect(labelsOf(rows)).not.toContain(tr2.cardStatsFsrsDifficulty());
 });
 
-test("an RWKV-Curve card without a curve shows no stability", () => {
-    const labels = rowsFromStats(rwkvCurveStats()).map((row) => row.label);
+test("an RWKV-Curve card without a curve shows no stability and a calculating R", () => {
+    const rows = rowsFromStats(rwkvCurveStats({}));
 
+    expect(labelsOf(rows)).not.toContain(tr2.cardStatsFsrsStability());
+    expect(rows).toContainEqual({
+        label: tr2.cardStatsFsrsRetrievability(),
+        value: tr2.cardStatsCalculating(),
+    });
+});
+
+test("an RWKV-Instant card shows only RWKV's R, once, and no forgetting curve", () => {
+    const stats = baseStats({
+        schedulingAlgorithm: SchedulingAlgorithm.RWKV_INSTANT,
+        desiredRetention: 0.9,
+        fsrsRetrievability: 0.8,
+        memoryState: fsrs7State,
+        extraRows: [
+            new CardStatsResponse_CardInfoRow({ label: "Other", value: "kept" }),
+            new CardStatsResponse_CardInfoRow({ label: "RWKV computed R", value: "79%" }),
+        ],
+    });
+    const rows = rowsFromStats(stats);
+
+    expect(rows).toContainEqual({ label: tr2.cardStatsFsrsRetrievability(), value: "79%" });
+    expect(rows).toContainEqual({ label: "Other", value: "kept" });
+    const labels = labelsOf(rows);
+    expect(labels).not.toContain("RWKV computed R");
     expect(labels).not.toContain(tr2.cardStatsFsrsStability());
     expect(labels).not.toContain(tr2.cardStatsFsrsDifficulty());
-    expect(labels).toContain("RWKV computed R");
+    expect(showsForgettingCurve(stats)).toBe(false);
+    expect(showsForgettingCurve(baseStats({ memoryState: fsrs7State }))).toBe(true);
+
+    const pending = rowsFromStats(
+        baseStats({ schedulingAlgorithm: SchedulingAlgorithm.RWKV_INSTANT, memoryState: fsrs7State }),
+    );
+    expect(pending).toContainEqual({
+        label: tr2.cardStatsFsrsRetrievability(),
+        value: tr2.cardStatsCalculating(),
+    });
 });
