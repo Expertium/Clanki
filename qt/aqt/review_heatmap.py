@@ -303,6 +303,15 @@ def compute_activity(
 
 
 @dataclass
+class _Contents:
+    """The card and review sums of an input fingerprint, with the database
+    connection and write count they were read at: (db, writes, sums), one
+    tuple so that a draw on another thread sees all three or none."""
+
+    last: tuple[Any, int, tuple[Any, ...]] | None = None
+
+
+@dataclass
 class _OlderReviews:
     """Reviews per day of the reviews before `cutoff` (a review-log id), and
     what they were counted from."""
@@ -320,11 +329,14 @@ class ActivityReporter:
         col: Collection,
         settings: HeatmapSettings,
         older_reviews: dict[Any, _OlderReviews] | None = None,
+        contents: _Contents | None = None,
     ) -> None:
         self._col = col
         self._settings = settings
         # per set of decks counted; kept between reporters by ReviewHeatmap
         self._older_reviews = {} if older_reviews is None else older_reviews
+        # the last card and review sums; kept between reporters too
+        self._contents = _Contents() if contents is None else contents
 
     def get_report(
         self,
@@ -366,24 +378,41 @@ class ActivityReporter:
         that changes the review count, and a removal followed by a new
         review also changes the newest id (both read from indexes; a sum
         over the review log would take ~90 ms on a large collection)."""
-        cards = self._col.db.first(
-            "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
-        )
-        # two queries: together SQLite reads every row (~60 ms on 1.3M
-        # reviews); apart, both are answered from the b-tree (<1 ms)
-        reviews = (
-            self._col.db.scalar("SELECT count() FROM revlog"),
-            self._col.db.scalar("SELECT max(id) FROM revlog"),
-        )
         dids = self._deck_ids(current_deck_only)
         return (
             self._today(),
             self._offset(),
             self._col.sched.today,
             None if dids is None else tuple(dids),
-            tuple(cards),
-            reviews,
+            *self._card_and_review_sums(),
         )
+
+    def _card_and_review_sums(self) -> tuple[Any, ...]:
+        """The card sums (a scan of every card, ~20 ms on 160k cards) and
+        review sums of the fingerprint. They are read again only after a
+        write: SQLite counts the rows each connection inserts, updates or
+        deletes (total_changes()), and the collection file is opened by one
+        connection only, in exclusive locking mode. Reopening the collection
+        gives a new connection, with its own count, and a new col.db."""
+        db = self._col.db
+        # read before the sums: a write in between makes the next call
+        # read them again, never the reverse
+        writes = db.scalar("SELECT total_changes()")
+        last = self._contents.last
+        if last is not None and last[0] is db and last[1] == writes:
+            return last[2]
+        cards = db.first(
+            "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
+        )
+        # two queries: together SQLite reads every row (~60 ms on 1.3M
+        # reviews); apart, both are answered from the b-tree (<1 ms)
+        reviews = (
+            db.scalar("SELECT count() FROM revlog"),
+            db.scalar("SELECT max(id) FROM revlog"),
+        )
+        sums = (tuple(cards), reviews)
+        self._contents.last = (db, writes, sums)
+        return sums
 
     def _offset(self) -> int:
         """The 'next day starts at' hour."""
@@ -461,8 +490,8 @@ class ActivityReporter:
         ]
 
     def _review_days(self, dids: list[int] | None, condition: str) -> dict[int, int]:
-        """Reviews per day of the reviews that meet `condition`."""
-        offset_secs = self._offset() * 3600
+        """Reviews per day of the reviews that meet `condition`, a condition
+        on the review-log id alone."""
         where = [condition]
         if self._settings.exclude_manual_reschedules:
             where.append("ease >= 1")
@@ -473,14 +502,102 @@ class ActivityReporter:
             where.append(f"EXISTS ({card} AND did IN {ids2str(dids)})")
         elif self._settings.exclude_deleted_cards:
             where.append(f"EXISTS ({card})")
+        days = self._review_days_by_day_ranges(condition, " AND ".join(where))
+        if days is None:
+            days = self._review_days_one_by_one(" AND ".join(where))
+        return days
+
+    def _review_days_one_by_one(self, where: str) -> dict[int, int]:
+        """Reviews per day, each review's local day computed on its own."""
+        offset_secs = self._offset() * 3600
         rows = self._col.db.all(
             f"""
 SELECT CAST(STRFTIME('%s', id / 1000 - {offset_secs}, 'unixepoch',
                      'localtime', 'start of day') AS int) AS day, COUNT()
-FROM revlog WHERE {" AND ".join(where)}
+FROM revlog WHERE {where}
 GROUP BY day"""
         )
         return {day: count for day, count in rows}
+
+    def _review_days_by_day_ranges(
+        self, condition: str, where: str
+    ) -> dict[int, int] | None:
+        """The counts of _review_days_one_by_one, from one review-log id
+        range per day: converting every review's time to local time is what
+        makes that slow (about 0.5 s per million reviews); here only the
+        ends of each day are converted.
+
+        A day's range runs from the UTC time of its local midnight (the
+        rollover hour applied) to the next day's. The range's reviews all
+        fall on that day when both ends of the range convert to that day
+        and the UTC offset is the same at both ends, so that local time runs
+        on evenly in between (one clock change within a day shows as
+        different offsets). Every range is checked; the reviews of a range
+        that fails (a daylight saving change, a skipped day) are counted one
+        by one. None when the ranges cannot be used at all: they are out of
+        order or miss a review, too many fail, or reviews are dated before
+        1970 or span more than 50,000 days."""
+        db = self._col.db
+        low, high = db.first(
+            f"SELECT (SELECT min(id) FROM revlog WHERE {condition}),"
+            f" (SELECT max(id) FROM revlog WHERE {condition})"
+        )
+        if low is None:
+            return {}
+        offset_secs = self._offset() * 3600
+        # a review's time as the one-by-one grouping sees it
+        first, last = low // 1000 - offset_secs, high // 1000 - offset_secs
+        # (a review dated far in the future would give millions of days)
+        if low < 0 or last - first > 50_000 * 86400:
+            return None
+        day = (
+            "CAST(STRFTIME('%s', {}, 'unixepoch', 'localtime', 'start of day') AS int)"
+        )
+        utc_offset = "(STRFTIME('%s', {0}, 'unixepoch', 'localtime') - ({0}))"
+        ids = f"id >= (lo + {offset_secs}) * 1000 AND id < (hi + {offset_secs}) * 1000"
+        rows = db.all(
+            f"""
+WITH RECURSIVE
+  days(d, last) AS (
+    SELECT {day.format("?")}, {day.format("?")}
+    UNION ALL SELECT d + 86400, last FROM days WHERE d <= last),
+  starts(d, lo) AS (
+    SELECT d, CAST(STRFTIME('%s', d, 'unixepoch', 'utc') AS int) FROM days),
+  ranges(d, lo, hi) AS (
+    SELECT d, lo, LEAD(lo) OVER (ORDER BY d) FROM starts),
+  checked(d, lo, hi, ok) AS (
+    SELECT d, lo, hi,
+      {day.format("lo")} = d AND {day.format("hi - 1")} = d
+        AND {utc_offset.format("lo")} = {utc_offset.format("hi - 1")}
+    FROM ranges WHERE hi IS NOT NULL)
+SELECT d, lo, hi, ok,
+  CASE WHEN ok THEN (SELECT COUNT() FROM revlog WHERE {ids} AND {where}) END
+FROM checked""",
+            first,
+            last,
+        )
+        rows.sort(key=lambda row: row[0])
+        if not (
+            rows
+            and all(lo < hi for _, lo, hi, _, _ in rows)
+            and all(rows[i][2] == rows[i + 1][1] for i in range(len(rows) - 1))
+            and rows[0][1] <= first
+            and rows[-1][2] > last
+        ):
+            return None
+        days = {d: count for d, _, _, ok, count in rows if ok and count}
+        failed = [
+            f"(id >= {(lo + offset_secs) * 1000} AND id < {(hi + offset_secs) * 1000})"
+            for _, lo, hi, ok, _ in rows
+            if not ok
+        ]
+        if len(failed) > 100:
+            return None
+        if failed:
+            rest = self._review_days_one_by_one(f"({' OR '.join(failed)}) AND {where}")
+            for d, count in rest.items():
+                days[d] = days.get(d, 0) + count
+        return days
 
     def _older_review_days(self, dids: list[int] | None) -> _OlderReviews:
         scope = None if dids is None else tuple(dids)
@@ -765,6 +882,7 @@ class ReviewHeatmap:
         # going between the deck list and a deck draws neither again
         self._cache: dict[tuple[Any, ...], _RenderCache] = {}
         self._older_reviews: dict[Any, _OlderReviews] = {}
+        self._contents = _Contents()
 
     def enabled(self) -> bool:
         col = self.mw.col
@@ -792,7 +910,7 @@ class ReviewHeatmap:
         settings = self.settings()
         if not settings.shows(view) and not settings.streak_stats_always:
             return ""
-        reporter = ActivityReporter(col, settings, self._older_reviews)
+        reporter = ActivityReporter(col, settings, self._older_reviews, self._contents)
         place = (view, current_deck_only, history_days, forecast_days)
         key = (settings, reporter.input_fingerprint(current_deck_only))
         cached = self._cache.get(place)
@@ -802,6 +920,17 @@ class ReviewHeatmap:
         html = render_report(report, view, current_deck_only, settings)
         self._cache[place] = _RenderCache(html, key)
         return html
+
+    def prepare(self, view: HeatmapView, current_deck_only: bool) -> None:
+        """Draw a place's heatmap into the cache. The deck list and the deck
+        overview call this in their background step, so that their draw on
+        the main thread finds it there and only checks that nothing was
+        written in between. Errors are left to that draw, which then does
+        the work itself."""
+        try:
+            self.render(view, current_deck_only)
+        except Exception:
+            return
 
     def render_for_stats(self, period: int, whole_collection: bool) -> str:
         """The legacy stats screen: 1 month, 1 year or the whole history."""
