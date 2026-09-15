@@ -105,7 +105,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_stats_prepare = dict(rwkv_scheduler._rwkv_stats_prepare_in_flight)
     previous_score_prewarm = set(rwkv_scheduler._rwkv_score_prewarm_in_flight)
     previous_memorised_job = rwkv_scheduler._rwkv_memorised_history_job
-    previous_startup_prompt_shown = rwkv_scheduler._rwkv_startup_prompt_shown
+    previous_startup_build_started = rwkv_scheduler._rwkv_startup_build_started
     previous_model_cache_signature = rwkv_scheduler._rwkv_model_cache_signature
     previous_model_cache_value = rwkv_scheduler._rwkv_model_cache_value
     rwkv_scheduler._reviewer_backend_warmup_states.clear()
@@ -125,7 +125,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_review_input_batch_module_cache.clear()
     rwkv_scheduler._rwkv_stats_prepare_in_flight.clear()
     rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
-    rwkv_scheduler._rwkv_startup_prompt_shown = False
+    rwkv_scheduler._rwkv_startup_build_started = False
     rwkv_scheduler._rwkv_model_cache_signature = None
     rwkv_scheduler._rwkv_model_cache_value = None
     rwkv_scheduler._rwkv_memorised_history_job = None
@@ -182,7 +182,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_stats_prepare_in_flight.update(previous_stats_prepare)
         rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
         rwkv_scheduler._rwkv_score_prewarm_in_flight.update(previous_score_prewarm)
-        rwkv_scheduler._rwkv_startup_prompt_shown = previous_startup_prompt_shown
+        rwkv_scheduler._rwkv_startup_build_started = previous_startup_build_started
 
 
 def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
@@ -2271,7 +2271,7 @@ def test_profile_open_reset_preserves_in_flight_warmup_tombstone() -> None:
     reviewer.mw.col.db = SimpleNamespace()
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None
-    rwkv_scheduler._rwkv_startup_prompt_shown = True
+    rwkv_scheduler._rwkv_startup_build_started = True
     with rwkv_scheduler._reviewer_backend_state_lock:
         rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] = 7
         rwkv_scheduler._reviewer_backend_warmup_pending_generations[warmup_key] = 7
@@ -2290,7 +2290,7 @@ def test_profile_open_reset_preserves_in_flight_warmup_tombstone() -> None:
         assert (
             rwkv_scheduler._reviewer_backend_warmup_pending_generations[warmup_key] == 8
         )
-    assert rwkv_scheduler._rwkv_startup_prompt_shown is False
+    assert rwkv_scheduler._rwkv_startup_build_started is False
 
 
 def test_cache_prepare_uses_the_backend_captured_at_begin(
@@ -9117,9 +9117,9 @@ def test_startup_load_skips_full_cache_preflight(monkeypatch) -> None:
     def load(
         mw: object,
         *,
-        prompt_if_unavailable: bool = False,
+        build_if_unavailable: bool = False,
     ) -> None:
-        load_calls.append((mw, prompt_if_unavailable))
+        load_calls.append((mw, build_if_unavailable))
 
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -9153,8 +9153,8 @@ def test_startup_cache_load_can_wait_until_after_sync(
     monkeypatch.setattr(
         rwkv_scheduler,
         "load_rwkv_state_cache_with_progress",
-        lambda _mw, *, prompt_if_unavailable=False: events.append(
-            f"load:{prompt_if_unavailable}"
+        lambda _mw, *, build_if_unavailable=False: events.append(
+            f"load:{build_if_unavailable}"
         ),
     )
 
@@ -9185,10 +9185,10 @@ def test_disabled_rwkv_clears_deferred_startup_loading(
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_startup_load_launch_failure_prompts_for_rebuild(
+def test_startup_load_launch_failure_builds_the_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prompts: list[object] = []
+    builds: list[object] = []
 
     class Taskman:
         def run_on_main(self, callback: Callable[[], None]) -> None:
@@ -9200,20 +9200,20 @@ def test_startup_load_launch_failure_prompts_for_rebuild(
     mw = SimpleNamespace(taskman=Taskman())
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_show_rwkv_state_cache_prompt",
-        prompts.append,
+        "_start_rwkv_state_cache_build",
+        builds.append,
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(
         mw,
-        prompt_if_unavailable=True,
+        build_if_unavailable=True,
     )
 
-    assert prompts == [mw]
+    assert builds == [mw]
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_startup_cache_miss_prompts_before_refreshing_active_counts(
+def test_startup_cache_miss_builds_before_refreshing_active_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -9229,32 +9229,25 @@ def test_startup_cache_miss_prompts_before_refreshing_active_counts(
     )
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_show_rwkv_state_cache_prompt",
-        lambda _mw: events.append("prompt"),
+        "_start_rwkv_state_cache_build",
+        lambda _mw: events.append("build"),
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(
         mw,
-        prompt_if_unavailable=True,
+        build_if_unavailable=True,
     )
 
-    assert events == ["prompt"]
+    assert events == ["build"]
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
 
 
-def test_stale_startup_prompt_choice_does_not_rebuild_ready_state(
+def test_queued_startup_build_skips_a_state_that_became_ready(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    prompt_callbacks: list[Callable[[int], None]] = []
+    queued: list[Callable[[], None]] = []
     build_calls: list[dict[str, object]] = []
-
-    def ask_user_dialog(_text: str, **kwargs: object) -> None:
-        callback = kwargs["callback"]
-        assert callable(callback)
-        prompt_callbacks.append(callback)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
     monkeypatch.setattr(
         rwkv_scheduler,
         "build_rwkv_state_cache_with_progress",
@@ -9264,22 +9257,23 @@ def test_stale_startup_prompt_choice_does_not_rebuild_ready_state(
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
     set_reviewer_backend(backend)
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
-    _attach_progress_taskman(reviewer.mw)
+    reviewer.mw.taskman = SimpleNamespace(run_on_main=queued.append)
 
-    rwkv_scheduler._show_rwkv_state_cache_prompt(reviewer.mw)
+    rwkv_scheduler._start_rwkv_state_cache_build(reviewer.mw)
 
-    assert len(prompt_callbacks) == 1
+    assert len(queued) == 1
     key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert key is not None
     with rwkv_scheduler._reviewer_backend_state_lock:
         rwkv_scheduler._reviewer_backend_warmup_states[key] = _rwkv_resident_identity()
 
-    prompt_callbacks[0](1)
+    queued[0]()
 
     assert build_calls == []
 
 
-def test_startup_prompt_can_build_rwkv_state_cache_only(
+# Pins spec/scheduling.md#sched.rwkv-state-cache-startup-build
+def test_startup_builds_the_state_and_the_calibration_data_without_asking(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -9295,16 +9289,10 @@ def test_startup_prompt_can_build_rwkv_state_cache_only(
         lambda: {"model": "test"},
     )
     monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
-    prompt_calls: list[dict[str, object]] = []
-
-    def ask_user_dialog(text: str, **kwargs: object) -> None:
-        assert "state cache" in text
-        prompt_calls.append(kwargs)
-        callback = kwargs["callback"]
-        assert callable(callback)
-        callback(0)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
+    monkeypatch.setattr(
+        "aqt.utils.ask_user_dialog",
+        lambda *args, **kwargs: pytest.fail("the startup build must not ask"),
+    )
 
     runtime = _CacheRuntime()
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
@@ -9313,48 +9301,9 @@ def test_startup_prompt_can_build_rwkv_state_cache_only(
 
     rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
 
-    assert len(prompt_calls) == 1
-    assert prompt_calls[0]["default_button"] == 1
-    assert prompt_calls[0]["title"] == "RWKV State Cache"
+    assert taskman.with_progress_kwargs is not None
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert rwkv_scheduler.rwkv_state_cache_usable(reviewer.mw) is True
-    assert reviewer.mw.col.rwkv_retrievability_rows == []
-    assert taskman.with_progress_kwargs is not None
-
-
-def test_startup_prompt_can_build_rwkv_state_cache_with_calibration_data(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    first_review = (40 * 86_400 + 100) * 1000
-    second_review = (41 * 86_400 + 3_700) * 1000
-    rows = [
-        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
-        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
-    ]
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_model_cache_key",
-        lambda: {"model": "test"},
-    )
-    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
-
-    def ask_user_dialog(text: str, **kwargs: object) -> None:
-        assert "state cache" in text
-        callback = kwargs["callback"]
-        assert callable(callback)
-        callback(1)
-
-    monkeypatch.setattr("aqt.utils.ask_user_dialog", ask_user_dialog)
-
-    runtime = _CacheRuntime()
-    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
-    _attach_progress_taskman(reviewer.mw)
-
-    rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
-
-    assert runtime.reviewed == [(1, 2), (1, 3)]
     assert [
         (review_id, prediction, source)
         for review_id, prediction, source, *_ in reviewer.mw.col.rwkv_retrievability_rows

@@ -675,13 +675,10 @@ revlogs, so stats and Card Info can use RWKV without waiting for their first
 on-demand query. When a local cache load finishes successfully, Anki prewarms
 only the current deck scope to keep automatic startup work bounded. An explicit
 cache build also prewarms the closest parent deck scope. When no usable local
-cache exists, desktop Anki prompts once per session after profile open and any
-automatic startup sync to build the RWKV state cache. This startup build, and
-the same manual
-build from the RWKV section of deck options, run as a modal progress operation.
-When the startup prompt appears, users can choose a faster state-only build or
-the slower state build that also records historical retrievability rows for
-calibration/stat consumers. The expensive replay work runs off
+cache exists, desktop Anki builds the RWKV state cache once per session after
+profile open and any automatic startup sync, without asking. This startup build
+runs as a modal progress operation and also records the historical
+retrievability rows for calibration/stat consumers. The expensive replay work runs off
 the UI thread, but Anki blocks review/deck interaction until the cache build
 finishes so the saved state is current when the operation completes. During
 replay, the progress dialog shows how many historical reviews have been applied

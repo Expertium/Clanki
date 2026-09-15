@@ -125,6 +125,24 @@ using FSRS-7's values.
 `test_rwkv_instant_card_info_says_the_model_is_missing`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-state-cache-startup-build
+
+Given a collection that runs RWKV-Curve or RWKV-Instant, a usable RWKV model,
+and no usable local RWKV state (no saved state cache, or one that does not
+load), when the profile opens and any automatic startup sync has finished:
+
+- Clanki builds the RWKV state cache and the calibration data (the historical
+  retrievability rows) at once, in a progress window, without asking;
+- it starts this build once per profile open, and skips it when the RWKV
+  state became ready in the meantime.
+
+**Why:** Andrew, 2026-09-15: "Don't show this at startup, just build both"
+(the question offered "Build State Only", "Build State + Calibration Data"
+and Cancel).
+
+**Pinned by:** `test_startup_builds_the_state_and_the_calibration_data_without_asking`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
