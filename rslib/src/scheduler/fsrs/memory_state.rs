@@ -143,20 +143,17 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     Ok(retrievability)
 }
 
-pub(crate) fn fsrs_next_interval_for_params(
+/// The interval at `desired_retention` of the FSRS-7 state whose S90 is
+/// `s90` (spec sched.fsrs7-sm2-conversion): the `FsrsNextInterval` add-on API
+/// is given the S90 a card shows, not FSRS-7's internal stability.
+pub(crate) fn fsrs_next_interval_for_s90(
     params: &[f32],
-    stability: f32,
+    s90: f32,
     desired_retention: f32,
 ) -> Result<f32> {
     let fsrs = FSRS::new(params)?;
-    Ok(fsrs.next_interval_for_state(
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-            stability_fast: stability,
-        },
-        desired_retention.clamp(0.0001, 0.9999),
-    ))
+    let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, s90, 0.9)?;
+    Ok(fsrs.next_interval_for_state(state, desired_retention.clamp(0.0001, 0.9999)))
 }
 
 pub(crate) fn fsrs_interval_at_retrievability_for_params(
@@ -1000,7 +997,7 @@ impl Collection {
         desired_retention: f32,
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_next_interval_for_params(&params, stability, desired_retention)
+        fsrs_next_interval_for_s90(&params, stability, desired_retention)
     }
 
     pub fn fsrs_interval_at_retrievability_for_card(
@@ -1580,6 +1577,25 @@ mod tests {
         assert_eq!(state.stability, 20.0);
         let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
         assert_close(fsrs.interval_at_retrievability(state.into(), 0.9), 20.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: the FsrsNextInterval
+    // API takes the stability it is given as the card's S90.
+    #[test]
+    fn next_interval_api_takes_the_s90() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card_id = col.get_first_card().id;
+        // at 90% the interval is the S90 itself
+        assert_close(col.fsrs_next_interval_for_card(card_id, 20.0, 0.9)?, 20.0);
+        // at another retention it is the interval of the state with that S90
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let state = memory_state_from_sm2_with_params(&fsrs, &DEFAULT_PARAMETERS, 2.5, 20.0, 0.9)?;
+        assert_close(
+            col.fsrs_next_interval_for_card(card_id, 20.0, 0.8)?,
+            fsrs.next_interval_for_state(state, 0.8),
+        );
         Ok(())
     }
 
@@ -2209,7 +2225,6 @@ mod tests {
         let params = DEFAULT_PARAMETERS.to_vec();
         let stability = 14.2;
         let elapsed_days = 21.0;
-        let desired_retention = 0.88;
         let target_retrievability = 0.9;
 
         let expected = FSRS::new(&params)?.current_retrievability(
@@ -2222,11 +2237,6 @@ mod tests {
         );
         let actual = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
         assert!((actual - expected).abs() < 1e-6);
-
-        let expected_interval =
-            FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
-        let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
-        assert!((actual_interval - expected_interval).abs() < 1e-6);
 
         let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
             MemoryState {
