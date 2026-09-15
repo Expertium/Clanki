@@ -44,6 +44,28 @@ impl Deck {
     }
 }
 
+/// RWKV-Instant counts only the reviews its scores make due, never FSRS-7's
+/// due cards: the review count of every normal deck with an RWKV-Instant
+/// preset starts at 0, and only scores add to it (spec
+/// sched.rwkv-instant-waits).
+pub(crate) fn clear_rwkv_instant_review_counts(
+    counts: &mut HashMap<DeckId, DueCounts>,
+    decks: &HashMap<DeckId, Deck>,
+    configs: &HashMap<DeckConfigId, DeckConfig>,
+) {
+    for (deck_id, deck_counts) in counts.iter_mut() {
+        if decks
+            .get(deck_id)
+            .filter(|deck| !deck.is_filtered())
+            .and_then(|deck| deck.config_id())
+            .and_then(|config_id| configs.get(&config_id))
+            .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
+        {
+            deck_counts.review = 0;
+        }
+    }
+}
+
 impl Collection {
     /// Get due counts for decks at the given timestamp.
     pub(crate) fn due_counts(
@@ -61,19 +83,7 @@ impl Collection {
         configs: &HashMap<DeckConfigId, DeckConfig>,
         timing: SchedTimingToday,
     ) -> Result<()> {
-        // RWKV-Instant counts only the reviews its scores make due, never
-        // FSRS-7's due cards; without scores, none (spec sched.rwkv-instant-waits)
-        for (deck_id, deck_counts) in counts.iter_mut() {
-            if decks
-                .get(deck_id)
-                .filter(|deck| !deck.is_filtered())
-                .and_then(|deck| deck.config_id())
-                .and_then(|config_id| configs.get(&config_id))
-                .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
-            {
-                deck_counts.review = 0;
-            }
-        }
+        clear_rwkv_instant_review_counts(counts, decks, configs);
 
         let deck_count_scores = self.take_rwkv_deck_count_scores_for_day(timing.days_elapsed);
         if !deck_count_scores.is_empty() {
