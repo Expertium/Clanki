@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- FSRS-7 now sees the exact time since a card's last review when you answer
+  it, as it does in training. Before, review cards got whole days counted
+  from the day rollover, so FSRS-7 was trained on one kind of input and used
+  with another.
 - Deck options: "Don't play audio automatically" is now "Play audio
   automatically", on by default. Audio plays exactly as before.
 - New presets get 9999 maximum reviews/day and sort reviews by ascending

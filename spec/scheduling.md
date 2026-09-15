@@ -147,6 +147,32 @@ RWKV-Curve as well as FSRS.
 `max_same_day_reviews_survives_storage_and_schema11`
 (`rslib/src/deckconfig/mod.rs`); `ts/routes/deck-options/same-day-reviews.test.ts`.
 
+## sched.fsrs7-fractional-elapsed-time
+
+Given a card answered with the FSRS-7 model (a preset whose FSRS parameters
+are the 34 FSRS-7 values), the elapsed time FSRS uses for the answer's
+retrievability and next states is the exact time since the card's last
+review, in fractional days, for every card: new, learning, relearning and
+review, in any queue. This is the same elapsed time training and the
+memory-state rebuild take from the review log (millisecond timestamps), so
+the model sees the same kind of input when it is trained and when it is
+used. Older models (FSRS-6 and before, trained on whole days) keep whole
+days counted from the next day rollover for cards outside the intraday
+learning queue.
+
+**Why:** Andrew, 2026-09-15: FSRS-7 must use fractional, not integer,
+interval lengths as inputs, both in training and in deployment. Before this
+entry, review and interday-learning cards got whole days from the rollover
+(a review Monday 23:00 answered Wednesday 05:00 with a 04:00 rollover was
+2 days, not 1.25), while training used the exact 1.25.
+
+**Pinned by:** `fsrs7_gets_fractional_elapsed_time_like_training`,
+`fsrs7_review_answer_uses_the_exact_elapsed_time`
+(`rslib/src/scheduler/answering/mod.rs`);
+`fsrs7_interday_delta_uses_fractional_elapsed_time`,
+`fsrs7_same_day_delta_uses_fractional_elapsed_time`
+(`rslib/src/scheduler/fsrs/params.rs`) for the training side.
+
 ## sched.no-dynamic-desired-retention
 
 Given a deck preset (or an add-on FSRS preset overlay) that stored dynamic
