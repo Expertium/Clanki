@@ -138,6 +138,28 @@ Simple mode must still be able to optimize.
 ("Optimize All Presets" visible in Simple mode, no "Optimize Current
 Preset" in either mode). The rest of the visibility is markup.
 
+## deck-options.desired-retention-note
+
+Given the deck-options screen under FSRS-7 or RWKV-Curve, a note box sits
+below the desired-retention row from the moment the page opens, with no
+need to focus the field first. While the value equals the one the page
+opened with, it reads "The higher your desired retention, the more
+frequently cards will be shown to you." Under FSRS-7, once the value
+changes, it shows FSRS-7's approximate workload compared with the starting
+value, or a warning when FSRS-7 cannot compute it (for example, parameters
+of the wrong length). Under RWKV-Curve it always shows the note: RWKV has no
+workload estimate, and FSRS-7's estimate and its parameter warnings never
+appear. Under RWKV-Instant the box explains how RWKV-Instant uses desired
+retention instead.
+
+**Why:** Andrew, 2026-09-15: "make sure this is ALWAYS shown when opening
+deck options and before changing DR"; and, under RWKV-Curve, changing
+desired retention showed "Expected 0 or 34 values (FSRS-7), but found 21."
+from FSRS-7's workload estimate, which mixes two algorithms.
+
+**Pinned by:** `ts/tests/e2e/deck-options.test.ts` ("the desired-retention
+note shows when the page opens"). The rest is markup.
+
 ## deck-options.reschedule-on-change
 
 Given the collection-wide "Reschedule cards when desired retention changes"

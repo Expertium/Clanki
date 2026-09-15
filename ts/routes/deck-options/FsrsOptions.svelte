@@ -50,7 +50,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let state: DeckOptionsState;
     export let openHelpModal: (String) => void;
-    export let newlyEnabled = false;
 
     export function onPresetChange() {
         desiredRetentionTabs[0] = new ValueTab(
@@ -91,13 +90,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: lastOptimizationWarning =
         $daysSinceLastOptimization > 30 ? tr.deckConfigTimeToOptimize() : "";
-    let desiredRetentionFocused = false;
-    let desiredRetentionEverFocused = false;
     const initialParams = [...$config.fsrsParams7];
-    $: if (desiredRetentionFocused) {
-        desiredRetentionEverFocused = true;
-    }
-    $: showDesiredRetentionTooltip = newlyEnabled || desiredRetentionEverFocused;
 
     let computeParamsProgress: ComputeParamsProgress | undefined;
     let checkingParams = false;
@@ -236,7 +229,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let desiredRetentionChangeInfo = "";
     let desiredRetentionChangeClass = "alert-info two-line";
-    $: if (showDesiredRetentionTooltip) {
+    // FSRS-7's workload estimate; RWKV has none, and FSRS-7's never stands in
+    // (spec deck-options.desired-retention-note)
+    $: if (!rwkvMode) {
         getRetentionChangeInfo(roundedRetention, $config.fsrsParams7);
     }
 
@@ -715,7 +710,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             min={0.1}
             max={0.99}
             percentage={true}
-            bind:focused={desiredRetentionFocused}
         >
             <TabbedValue
                 slot="tabs"
@@ -735,9 +729,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         className="alert-info two-line"
     />
 {:else}
+    <!-- Shown from the moment the page opens: the plain note until the value
+         changes, then FSRS-7's workload estimate; RWKV-Curve keeps the note
+         (spec deck-options.desired-retention-note). -->
     <Warning
-        warning={desiredRetentionChangeInfo}
-        className={desiredRetentionChangeClass}
+        warning={rwkvCurve
+            ? tr.deckConfigWorkloadFactorUnchanged()
+            : desiredRetentionChangeInfo}
+        className={rwkvCurve ? "alert-info two-line" : desiredRetentionChangeClass}
     />
     <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
 {/if}
@@ -962,13 +961,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         color: var(--fg-light-green, #12b76a);
     }
 
+    /* as high as the text, with less padding than a plain alert */
     :global(.two-line) {
         white-space: pre-wrap;
-        min-height: calc(2ch + 30px);
-        box-sizing: content-box;
-        display: flex;
-        align-content: center;
-        flex-wrap: wrap;
+        padding-block: 0.5rem;
     }
 
     .fsrs-progress {

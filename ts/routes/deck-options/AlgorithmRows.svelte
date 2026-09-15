@@ -44,7 +44,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const advancedUi = state.advancedUi;
     const schedulingAlgorithm = state.schedulingAlgorithm;
     const settings = algorithmHelpSettings();
-    let newlyEnabled = false;
 
     // Every preset carries the collection's algorithm; a preset that does
     // not (both RWKV modes on, or saved by an older client) takes it. FSRS
@@ -94,9 +93,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     $: applyChoice(choice);
     const choices = schedulerChoices();
-    $: if (!$fsrs) {
-        newlyEnabled = true;
-    }
 </script>
 
 <!-- Advanced-only. The one global setting on this page, so it carries a
@@ -122,7 +118,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <FsrsOptions
         bind:this={fsrsOptionsComponent}
         {state}
-        {newlyEnabled}
         openHelpModal={(key) => openHelp(key)}
         {onPresetChange}
     />
