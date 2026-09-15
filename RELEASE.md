@@ -24,6 +24,15 @@ repeated here unless they materially affect a fork feature.
 
 - With "Show only Again and Good answer buttons" on, the Hard and Easy keys
   (2 and 4) do nothing. Before, key 2 answered Good.
+- Cards last reviewed in official Anki or AnkiDroid (which store an FSRS-6
+  memory state and drop FSRS-7's extra fields) get their FSRS-7 memory
+  state back: from their review history, or, without one, the FSRS-7 state
+  with the same stability. This happens when the collection opens, during
+  every sync and after importing an .apkg; due dates do not change. Before,
+  such a card's intervals came out about 2.3 times too long.
+- The post-sync repair of conflicting cards now uses the fixed historical
+  retention of 0.9, like everything else, instead of a value stored in the
+  preset.
 - RWKV-Curve cards never show or store FSRS-7 intervals: until RWKV-Curve
   has calculated a card's intervals, the reviewer shows "Waiting for
   RWKV-Curve…" instead of the answer buttons and ignores answer keys. Before,
