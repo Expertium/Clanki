@@ -54,7 +54,11 @@ from anki.stats_pb2 import CardStatsResponse, GraphsRequest
 from anki.utils import dev_mode, from_json_bytes, to_json_bytes
 from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
-from aqt.deckoptions import DeckOptionsDialog
+from aqt.deckoptions import (
+    DeckOptionsDialog,
+    after_algorithm_change,
+    ask_reschedule_after_algorithm_change,
+)
 from aqt.operations import on_op_finished
 from aqt.operations.deck import update_deck_configs as update_deck_configs_op
 from aqt.progress import ProgressBarUpdate, ProgressUpdate
@@ -844,13 +848,35 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
             update.abort = True
 
     def handle_on_main() -> None:
-        rwkv_snapshot = aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot(aqt.mw, input)
-        update_deck_configs_op(parent=aqt.mw, input=input).success(
-            lambda _: _on_update_deck_configs_success(
-                input,
-                close_on_success=close_on_success,
-                rwkv_snapshot=rwkv_snapshot,
+        if input.HasField("scheduling_algorithm"):
+            # a new algorithm: the user's answer replaces the RWKV
+            # reschedules a desired-retention change would start (spec
+            # sched.algorithm-change-prompt)
+            algorithm = input.scheduling_algorithm
+            reschedule = ask_reschedule_after_algorithm_change(
+                aqt.mw.app.activeModalWidget() or aqt.mw, algorithm
             )
+
+            def on_success(_: OpChanges) -> None:
+                _on_update_deck_configs_success(
+                    input, close_on_success=close_on_success
+                )
+                after_algorithm_change(aqt.mw, algorithm, reschedule)
+
+        else:
+            rwkv_snapshot = aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot(
+                aqt.mw, input
+            )
+
+            def on_success(_: OpChanges) -> None:
+                _on_update_deck_configs_success(
+                    input,
+                    close_on_success=close_on_success,
+                    rwkv_snapshot=rwkv_snapshot,
+                )
+
+        update_deck_configs_op(parent=aqt.mw, input=input).success(
+            on_success
         ).with_backend_progress(on_progress).run_in_background()
 
     aqt.mw.taskman.run_on_main(handle_on_main)

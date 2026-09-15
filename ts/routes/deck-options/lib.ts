@@ -26,6 +26,8 @@ import { get, readable, writable } from "svelte/store";
 import type { DynamicSvelteComponent } from "$lib/sveltelib/dynamicComponent";
 
 import { fsrsParamDiagnostics } from "./fsrs-param-diagnostics";
+import type { SchedulingAlgorithm } from "./scheduler-choice";
+import { flagsFromSchedulerChoice } from "./scheduler-choice";
 
 export type DeckOptionsId = bigint;
 
@@ -87,6 +89,11 @@ export class DeckOptionsState {
     readonly fsrsReschedule: Writable<boolean>;
     /** The collection-wide Advanced UI mode (spec ui.mode-switch); read-only here. */
     readonly advancedUi: Writable<boolean>;
+    /**
+     * The collection's one algorithm (spec sched.one-global-algorithm); every
+     * preset carries it. Change it with setSchedulingAlgorithm().
+     */
+    readonly schedulingAlgorithm: Writable<SchedulingAlgorithm>;
     readonly reviewFuzzEnabled: Writable<boolean>;
     readonly reviewFuzzBase: Writable<number>;
     readonly reviewFuzzFactorShort: Writable<number>;
@@ -112,6 +119,8 @@ export class DeckOptionsState {
     // selected/loaded once, via their ids.
     // needed for proper change detection
     private loadedPresets: Set<DeckConfig["id"]> = new Set();
+    // the collection's stored algorithm, so a save sends only a change
+    private savedSchedulingAlgorithm: SchedulingAlgorithm;
 
     constructor(targetDeckId: DeckOptionsId, data: DeckConfigsForUpdate) {
         this.targetDeckId = targetDeckId;
@@ -139,6 +148,8 @@ export class DeckOptionsState {
         );
         this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
+        this.schedulingAlgorithm = writable(data.schedulingAlgorithm);
+        this.savedSchedulingAlgorithm = data.schedulingAlgorithm;
         this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);
         this.reviewFuzzBase = writable(data.reviewFuzzBase);
         this.reviewFuzzFactorShort = writable(data.reviewFuzzFactorShort);
@@ -337,9 +348,24 @@ export class DeckOptionsState {
         this.setCurrentIndex(newIdx);
     }
 
+    /**
+     * Makes `algorithm` the collection's algorithm: every preset, and the
+     * template for new ones, get its switches (spec sched.one-global-algorithm).
+     */
+    setSchedulingAlgorithm(algorithm: SchedulingAlgorithm): void {
+        this.schedulingAlgorithm.set(algorithm);
+        const flags = flagsFromSchedulerChoice(algorithm);
+        for (const inner of [this.defaults, ...this.configs.map((c) => c.config.config!)]) {
+            inner.rwkvReviewEnabled = flags.rwkvCurve;
+            inner.rwkvReviewInstantOrderEnabled = flags.rwkvInstant;
+        }
+        this.updateCurrentConfig();
+    }
+
     // A partial message: the collection-wide settings are left out (spec
     // deck-options.collection-wide-in-preferences).
     dataForSaving(mode: UpdateDeckConfigsMode): PartialMessage<UpdateDeckConfigsRequest> {
+        const algorithm = get(this.schedulingAlgorithm);
         const modifiedConfigsExcludingCurrent = this.configs
             .map((c) => c.config)
             .filter((c, idx) => {
@@ -370,6 +396,8 @@ export class DeckOptionsState {
             reviewFuzzFactorShort: get(this.reviewFuzzFactorShort),
             reviewFuzzFactorMid: get(this.reviewFuzzFactorMid),
             reviewFuzzFactorLong: get(this.reviewFuzzFactorLong),
+            // only a change is sent: it asks whether to reschedule
+            schedulingAlgorithm: algorithm !== this.savedSchedulingAlgorithm ? algorithm : undefined,
         };
     }
 
@@ -379,6 +407,7 @@ export class DeckOptionsState {
 
     async save(mode: UpdateDeckConfigsMode, closeOnSuccess = false): Promise<void> {
         const request = this.dataForSaving(mode);
+        this.savedSchedulingAlgorithm = get(this.schedulingAlgorithm);
         if (closeOnSuccess) {
             await updateDeckConfigsAndClose(request);
         } else {

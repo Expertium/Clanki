@@ -9,6 +9,8 @@ export type HelpItem = {
     help?: string;
     url?: string;
     sched?: HelpItemScheduler;
+    /** A setting for the whole collection (spec ui.global-marker). */
+    global?: boolean;
 };
 
 export enum HelpItemScheduler {

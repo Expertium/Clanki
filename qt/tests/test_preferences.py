@@ -7,12 +7,7 @@ from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 from anki.collection import Preferences as PreferencesProto
-from aqt.preferences import (
-    Algorithm,
-    Preferences,
-    after_algorithm_change,
-    ask_reschedule_after_algorithm_change,
-)
+from aqt.preferences import Preferences
 
 
 def make_prefs() -> PreferencesProto:
@@ -22,7 +17,6 @@ def make_prefs() -> PreferencesProto:
     prefs.scheduling.apply_all_parent_limits = True
     prefs.scheduling.fsrs_reschedule = True
     prefs.scheduling.card_state_customizer = "// custom"
-    prefs.scheduling.algorithm = Algorithm.RWKV_CURVE
     prefs.reviewing.show_remaining_due_counts = True
     prefs.reviewing.show_intervals_on_buttons = True
     prefs.reviewing.time_limit_secs = 0
@@ -56,7 +50,6 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
     form.customScheduling.toPlainText.return_value = (
         prefs.scheduling.card_state_customizer
     )
-    form.algorithm.currentData.return_value = prefs.scheduling.algorithm
     form.showProgress.isChecked.return_value = prefs.reviewing.show_remaining_due_counts
     form.showEstimates.isChecked.return_value = (
         prefs.reviewing.show_intervals_on_buttons
@@ -190,98 +183,3 @@ def test_update_collection_writes_the_review_heatmap_preference(
     mock_set_preferences.assert_called_once_with(
         parent=dialog, preferences=dialog.prefs
     )
-
-
-# Pins spec/scheduling.md#sched.algorithm-change-prompt
-@patch("aqt.preferences.after_algorithm_change")
-@patch("aqt.preferences.ask_reschedule_after_algorithm_change")
-@patch("aqt.preferences.set_preferences")
-def test_an_algorithm_change_asks_and_then_reschedules(
-    mock_set_preferences: MagicMock, mock_ask: MagicMock, mock_after: MagicMock
-) -> None:
-    prefs = make_prefs()
-    form = make_form(prefs)
-    form.algorithm.currentData.return_value = Algorithm.FSRS7
-    dialog = make_dialog(prefs, form)
-    mock_ask.return_value = True
-
-    dialog.update_collection(MagicMock())
-
-    assert dialog.prefs.scheduling.algorithm == Algorithm.FSRS7
-    mock_ask.assert_called_once_with(dialog, Algorithm.FSRS7)
-    # the reschedule runs after the new algorithm is saved
-    mock_after.assert_not_called()
-    mock_set_preferences.return_value.success.call_args.args[0]()
-    mock_after.assert_called_once_with(dialog.mw, Algorithm.FSRS7, True)
-
-
-# Pins spec/scheduling.md#sched.algorithm-change-prompt
-@patch("aqt.preferences.after_algorithm_change")
-@patch("aqt.preferences.ask_reschedule_after_algorithm_change")
-@patch("aqt.preferences.set_preferences")
-def test_no_question_without_an_algorithm_change(
-    mock_set_preferences: MagicMock, mock_ask: MagicMock, mock_after: MagicMock
-) -> None:
-    prefs = make_prefs()
-    form = make_form(prefs)
-    form.dayOffset.value.return_value = prefs.scheduling.rollover + 1
-    dialog = make_dialog(prefs, form)
-
-    dialog.update_collection(MagicMock())
-    mock_set_preferences.return_value.success.call_args.args[0]()
-
-    mock_ask.assert_not_called()
-    mock_after.assert_not_called()
-
-
-# Pins spec/scheduling.md#sched.algorithm-change-prompt
-@patch("aqt.preferences.QMessageBox")
-def test_no_question_for_rwkv_instant(mock_box: MagicMock) -> None:
-    assert (
-        ask_reschedule_after_algorithm_change(MagicMock(), Algorithm.RWKV_INSTANT)
-        is False
-    )
-    mock_box.assert_not_called()
-
-
-# Pins spec/scheduling.md#sched.algorithm-change-prompt
-@patch("aqt.operations.CollectionOp")
-@patch("aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress")
-@patch("aqt.rwkv_scheduler.rwkv_instant_retention_did_change")
-def test_after_an_algorithm_change_the_chosen_reschedule_runs(
-    mock_refresh: MagicMock, mock_rwkv_reschedule: MagicMock, mock_op: MagicMock
-) -> None:
-    mw = MagicMock()
-
-    after_algorithm_change(mw, Algorithm.RWKV_CURVE, False)
-    mock_refresh.assert_called_once_with(mw)
-    mock_rwkv_reschedule.assert_not_called()
-    mock_op.assert_not_called()
-
-    after_algorithm_change(mw, Algorithm.RWKV_CURVE, True)
-    mock_rwkv_reschedule.assert_called_once_with(mw)
-
-    after_algorithm_change(mw, Algorithm.FSRS7, True)
-    col = MagicMock()
-    mock_op.call_args.args[1](col)
-    col._backend.reschedule_all_cards_with_fsrs7.assert_called_once_with()
-    mock_op.return_value.run_in_background.assert_called_once()
-
-
-# Pins spec/ui.md#ui.mode-switch
-def test_the_algorithm_list_is_advanced_only() -> None:
-    for advanced in (False, True):
-        dialog = make_dialog(make_prefs(), MagicMock())
-        dialog.mw.advanced_ui.return_value = advanced
-
-        dialog.setup_algorithm(Algorithm.RWKV_CURVE)
-
-        combo = dialog.form.algorithm
-        assert [c.args[1] for c in combo.addItem.call_args_list] == [
-            Algorithm.FSRS7,
-            Algorithm.RWKV_CURVE,
-            Algorithm.RWKV_INSTANT,
-        ]
-        combo.findData.assert_called_once_with(Algorithm.RWKV_CURVE)
-        combo.setVisible.assert_called_once_with(advanced)
-        dialog.form.algorithmLabel.setVisible.assert_called_once_with(advanced)

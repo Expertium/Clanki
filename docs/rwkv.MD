@@ -519,8 +519,8 @@ each hypothetical answer; they are separate from the RWKV-Curve predictions
 used for answer-button intervals.
 
 For RWKV-Curve-enabled cards, **RWKV Curve Next S90** reports the Curve S90
-predicted for each hypothetical answer, while **FSRS Next S90** reports Anki's
-FSRS S90 from the unmodified scheduling states for the same four answers.
+predicted for each hypothetical answer; card info shows no FSRS-7 values for
+them (`ui.card-info-rwkv-curve`).
 Learning and relearning steps may therefore show a short answer-button delay
 even when their underlying next S90 is much longer.
 

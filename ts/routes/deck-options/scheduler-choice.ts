@@ -1,52 +1,55 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import * as tr from "@generated/ftl";
 
 /**
- * The collection's one scheduling algorithm, as deck options show it.
- *
- * It maps onto the per-preset RWKV-Curve / RWKV-Instant switches, which every
- * preset carries as a copy of the collection's algorithm. The algorithm is
- * chosen in Preferences; deck options show it read-only (spec/scheduling.md,
+ * The collection's one scheduling algorithm, chosen in the deck-options
+ * Algorithm list. Every preset carries it as its RWKV-Curve / RWKV-Instant
+ * switches, and FSRS stays on under every algorithm (spec/scheduling.md,
  * `sched.one-global-algorithm`; spec/deck-options.md,
  * `deck-options.scheduler-choice`).
  */
-export enum SchedulerChoice {
-    FSRS = 0,
-    RWKV_CURVE = 1,
-    RWKV_INSTANT = 2,
-}
+export { SchedulingAlgorithm };
 
 export interface SchedulerFlags {
-    fsrs: boolean;
     rwkvCurve: boolean;
     rwkvInstant: boolean;
 }
 
-/**
- * The algorithm the stored flags select. A preset with both RWKV modes on
- * reads as RWKV-Curve, the mode that decides intervals. The FSRS switch does
- * not influence the value: a collection with it off still reads as FSRS.
- */
-export function schedulerChoiceFromFlags(flags: SchedulerFlags): SchedulerChoice {
-    if (flags.rwkvCurve) {
-        return SchedulerChoice.RWKV_CURVE;
-    }
-    if (flags.rwkvInstant) {
-        return SchedulerChoice.RWKV_INSTANT;
-    }
-    return SchedulerChoice.FSRS;
+/** The preset switches an algorithm writes. */
+export function flagsFromSchedulerChoice(algorithm: SchedulingAlgorithm): SchedulerFlags {
+    return {
+        rwkvCurve: algorithm === SchedulingAlgorithm.RWKV_CURVE,
+        rwkvInstant: algorithm === SchedulingAlgorithm.RWKV_INSTANT,
+    };
 }
 
-/** The algorithm's name. */
-export function schedulerChoiceLabel(choice: SchedulerChoice): string {
-    switch (choice) {
-        case SchedulerChoice.RWKV_CURVE:
-            return tr.deckConfigSchedulerChoiceRwkvCurve();
-        case SchedulerChoice.RWKV_INSTANT:
-            return tr.deckConfigSchedulerChoiceRwkvInstant();
-        default:
-            return tr.deckConfigSchedulerChoiceFsrs();
-    }
+export interface SchedulerChoiceOption {
+    label: string;
+    value: SchedulingAlgorithm;
+    /** Shown under the label in the open dropdown. */
+    description: string;
+}
+
+/** The dropdown entries, in display order. */
+export function schedulerChoices(): SchedulerChoiceOption[] {
+    return [
+        {
+            label: tr.deckConfigSchedulerChoiceFsrs(),
+            value: SchedulingAlgorithm.FSRS7,
+            description: tr.deckConfigSchedulerChoiceFsrsDescription(),
+        },
+        {
+            label: tr.deckConfigSchedulerChoiceRwkvCurve(),
+            value: SchedulingAlgorithm.RWKV_CURVE,
+            description: tr.deckConfigSchedulerChoiceRwkvCurveDescription(),
+        },
+        {
+            label: tr.deckConfigSchedulerChoiceRwkvInstant(),
+            value: SchedulingAlgorithm.RWKV_INSTANT,
+            description: tr.deckConfigSchedulerChoiceRwkvInstantDescription(),
+        },
+    ];
 }

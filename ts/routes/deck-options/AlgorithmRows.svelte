@@ -4,27 +4,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
     import type { DeckConfig_Config } from "@generated/anki/deck_config_pb";
-    import * as tr from "@generated/ftl";
+    import { get } from "svelte/store";
 
-    import Col from "$lib/components/Col.svelte";
+    import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
     import Item from "$lib/components/Item.svelte";
-    import Row from "$lib/components/Row.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
 
     import type { AlgorithmHelpKey } from "./algorithm-help";
     import { algorithmHelpSettings } from "./algorithm-help";
     import FsrsOptions from "./FsrsOptions.svelte";
+    import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import { reviewOrderForAlgorithm } from "./review-order";
-    import { schedulerChoiceFromFlags, schedulerChoiceLabel } from "./scheduler-choice";
+    import {
+        flagsFromSchedulerChoice,
+        SchedulingAlgorithm,
+        schedulerChoices,
+    } from "./scheduler-choice";
 
     /**
-     * The Algorithm block: the collection's algorithm, read-only (Advanced
-     * mode only; it is chosen in Preferences, spec
-     * sched.one-global-algorithm) and the FSRS options. Hosted by the
-     * Advanced-mode Algorithm section (FsrsOptionsOuter) and by the
-     * Simple-mode page (SimpleOptions), which own the help modal and receive
-     * the help key to open.
+     * The Algorithm block: the collection's one algorithm (Advanced mode
+     * only; a global setting, spec sched.one-global-algorithm) and the FSRS
+     * options. Hosted by the Advanced-mode Algorithm section
+     * (FsrsOptionsOuter) and by the Simple-mode page (SimpleOptions), which
+     * own the help modal and receive the help key to open.
      */
     export let state: DeckOptionsState;
     export let openHelp: (key: AlgorithmHelpKey) => void;
@@ -39,21 +42,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrs = state.fsrs;
     const config = state.currentConfig;
     const advancedUi = state.advancedUi;
+    const schedulingAlgorithm = state.schedulingAlgorithm;
     const settings = algorithmHelpSettings();
     let newlyEnabled = false;
 
-    // A stored preset with both RWKV modes on reads as RWKV-Curve. FSRS is
-    // always on; SM-2 is not an algorithm here. Both are normalized on load
-    // (spec deck-options.scheduler-choice).
+    // Every preset carries the collection's algorithm; a preset that does
+    // not (both RWKV modes on, or saved by an older client) takes it. FSRS
+    // is always on; SM-2 is not an algorithm here (spec
+    // deck-options.scheduler-choice).
     // Store writes happen inside plain functions so no reactive declaration
     // depends on another one that it also writes to.
     function normalizeSchedulerFlags(
         current: DeckConfig_Config,
         fsrsOn: boolean,
+        algorithm: SchedulingAlgorithm,
     ): void {
-        if (current.rwkvReviewEnabled && current.rwkvReviewInstantOrderEnabled) {
+        const flags = flagsFromSchedulerChoice(algorithm);
+        if (
+            current.rwkvReviewEnabled !== flags.rwkvCurve ||
+            current.rwkvReviewInstantOrderEnabled !== flags.rwkvInstant
+        ) {
             config.update((c) => {
-                c.rwkvReviewInstantOrderEnabled = false;
+                c.rwkvReviewEnabled = flags.rwkvCurve;
+                c.rwkvReviewInstantOrderEnabled = flags.rwkvInstant;
                 return c;
             });
         }
@@ -62,7 +73,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         // Difficulty orders are FSRS-only; under RWKV a stored one reads as
         // the default order (spec deck-options.no-difficulty-order-under-rwkv).
-        const rwkv = current.rwkvReviewEnabled || current.rwkvReviewInstantOrderEnabled;
+        const rwkv = flags.rwkvCurve || flags.rwkvInstant;
         const order = reviewOrderForAlgorithm(current.reviewOrder, rwkv);
         if (order !== current.reviewOrder) {
             config.update((c) => {
@@ -71,38 +82,39 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             });
         }
     }
-    $: normalizeSchedulerFlags($config, $fsrs);
+    $: normalizeSchedulerFlags($config, $fsrs, $schedulingAlgorithm);
 
-    // every preset carries the collection's algorithm
-    $: algorithmLabel = schedulerChoiceLabel(
-        schedulerChoiceFromFlags({
-            fsrs: $fsrs,
-            rwkvCurve: $config.rwkvReviewEnabled,
-            rwkvInstant: $config.rwkvReviewInstantOrderEnabled,
-        }),
-    );
+    let choice: SchedulingAlgorithm = get(schedulingAlgorithm);
+    // Runs on every change of the dropdown value; a no-op when the value is
+    // already the collection's algorithm.
+    function applyChoice(value: SchedulingAlgorithm): void {
+        if (value !== get(schedulingAlgorithm)) {
+            state.setSchedulingAlgorithm(value);
+        }
+    }
+    $: applyChoice(choice);
+    const choices = schedulerChoices();
     $: if (!$fsrs) {
         newlyEnabled = true;
     }
 </script>
 
-<!-- Advanced-only and read-only: the algorithm is a Preferences setting
-     (spec sched.one-global-algorithm). The manual RWKV-Curve reschedule
-     action is gone: the "Reschedule cards when desired retention changes"
-     Preferences setting covers every algorithm
+<!-- Advanced-only. The one global setting on this page, so it carries a
+     "(global)" mark and the globe (spec ui.global-marker). The manual RWKV-Curve
+     reschedule action is gone: the "Reschedule cards when desired retention
+     changes" Preferences setting covers every algorithm
      (spec deck-options.reschedule-on-change). -->
 {#if $advancedUi}
     <Item>
-        <Row --cols={13}>
-            <Col --col-size={7} breakpoint="md">
-                <SettingTitle on:click={() => openHelp("fsrs")}>
-                    {settings.fsrs.title}
-                </SettingTitle>
-            </Col>
-            <Col --col-size={6} breakpoint="md">
-                {tr.deckConfigAlgorithmSetInPreferences({ algorithm: algorithmLabel })}
-            </Col>
-        </Row>
+        <EnumSelectorRow
+            bind:value={choice}
+            defaultValue={SchedulingAlgorithm.RWKV_CURVE}
+            {choices}
+        >
+            <SettingTitle on:click={() => openHelp("fsrs")}>
+                <GlobalLabel title={settings.fsrs.title} />
+            </SettingTitle>
+        </EnumSelectorRow>
     </Item>
 {/if}
 

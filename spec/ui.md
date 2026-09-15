@@ -1,5 +1,23 @@
 # User interface modes
 
+## ui.global-marker
+
+Given a deck-options setting that applies to the whole collection rather
+than to one preset (marked `global` in its help entry; today only the
+Algorithm, `deck-options.scheduler-choice`), its label reads
+"<name> (global)" and carries a meridian-globe icon (`mdiWeb`, the Material
+Design "web" glyph) in the link colour (`--fg-link`), with the "Affects the
+entire collection." tooltip; the help modal shows the same icon next to that
+setting's explanation.
+
+**Why:** Andrew, 2026-09-14: the upstream `earth` glyph reads as an odd blob;
+a blue meridian globe is the familiar "global" symbol. 2026-09-15: a global
+setting in deck options, where people look most, needs a visible mark.
+
+**Pinned by:** markup only (`ts/routes/deck-options/GlobalLabel.svelte`,
+`ts/lib/components/HelpSection.svelte`); `ts/tests/e2e/deck-options.test.ts`
+checks the "(global)" label.
+
 ## ui.mode-switch
 
 Given a collection, the interface is in Simple mode unless the collection flag
@@ -16,7 +34,7 @@ formerly named "Get Shared") and Create Deck but not Import File (Import
 stays under File); these buttons share one width in both modes, the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown in both modes,
-Preferences has no Algorithm list (`sched.one-global-algorithm`), and the
+and the
 deck-options screen shows its simplified view
 (`spec/deck-options.md`, `deck-options.advanced-view`) with no switch of its
 own. Hidden settings keep their stored values and keep taking effect.
@@ -31,8 +49,7 @@ installed).
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
 reset),
-`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
-`test_the_algorithm_list_is_advanced_only` (`qt/tests/test_preferences.py`).
+`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`).
 
 ## ui.review-heatmap
 

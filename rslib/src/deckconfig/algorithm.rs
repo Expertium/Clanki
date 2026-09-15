@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use anki_proto::config::preferences::scheduling::Algorithm as SchedulingAlgorithmProto;
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -76,7 +76,7 @@ impl Collection {
         self.get_config_optional(ConfigKey::SchedulingAlgorithm)
     }
 
-    /// The algorithm Preferences shows: the collection's, or, before it has
+    /// The algorithm deck options show: the collection's, or, before it has
     /// one, the Default preset's.
     pub(crate) fn effective_scheduling_algorithm(&self) -> Result<SchedulingAlgorithm> {
         if let Some(algorithm) = self.scheduling_algorithm() {
@@ -105,7 +105,7 @@ impl Collection {
         Ok(())
     }
 
-    /// The user's choice in Preferences. FSRS goes on (every algorithm needs
+    /// The user's choice in deck options. FSRS goes on (every algorithm needs
     /// the FSRS memory states). Under FSRS-7, and whenever FSRS was off,
     /// every card's memory state is computed again from its review log, so
     /// no RWKV-Curve stability stays behind; due dates do not change (the
@@ -163,7 +163,7 @@ impl Collection {
     /// collection switches to FSRS-7 and the user chooses to reschedule
     /// (spec sched.algorithm-change-prompt). Writes no review-log rows.
     pub fn reschedule_all_cards_with_fsrs7(&mut self) -> Result<OpOutput<()>> {
-        self.transact(Op::UpdatePreferences, |col| {
+        self.transact(Op::UpdateDeckConfig, |col| {
             require!(
                 col.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7,
                 "the collection does not run FSRS-7"
@@ -415,31 +415,45 @@ mod test {
 
     // Pins spec/scheduling.md#sched.one-global-algorithm
     #[test]
-    fn scheduling_preferences_carry_the_algorithm() -> Result<()> {
+    fn deck_options_show_and_change_the_algorithm() -> Result<()> {
         let mut col = Collection::new();
-        let mut prefs = col.get_scheduling_preferences()?;
+        let shown = |col: &mut Collection| {
+            col.get_deck_configs_for_update(DeckId(1))
+                .unwrap()
+                .scheduling_algorithm()
+        };
+        let save = |col: &mut Collection, algorithm: Option<SchedulingAlgorithmProto>| {
+            let config = col
+                .get_deck_config(DeckConfigId(1), false)
+                .unwrap()
+                .unwrap();
+            let _changes = crate::services::DeckConfigService::update_deck_configs(
+                col,
+                anki_proto::deck_config::UpdateDeckConfigsRequest {
+                    target_deck_id: 1,
+                    configs: vec![config.into()],
+                    scheduling_algorithm: algorithm.map(|algorithm| algorithm as i32),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
         // before the collection has one: the Default preset's
-        assert_eq!(
-            prefs.algorithm,
-            Some(SchedulingAlgorithmProto::Fsrs7 as i32)
-        );
+        assert_eq!(shown(&mut col), SchedulingAlgorithmProto::Fsrs7);
 
         // an unchanged value writes nothing
-        col.set_scheduling_preferences(prefs.clone())?;
+        save(&mut col, Some(SchedulingAlgorithmProto::Fsrs7));
         assert_eq!(col.scheduling_algorithm(), None);
 
-        prefs.algorithm = Some(SchedulingAlgorithmProto::RwkvInstant as i32);
-        col.set_scheduling_preferences(prefs.clone())?;
+        add_deck(&mut col, "second", Fsrs7);
+        save(&mut col, Some(SchedulingAlgorithmProto::RwkvInstant));
         assert_eq!(col.scheduling_algorithm(), Some(RwkvInstant));
-        assert_eq!(preset_algorithms(&col), vec![RwkvInstant]);
-        assert_eq!(
-            col.get_scheduling_preferences()?.algorithm,
-            Some(SchedulingAlgorithmProto::RwkvInstant as i32)
-        );
+        assert_eq!(preset_algorithms(&col), vec![RwkvInstant; 2]);
+        assert!(col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(shown(&mut col), SchedulingAlgorithmProto::RwkvInstant);
 
-        // a write without the field keeps the algorithm
-        prefs.algorithm = None;
-        col.set_scheduling_preferences(prefs)?;
+        // a save without the field keeps the algorithm
+        save(&mut col, None);
         assert_eq!(col.scheduling_algorithm(), Some(RwkvInstant));
         Ok(())
     }

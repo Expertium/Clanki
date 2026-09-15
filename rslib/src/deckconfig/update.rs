@@ -10,6 +10,7 @@ use std::iter;
 use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
 use anki_proto::deck_config::deck_configs_for_update::ConfigWithExtra;
 use anki_proto::deck_config::deck_configs_for_update::CurrentDeck;
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
 use fsrs::DEFAULT_PARAMETERS;
@@ -17,6 +18,7 @@ use fsrs::FSRS;
 use tracing::debug;
 use tracing::warn;
 
+use super::algorithm::SchedulingAlgorithm;
 use super::FsrsVersion;
 use crate::config::I32ConfigKey;
 use crate::config::StringKey;
@@ -214,12 +216,31 @@ impl Collection {
             days_since_last_fsrs_optimize,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
             fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
+            scheduling_algorithm: SchedulingAlgorithmProto::from(
+                self.effective_scheduling_algorithm()?,
+            ) as i32,
         })
     }
 
     /// Information required for the deck options screen.
     pub fn update_deck_configs(&mut self, input: UpdateDeckConfigsRequest) -> Result<OpOutput<()>> {
+        self.update_deck_configs_and_algorithm(input, None)
+    }
+
+    /// A deck-options save that can also change the collection's algorithm
+    /// (spec sched.one-global-algorithm). The new algorithm is set first, so
+    /// the saved presets take it.
+    pub fn update_deck_configs_and_algorithm(
+        &mut self,
+        input: UpdateDeckConfigsRequest,
+        algorithm: Option<SchedulingAlgorithm>,
+    ) -> Result<OpOutput<()>> {
         self.transact(Op::UpdateDeckConfig, |col| {
+            if let Some(algorithm) = algorithm {
+                if algorithm != col.effective_scheduling_algorithm()? {
+                    col.change_scheduling_algorithm(algorithm)?;
+                }
+            }
             col.update_deck_configs_inner(input)
         })
     }
@@ -301,7 +322,7 @@ impl Collection {
 
     fn update_deck_configs_inner(&mut self, mut req: UpdateDeckConfigsRequest) -> Result<()> {
         require!(!req.configs.is_empty(), "config not provided");
-        // the algorithm is a Preferences setting: the saved presets take it (in
+        // the saved presets take the collection's algorithm (in
         // add_or_update_deck_config), and FSRS, which every algorithm needs,
         // stays on (spec sched.one-global-algorithm)
         if self.scheduling_algorithm().is_some() {

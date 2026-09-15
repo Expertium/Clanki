@@ -370,19 +370,6 @@
               </property>
              </widget>
             </item>
-            <item row="3" column="0">
-             <widget class="QLabel" name="algorithmLabel">
-              <property name="text">
-               <string>preferences_algorithm</string>
-              </property>
-              <property name="buddy">
-               <cstring>algorithm</cstring>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <widget class="QComboBox" name="algorithm"/>
-            </item>
            </layout>
           </item>
           <item>

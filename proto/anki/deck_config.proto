@@ -243,6 +243,13 @@ message DeckConfig {
 }
 
 message DeckConfigsForUpdate {
+  // The collection's one scheduling algorithm (spec
+  // sched.one-global-algorithm).
+  enum SchedulingAlgorithm {
+    FSRS7 = 0;
+    RWKV_CURVE = 1;
+    RWKV_INSTANT = 2;
+  }
   message ConfigWithExtra {
     DeckConfig config = 1;
     uint32 use_count = 2;
@@ -296,6 +303,9 @@ message DeckConfigsForUpdate {
   // setting; the page only reads it, for the Easy Days warning (spec
   // deck-options.collection-wide-in-preferences).
   bool fsrs_reschedule = 22;
+  // The collection's algorithm; a collection without one reads as its
+  // Default preset's.
+  SchedulingAlgorithm scheduling_algorithm = 23;
 }
 
 enum UpdateDeckConfigsMode {
@@ -330,4 +340,6 @@ message UpdateDeckConfigsRequest {
   optional float review_fuzz_factor_short = 17;
   optional float review_fuzz_factor_mid = 18;
   optional float review_fuzz_factor_long = 19;
+  // Absent: the collection's algorithm does not change.
+  optional DeckConfigsForUpdate.SchedulingAlgorithm scheduling_algorithm = 20;
 }

@@ -147,6 +147,8 @@ import VectorPolygonVariant_ from "@mdi/svg/svg/vector-polygon-variant.svg?compo
 import vectorPolygonVariant_ from "@mdi/svg/svg/vector-polygon-variant.svg?url";
 import ViewDashboard_ from "@mdi/svg/svg/view-dashboard.svg?component";
 import viewDashboard_ from "@mdi/svg/svg/view-dashboard.svg?url";
+import Web_ from "@mdi/svg/svg/web.svg?component";
+import web_ from "@mdi/svg/svg/web.svg?url";
 import Revert_ from "bootstrap-icons/icons/arrow-counterclockwise.svg?component";
 import revert_ from "bootstrap-icons/icons/arrow-counterclockwise.svg?url";
 import ArrowLeft_ from "bootstrap-icons/icons/arrow-left.svg?component";
@@ -291,6 +293,7 @@ export const mdiUngroup = { url: ungroup_, component: Ungroup_ };
 export const mdiVectorPolygonVariant = { url: vectorPolygonVariant_, component: VectorPolygonVariant_ };
 export const incrementClozeIcon = { url: incrementCloze_, component: IncrementCloze_ };
 export const mdiEarth = { url: earth_, component: Earth_ };
+export const mdiWeb = { url: web_, component: Web_ };
 export const caretDownFill = { url: caretDownFill_, component: CaretDownFill_ };
 export const mdiNewspaper = { url: newspaper_, component: Newspaper_ };
 export const mdiBookOutline = { url: bookOutline_, component: BookOutline_ };

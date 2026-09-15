@@ -19,6 +19,7 @@ export function algorithmHelpSettings(): Record<AlgorithmHelpKey, HelpItem> {
             title: tr.deckConfigScheduler(),
             help: tr.deckConfigSchedulerTooltip(),
             url: HelpPage.DeckOptions.fsrs,
+            global: true,
         },
         desiredRetention: {
             title: tr.deckConfigDesiredRetention(),

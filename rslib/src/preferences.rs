@@ -1,7 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use anki_proto::config::preferences::scheduling::Algorithm as AlgorithmPB;
 use anki_proto::config::preferences::scheduling::NewReviewMix as NewRevMixPB;
 use anki_proto::config::preferences::Editing;
 use anki_proto::config::preferences::Reviewing;
@@ -11,7 +10,6 @@ use anki_proto::config::Preferences;
 use crate::collection::Collection;
 use crate::config::BoolKey;
 use crate::config::StringKey;
-use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::error::Result;
 use crate::prelude::*;
 use crate::scheduler::timing::local_minutes_west_for_stamp;
@@ -64,7 +62,6 @@ impl Collection {
             apply_all_parent_limits: self.get_config_bool(BoolKey::ApplyAllParentLimits),
             fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
             card_state_customizer: self.get_config_string(StringKey::CardStateCustomizer),
-            algorithm: Some(AlgorithmPB::from(self.effective_scheduling_algorithm()?) as i32),
         })
     }
 
@@ -76,14 +73,6 @@ impl Collection {
         self.set_config_bool_inner(BoolKey::ApplyAllParentLimits, s.apply_all_parent_limits)?;
         self.set_config_bool_inner(BoolKey::FsrsReschedule, s.fsrs_reschedule)?;
         self.set_config_string_inner(StringKey::CardStateCustomizer, &s.card_state_customizer)?;
-        // only a change is written: an unchanged value must not give a new,
-        // empty collection a key (spec sched.one-global-algorithm)
-        if s.algorithm.is_some() {
-            let algorithm = SchedulingAlgorithm::from(s.algorithm());
-            if algorithm != self.effective_scheduling_algorithm()? {
-                self.change_scheduling_algorithm(algorithm)?;
-            }
-        }
 
         self.set_new_review_mix(match s.new_review_mix() {
             NewRevMixPB::Distribute => crate::config::NewReviewMix::Mix,

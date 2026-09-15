@@ -776,14 +776,18 @@ deck-config-optimize-all-tip = You can optimize all presets at once by using the
 
 deck-config-scheduler = Algorithm
 deck-config-scheduler-tooltip =
-    Which algorithm schedules your cards. It is one setting for the whole
-    collection, chosen in Preferences > Review. FSRS-7 computes intervals from
+    Which algorithm schedules your cards. It is one setting for all presets:
+    a change here changes it for every deck. FSRS-7 computes intervals from
     your review history. RWKV-Curve uses the RWKV neural network for the
     answer button intervals. RWKV-Instant has no intervals: after every
     review, RWKV decides which cards are due.
+# Next to a setting that applies to all presets, such as the Algorithm.
+deck-config-global = (global)
+deck-config-algorithm-changed-question =
+    The algorithm is now { $algorithm }. Reschedule all your cards with it now, or keep their due dates? Cards you keep get { $algorithm }'s intervals at their next review.
+deck-config-reschedule-all-now = Reschedule all cards now
+deck-config-keep-due-dates = Keep due dates
 deck-config-scheduler-choice-fsrs = FSRS-7
-# Deck options show the collection's algorithm; it changes in Preferences.
-deck-config-algorithm-set-in-preferences = { $algorithm } (set in Preferences)
 deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
 deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
 deck-config-scheduler-choice-fsrs-description =
