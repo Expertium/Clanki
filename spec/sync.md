@@ -153,3 +153,26 @@ unchanged by a reschedule), `post_sync_reconcile_keeps_stale_schedule_when_resch
 `post_sync_reconcile_leaves_schedule_alone_when_card_only_moved_deck`,
 `sync_does_not_unforget_a_card`, and the `assert_no_reschedule_rows` checks in
 the other reconcile tests (`rslib/src/sync/collection/tests.rs`).
+
+## sync.global-algorithm-mirror
+
+Given a normal sync, once it has finished, the presets are brought in line
+with the collection's algorithm (`sched.one-global-algorithm`) in a separate
+step: a preset that another client switched to another algorithm (a client
+that knows only the preset flags, such as an older build, AnkiDroid or an
+add-on) gets the collection's algorithm back, and the next sync uploads it.
+A collection that arrived without the `schedulingAlgorithm` key gets one
+(`sched.global-algorithm-migration`). The collection's key wins over a
+preset's flags because the config table syncs as a whole, newest first, and
+presets sync row by row. The step runs after the sync because deck configs
+travel before the post-sync passes, and a change written during the sync
+would be left unsent. Nothing is written when all presets agree. An
+algorithm that changes by sync asks no question
+(`sched.algorithm-change-prompt`). The wire protocol does not change.
+
+**Why:** Andrew, 2026-09-15: one algorithm for the whole collection; other
+clients only know the per-preset flags, so the mirror must repair what they
+change.
+
+**Pinned by:** `sync_reverts_a_preset_another_client_gave_another_algorithm`
+(`rslib/src/sync/collection/tests.rs`).

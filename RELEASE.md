@@ -22,6 +22,13 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The scheduling algorithm (FSRS-7, RWKV-Curve or RWKV-Instant) is one
+  setting for the whole collection, in Preferences > Review. After you change
+  it, Clanki asks whether to reschedule all cards now or keep their due
+  dates. Deck options show the algorithm but can no longer change it, and
+  neither can add-ons or other clients that change a preset: Clanki switches
+  the preset back. A collection whose presets used different algorithms
+  keeps the one that schedules the most review cards.
 - The periodic backup (checked every 5 minutes) waits while you review, and
   while an FSRS optimization, a reschedule, a sync or another task uses the
   collection. Before, it could make an answer wait, with a "Processing..."

@@ -177,6 +177,9 @@ impl Collection {
         let mut defaults = DeckConfig::default();
         defaults.inner.fsrs_params_7 = DEFAULT_PARAMETERS.into();
         defaults.inner.fsrs_version = FsrsVersion::Seven as i32;
+        // Add preset and Restore defaults take the collection's algorithm
+        // (spec sched.one-global-algorithm)
+        self.apply_scheduling_algorithm(&mut defaults.inner);
         let last_optimize = self.get_config_i32(I32ConfigKey::LastFsrsOptimize) as u32;
         let days_since_last_fsrs_optimize = if last_optimize > 0 {
             self.timing_today()?
@@ -298,6 +301,12 @@ impl Collection {
 
     fn update_deck_configs_inner(&mut self, mut req: UpdateDeckConfigsRequest) -> Result<()> {
         require!(!req.configs.is_empty(), "config not provided");
+        // the algorithm is a Preferences setting: the saved presets take it (in
+        // add_or_update_deck_config), and FSRS, which every algorithm needs,
+        // stays on (spec sched.one-global-algorithm)
+        if self.scheduling_algorithm().is_some() {
+            req.fsrs = true;
+        }
         let configs_before_update = self.storage.get_deck_config_map()?;
         let mut configs_after_update = configs_before_update.clone();
         let previous_review_fuzz = self.stored_review_fuzz_config();

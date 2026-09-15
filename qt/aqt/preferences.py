@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import html
 import re
 from collections.abc import Callable
 from copy import deepcopy
@@ -13,6 +14,7 @@ import aqt
 import aqt.forms
 import aqt.operations
 from anki.collection import OpChanges
+from anki.collection import Preferences as PreferencesProto
 from anki.utils import is_mac
 from aqt import AnkiQt
 from aqt.ankihub import ankihub_login, ankihub_logout
@@ -147,6 +149,7 @@ class Preferences(QDialog):
         form.applyAllParentLimits.setChecked(scheduling.apply_all_parent_limits)
         form.fsrsReschedule.setChecked(scheduling.fsrs_reschedule)
         form.customScheduling.setPlainText(scheduling.card_state_customizer)
+        self.setup_algorithm(scheduling.algorithm)
 
         reviewing = self.prefs.reviewing
         form.timeLimit.setValue(int(reviewing.time_limit_secs / 60.0))
@@ -191,6 +194,20 @@ class Preferences(QDialog):
             tr.preferences_heatmap_tab(),
         )
 
+    def setup_algorithm(self, algorithm: Algorithm.V) -> None:
+        """The collection's one algorithm (spec sched.one-global-algorithm);
+        Advanced-only, as the choice was in deck options (spec ui.mode-switch)."""
+        combo = self.form.algorithm
+        for index, (value, label, description) in enumerate(algorithm_choices()):
+            combo.addItem(label, value)
+            combo.setItemData(
+                index, f"<p>{html.escape(description)}</p>", Qt.ItemDataRole.ToolTipRole
+            )
+        combo.setCurrentIndex(combo.findData(algorithm))
+        advanced = self.mw.advanced_ui()
+        combo.setVisible(advanced)
+        self.form.algorithmLabel.setVisible(advanced)
+
     def show_review_heatmap_tab(self) -> None:
         self.form.tabWidget.setCurrentWidget(self.heatmap_tab)
 
@@ -203,6 +220,11 @@ class Preferences(QDialog):
         scheduling.apply_all_parent_limits = form.applyAllParentLimits.isChecked()
         scheduling.fsrs_reschedule = form.fsrsReschedule.isChecked()
         scheduling.card_state_customizer = form.customScheduling.toPlainText()
+        scheduling.algorithm = form.algorithm.currentData()
+        algorithm_changed = scheduling.algorithm != self.old_prefs.scheduling.algorithm
+        reschedule = algorithm_changed and ask_reschedule_after_algorithm_change(
+            self, scheduling.algorithm
+        )
 
         reviewing = self.prefs.reviewing
         reviewing.show_remaining_due_counts = form.showProgress.isChecked()
@@ -233,6 +255,8 @@ class Preferences(QDialog):
 
         def after_prefs_update(changes: OpChanges | None = None) -> None:
             self.mw.apply_collection_options()
+            if algorithm_changed:
+                after_algorithm_change(self.mw, scheduling.algorithm, reschedule)
             on_done()
 
         if self.prefs == self.old_prefs:
@@ -539,3 +563,75 @@ def video_driver_name_for_platform(driver: VideoDriver) -> str:
         label += f" ({tr.preferences_video_driver_default()})"
 
     return label
+
+
+# The collection's one scheduling algorithm
+######################################################################
+
+Algorithm = PreferencesProto.Scheduling.Algorithm
+
+
+def algorithm_choices() -> list[tuple[Algorithm.V, str, str]]:
+    """The Algorithm combobox entries: value, label and description (the
+    deck options' former dropdown texts)."""
+    return [
+        (
+            Algorithm.FSRS7,
+            tr.deck_config_scheduler_choice_fsrs(),
+            tr.deck_config_scheduler_choice_fsrs_description(),
+        ),
+        (
+            Algorithm.RWKV_CURVE,
+            tr.deck_config_scheduler_choice_rwkv_curve(),
+            tr.deck_config_scheduler_choice_rwkv_curve_description(),
+        ),
+        (
+            Algorithm.RWKV_INSTANT,
+            tr.deck_config_scheduler_choice_rwkv_instant(),
+            tr.deck_config_scheduler_choice_rwkv_instant_description(),
+        ),
+    ]
+
+
+def ask_reschedule_after_algorithm_change(
+    parent: QWidget, algorithm: Algorithm.V
+) -> bool:
+    """Asked on every change of the algorithm, except to RWKV-Instant, which
+    has no intervals to reschedule (spec sched.algorithm-change-prompt).
+    Closing the question keeps the due dates."""
+    if algorithm == Algorithm.RWKV_INSTANT:
+        return False
+    label = next(label for value, label, _ in algorithm_choices() if value == algorithm)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle(tr.preferences_algorithm())
+    box.setText(tr.preferences_algorithm_changed_question(algorithm=label))
+    reschedule = box.addButton(
+        tr.preferences_reschedule_all_now(), QMessageBox.ButtonRole.AcceptRole
+    )
+    keep = box.addButton(
+        tr.preferences_keep_due_dates(), QMessageBox.ButtonRole.RejectRole
+    )
+    box.setDefaultButton(keep)
+    box.setEscapeButton(keep)
+    box.exec()
+    return box.clickedButton() is reschedule
+
+
+def after_algorithm_change(
+    mw: AnkiQt, algorithm: Algorithm.V, reschedule: bool
+) -> None:
+    """Drop RWKV's cached targets and queue scores and refresh the study
+    screens; then, if the user chose it, reschedule every card."""
+    from aqt import rwkv_scheduler
+    from aqt.operations import CollectionOp
+
+    rwkv_scheduler.rwkv_instant_retention_did_change(mw)
+    if not reschedule:
+        return
+    if algorithm == Algorithm.FSRS7:
+        CollectionOp(
+            mw, lambda col: col._backend.reschedule_all_cards_with_fsrs7()
+        ).run_in_background()
+    elif algorithm == Algorithm.RWKV_CURVE:
+        rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(mw)

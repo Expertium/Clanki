@@ -120,6 +120,14 @@ message Preferences {
       REVIEWS_FIRST = 1;
       NEW_FIRST = 2;
     }
+    // The collection's one scheduling algorithm (spec
+    // sched.one-global-algorithm); the values match the deck options'
+    // SchedulerChoice.
+    enum Algorithm {
+      FSRS7 = 0;
+      RWKV_CURVE = 1;
+      RWKV_INSTANT = 2;
+    }
 
     uint32 rollover = 2;
     uint32 learn_ahead_secs = 3;
@@ -138,6 +146,8 @@ message Preferences {
     // deck-options save and by the post-sync reconcile pass.
     bool fsrs_reschedule = 9;
     string card_state_customizer = 10;
+    // absent in a write: the algorithm does not change
+    optional Algorithm algorithm = 11;
   }
   message Reviewing {
     bool hide_audio_play_buttons = 1;

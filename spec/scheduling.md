@@ -465,7 +465,9 @@ enough; the extra switch is not needed.
 ## sched.reschedule-no-revlog
 
 Given "Reschedule cards when desired retention changes" applying new FSRS intervals on a
-deck-options save, or the RWKV-Curve reschedule, the affected cards get a new
+deck-options save, the RWKV-Curve reschedule, or "Reschedule all cards now"
+after a change of the algorithm (sched.algorithm-change-prompt), the
+affected cards get a new
 interval, due date, memory state and desired retention, and no row is added
 to the review log. Rows of kind `Rescheduled` that older builds wrote are
 still read (statistics keep excluding them). "Set Due Date" and "Forget" are
@@ -476,4 +478,101 @@ history, as the FSRS Helper add-on does it. The rescheduled rows carried no
 answer and only cluttered the history and the review count.
 
 **Pinned by:** `reschedule_on_change_writes_no_revlog_rows`
-(`rslib/src/scheduler/fsrs/memory_state.rs`).
+(`rslib/src/scheduler/fsrs/memory_state.rs`);
+`a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
+(`rslib/src/deckconfig/algorithm.rs`).
+
+## sched.one-global-algorithm
+
+Given a collection with the `schedulingAlgorithm` config key (`fsrs7`,
+`rwkvCurve` or `rwkvInstant`), every preset schedules with that algorithm:
+each preset carries it as its two RWKV flags (the table in
+`deck-options.scheduler-choice`), and the flags are only a copy of the key.
+The key is chosen in Preferences > Review > Scheduler, in an **Algorithm**
+list with FSRS-7, RWKV-Curve and RWKV-Instant that shows only in Advanced
+mode (`ui.mode-switch`; in Simple mode the algorithm stays as it is), each
+with its description as a tooltip (FSRS-7: each card's grades and the time between reviews only,
+the least accurate; RWKV-Curve: the default, a neural network that uses more
+information but not card content, with intervals like FSRS-7; RWKV-Instant:
+the same network, best at keeping retention at the desired level, no
+intervals, dueness decided again after each review, possibly unintuitive).
+Deck options only show it (`deck-options.scheduler-choice`).
+
+Every write of a preset takes the key's algorithm, whatever flags it
+carries: the deck-options save and Add preset / Restore defaults, the
+presets of an .apkg import, and the preset writes of add-ons and
+AnkiConnect (`col.decks.add_config`, `update_config`, `saveDeckConfig`).
+Presets are brought in line with the key when the collection opens and
+after every normal sync (`sync.global-algorithm-mirror`); only presets that
+differ are written, and nothing at all is written when all agree.
+
+Changing the algorithm in Preferences turns the collection `fsrs` switch on.
+A change to FSRS-7, or any change while `fsrs` was off, computes every
+card's FSRS-7 memory state again from its review log (no due date changes),
+so no RWKV-Curve stability stays behind. Preferences shows the key; in a
+collection without one, the Default preset's algorithm, and choosing that
+same value writes nothing. A Preferences write without the field keeps the
+algorithm.
+
+**Why:** Andrew, 2026-09-15: "there should never be a situation where
+different decks use different algorithms. Algorithm selection should be a
+global thing in Preferences." The key is the source of truth; the flags stay
+as a copy so the scheduler, the Qt code and other clients that read them see
+the same algorithm.
+
+**Pinned by:** `every_preset_write_takes_the_collection_algorithm`,
+`deck_options_save_cannot_change_the_algorithm`,
+`scheduling_preferences_carry_the_algorithm`,
+`a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
+(`rslib/src/deckconfig/algorithm.rs`).
+
+## sched.global-algorithm-migration
+
+Given a collection without the `schedulingAlgorithm` key that has cards,
+when it opens (or after a sync or an .apkg import) the key becomes the
+algorithm of the presets that schedule the most review and relearning cards
+(`type` 2 or 3), each card counted by its home deck's preset (a card in a
+filtered deck by its original deck; a deck or preset that is missing counts
+as the Default preset). With no review or relearning cards, all cards
+count. Ties go to RWKV-Curve, then FSRS-7, then RWKV-Instant. Every preset
+then takes that algorithm (`sched.one-global-algorithm`); due dates and
+memory states do not change. Given a collection without cards, nothing is
+written, so a new, empty collection does not need a full sync.
+
+**Why:** Andrew, 2026-09-15: a collection whose presets used different
+algorithms keeps the one that schedules the most review cards.
+
+**Pinned by:**
+`a_collection_without_an_algorithm_gets_the_one_with_most_review_cards`,
+`migration_counts_filtered_cards_by_home_deck_and_breaks_ties`,
+`a_collection_without_cards_gets_no_algorithm`
+(`rslib/src/deckconfig/algorithm.rs`);
+`new_empty_collection_should_not_require_full_sync`
+(`rslib/src/sync/collection/tests.rs`).
+
+## sched.algorithm-change-prompt
+
+Given the user closes Preferences after changing the Algorithm to FSRS-7 or
+RWKV-Curve, a question asks every time: "Reschedule all cards now" or "Keep
+due dates" (closing the question keeps them). "Reschedule all cards now"
+gives every card the new algorithm's due date after the change is saved:
+FSRS-7 computes every card's memory state and interval with its preset's
+parameters; RWKV-Curve runs its reschedule of all decks. Neither writes
+review-log rows (`sched.reschedule-no-revlog`). A change to RWKV-Instant
+asks nothing, since it has no intervals to reschedule; neither does a close
+without a change of the algorithm, or a change that arrives by sync. After
+any change the RWKV targets and queue scores are dropped and the study
+screens refresh.
+
+**Why:** Andrew, 2026-09-15: on a change of the algorithm, ask each time
+whether to reschedule all cards now or keep their due dates; the question
+appears only when the algorithm changes.
+
+**Pinned by:** `test_an_algorithm_change_asks_and_then_reschedules`,
+`test_no_question_without_an_algorithm_change`,
+`test_no_question_for_rwkv_instant`,
+`test_after_an_algorithm_change_the_chosen_reschedule_runs`
+(`qt/tests/test_preferences.py`);
+`a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
+(`rslib/src/deckconfig/algorithm.rs`, which also checks that the FSRS-7
+reschedule refuses to run under another algorithm).

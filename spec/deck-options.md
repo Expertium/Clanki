@@ -2,11 +2,14 @@
 
 ## deck-options.scheduler-choice
 
-Given the deck-options screen, the algorithm for a preset is chosen from one
-dropdown labelled **Algorithm** with the values FSRS-7, RWKV-Curve and
-RWKV-Instant. SM-2 is not selectable: the collection `fsrs` switch is on for
-every value. The value maps onto the stored flags as follows, and nothing
-else:
+Given the deck-options screen in Advanced mode, the **Algorithm** row shows
+the collection's algorithm (FSRS-7, RWKV-Curve or RWKV-Instant) read-only,
+as "<algorithm> (set in Preferences)": it is chosen in Preferences
+(`sched.one-global-algorithm`). Simple mode has no Algorithm row. A
+deck-options save cannot change a preset's algorithm: the saved presets
+take the collection's, and the collection `fsrs` switch stays on. SM-2 is
+not an algorithm here. Each algorithm corresponds to these stored flags,
+and nothing else:
 
 | Value        | collection `fsrs` | preset `rwkv_review_enabled` | preset `rwkv_review_instant_order_enabled` |
 | ------------ | ----------------- | ---------------------------- | ------------------------------------------ |
@@ -26,22 +29,15 @@ nothing is written until the user saves. The underlying flags, their
 storage in the `jschoreels.rwkv` bag, and the scheduler behavior behind
 each single algorithm are unchanged.
 
-In the open dropdown each algorithm shows a short description under its
-name (FSRS-7: each card's grades and the time between reviews only, the least
-accurate; RWKV-Curve: the default, a neural network that uses more
-information but not card content, with intervals like FSRS-7;
-RWKV-Instant: the same network, best at keeping retention at the desired
-level, no intervals, dueness decided again after each review, possibly
-unintuitive). The revert button restores
-the new-preset algorithm, RWKV-Curve (`deck-options.new-preset-defaults`).
-
 **Why:** the three switches were independent and could be combined in ways
 the user did not mean; desired retention was also only editable inside the
-FSRS block even though RWKV reads it, which the dropdown resolves by keeping
-FSRS on for every RWKV mode. Andrew, 2026-09-15: there must only be one
-algorithm at any given time, and each choice needs a description.
+FSRS block even though RWKV reads it, which is resolved by keeping FSRS on
+for every RWKV mode. Andrew, 2026-09-15: there must only be one algorithm at
+any given time, and it is a Preferences setting, not a deck option.
 
 **Pinned by:** `ts/routes/deck-options/scheduler-choice.test.ts`;
+`deck_options_save_cannot_change_the_algorithm`
+(`rslib/src/deckconfig/algorithm.rs`);
 `ts/tests/e2e/deck-options.test.ts` checks that no FSRS switch remains;
 `a_preset_stored_with_both_rwkv_modes_reads_as_rwkv_curve`
 (`rslib/src/deckconfig/fork_fields.rs`);
@@ -204,11 +200,11 @@ minimum other reviews and minimum seconds before a same-day repeat; predict R
 for new cards from creation time; dynamic preset add-on support; the Rebuild
 RWKV State and Recompute Calibration actions.
 
-The Algorithm dropdown itself exists only in Advanced mode
-(`deck-options.simple-view`); in Simple mode a preset keeps its stored
-algorithm (new presets: RWKV-Curve, `deck-options.new-preset-defaults`). The
-RWKV section exists only in Advanced mode, under either RWKV mode; the
-same-day repeat switch in it shows while RWKV-Instant is selected.
+The read-only Algorithm row exists only in Advanced mode
+(`deck-options.simple-view`); the algorithm itself is a Preferences setting
+(`sched.one-global-algorithm`). The RWKV section exists only in Advanced
+mode, under either RWKV mode; the same-day repeat switch in it shows while
+RWKV-Instant is the algorithm.
 
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
 knobs have defaults that suit nearly everyone.
@@ -231,7 +227,7 @@ titled "Deck Options", with exactly these controls in this order:
    in Advanced mode, the First intervals table and the "Optimize All
    Presets" button for FSRS-7 and the RWKV-Instant information box
    (`deck-options.first-intervals`, `deck-options.fsrs-only-controls`) —
-   without the Algorithm dropdown, which is Advanced-only;
+   without the Algorithm row, which is Advanced-only;
 3. Bury siblings — one switch;
 4. Play audio automatically (`deck-options.play-audio-switch`);
 5. On-screen timer — one switch;
@@ -263,7 +259,7 @@ Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
 bury switches and the two separate timer settings, and it alone shows: the
 preset / This deck / Today only tabs of the daily limits and the preset /
 This deck tabs of desired retention, Maximum reviews/day, the
-Algorithm dropdown, Learning steps, Insertion order, Relearning steps, Leech
+read-only Algorithm row, Learning steps, Insertion order, Relearning steps, Leech
 threshold, Leech action, the whole Display order section, the FSRS advanced
 section (`deck-options.fsrs-only-controls`), Skip question when replaying
 answer (off by default), Maximum answer seconds, the
@@ -281,7 +277,7 @@ settings only matter to power users.
 **Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts`,
 `ts/routes/deck-options/timer-switch.test.ts` (the combined switches);
 `ts/tests/e2e/deck-options.test.ts` (the FSRS parameters, the Algorithm
-dropdown, the limit tabs and Skip question when replaying answer exist only
+row, the limit tabs and Skip question when replaying answer exist only
 in Advanced mode; Desired retention and Bury siblings are visible in Simple
 mode). The section layout itself is markup.
 
@@ -304,9 +300,10 @@ audio automatically".
 ## deck-options.collection-wide-in-preferences
 
 Given the deck-options screen, every setting on it belongs to one preset
-(or, for the limit tabs, to the current deck). The three settings that
-apply to the whole collection live in Preferences > Review, in the Scheduler
-group and a "Custom scheduling" group, and nowhere else: Limits start from
+(or, for the limit tabs, to the current deck). The settings that apply to
+the whole collection live in Preferences > Review, in the Scheduler group
+and a "Custom scheduling" group, and nowhere else: the Algorithm (shown
+read-only in deck options, `sched.one-global-algorithm`), Limits start from
 top (`applyAllParentLimits`), Reschedule cards when desired retention
 changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
 and Custom scheduling (`cardStateCustomizer`). They are read and written
@@ -339,7 +336,8 @@ stored choice); "collection-wide settings are not on the deck-options page"
 Given a new preset — added on the deck-options screen, created by
 `col.decks.add_config()` without a source, or reset with "Restore
 defaults" — its learning steps and relearning steps are empty and its
-algorithm is RWKV-Curve (`rwkv_review_enabled` on,
+algorithm is the collection's (`sched.one-global-algorithm`), or, in a
+collection that has none yet, RWKV-Curve (`rwkv_review_enabled` on,
 `rwkv_review_instant_order_enabled` off), its leech action is Tag Only, its
 maximum reviews/day is 9999 and its review sort order is descending
 retrievability (most likely to be recalled first); the revert buttons
@@ -359,7 +357,9 @@ built on.
 
 **Pinned by:** `new_preset_has_no_steps_and_runs_rwkv_curve`,
 `fresh_collection_starts_with_new_preset_defaults`,
-`stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`).
+`stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`);
+`every_preset_write_takes_the_collection_algorithm`
+(`rslib/src/deckconfig/algorithm.rs`).
 
 ## deck-options.no-difficulty-order-under-rwkv
 

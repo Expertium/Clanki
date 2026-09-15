@@ -16,7 +16,8 @@ formerly named "Get Shared") and Create Deck but not Import File (Import
 stays under File); these buttons share one width in both modes, the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown in both modes,
-and the deck-options screen shows its simplified view
+Preferences has no Algorithm list (`sched.one-global-algorithm`), and the
+deck-options screen shows its simplified view
 (`spec/deck-options.md`, `deck-options.advanced-view`) with no switch of its
 own. Hidden settings keep their stored values and keep taking effect.
 
@@ -30,7 +31,8 @@ installed).
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
 reset),
-`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`).
+`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
+`test_the_algorithm_list_is_advanced_only` (`qt/tests/test_preferences.py`).
 
 ## ui.review-heatmap
 

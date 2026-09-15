@@ -680,6 +680,10 @@ impl crate::services::SchedulerService for Collection {
         self.compute_memory_state(input.into())
     }
 
+    fn reschedule_all_cards_with_fsrs7(&mut self) -> Result<anki_proto::collection::OpChanges> {
+        self.reschedule_all_cards_with_fsrs7().map(Into::into)
+    }
+
     fn get_fsrs_preset_for_card(
         &mut self,
         input: cards::CardId,

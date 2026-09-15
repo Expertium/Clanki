@@ -4,12 +4,13 @@
 import * as tr from "@generated/ftl";
 
 /**
- * The single "Scheduler" choice shown in deck options.
+ * The collection's one scheduling algorithm, as deck options show it.
  *
- * It maps onto three stored flags: the collection-wide FSRS switch and the
- * per-preset RWKV-Curve / RWKV-Instant switches. Exactly one scheduler is
- * active at a time, and FSRS is always on: SM-2 is not selectable from this
- * screen (spec/deck-options.md, `deck-options.scheduler-choice`).
+ * It maps onto the per-preset RWKV-Curve / RWKV-Instant switches, which every
+ * preset carries as a copy of the collection's algorithm. The algorithm is
+ * chosen in Preferences; deck options show it read-only (spec/scheduling.md,
+ * `sched.one-global-algorithm`; spec/deck-options.md,
+ * `deck-options.scheduler-choice`).
  */
 export enum SchedulerChoice {
     FSRS = 0,
@@ -24,10 +25,9 @@ export interface SchedulerFlags {
 }
 
 /**
- * Derive the dropdown value from the stored flags. A preset with both RWKV
- * modes on cannot be represented; it reads as RWKV-Curve, the mode that
- * decides intervals. The FSRS switch does not influence the value: a
- * collection with it off still reads as FSRS, and the screen turns it on.
+ * The algorithm the stored flags select. A preset with both RWKV modes on
+ * reads as RWKV-Curve, the mode that decides intervals. The FSRS switch does
+ * not influence the value: a collection with it off still reads as FSRS.
  */
 export function schedulerChoiceFromFlags(flags: SchedulerFlags): SchedulerChoice {
     if (flags.rwkvCurve) {
@@ -39,39 +39,14 @@ export function schedulerChoiceFromFlags(flags: SchedulerFlags): SchedulerChoice
     return SchedulerChoice.FSRS;
 }
 
-/** The flags a dropdown value writes. FSRS is on for every value. */
-export function flagsFromSchedulerChoice(choice: SchedulerChoice): SchedulerFlags {
-    return {
-        fsrs: true,
-        rwkvCurve: choice === SchedulerChoice.RWKV_CURVE,
-        rwkvInstant: choice === SchedulerChoice.RWKV_INSTANT,
-    };
-}
-
-export interface SchedulerChoiceOption {
-    label: string;
-    value: SchedulerChoice;
-    /** Shown under the label in the open dropdown. */
-    description: string;
-}
-
-/** The dropdown entries, in display order. */
-export function schedulerChoices(): SchedulerChoiceOption[] {
-    return [
-        {
-            label: tr.deckConfigSchedulerChoiceFsrs(),
-            value: SchedulerChoice.FSRS,
-            description: tr.deckConfigSchedulerChoiceFsrsDescription(),
-        },
-        {
-            label: tr.deckConfigSchedulerChoiceRwkvCurve(),
-            value: SchedulerChoice.RWKV_CURVE,
-            description: tr.deckConfigSchedulerChoiceRwkvCurveDescription(),
-        },
-        {
-            label: tr.deckConfigSchedulerChoiceRwkvInstant(),
-            value: SchedulerChoice.RWKV_INSTANT,
-            description: tr.deckConfigSchedulerChoiceRwkvInstantDescription(),
-        },
-    ];
+/** The algorithm's name. */
+export function schedulerChoiceLabel(choice: SchedulerChoice): string {
+    switch (choice) {
+        case SchedulerChoice.RWKV_CURVE:
+            return tr.deckConfigSchedulerChoiceRwkvCurve();
+        case SchedulerChoice.RWKV_INSTANT:
+            return tr.deckConfigSchedulerChoiceRwkvInstant();
+        default:
+            return tr.deckConfigSchedulerChoiceFsrs();
+    }
 }

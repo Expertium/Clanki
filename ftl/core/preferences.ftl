@@ -100,6 +100,12 @@ preferences-default-deck = Default deck
 preferences-account = AnkiWeb Account
 preferences-note = Note
 preferences-scheduler = Scheduler
+# The collection's one scheduling algorithm (FSRS-7, RWKV-Curve or RWKV-Instant).
+preferences-algorithm = Algorithm
+preferences-algorithm-changed-question =
+    The algorithm is now { $algorithm }. Reschedule all your cards with it now, or keep their due dates? Cards you keep get { $algorithm }'s intervals at their next review.
+preferences-reschedule-all-now = Reschedule all cards now
+preferences-keep-due-dates = Keep due dates
 preferences-user-interface = User Interface
 preferences-import-export = Import/Export
 preferences-network-timeout = Network timeout
