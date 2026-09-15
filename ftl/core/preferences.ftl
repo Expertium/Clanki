@@ -39,6 +39,9 @@ preferences-heatmap-limits-tooltip = Applies to the main screen and the deck scr
 preferences-heatmap-history-limit = History limit
 preferences-heatmap-forecast-limit = Forecast limit
 preferences-heatmap-no-limit = No limit
+# The forecast limit's lowest setting: the heatmap never forecasts more
+# than 5 years ahead.
+preferences-heatmap-forecast-five-years = 5 years
 preferences-heatmap-days = days
 preferences-heatmap-ignore-before = Ignore reviews before
 preferences-heatmap-exclude-deleted = Exclude deleted cards from the history

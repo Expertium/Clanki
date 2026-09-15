@@ -91,7 +91,10 @@ by default) and the calendar mode (yearly overview or a continuous
 nine-month timeline); where the calendar shows (main screen, deck screen,
 stats screen) and whether the four figures show even where it is hidden;
 a history limit and a forecast limit in days, and a date before which
-reviews are ignored (these three apply to the main and deck screens); to
+reviews are ignored (these three apply to the main and deck screens; the
+forecast never reaches more than 5 years ahead, 1,826 days, whatever the
+limit or the stats screen's period, and its "no limit" setting reads "5
+years"); to
 exclude deleted cards and manual reschedules (ease 0) from the history (the
 latter on by default); and decks left out of the main-screen heatmap, with
 their subdecks. The settings are stored in the collection config under

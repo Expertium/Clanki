@@ -30,6 +30,7 @@ from aqt.qt import (
 from aqt.review_heatmap import (
     CALENDAR_MODES,
     COLOR_SCHEMES,
+    MAX_FORECAST_DAYS,
     HeatmapSettings,
     load_settings,
     save_settings,
@@ -98,7 +99,11 @@ class ReviewHeatmapPreferences(QWidget):
         form = QFormLayout(self.history)
         self.history_limit = self._days_spin_box(settings.history_limit_days)
         form.addRow(tr.preferences_heatmap_history_limit(), self.history_limit)
-        self.forecast_limit = self._days_spin_box(settings.forecast_limit_days)
+        self.forecast_limit = self._days_spin_box(
+            settings.forecast_limit_days,
+            maximum=MAX_FORECAST_DAYS,
+            unlimited_text=tr.preferences_heatmap_forecast_five_years(),
+        )
         form.addRow(tr.preferences_heatmap_forecast_limit(), self.forecast_limit)
         self.ignore_before_box = QCheckBox(tr.preferences_heatmap_ignore_before())
         self.ignore_before = QDateEdit()
@@ -154,10 +159,14 @@ class ReviewHeatmapPreferences(QWidget):
         self._sync_enabled(self.enabled_box.isChecked())
 
     @staticmethod
-    def _days_spin_box(value: int) -> QSpinBox:
+    def _days_spin_box(
+        value: int,
+        maximum: int = MAX_LIMIT_DAYS,
+        unlimited_text: str | None = None,
+    ) -> QSpinBox:
         spin = QSpinBox()
-        spin.setRange(0, MAX_LIMIT_DAYS)
-        spin.setSpecialValueText(tr.preferences_heatmap_no_limit())
+        spin.setRange(0, maximum)
+        spin.setSpecialValueText(unlimited_text or tr.preferences_heatmap_no_limit())
         spin.setSuffix(f" {tr.preferences_heatmap_days()}")
         spin.setValue(value)
         return spin
