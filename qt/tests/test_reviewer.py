@@ -522,6 +522,34 @@ def test_answer_buttons_wait_for_pending_scheduling_states() -> None:
     assert progress.single_shots == 1
 
 
+def test_on_screen_timer_keeps_running_when_the_answer_shows(monkeypatch) -> None:
+    """Pins spec/reviewer.md#review.timer-keeps-running"""
+    evals: list[str] = []
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: False
+    )
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            decks=SimpleNamespace(
+                # the stored setting is ignored
+                config_dict_for_deck_id=lambda deck_id: {"stopTimerOnAnswer": True}
+            )
+        ),
+    )
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=evals.append))
+    reviewer.card = SimpleNamespace(id=7, current_deck_id=lambda: 1)
+    reviewer._states_mutated = True
+    reviewer._scheduling_states_pending = False
+    reviewer._v3 = SimpleNamespace(states=scheduling_states_with_review_current())
+    reviewer._answerButtons = lambda: "BUTTONS"
+
+    reviewer._showEaseButtons()
+
+    # reviewer-bottom.ts: showAnswer(txt, stopTimer = false)
+    assert evals == [f"showAnswer({json.dumps('BUTTONS')});"]
+
+
 def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait"""
     shots: list[tuple[int, Callable[[], None]]] = []
@@ -572,7 +600,7 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     shots[-1][1]()
 
     assert len(shots) == 2
-    assert evals[-1] == 'showAnswer("BUTTONS 1d 3d", false);'
+    assert evals[-1] == 'showAnswer("BUTTONS 1d 3d");'
     assert reviewer._rwkv_intervals_retry_ms == 0
 
 

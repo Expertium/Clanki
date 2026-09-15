@@ -234,7 +234,8 @@ titled "Deck Options", with exactly these controls in this order:
    without the Algorithm dropdown, which is Advanced-only;
 3. Bury siblings — one switch;
 4. Play audio automatically (`deck-options.play-audio-switch`);
-5. On-screen timer — one switch;
+5. On-screen timer — the `showTimer` setting (Advanced mode's "Show on-screen
+   timer");
 6. the Easy Days sliders, collapsed behind an "Easy Days" expander (plain,
    not bold) that the user opens by clicking its name; a small "?" next to
    the name opens the Easy Days help without toggling the expander
@@ -242,25 +243,18 @@ titled "Deck Options", with exactly these controls in this order:
 
 Add-on components render after the section, in both modes.
 
-The two combined switches stand for several stored settings. Bury siblings
-reads as on only while `buryNew`, `buryReviews` and `buryInterdayLearning`
-are all on; turning it on or off writes all three. On-screen timer reads as
-on while `showTimer` is on; turning it on or off writes `showTimer` and
-`stopTimerOnAnswer` together. Showing a preset writes nothing: a preset
-whose stored settings do not match its switch value (some bury settings on,
-or the timer shown without stopping on answer) keeps them until the switch
-is toggled. Such a preset shows the caption "Partly on (set in Advanced
-mode)" under the switch: Bury siblings when some but not all three bury
-settings are on (the switch reads as off; turning it on writes all three),
-On-screen timer when the timer is shown but does not stop on answer (the
-switch reads as on). A timer that is hidden but set to stop on answer reads
-as plainly off, since stopping a hidden timer changes nothing. The revert
-button of each combined switch restores off.
+The Bury siblings switch stands for three stored settings: it reads as on
+only while `buryNew`, `buryReviews` and `buryInterdayLearning` are all on;
+turning it on or off writes all three. Showing a preset writes nothing: a
+preset with some but not all three bury settings on keeps them until the
+switch is toggled, and shows the caption "Partly on (set in Advanced mode)"
+under the switch (the switch reads as off; turning it on writes all three).
+Its revert button restores off.
 
 Given the flag on (Advanced mode), the screen has the per-topic sections
 (Daily limits, New cards, Lapses, Display order, Algorithm, RWKV, Burying,
 Audio, Timers, Auto advance, Easy Days, Advanced) with the three separate
-bury switches and the two separate timer settings, and it alone shows: the
+bury switches, and it alone shows: the
 preset / This deck / Today only tabs of the daily limits and the preset /
 This deck tabs of desired retention, Maximum reviews/day, the
 Algorithm dropdown, Learning steps, Insertion order, Relearning steps, Leech
@@ -275,11 +269,12 @@ mode shows a collection-wide setting
 
 **Why:** Andrew, 2026-09-14, plan item 2: Simple mode is one short list of
 the settings a new user needs; everything else belongs to Advanced mode.
-One bury switch and one timer switch are enough there, because the split
-settings only matter to power users.
+One bury switch is enough there, because the split settings only matter to
+power users. Andrew, 2026-09-15: "Stop on-screen timer on answer" is gone
+from both modes (`review.timer-keeps-running`), so the timer switch stands
+for one setting and needs no "Partly on" caption.
 
-**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts`,
-`ts/routes/deck-options/timer-switch.test.ts` (the combined switches);
+**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined switch);
 `ts/tests/e2e/deck-options.test.ts` (the FSRS parameters, the Algorithm
 dropdown, the limit tabs and Skip question when replaying answer exist only
 in Advanced mode; Desired retention and Bury siblings are visible in Simple

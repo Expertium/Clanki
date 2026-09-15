@@ -40,10 +40,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.schedulingShowAnswerTimer(),
             help: tr.deckConfigShowAnswerTimerTooltip(),
         },
-        stopTimerOnAnswer: {
-            title: tr.deckConfigStopTimerOnAnswer(),
-            help: tr.deckConfigStopTimerOnAnswerTooltip(),
-        },
     };
     const helpSections: HelpItem[] = Object.values(settings);
 
@@ -109,22 +105,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </div>
         </Item>
 
-        <Item>
-            <div class="show-timer-switch" style="display: contents;">
-                <SwitchRow
-                    bind:value={$config.stopTimerOnAnswer}
-                    defaultValue={defaults.stopTimerOnAnswer}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("stopTimerOnAnswer"),
-                            )}
-                    >
-                        {settings.stopTimerOnAnswer.title}
-                    </SettingTitle>
-                </SwitchRow>
-            </div>
-        </Item>
+        <!-- "Stop on-screen timer on answer" is not shown: the timer keeps
+             running when the answer shows (spec review.timer-keeps-running). -->
     </DynamicallySlottable>
 </TitledContainer>

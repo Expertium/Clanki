@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- "Stop on-screen timer on answer" is gone from deck options in both modes: the
+  on-screen timer keeps counting after the answer shows. Simple mode's
+  "On-screen timer" switch is now just "Show on-screen timer", with no "Partly on"
+  caption.
 - The periodic backup (checked every 5 minutes) waits while you review, and
   while an FSRS optimization, a reschedule, a sync or another task uses the
   collection. Before, it could make an answer wait, with a "Processing..."
