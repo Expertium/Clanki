@@ -22,10 +22,6 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- "Stop on-screen timer on answer" is gone from deck options in both modes: the
-  on-screen timer keeps counting after the answer shows. Simple mode's
-  "On-screen timer" switch is now just "Show on-screen timer", with no "Partly on"
-  caption.
 - The next states that add-ons and custom-scheduling scripts get now carry the
   S90 (the time until recall falls to 90%) as `stability`; FSRS-7's internal
   stability stays in `stability_internal`. The simulator's R*f(S) graph weights
