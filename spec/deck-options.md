@@ -61,6 +61,27 @@ say that it is not a per-preset setting.
 `test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## deck-options.rwkv-fixed-settings
+
+Given any preset, RWKV predicts a new card's retrievability before its first
+learning review from the time since the card was created, and replays a
+card's history with its current preset only: "Predict R for new cards based
+on creation time" is always on and "Dynamic Preset Addon Support" always
+off. Neither has a control in deck options any more (nor the "New Cards"
+and "Card History" headings above them), and a value stored in a preset,
+from an older build or another client, is ignored. The stored field itself
+is kept, so older clients read their own value.
+
+**Why:** Andrew, 2026-09-15: remove both from deck options; the dynamic
+preset add-on support is not needed, and the card's creation date will
+become a proper RWKV input feature later.
+
+**Pinned by:** `test_rwkv_first_review_elapsed_from_card_creation_is_always_on`,
+`test_rwkv_review_input_uses_card_creation_even_if_stored_off`,
+`test_reviewer_rwkv_cache_survives_a_stored_creation_elapsed_change`,
+`test_reviewer_rwkv_warmup_ignores_stored_dynamic_preset_replay`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## deck-options.first-intervals
 
 Given the deck-options screen with FSRS-7 selected, a **First intervals**
@@ -220,9 +241,9 @@ see `deck-options.fsrs-only-controls`.)
 
 Hidden: keep RWKV intervals in answer order; minimum reviews per day; faster
 approximate queue updates; queue update interval; update queue after reviewing;
-minimum other reviews and minimum seconds before a same-day repeat; predict R
-for new cards from creation time; dynamic preset add-on support; the Rebuild
-RWKV State and Recompute Calibration actions.
+minimum other reviews and minimum seconds before a same-day repeat; the
+Rebuild RWKV State and Recompute Calibration actions. Two former RWKV settings
+are gone in both modes (`deck-options.rwkv-fixed-settings`).
 
 The Algorithm dropdown exists only in Advanced mode
 (`deck-options.simple-view`); in Simple mode the collection's algorithm

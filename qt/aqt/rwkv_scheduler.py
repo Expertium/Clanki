@@ -17028,39 +17028,19 @@ def _rwkv_replay_semantics_key(
 
 
 def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_dynamic_preset_replay")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewDynamicPresetReplay",
-        "rwkv_review_dynamic_preset_replay",
-    )
-    return value if isinstance(value, bool) else False
+    """Always off: the setting is gone from deck options, and a stored value
+    is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return False
 
 
 def _rwkv_review_first_review_elapsed_from_card_creation(
     deck_config: dict[str, object],
 ) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_first_review_elapsed_from_card_creation")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewFirstReviewElapsedFromCardCreation",
-        "rwkv_review_first_review_elapsed_from_card_creation",
-    )
-    return (
-        value
-        if isinstance(value, bool)
-        else _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
-    )
+    """Always the default (on): the setting is gone from deck options, and a
+    stored value is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
