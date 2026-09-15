@@ -118,18 +118,6 @@ fn fsrs_current_retrievability_for_memory_state(
     Ok(retrievability)
 }
 
-/// `fsrs_current_retrievability_for_state` with the model of the parameters
-/// already built.
-pub(crate) fn fsrs_current_retrievability_with_model(
-    fsrs: &FSRS,
-    state: FsrsMemoryState,
-    elapsed_days: f32,
-) -> Result<f32> {
-    let retrievability = fsrs.current_retrievability(state.into(), elapsed_days.max(0.0));
-    require!(retrievability.is_finite(), "invalid FSRS parameter values");
-    Ok(retrievability)
-}
-
 /// Return the negative fraction of the target interval that has elapsed.
 ///
 /// The FSRS-7 mixture curve has no scalar decay that can be inverted in SQL,
@@ -140,30 +128,77 @@ pub(crate) fn fsrs_relative_overdueness_for_state(
     elapsed_days: f32,
     target_retrievability: f32,
 ) -> Result<f32> {
-    fsrs_relative_overdueness_with_model(
-        &FSRS::new(params)?,
-        state,
-        elapsed_days,
-        target_retrievability,
-    )
+    FsrsCurveModel::new(params).relative_overdueness(state, elapsed_days, target_retrievability)
 }
 
-/// `fsrs_relative_overdueness_for_state` with the model of the parameters
-/// already built.
-pub(crate) fn fsrs_relative_overdueness_with_model(
-    fsrs: &FSRS,
-    state: FsrsMemoryState,
-    elapsed_days: f32,
-    target_retrievability: f32,
-) -> Result<f32> {
-    let target_interval =
-        fsrs.interval_at_retrievability(state.into(), target_retrievability.clamp(0.0001, 0.9999));
-    let relative_overdueness = -elapsed_days.max(0.0) / target_interval.max(0.0001);
-    require!(
-        relative_overdueness.is_finite(),
-        "invalid FSRS parameter values"
-    );
-    Ok(relative_overdueness)
+/// One parameter set's forgetting curve, for callers that need it for many
+/// cards (the queue's retrievability orders): [`Fsrs7Curve`] where it covers
+/// the input, else the fsrs crate's model, made when first needed. The
+/// results are the bits of `FSRS::new(params)`'s.
+pub(crate) struct FsrsCurveModel {
+    params: Vec<f32>,
+    curve: Option<Fsrs7Curve>,
+    fsrs: Option<FSRS>,
+}
+
+impl FsrsCurveModel {
+    pub(crate) fn new(params: &[f32]) -> Self {
+        Self {
+            params: params.to_vec(),
+            curve: Fsrs7Curve::new(params),
+            fsrs: None,
+        }
+    }
+
+    fn fsrs(&mut self) -> Result<&FSRS> {
+        if self.fsrs.is_none() {
+            self.fsrs = Some(FSRS::new(&self.params)?);
+        }
+        Ok(self.fsrs.as_ref().unwrap())
+    }
+
+    /// `fsrs_current_retrievability_for_state` of these parameters.
+    pub(crate) fn current_retrievability(
+        &mut self,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let state = state.into();
+        let elapsed_days = elapsed_days.max(0.0);
+        let retrievability = match self
+            .curve
+            .as_ref()
+            .and_then(|curve| curve.retrievability(state, elapsed_days))
+        {
+            Some(retrievability) => retrievability,
+            None => self.fsrs()?.current_retrievability(state, elapsed_days),
+        };
+        require!(retrievability.is_finite(), "invalid FSRS parameter values");
+        Ok(retrievability)
+    }
+
+    /// `fsrs_relative_overdueness_for_state` of these parameters.
+    pub(crate) fn relative_overdueness(
+        &mut self,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+        target_retrievability: f32,
+    ) -> Result<f32> {
+        let state = state.into();
+        let target_retrievability = target_retrievability.clamp(0.0001, 0.9999);
+        let target_interval = match &self.curve {
+            Some(curve) => curve.interval_at_retrievability(state, target_retrievability),
+            None => self
+                .fsrs()?
+                .interval_at_retrievability(state, target_retrievability),
+        };
+        let relative_overdueness = -elapsed_days.max(0.0) / target_interval.max(0.0001);
+        require!(
+            relative_overdueness.is_finite(),
+            "invalid FSRS parameter values"
+        );
+        Ok(relative_overdueness)
+    }
 }
 
 /// Scalar compatibility helper for callers that do not have a complete

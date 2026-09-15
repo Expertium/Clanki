@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::hash::Hasher;
 
 use fnv::FnvHasher;
-use fsrs::FSRS;
 
 use super::DueCard;
 use super::NewCard;
@@ -17,8 +16,7 @@ use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
-use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_with_model;
-use crate::scheduler::fsrs::memory_state::fsrs_relative_overdueness_with_model;
+use crate::scheduler::fsrs::memory_state::FsrsCurveModel;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
@@ -937,7 +935,7 @@ struct ExactReviewOrderKeys {
     timing: SchedTimingToday,
     order: ReviewCardOrder,
     deck_presets: HashMap<DeckId, FsrsPreset>,
-    models: HashMap<Vec<u32>, FSRS>,
+    models: HashMap<Vec<u32>, FsrsCurveModel>,
 }
 
 impl ExactReviewOrderKeys {
@@ -967,11 +965,11 @@ impl ExactReviewOrderKeys {
         let preset = self.preset(col, card)?;
         let desired_retention = card.desired_retention.unwrap_or(preset.desired_retention);
         let relative_overdueness = matches!(self.order, ReviewCardOrder::RelativeOverdueness);
-        let fsrs = self.model(&preset.params)?;
+        let model = self.model(&preset.params);
         if relative_overdueness {
-            fsrs_relative_overdueness_with_model(fsrs, state, elapsed_days, desired_retention)
+            model.relative_overdueness(state, elapsed_days, desired_retention)
         } else {
-            fsrs_current_retrievability_with_model(fsrs, state, elapsed_days)
+            model.current_retrievability(state, elapsed_days)
         }
     }
 
@@ -990,12 +988,12 @@ impl ExactReviewOrderKeys {
         Ok(preset)
     }
 
-    fn model(&mut self, params: &[f32]) -> Result<&FSRS> {
+    fn model(&mut self, params: &[f32]) -> &mut FsrsCurveModel {
         let bits: Vec<u32> = params.iter().map(|param| param.to_bits()).collect();
-        Ok(match self.models.entry(bits) {
+        match self.models.entry(bits) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(FSRS::new(params)?),
-        })
+            Entry::Vacant(entry) => entry.insert(FsrsCurveModel::new(params)),
+        }
     }
 }
 
@@ -1009,6 +1007,7 @@ fn fnvhash_due_card(card: &DueCard) -> i64 {
 #[cfg(test)]
 mod test {
     use fsrs::DEFAULT_PARAMETERS;
+    use fsrs::FSRS;
 
     use super::*;
     use crate::card::CardQueue;
@@ -1187,6 +1186,91 @@ mod test {
                         per_card.to_bits(),
                         "seed {seed} {order:?} card {card_id}"
                     );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The key of a card with a memory state through the fsrs crate's tensor
+    /// model, as the queue computed it before the plain-f32 curve.
+    fn tensor_path_key(
+        col: &mut Collection,
+        card: &Card,
+        timing: SchedTimingToday,
+        order: ReviewCardOrder,
+    ) -> Result<f32> {
+        let state = card.memory_state.unwrap();
+        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+        let preset = col.fsrs_preset_for_card(card)?;
+        let fsrs = FSRS::new(&preset.params)?;
+        Ok(if matches!(order, ReviewCardOrder::RelativeOverdueness) {
+            let target = card
+                .desired_retention
+                .unwrap_or(preset.desired_retention)
+                .clamp(0.0001, 0.9999);
+            -elapsed_days.max(0.0)
+                / fsrs
+                    .interval_at_retrievability(state.into(), target)
+                    .max(0.0001)
+        } else {
+            fsrs.current_retrievability(state.into(), elapsed_days.max(0.0))
+        })
+    }
+
+    #[test]
+    fn keys_are_the_bits_of_the_tensor_path() -> Result<()> {
+        for seed in 0..6 {
+            let (mut col, ids) = random_collection(seed, seed % 3 == 0)?;
+            let timing = col.timing_today()?;
+            for order in [
+                ReviewCardOrder::RetrievabilityAscending,
+                ReviewCardOrder::RelativeOverdueness,
+            ] {
+                let mut keys = ExactReviewOrderKeys::new(timing, order);
+                let mut check = |col: &mut Collection, card: &Card| -> Result<()> {
+                    let key = keys.key(col, card)?;
+                    let tensor = tensor_path_key(col, card, timing, order)?;
+                    assert_eq!(
+                        key.to_bits(),
+                        tensor.to_bits(),
+                        "seed {seed} {order:?} card {:?}",
+                        card
+                    );
+                    Ok(())
+                };
+                for &card_id in &ids {
+                    let card = col.storage.get_card(card_id)?.unwrap();
+                    if card.memory_state.is_some() {
+                        check(&mut col, &card)?;
+                    }
+                }
+                // the edges: stabilities below, at and above the clamps, no
+                // fast stability, difficulty outside its range, elapsed time
+                // 0, one second and more than a century, desired retention
+                // at and past the solver's bounds
+                for &card_id in ids.iter().take(2) {
+                    let mut card = col.storage.get_card(card_id)?.unwrap();
+                    for stability_internal in [1e-6, 0.0001, 0.3, 36500.0, 1e6] {
+                        for stability_fast in [None, Some(1e-6), Some(2.0), Some(1e5)] {
+                            for difficulty in [0.5, 1.0, 10.0, 12.0] {
+                                for elapsed_secs in [0, 1, 86_400 * 50_000] {
+                                    for desired_retention in [None, Some(0.0), Some(0.9999)] {
+                                        card.memory_state = Some(FsrsMemoryState {
+                                            stability: stability_internal,
+                                            stability_internal,
+                                            stability_fast,
+                                            difficulty,
+                                        });
+                                        card.last_review_time =
+                                            Some(timing.now.adding_secs(-elapsed_secs));
+                                        card.desired_retention = desired_retention;
+                                        check(&mut col, &card)?;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
