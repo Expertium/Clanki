@@ -235,23 +235,22 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
     assert rwkv_scheduler.reviewer_queue_order_refresh_due(reviewer)
 
 
-def test_rwkv_first_review_elapsed_source_reads_direct_and_nested_config() -> None:
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": True}
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_rwkv_first_review_elapsed_from_card_creation_is_always_on() -> None:
+    for config in (
+        {},
+        {"rwkvReviewFirstReviewElapsedFromCardCreation": False},
         {
             "other": {
                 "jschoreels.rwkv": {
-                    "rwkv_review_first_review_elapsed_from_card_creation": True,
+                    "rwkv_review_first_review_elapsed_from_card_creation": False,
                 }
             }
-        }
-    )
-    assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation({})
-    assert not rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
-        {"rwkvReviewFirstReviewElapsedFromCardCreation": False}
-    )
+        },
+    ):
+        assert rwkv_scheduler._rwkv_review_first_review_elapsed_from_card_creation(
+            config
+        )
 
 
 def test_rwkv_min_intervening_reviews_defaults_to_five_and_allows_zero() -> None:
@@ -267,51 +266,6 @@ def test_rwkv_min_intervening_reviews_defaults_to_five_and_allows_zero() -> None
 def test_rwkv_review_batch_size_accepts_8192_and_rejects_larger_values() -> None:
     assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8192}) == 8192
     assert rwkv_scheduler._rwkv_review_batch_size({"rwkvReviewBatchSize": 8193}) == 512
-
-
-def test_rwkv_review_input_batch_cache_key_includes_first_review_elapsed_mode() -> None:
-    missing_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=False
-    )
-    card_creation_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=True
-    )
-
-    missing_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
-        reviewer=missing_elapsed,
-        deck_id=100,
-        batch_size_override=512,
-        include_new_cards=True,
-    )
-    card_creation_key = rwkv_scheduler._rwkv_review_input_batch_cache_key(
-        reviewer=card_creation_elapsed,
-        deck_id=100,
-        batch_size_override=512,
-        include_new_cards=True,
-    )
-
-    assert missing_key is not None
-    assert card_creation_key is not None
-    assert missing_key != card_creation_key
-
-
-def test_rwkv_review_queue_score_config_key_includes_first_review_elapsed_mode() -> (
-    None
-):
-    missing_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=False
-    )
-    card_creation_elapsed = _rwkv_reviewer(
-        rwkv_review_first_review_elapsed_from_card_creation=True
-    )
-
-    assert rwkv_scheduler._rwkv_review_queue_score_config_key(
-        missing_elapsed,
-        100,
-    ) != rwkv_scheduler._rwkv_review_queue_score_config_key(
-        card_creation_elapsed,
-        100,
-    )
 
 
 def test_rwkv_queue_caches_are_scoped_to_collection() -> None:
@@ -4070,8 +4024,9 @@ def test_rwkv_later_learning_answer_preserves_elapsed_time() -> None:
     assert rwkv_scheduler._rwkv_state_update_input(answer) is answer
 
 
-def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
-    reviewer = _rwkv_reviewer()
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_rwkv_review_input_uses_card_creation_even_if_stored_off() -> None:
+    reviewer = _rwkv_reviewer(rwkv_review_first_review_elapsed_from_card_creation=False)
     reviewer._v3.states.current.normal.new.SetInParent()
     card = _rwkv_card(
         card_id=(42 * 86_400 + 100 - 90_000) * 1000,
@@ -4094,8 +4049,9 @@ def test_rwkv_review_input_leaves_new_card_elapsed_missing_by_default() -> None:
     )
 
     assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
+    # the time since the card was created, although the preset stores off
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 90_000
 
 
 def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
@@ -4164,45 +4120,6 @@ def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -
     assert review_input.current_normal_state_kind == "new"
     assert review_input.current_elapsed_days == 1
     assert review_input.current_elapsed_seconds == 90_000
-
-
-def test_rwkv_stats_graph_new_card_creation_elapsed_can_be_disabled() -> None:
-    now = 42 * 86_400 + 100
-    card = rwkv_scheduler.RwkvStatsGraphCard(
-        id=(now - 90_000) * 1000,
-        nid=10,
-        did=100,
-        odid=0,
-        type=0,
-        queue=0,
-        due=50,
-        odue=0,
-        ivl=0,
-        factor=0,
-        reps=0,
-        lapses=0,
-        last_review_time=None,
-    )
-
-    review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
-        card=card,
-        deck_config={
-            "id": 1000,
-            "rwkvReviewEnabled": True,
-            "rwkvReviewFirstReviewElapsedFromCardCreation": False,
-        },
-        timing=SimpleNamespace(
-            now=now,
-            days_elapsed=42,
-            next_day_at=43 * 86_400,
-        ),
-    )
-
-    assert review_input is not None
-    assert review_input.current_state_kind == "normal"
-    assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days is None
-    assert review_input.current_elapsed_seconds is None
 
 
 def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
@@ -5178,8 +5095,10 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
         )
     )
 
-    assert missing.reviews[0].current_elapsed_seconds == -1
-    assert missing.reviews[0].current_elapsed_days == -1
+    # the fixture stores the setting off; it is ignored (spec
+    # deck-options.rwkv-fixed-settings)
+    assert missing.reviews[0].current_elapsed_seconds == 3 * 86_400
+    assert missing.reviews[0].current_elapsed_days == 3
     assert card_creation.reviews[0].current_elapsed_seconds == 3 * 86_400
     assert card_creation.reviews[0].current_elapsed_days == 3
     assert card_creation.reviews[1].current_elapsed_seconds == 90_000
@@ -5314,7 +5233,8 @@ def test_stateful_warmup_uses_creation_elapsed_only_for_initial_query() -> None:
     assert answer.current_elapsed_seconds == -1
 
 
-def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_reviewer_rwkv_warmup_ignores_stored_dynamic_preset_replay() -> None:
     first_review = (39 * 86_400 + 100) * 1000
     second_review = (40 * 86_400 + 100) * 1000
     third_review = (41 * 86_400 + 100) * 1000
@@ -5345,11 +5265,11 @@ def test_reviewer_rwkv_warmup_uses_historical_interval_split_rules() -> None:
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
+    # the add-on's rules are not replayed per review: every review keeps the
+    # card's current preset
     assert [item.identity.preset_id for item in runtime.answered_inputs] == [
-        _expected_preset_hash("addon:test:young"),
-        _expected_preset_hash("addon:test:young"),
-        _expected_preset_hash("addon:test:mature"),
-    ]
+        _expected_preset_hash("addon:test:current"),
+    ] * 3
 
 
 def test_reviewer_rwkv_warmup_pins_resolved_preset_without_dynamic_replay() -> None:
@@ -6919,7 +6839,8 @@ def test_rwkv_historical_fingerprint_passes_stable_addon_preset_ids(
                     "addon:simulator",
                 )
             },
-            "first_review_uses_creation_by_config_id": {123: False, 456: True},
+            # a stored off value is ignored (spec deck-options.rwkv-fixed-settings)
+            "first_review_uses_creation_by_config_id": {123: True, 456: True},
             "expected_identity": scheduler_pb2.RwkvHistoricalReviewIdentity(
                 last_review_id=2_000,
                 review_count=2,
@@ -7142,7 +7063,8 @@ def test_reviewer_rwkv_cache_rebuilds_when_cached_prefix_contents_change(
     assert rebuilt_runtime.reviewed == [(1, 1), (1, 3)]
 
 
-def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
+# Pins spec/deck-options.md#deck-options.rwkv-fixed-settings
+def test_reviewer_rwkv_cache_survives_a_stored_creation_elapsed_change(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -7171,8 +7093,9 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     set_reviewer_backend(RwkvStatefulReviewerBackend(rebuilt_runtime))
 
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
-    assert rebuilt_runtime.reviewed == [(card_id, 2)]
-    assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
+    # the stored value is ignored, so the replay semantics are the same and
+    # the saved state is restored instead of replayed
+    assert rebuilt_runtime.reviewed == []
 
 
 def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(

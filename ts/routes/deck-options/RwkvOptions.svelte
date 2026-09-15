@@ -65,10 +65,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewAllowSameDayReview(),
             help: tr.deckConfigRwkvReviewAllowSameDayReviewTooltip(),
         },
-        rwkvFirstReviewElapsed: {
-            title: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation(),
-            help: tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreationTooltip(),
-        },
         rwkvMinInterveningReviews: {
             title: tr.deckConfigRwkvReviewMinInterveningReviews(),
             help: tr.deckConfigRwkvReviewMinInterveningReviewsTooltip(),
@@ -76,10 +72,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvMinElapsedSecs: {
             title: tr.deckConfigRwkvReviewMinElapsedSecs(),
             help: tr.deckConfigRwkvReviewMinElapsedSecsTooltip(),
-        },
-        rwkvDynamicPresetReplay: {
-            title: tr.deckConfigRwkvReviewDynamicPresetReplay(),
-            help: tr.deckConfigRwkvReviewDynamicPresetReplayTooltip(),
         },
     };
     const settingKeys = Object.keys(settings);
@@ -258,33 +250,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 {/if}
             {/if}
 
+            <!-- "Predict R for new cards based on creation time" and "Dynamic
+                 Preset Addon Support" are gone; both are fixed at their
+                 defaults (spec deck-options.rwkv-fixed-settings). -->
             {#if $advanced}
-                <h2 class="rwkv-subheading">New Cards</h2>
-
-                <SwitchRow
-                    bind:value={$config.rwkvReviewFirstReviewElapsedFromCardCreation}
-                    defaultValue={defaults.rwkvReviewFirstReviewElapsedFromCardCreation}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvFirstReviewElapsed")}
-                    >
-                        {tr.deckConfigRwkvReviewFirstReviewElapsedFromCardCreation()}
-                    </SettingTitle>
-                </SwitchRow>
-
-                <h2 class="rwkv-subheading">Card History</h2>
-
-                <SwitchRow
-                    bind:value={$config.rwkvReviewDynamicPresetReplay}
-                    defaultValue={defaults.rwkvReviewDynamicPresetReplay}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvDynamicPresetReplay")}
-                    >
-                        {tr.deckConfigRwkvReviewDynamicPresetReplay()}
-                    </SettingTitle>
-                </SwitchRow>
-
                 <h2 class="rwkv-subheading">Maintenance</h2>
 
                 <div class="d-flex flex-wrap gap-2">
