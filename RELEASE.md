@@ -26,6 +26,11 @@ repeated here unless they materially affect a fork feature.
   on-screen timer keeps counting after the answer shows. Simple mode's
   "On-screen timer" switch is now just "Show on-screen timer", with no "Partly on"
   caption.
+- Card info for an RWKV-Curve card draws RWKV-Curve's own forgetting curve since
+  the last review, and its Stability shows where that curve meets 90%. It no
+  longer draws FSRS-7's curve under an RWKV S90. While RWKV has no curve for the
+  card yet, the chart shows no data. Its card info shows no FSRS-7 values:
+  no Difficulty, no FSRS-7 Retrievability and no "FSRS Next S90" row.
 - The periodic backup (checked every 5 minutes) waits while you review, and
   while an FSRS optimization, a reschedule, a sync or another task uses the
   collection. Before, it could make an answer wait, with a "Processing..."

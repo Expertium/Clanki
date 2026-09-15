@@ -9,6 +9,7 @@ import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -50,10 +51,6 @@ RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS = [
 NEXT_S90_UNAVAILABLE_ROWS = [
     (
         "RWKV Curve Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
-    (
-        "FSRS Next S90",
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
 ]
@@ -403,6 +400,75 @@ def test_web_page_backend_request_counts_as_collection_use(
 
     assert busy_during_request == [True]
     assert not mw.taskman.collection_busy()
+
+
+def _card_stats_with_two_reviews() -> Any:
+    from anki.stats_pb2 import CardStatsResponse
+
+    response = CardStatsResponse()
+    response.memory_state.stability = 30.0
+    # newest first; a manual entry (no answer button) on top
+    manual = response.revlog.add(time=300, button_chosen=0)
+    manual.memory_state.stability = 30.0
+    latest = response.revlog.add(time=200, button_chosen=3)
+    latest.memory_state.stability = 30.0
+    older = response.revlog.add(time=100, button_chosen=3)
+    older.memory_state.stability = 12.0
+    return response
+
+
+@pytest.mark.parametrize("has_curve", [True, False])
+def test_card_info_gets_rwkv_curves_own_curve_and_s90(
+    monkeypatch: pytest.MonkeyPatch, has_curve: bool
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve"""
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    curve = rwkv.RwkvCardCurve(elapsed_days=(0.0, 1.0), recall=(1.0, 0.8), s90=0.4)
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(
+        rwkv,
+        "rwkv_card_info_curve",
+        lambda reviewer, card: curve if has_curve else None,
+    )
+    response = _card_stats_with_two_reviews()
+
+    _add_rwkv_curve(response, object(), object())
+
+    assert response.HasField("rwkv_curve")
+    if has_curve:
+        assert list(response.rwkv_curve.elapsed_days) == [0.0, 1.0]
+        assert list(response.rwkv_curve.recall) == pytest.approx([1.0, 0.8])
+        assert response.rwkv_curve.s90 == pytest.approx(0.4)
+        # the latest review shows the drawn curve's S90
+        assert response.revlog[1].memory_state.stability == pytest.approx(0.4)
+    else:
+        assert not response.rwkv_curve.elapsed_days
+        assert not response.rwkv_curve.HasField("s90")
+        # no FSRS-7 value stands in for the missing curve
+        assert not response.revlog[1].HasField("memory_state")
+    # older reviews keep no FSRS-7 memory state; the newer manual entry and
+    # the card's own state stay (card info decides which rows to show)
+    assert not response.revlog[2].HasField("memory_state")
+    assert response.revlog[0].memory_state.stability == 30.0
+    assert response.memory_state.stability == 30.0
+
+
+def test_card_info_has_no_rwkv_curve_for_other_algorithms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: False)
+    response = _card_stats_with_two_reviews()
+
+    _add_rwkv_curve(response, object(), object())
+
+    assert not response.HasField("rwkv_curve")
+    assert response.memory_state.stability == 30.0
+    assert response.revlog[2].memory_state.stability == 12.0
 
 
 class TestCheckDynamicRequestPermissions:
