@@ -28,11 +28,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import DailyLimitRows from "./DailyLimitRows.svelte";
     import EasyDaysRows from "./EasyDaysRows.svelte";
     import type { DeckOptionsState } from "./lib";
-    import {
-        applyOnScreenTimer,
-        onScreenTimerFromConfig,
-        onScreenTimerPartlyOn,
-    } from "./timer-switch";
 
     /**
      * The Simple-mode page: one section with the settings listed in
@@ -57,11 +52,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
-    // One switch stands for the three bury settings, and one for the two
-    // timer settings. The switch value follows the preset; a toggle writes
-    // every setting it stands for; showing a preset writes nothing, because
-    // the writes are skipped when the preset already reads as the switch
-    // value (the same pattern as the Algorithm dropdown).
+    // One switch stands for the three bury settings. The switch value follows
+    // the preset; a toggle writes every setting it stands for; showing a
+    // preset writes nothing, because the writes are skipped when the preset
+    // already reads as the switch value (the same pattern as the Algorithm
+    // dropdown).
     let burySiblings = burySiblingsFromConfig($config);
     $: burySiblings = burySiblingsFromConfig($config);
     function setBurySiblings(on: boolean): void {
@@ -70,15 +65,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
     $: setBurySiblings(burySiblings);
-
-    let onScreenTimer = onScreenTimerFromConfig($config);
-    $: onScreenTimer = onScreenTimerFromConfig($config);
-    function setOnScreenTimer(on: boolean): void {
-        if (onScreenTimerFromConfig(get(config)) !== on) {
-            config.update((current) => applyOnScreenTimer(current, on));
-        }
-    }
-    $: setOnScreenTimer(onScreenTimer);
 
     // "Play audio automatically" is `disableAutoplay` turned the other way
     // round (spec deck-options.play-audio-switch).
@@ -126,12 +112,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         },
         onScreenTimer: {
             title: tr.deckConfigOnScreenTimer(),
-            help:
-                tr.deckConfigOnScreenTimerSimpleTooltip() +
-                "\n\n" +
-                tr.deckConfigShowAnswerTimerTooltip() +
-                "\n\n" +
-                tr.deckConfigStopTimerOnAnswerTooltip(),
+            help: tr.deckConfigShowAnswerTimerTooltip(),
             url: HelpPage.DeckOptions.timer,
         },
         easyDays: {
@@ -207,16 +188,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <!-- AnkiMobile hides this -->
             <div class="show-timer-switch" style="display: contents;">
                 <SwitchRow
-                    bind:value={onScreenTimer}
-                    defaultValue={onScreenTimerFromConfig(defaults)}
+                    bind:value={$config.showTimer}
+                    defaultValue={defaults.showTimer}
                 >
                     <SettingTitle on:click={() => openHelp("onScreenTimer")}>
                         {settings.onScreenTimer.title}
                     </SettingTitle>
                 </SwitchRow>
-                {#if onScreenTimerPartlyOn($config)}
-                    <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
-                {/if}
             </div>
         </Item>
 

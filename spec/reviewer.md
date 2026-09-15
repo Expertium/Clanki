@@ -22,3 +22,19 @@ and Easy shortcuts must be ignored (key 2 used to answer Good).
 **Pinned by:** `test_two_button_mode_offers_again_and_good`,
 `test_two_button_mode_maps_answer_keys` (`qt/tests/test_reviewer.py`),
 `answer_button_options_default_to_on` (`rslib/src/config/bool.rs`).
+
+## review.timer-keeps-running
+
+Given the on-screen timer shown on the Study screen (the preset's "Show
+on-screen timer"), it keeps counting after the answer is shown, until the
+card is answered. A preset's stored "Stop on-screen timer on answer"
+(`stopTimerOnAnswer`) is kept as it is, for other clients, but not used, and
+deck options no longer show it in either mode. The time recorded for an
+answer does not depend on the on-screen timer.
+
+**Why:** Andrew, 2026-09-15: remove the setting and treat it as off in both
+modes, so Simple mode's single timer switch stands for one setting and needs
+no "Partly on" caption.
+
+**Pinned by:** `test_on_screen_timer_keeps_running_when_the_answer_shows`
+(`qt/tests/test_reviewer.py`).

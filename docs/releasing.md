@@ -58,7 +58,8 @@ Use this process whenever this fork is aligned to a new official Anki release:
    file. Verify the update endpoints in `rslib/src/backend/github.rs` still use
    `JSchoreels/anki`, and that both automatic and manual update checks use the
    fork's GitHub releases.
-5. Update `RELEASE.md`. Link the official upstream release and summarize both
+5. Update `RELEASE.md`: move the files in `release-notes/` into it and
+   delete them (`release-notes/README.md`). Link the official upstream release and summarize both
    the upstream alignment and the fork-specific changes retained in the build.
 6. Run targeted tests and `just check`. Commit the merge, push the exact release
    commit, and wait for its complete CI matrix to succeed.
