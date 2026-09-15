@@ -344,12 +344,14 @@ class ActivityReporter:
         report. The report reads each card's deck, due day and queue: a
         change of any of them changes one of the sums below, unless changes
         cancel out exactly within one second (the resolution of a card's
-        modified time). Any added or removed review changes the review
-        count, the sum of the review ids or the newest id."""
+        modified time). Reviews are only added or removed, never edited:
+        that changes the review count, and a removal followed by a new
+        review also changes the newest id (both read from indexes; a sum
+        over the review log would take ~90 ms on a large collection)."""
         cards = self._col.db.first(
             "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
         )
-        reviews = self._col.db.first("SELECT count(), total(id), max(id) FROM revlog")
+        reviews = self._col.db.first("SELECT count(), max(id) FROM revlog")
         dids = self._deck_ids(current_deck_only)
         return (
             self._today(),
