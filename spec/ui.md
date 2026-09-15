@@ -107,3 +107,36 @@ same time waits, and the "Processing..." window appeared during reviews.
 `test_collection_busy_counts_queued_and_running_collection_tasks`
 (`qt/tests/test_main.py`); `test_web_page_backend_request_counts_as_collection_use`
 (`qt/tests/test_mediasrv.py`).
+
+## ui.card-info-rwkv-curve
+
+Given a card whose preset runs RWKV-Curve, card info's forgetting-curve chart
+shows only RWKV-Curve's own curve: the curve RWKV stored for the card at its
+last answered review, from that review to now and then as a dashed preview.
+It draws no FSRS-7 segments for the reviews before it, since RWKV's past
+curves are not stored. The chart's tooltip, card info's "Stability" row and
+the latest review's "Stability" in the review list show that curve's S90
+(where it meets 90% recall), not the S90 stored on the card. While RWKV has
+no curve for the card (its state still loading, busy, or no answered
+review), the chart shows no data. The curve reaches the page as recall at 0
+and at 300 elapsed times evenly spaced in log time from one minute to
+100 years, joined by straight lines. Cards of FSRS-7 and RWKV-Instant presets
+draw FSRS-7's curve with its S90 for every review, as before.
+
+**Why:** Andrew, 2026-09-15: forgetting curve graphs always use the S90, for
+RWKV-Curve as for FSRS-7; the Stability row and the tooltip show the drawn
+curve's S90; with no RWKV curve, hide the segment; and never mix two
+algorithms in one display (so no FSRS-7 segments under an RWKV-Curve card).
+
+**Pinned by:** `card_curve_points_are_the_curve_and_its_s90`
+(`rslib/src/rwkv/mod.rs`);
+`test_rwkv_card_info_curve_samples_the_stored_curve`,
+`test_rwkv_card_info_curve_is_none_without_a_curve`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_card_info_gets_rwkv_curves_own_curve_and_s90`,
+`test_card_info_has_no_rwkv_curve_for_other_algorithms`
+(`qt/tests/test_mediasrv.py`); "rwkvRecallAt interpolates between the
+curve's points", "an RWKV-Curve card's chart starts at its last review: no
+FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
+curve and S90", "without an RWKV curve yet the chart stops at the last
+review" (`ts/routes/card-info/forgetting-curve.test.ts`).

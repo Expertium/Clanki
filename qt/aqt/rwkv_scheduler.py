@@ -1035,6 +1035,12 @@ class RwkvStatefulReviewerBackend:
             else None
         )
 
+    def card_curve(
+        self, card_id: int, elapsed_days: Sequence[float]
+    ) -> tuple[list[float], float] | None:
+        card_curve = getattr(self._runtime, "card_curve", None)
+        return card_curve(card_id, elapsed_days) if callable(card_curve) else None
+
     def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
         if self._runtime_owns_warm_up_state():
             runtime_snapshot = getattr(self._runtime, "warm_up_snapshot", None)
@@ -8627,6 +8633,60 @@ def _queried_card_info_diagnostics(
     except Exception:
         logger.exception("RWKV card info prediction failed")
         return None
+
+
+# Card info samples RWKV-Curve's stored curve at 0 and at 300 times spaced
+# evenly in log time from one minute to 100 years, whatever range the chart
+# shows (spec ui.card-info-rwkv-curve).
+RWKV_CARD_INFO_CURVE_DAYS: tuple[float, ...] = (0.0,) + tuple(
+    (60 / 86_400) * (36_500 * 1440) ** (step / 299) for step in range(300)
+)
+
+
+@dataclass(frozen=True)
+class RwkvCardCurve:
+    elapsed_days: tuple[float, ...]
+    recall: tuple[float, ...]
+    s90: float
+
+
+def rwkv_card_info_curve(reviewer: object, card: object) -> RwkvCardCurve | None:
+    """RWKV-Curve's forgetting curve for card info: the curve RWKV stored for
+    the card at its last answered review, and that curve's S90. None for a
+    card whose preset does not run RWKV-Curve, and while RWKV has no curve
+    for the card (state loading, busy, no review yet) (spec
+    ui.card-info-rwkv-curve)."""
+    backend = _reviewer_backend
+    card_id = _card_id(card)
+    if backend is None or card_id is None or not rwkv_review_enabled(reviewer, card):
+        return None
+    try:
+        if not _prepare_reviewer_backend_for_card_info(reviewer):
+            return None
+        state_token = _capture_reviewer_backend_prediction_state_token(
+            reviewer,
+            expected_backend=backend,
+        )
+        if state_token is None:
+            return None
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=state_token,
+        ) as current_backend:
+            card_curve = getattr(current_backend, "card_curve", None)
+            if not callable(card_curve):
+                return None
+            result = card_curve(card_id, RWKV_CARD_INFO_CURVE_DAYS)
+    except Exception:
+        logger.exception("RWKV card info curve failed")
+        return None
+    if result is None:
+        return None
+    recall, s90 = result
+    return RwkvCardCurve(
+        elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
+        recall=tuple(float(value) for value in recall),
+        s90=float(s90),
+    )
 
 
 def _card_info_review_candidate(reviewer: object, card: object) -> RwkvReviewCandidate:

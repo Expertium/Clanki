@@ -1088,6 +1088,13 @@ class _RustRwkvRuntime:
             with self._locked_process():
                 self._process.restore_state(state)
 
+    def card_curve(
+        self, card_id: int, elapsed_days: Sequence[float]
+    ) -> tuple[list[float], float] | None:
+        """The card's stored RWKV-Curve curve at `elapsed_days` and its S90."""
+        with self._locked_process():
+            return self._process.card_curve(card_id, list(elapsed_days))
+
     def cache_state(self) -> bytes:
         with self._locked_process():
             return bytes(self._process.cache_state())

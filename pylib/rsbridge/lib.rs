@@ -700,6 +700,12 @@ impl RwkvInference {
         }
     }
 
+    /// (recall at each of `elapsed_days`, the curve's S90), or None without a
+    /// stored curve for the card.
+    fn card_curve(&self, card_id: i64, elapsed_days: Vec<f32>) -> Option<(Vec<f32>, f32)> {
+        self.inner.card_curve(card_id, &elapsed_days)
+    }
+
     fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.inner.restore_state(&state.inner)
     }

@@ -1450,6 +1450,15 @@ insert into segments (
         }
     }
 
+    /// RWKV-Curve's forgetting curve for `card_id` as it was stored at the
+    /// card's last answered review: the recall at each of `elapsed_days`, and
+    /// the curve's own S90, for card info (spec ui.card-info-rwkv-curve).
+    /// None when the card has no stored curve.
+    pub fn card_curve(&self, card_id: i64, elapsed_days: &[f32]) -> Option<(Vec<f32>, f32)> {
+        let curve = self.curves.get(&card_id)?;
+        curve_points_and_s90(curve, elapsed_days, self.max_interval_days)
+    }
+
     pub fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.features.restore_state(&state.feature_state);
         if let Some(curve) = &state.curve {
@@ -4638,6 +4647,21 @@ fn unrounded_interval_for_curve(
         |days: f32| [predict_curve(curve, days * SECONDS_PER_DAY as f32) - target_retention];
     let [crossing] = crossings_on_grid(max_interval_days, margins_at);
     Some(crossing)
+}
+
+/// The recall of `curve` at each of `elapsed_days`, and its S90 (where it
+/// meets 90% recall, `unrounded_interval_for_curve`).
+fn curve_points_and_s90(
+    curve: &ReviewCurve,
+    elapsed_days: &[f32],
+    max_interval_days: u32,
+) -> Option<(Vec<f32>, f32)> {
+    let s90 = unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, max_interval_days)?;
+    let recall = elapsed_days
+        .iter()
+        .map(|days| predict_curve(curve, days * SECONDS_PER_DAY as f32))
+        .collect();
+    Some((recall, s90))
 }
 
 /// Points (days) searched inside the first day when an answer curve reaches
@@ -9510,6 +9534,26 @@ order by e.id, e.cid
         assert!(fast > 0.03 && fast < 0.05, "{fast}");
         let slow = unrounded_interval_for_curve(&basis_curve(60), 0.9, 36_500).unwrap();
         assert!(slow > 1.0 && slow != slow.round(), "{slow}");
+    }
+
+    // Pins spec/ui.md#ui.card-info-rwkv-curve: card info gets the stored
+    // curve's recall at the times asked for, and the S90 of that same curve.
+    #[test]
+    fn card_curve_points_are_the_curve_and_its_s90() {
+        for basis in [32, 60, 100] {
+            let curve = basis_curve(basis);
+            let days = [0.0, 0.01, 1.0, 30.0, 365.0];
+            let (recall, s90) = curve_points_and_s90(&curve, &days, 36_500).unwrap();
+            for (day, recall) in days.iter().zip(&recall) {
+                assert_eq!(*recall, predict_curve(&curve, day * SECONDS_PER_DAY as f32));
+            }
+            assert_eq!(
+                Some(s90),
+                unrounded_interval_for_curve(&curve, S90_TARGET_RETENTION, 36_500)
+            );
+            let at_s90 = predict_curve(&curve, s90 * SECONDS_PER_DAY as f32);
+            assert!((at_s90 - 0.9).abs() < 1e-3, "basis {basis}: {at_s90}");
+        }
     }
 
     #[test]
