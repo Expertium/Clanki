@@ -642,6 +642,117 @@ async fn fsrs_stale_card_state_is_reconciled_during_sync() -> Result<()> {
     .await
 }
 
+/// Write the card's data as official Anki and AnkiDroid do: they keep `s`
+/// and `d` but drop FSRS-7's `s_int` and `s_fast`. Marked for upload.
+fn write_foreign_fsrs_state(
+    col: &mut Collection,
+    card_id: CardId,
+    stability: f32,
+    difficulty: f32,
+) -> Result<()> {
+    let data = json!({"s": stability, "d": difficulty, "dr": 0.9, "decay": 0.1542}).to_string();
+    col.storage.db.execute(
+        "update cards set data = ?, mod = ?, usn = -1 where id = ?",
+        rusqlite::params![data, TimestampSecs::now().0, card_id],
+    )?;
+    Ok(())
+}
+
+fn card_data(col: &Collection, card_id: CardId) -> Result<String> {
+    Ok(col
+        .storage
+        .db
+        .query_row("select data from cards where id = ?", [card_id], |row| {
+            row.get(0)
+        })?)
+}
+
+/// FSRS off on this device only (the config row keeps its usn, so no sync
+/// sends it): the device then repairs nothing and stands in for another
+/// client.
+fn turn_fsrs_off_on_this_device_only(col: &Collection) -> Result<()> {
+    col.storage.db.execute(
+        "update config set val = cast('false' as blob) where key = 'fsrs'",
+        [],
+    )?;
+    assert!(!col.get_config_bool(BoolKey::Fsrs));
+    Ok(())
+}
+
+// Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards: a card another client
+// wrote reaches this device without FSRS-7's internal stability; the same
+// sync gives it its FSRS-7 memory state from the review log again and
+// uploads it.
+#[tokio::test]
+async fn fsrs7_state_of_a_foreign_card_is_rebuilt_during_sync() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+
+        let mut col1 = ctx.col1();
+        col1.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let card_id = add_reviewed_card(&mut col1, "foreign", DeckId(1))?;
+        let fsrs7_state = col1.storage.get_card(card_id)?.unwrap().memory_state;
+        assert!(card_data(&col1, card_id)?.contains("\"s_int\""));
+        sync_fsrs_collections(&ctx, col1).await?;
+
+        let mut col1 = ctx.col1();
+        let mut col2 = ctx.col2();
+        turn_fsrs_off_on_this_device_only(&col2)?;
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_foreign_fsrs_state(&mut col2, card_id, 3.0, 7.5)?;
+        let out = ctx.normal_sync(&mut col2).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert!(!card_data(&col2, card_id)?.contains("\"s_int\""));
+
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        let repaired = col1.storage.get_card(card_id)?.unwrap();
+        assert!(card_data(&col1, card_id)?.contains("\"s_int\""));
+        assert_memory_state_close(repaired.memory_state, fsrs7_state);
+        // no review log row, no schedule change
+        assert_eq!(revlog_kinds(&col1, card_id)?.len(), 1);
+
+        // the same sync uploaded it
+        let out = ctx.normal_sync(&mut col2).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert!(card_data(&col2, card_id)?.contains("\"s_int\""));
+        assert_eq!(
+            col2.storage.get_card(card_id)?.unwrap().memory_state,
+            repaired.memory_state
+        );
+
+        Ok(())
+    })
+    .await
+}
+
+// Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards: a foreign card
+// already in the collection (a full download, a restored backup) is
+// repaired when the collection opens.
+#[tokio::test]
+async fn fsrs7_state_of_a_foreign_card_is_rebuilt_on_open() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+
+        let mut col1 = ctx.col1();
+        col1.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let card_id = add_reviewed_card(&mut col1, "foreign-open", DeckId(1))?;
+        let fsrs7_state = col1.storage.get_card(card_id)?.unwrap().memory_state;
+        write_foreign_fsrs_state(&mut col1, card_id, 3.0, 7.5)?;
+        col1.close(None)?;
+
+        let col1 = ctx.col1();
+        assert!(card_data(&col1, card_id)?.contains("\"s_int\""));
+        assert_memory_state_close(
+            col1.storage.get_card(card_id)?.unwrap().memory_state,
+            fsrs7_state,
+        );
+
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn post_sync_reconcile_keeps_stale_schedule_when_reschedule_on_change_is_off() -> Result<()> {
     with_active_server(|client| async move {
