@@ -38,6 +38,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     revlog={stats.revlog}
                     {desiredRetention}
                     fsrsParams={stats.fsrsParams}
+                    rwkvCurve={stats.rwkvCurve}
                 />
             </Row>
         {/if}
