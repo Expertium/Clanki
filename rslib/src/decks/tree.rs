@@ -12,6 +12,7 @@ use anki_proto::decks::DeckTreeNode;
 use serde_tuple::Serialize_tuple;
 use unicase::UniCase;
 
+use super::counts::clear_rwkv_instant_review_counts;
 use super::limits::remaining_limits_map;
 use super::limits::RemainingLimits;
 use super::DueCounts;
@@ -378,9 +379,11 @@ impl Collection {
             subtree_deck_ids(&node, &mut ids);
             let decks_and_new_caps: Vec<_> =
                 ids.into_iter().map(|id| (id, limits_of(id).new)).collect();
-            let counts =
+            let mut counts =
                 self.storage
                     .capped_due_counts(&decks_and_new_caps, days_elapsed, learn_cutoff)?;
+            // without scores, as in deck_tree(): no RWKV-Instant reviews
+            clear_rwkv_instant_review_counts(&mut counts, &decks_map, &dconf);
             add_counts(&mut node, &counts);
             sum_counts_and_apply_limits_v3(&mut node, &limits, parent_limits);
             Some(node)
@@ -670,6 +673,10 @@ pub(crate) mod test {
 
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 0);
+        // the overview's counts too, while the scores are pending
+        let overview = col.deck_due_counts(deck.id, timing.now)?.unwrap();
+        assert_eq!(overview.review_count, 0);
+        assert_due_counts_match_tree(&mut col, timing.now);
 
         col.set_rwkv_review_queue_scores(
             deck.id,

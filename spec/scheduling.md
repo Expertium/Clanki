@@ -135,9 +135,10 @@ Given a collection that runs RWKV-Instant:
   has come. Until RWKV-Instant has scored the studied deck, the queue holds no
   review cards (learning and new cards still come) and reports that the
   scores are pending;
-- a normal deck's review count is the number of its scored cards whose score
-  makes them due, plus the daily-minimum pulls; a card without a score counts
-  nothing, and FSRS-7's due count never stands in;
+- a normal deck's review count, in the deck list and in the overview, is the
+  number of its scored cards whose score makes them due, plus the
+  daily-minimum pulls; a card without a score counts nothing, and FSRS-7's
+  due count never stands in;
 - while the scores are pending, the deck list shows the review count as "…",
   also when the scoring fails, finds nothing it can score, or gives a stale
   result (the next refresh of the deck list tries again); the overview shows
