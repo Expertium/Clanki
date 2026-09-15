@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use anki_proto::scheduler::ComputeMemoryStateResponse;
 use fsrs::FSRSItem;
 use fsrs::MemoryState;
+use fsrs::NextStates;
 use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Either;
@@ -179,6 +180,12 @@ pub(crate) fn fsrs_memory_state_for_params(
 ) -> Result<FsrsMemoryState> {
     let fsrs = FSRS::new(params)?;
     Ok(fsrs_memory_state_for_fsrs(&fsrs, memory_state))
+}
+
+/// The S90 of each of FSRS's next states: Again, Hard, Good, Easy.
+pub(crate) fn fsrs_next_states_s90(fsrs: &FSRS, states: &NextStates) -> [f32; 4] {
+    [&states.again, &states.hard, &states.good, &states.easy]
+        .map(|state| fsrs.interval_at_retrievability(state.memory, 0.9))
 }
 
 pub(crate) fn fsrs_memory_state_for_fsrs(

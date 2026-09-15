@@ -165,15 +165,21 @@ settings. `SimulateFsrsReviewRequest` carries no `rwkv_workload_*` fields
 (numbers 36-38 are reserved), and the desktop no longer serves the
 `simulateRwkvWorkload`, `startRwkvWorkload`, `rwkvWorkloadResult`,
 `cancelRwkvWorkload` and `rwkvWorkloadProgress` endpoints. RWKV presets
-simulate with their FSRS parameters.
+simulate with their FSRS parameters. The "R*f(S)" graph weights each card by
+its S90 (the time its simulated forgetting curve takes to reach 90% recall),
+not by the simulator's internal stability: weight = 1 − e^(−8·S90/365), with
+the S90 interpolated between exact grid values (weights within 0.00005).
 
 **Why:** plan item 6 — RWKV uses many more input features and processes all
 cards together instead of independently, so a correct RWKV simulator is out of
-scope.
+scope. Andrew, 2026-09-15: every graph that uses a stability uses the S90.
 
 **Pinned by:** `test_post_handler_list_has_no_rwkv_workload_handlers`
 (`qt/tests/test_mediasrv.py`); "simulate request carries no RWKV fields"
-(`ts/routes/deck-options/simulate-fsrs-request.test.ts`).
+(`ts/routes/deck-options/simulate-fsrs-request.test.ts`);
+`weighted_memorized_for_cards_uses_retrievability_times_stability_weight`,
+`simulated_s90_weights_match_the_exact_s90_weights`
+(`rslib/src/scheduler/fsrs/simulator.rs`).
 
 ## deck-options.reschedule-choice-remembered
 
