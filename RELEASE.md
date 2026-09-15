@@ -25,6 +25,16 @@ repeated here unless they materially affect a fork feature.
 - RWKV-Curve's stability (S90) is no longer rounded up to whole days: card
   info and the stored stability show the exact point where RWKV-Curve's
   curve meets 90%, which can be under a day.
+- A card without a usable review history (no review log, or a truncated
+  one) now gets an FSRS-7 memory state whose stability (S90) is its current
+  interval. Before, FSRS-7 took the interval as its internal stability, and
+  a 100-day interval became a stability of about 226 days. The same holds
+  for a card RWKV-Curve answers without an FSRS memory state: its FSRS-7
+  state now matches RWKV's S90.
+- Add-ons: `col.fsrs_next_interval(card_id, stability, retention)` takes
+  the card's stability as shown (S90) and returns the matching FSRS-7
+  interval. It used to read it as FSRS-7's internal stability, which gave
+  intervals about twice as long.
 - Deck options: the Algorithm dropdown shows a short description under each
   algorithm, and its revert button restores RWKV-Curve (the new-preset
   default). The highlighted entry in any dropdown now opens on the current

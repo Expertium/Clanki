@@ -27,7 +27,6 @@ use super::timespan::answer_button_time_collapsible;
 use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
-use crate::card::FsrsMemoryState;
 use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
@@ -36,6 +35,7 @@ use crate::prelude::*;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
+use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::preset::FsrsPreset;
@@ -485,21 +485,21 @@ impl Collection {
         self.maybe_bury_siblings(&original, &updater.config)?;
         let timing = updater.timing;
         let deckconfig_id = updater.original_deck.config_id();
-        let mut card = updater.into_card();
         if let Some(rwkv_s90) = answer.rwkv_s90 {
             require!(rwkv_s90.is_finite() && rwkv_s90 > 0.0, "invalid RWKV S90");
-            match &mut card.memory_state {
+            match &mut updater.card.memory_state {
                 Some(memory_state) => memory_state.stability = rwkv_s90,
                 None => {
-                    card.memory_state = Some(FsrsMemoryState {
-                        stability: rwkv_s90,
-                        stability_internal: rwkv_s90,
-                        stability_fast: Some(rwkv_s90),
-                        difficulty: 5.0,
-                    });
+                    // an FSRS-7 state whose own S90 is RWKV's (spec
+                    // sched.fsrs7-sm2-conversion)
+                    updater.card.memory_state = Some(fsrs_memory_state_for_s90(
+                        &updater.fsrs_preset.params,
+                        rwkv_s90,
+                    )?);
                 }
             }
         }
+        let mut card = updater.into_card();
         if !matches!(
             answer.current_state,
             CardState::Filtered(FilteredState::Preview(_))
@@ -1062,6 +1062,39 @@ pub(crate) mod test {
         assert!((cached_retrievability - 0.62).abs() < 1e-6);
         assert_eq!(col.can_undo(), Some(&Op::AnswerCard));
 
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: without an FSRS
+    // memory state, an RWKV-Curve answer stores RWKV's S90 with the FSRS-7
+    // state whose own S90 it is, not that S90 as the internal stability.
+    #[test]
+    fn rwkv_s90_answer_without_memory_state_gets_an_fsrs7_state_with_that_s90() -> Result<()> {
+        let mut col = Collection::new();
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        let states = col.get_scheduling_states(cid)?;
+
+        col.answer_card(&mut CardAnswer {
+            card_id: cid,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: Some(20.0),
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: true,
+        })?;
+
+        let memory_state = col.storage.get_card(cid)?.unwrap().memory_state.unwrap();
+        assert_eq!(memory_state.stability, 20.0);
+        let fsrs = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+        assert!((s90 - 20.0).abs() < 0.02, "{s90}");
+        assert!(memory_state.stability_internal < 20.0);
         Ok(())
     }
 
