@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
+import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -180,3 +182,42 @@ def test_mpvmanager_can_play_generated_wav(
     monkeypatch.setattr(aqt, "mw", mock_mw)
     manager = MpvManager(tmp_path, tmp_path)
     manager.play(SoundOrVideoTag(filename=str(generated_wav.name)), lambda _: None)
+
+
+@pytest.mark.skipif(is_lin, reason="mpv is not bundled for Linux")
+def test_mpv_replies_reach_the_thread_that_asked(
+    monkeypatch, tmp_path: Path, generated_wav: Path
+):
+    monkeypatch.setattr(
+        MpvManager, "default_argv", MpvManager.default_argv + ["--ao=null", "--vo=null"]
+    )
+    mock_mw = MagicMock()
+    mock_mw.taskman.run_in_background.side_effect = (
+        lambda task, on_done=None, **kwargs: task()
+    )
+    monkeypatch.setattr(aqt, "mw", mock_mw)
+    manager = MpvManager(tmp_path, tmp_path)
+    try:
+        replies: dict[str, object] = {}
+
+        def ask_from_another_thread() -> None:
+            for _ in range(20):
+                replies["thread"] = manager.get_property("idle-active")
+
+        thread = threading.Thread(target=ask_from_another_thread)
+        thread.start()
+        for _ in range(20):
+            replies["main"] = manager.command(
+                "loadfile", str(generated_wav), "replace", -1, "pause=yes"
+            )
+            # a pause between requests: the reply must still arrive
+            time.sleep(0.05)
+        thread.join(timeout=30)
+
+        assert not thread.is_alive()
+        assert replies["thread"] in (True, False)
+        assert isinstance(replies["main"], dict)
+        assert "playlist_entry_id" in replies["main"]
+        assert str(manager.get_property("mpv-version")).startswith("mpv")
+    finally:
+        manager.close()

@@ -28,6 +28,16 @@ function updateSyncColor(state: SyncState) {
     }
 }
 
+/** The Simple | Advanced control switched in place, without reloading the
+ * toolbar (spec ui.mode-switch). */
+function setUiMode(advanced: boolean) {
+    for (const option of document.querySelectorAll<HTMLElement>("#ui-mode .ui-mode-option")) {
+        const active = (option.dataset.mode === "advanced") === advanced;
+        option.classList.toggle("active", active);
+        option.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+}
+
 // Dealing with legacy add-ons that used CSS to absolutely position
 // themselves at toolbar edges
 

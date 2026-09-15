@@ -231,6 +231,30 @@ none for a card, and its counts fell back to FSRS-7's.
 `test_remaining_review_count_is_pending_without_rwkv_instant_scores`
 (`qt/tests/test_reviewer.py`).
 
+## sched.study-queue-kept-after-answer
+
+Given a studied deck, when a card is answered, the study queue is updated in
+place, as in upstream Anki: the answered card leaves it, a (re)learning card
+goes back in by its due time, and the counts go down. The queue is not built
+again. In a deck without RWKV-Instant, the reviewer then empties the RWKV
+score map; when that map is already empty, the queue is kept. So the
+retrievability orders (FSRS-7's, and RWKV-Curve's own measure,
+`sched.rwkv-review-order`) keep the order the queue was built with until
+something else rebuilds it (another operation, a new day, the next study
+session). Installing RWKV-Instant scores, or emptying a map that held
+scores, still builds the queue again, and RWKV-Instant still patches the
+answered card's score in place after an answer and still waits for its
+scores (`sched.rwkv-instant-waits`). A kept queue holds only cards the
+running algorithm gathered; nothing of another algorithm enters it.
+
+**Why:** Andrew, 2026-09-15: the rebuild after every answer froze the window
+for 60 ms under RWKV-Curve and 430 ms under FSRS-7 on a deck with 20,000 due
+cards. Before this entry, emptying an empty map dropped the queue, so it was
+built again after every answer.
+
+**Pinned by:** `emptying_empty_rwkv_scores_keeps_the_study_queue`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.rwkv-state-cache-startup-build
 
 Given a collection that runs RWKV-Curve or RWKV-Instant, a usable RWKV model,

@@ -31,7 +31,9 @@ if TYPE_CHECKING:
     from aqt.main import AnkiQt
     from aqt.overview import Overview, OverviewContent
 
-MAX_FORECAST_DAYS = 73000
+# the forecast never goes more than 5 years ahead, a leap day included
+# (Andrew, 2026-09-15; spec ui.review-heatmap)
+MAX_FORECAST_DAYS = 5 * 365 + 1
 DEFAULT_ROLLOVER = 4
 
 WEB_BASE = "/_anki"
@@ -353,12 +355,11 @@ class ActivityReporter:
             if history_days is not None
             else self._settings_history_start(today)
         )
-        if forecast_days is not None:
-            forecast_stop = self._days_from_today(today, forecast_days)
-        else:
-            forecast_stop = self._days_from_today(
-                today, self._settings.forecast_limit_days or MAX_FORECAST_DAYS
-            )
+        if forecast_days is None:
+            forecast_days = self._settings.forecast_limit_days or MAX_FORECAST_DAYS
+        forecast_stop = self._days_from_today(
+            today, min(forecast_days, MAX_FORECAST_DAYS)
+        )
         history = self._cards_done(current_deck_only, history_start)
         if not history:
             return None

@@ -705,3 +705,37 @@ def test_installing_the_review_heatmap_addon_leaves_it_disabled() -> None:
     package, meta = manager.writeAddonMeta.call_args.args
     assert package == "1771074083" and meta["disabled"] is True
     show_info.assert_called_once()
+
+
+def test_forecast_never_reaches_past_five_years() -> None:
+    """The due forecast stops 5 years (1,826 days) ahead, whatever the
+    setting or the period (spec ui.review-heatmap)."""
+    today = 100 * DAY
+
+    def forecast_stop(settings_days: int, forecast_days: int | None) -> int:
+        reporter = review_heatmap.ActivityReporter(
+            cast(Any, MagicMock()),
+            HeatmapSettings(forecast_limit_days=settings_days),
+        )
+        stops: list[int] = []
+        with (
+            patch.object(reporter, "_today", return_value=today),
+            patch.object(reporter, "_cards_done", return_value=[(today, 1)]),
+            patch.object(reporter, "_offset", return_value=4),
+            patch.object(
+                reporter,
+                "_cards_due",
+                side_effect=lambda start, stop, current_deck_only: (
+                    stops.append(stop) or []
+                ),
+            ),
+        ):
+            reporter.get_report(False, None, forecast_days)
+        return (stops[0] - today) // DAY
+
+    assert review_heatmap.MAX_FORECAST_DAYS == 1826
+    assert forecast_stop(0, None) == 1826  # "no limit" = 5 years
+    assert forecast_stop(10, None) == 10
+    assert forecast_stop(5000, None) == 1826
+    assert forecast_stop(0, 3650) == 1826  # the stats screen's period
+    assert forecast_stop(0, 365) == 365
