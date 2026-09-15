@@ -12,6 +12,7 @@ use std::result;
 use anki_proto::stats::CardEntry;
 use rusqlite::named_params;
 use rusqlite::params;
+use rusqlite::params_from_iter;
 use rusqlite::types::FromSql;
 use rusqlite::types::FromSqlError;
 use rusqlite::types::ValueRef;
@@ -688,6 +689,19 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             .prepare(include_str!("search_cards_of_notes_into_table.sql"))?
             .execute([])
             .map_err(Into::into)
+    }
+
+    /// The cards whose ids the query `ids_sql` (with `args`) returns.
+    pub(crate) fn cards_with_ids_in(&self, ids_sql: &str, args: &[String]) -> Result<Vec<Card>> {
+        self.db
+            .prepare(&format!(
+                "{} where id in ({ids_sql})",
+                include_str!("get_card.sql")
+            ))?
+            .query_and_then(params_from_iter(args.iter()), |r| {
+                row_to_card(r).map_err(Into::into)
+            })?
+            .collect()
     }
 
     /// Every card of the collection, in one table scan.

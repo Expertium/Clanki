@@ -422,9 +422,13 @@ impl Collection {
     {
         if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
             let top_node = search.try_into_search()?;
-            let mut ids = self.search_card_ids_for_node(&top_node, mode.required_table(), None)?;
-            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
-            return Ok(ids);
+            return self.search_card_ids_sorted_by_exact_fsrs_metric(
+                &top_node,
+                mode.required_table(),
+                None,
+                metric,
+                reverse,
+            );
         }
         self.search(search, mode)
     }
@@ -445,12 +449,14 @@ impl Collection {
 }
 
 impl Collection {
-    fn search_card_ids_for_node(
+    /// The cards `top_node` matches, loaded by the search query itself
+    /// (not their ids first and then each card by id).
+    fn search_cards_for_node(
         &mut self,
         top_node: &Node,
         required_table: RequiredTable,
         stats_search: Option<&str>,
-    ) -> Result<Vec<CardId>> {
+    ) -> Result<Vec<Card>> {
         let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(top_node);
         let use_rwkv_due = has_rwkv_due_state(top_node);
         self.with_search_auxiliary_tables(
@@ -460,11 +466,7 @@ impl Collection {
             |col| {
                 let writer = SqlWriter::new(col, ReturnItemType::Cards);
                 let (sql, args) = writer.build_query(top_node, required_table)?;
-                let mut stmt = col.storage.db.prepare(&sql)?;
-                let ids: Vec<_> = stmt
-                    .query_map(params_from_iter(args.iter()), |row| row.get(0))?
-                    .collect::<std::result::Result<_, _>>()?;
-                Ok(ids)
+                col.storage.cards_with_ids_in(&sql, &args)
             },
         )
     }
@@ -518,23 +520,27 @@ impl Collection {
             }))
     }
 
-    fn sort_card_ids_by_exact_fsrs_metric(
+    /// The ids of the cards `top_node` matches, sorted by the exact metric
+    /// (ties by card id, so the order the cards load in does not matter).
+    fn search_card_ids_sorted_by_exact_fsrs_metric(
         &mut self,
-        ids: &mut [CardId],
+        top_node: &Node,
+        required_table: RequiredTable,
+        stats_search: Option<&str>,
         metric: ExactFsrsSortMetric,
         reverse: bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<CardId>> {
         let start = Instant::now();
-        let timing = self.timing_today()?;
         let load_start = Instant::now();
-        let cards = self.all_cards_for_ids(ids, false)?;
+        let cards = self.search_cards_for_node(top_node, required_table, stats_search)?;
         let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
+        let timing = self.timing_today()?;
         let card_count = cards.len();
         let preset_start = Instant::now();
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let metric_start = Instant::now();
-        let mut with_metric = Vec::with_capacity(ids.len());
+        let mut with_metric = Vec::with_capacity(cards.len());
         for card in cards {
             let preset = presets_by_card
                 .get(&card.id)
@@ -556,9 +562,7 @@ impl Collection {
             let ord = if reverse { ord.reverse() } else { ord };
             ord.then_with(|| cid_a.cmp(cid_b))
         });
-        for (target, (cid, _)) in ids.iter_mut().zip(with_metric) {
-            *target = cid;
-        }
+        let ids = with_metric.into_iter().map(|(cid, _)| cid).collect();
         tracing::debug!(
             ?metric,
             reverse,
@@ -570,7 +574,7 @@ impl Collection {
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
             "sorted cards by exact FSRS metric"
         );
-        Ok(())
+        Ok(ids)
     }
 
     fn search<T, N>(&mut self, search: N, mode: SortMode) -> Result<Vec<T>>
@@ -637,9 +641,13 @@ impl Collection {
     ) -> Result<CardTableGuard<'_>> {
         if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
             let top_node = search.try_into_search()?;
-            let mut ids =
-                self.search_card_ids_for_node(&top_node, mode.required_table(), stats_search)?;
-            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
+            let ids = self.search_card_ids_sorted_by_exact_fsrs_metric(
+                &top_node,
+                mode.required_table(),
+                stats_search,
+                metric,
+                reverse,
+            )?;
             self.storage
                 .setup_searched_cards_table_to_preserve_order()?;
             self.storage.set_search_table_to_card_ids(&ids)?;
@@ -1244,6 +1252,53 @@ mod test {
             sorted_cards.into_iter().map(|c| c.id).collect::<Vec<_>>(),
             vec![card1.id, card2.id]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_sorts_put_cards_without_a_memory_state_first_and_break_ties_by_id() -> Result<()> {
+        let mut col = Collection::new();
+        set_selected_fsrs7_params(&mut col, fsrs7_sort_params_a())?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for text in ["alpha", "beta", "alpha", "gamma", "alpha", "delta"] {
+            let mut note = nt.new_note();
+            note.set_field(0, text)?;
+            col.add_note(&mut note, DeckId(1))?;
+        }
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+        let timing = col.timing_today()?;
+        // cards 0 and 3 have no memory state; 1 and 4 are identical
+        for (index, stability) in [(1, 30.0), (2, 5.0), (4, 30.0), (5, 12.0)] {
+            let mut card = col.storage.get_card(ids[index])?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 10;
+            card.memory_state = Some(FsrsMemoryState {
+                stability,
+                stability_internal: stability,
+                stability_fast: Some(stability / 2.0),
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-10 * 86_400));
+            col.storage.update_card(&card)?;
+        }
+        let id = |indexes: &[usize]| indexes.iter().map(|&i| ids[i]).collect::<Vec<_>>();
+        for column in [Column::Retrievability, Column::Stability] {
+            // lower stability, lower R: 2, 5, then the tie 1/4
+            let sort = |reverse| SortMode::Builtin { column, reverse };
+            assert_eq!(col.search_cards("", sort(false))?, id(&[0, 3, 2, 5, 1, 4]));
+            assert_eq!(col.search_cards("", sort(true))?, id(&[1, 4, 5, 2, 0, 3]));
+            // a search that needs the notes table, and a card filter
+            assert_eq!(col.search_cards("alpha", sort(false))?, id(&[0, 2, 4]));
+            assert_eq!(col.search_cards("-alpha", sort(true))?, id(&[1, 5, 3]));
+            let in_order = col.all_cards_for_search_in_order("", sort(false))?;
+            assert_eq!(
+                in_order.into_iter().map(|card| card.id).collect::<Vec<_>>(),
+                id(&[0, 3, 2, 5, 1, 4])
+            );
+        }
         Ok(())
     }
 
