@@ -49,6 +49,22 @@ def test_toggle_marks_the_active_side() -> None:
     assert 'aria-pressed="true"' in advanced and "active" in advanced
 
 
+def test_toggle_switches_in_place() -> None:
+    """The mode switch updates the control with a script, without reloading
+    the toolbar page (spec ui.mode-switch)."""
+    for advanced in (False, True):
+        toolbar, _ = _toolbar(advanced)
+        simple, advanced_option = _options(toolbar._create_ui_mode_toggle())
+        assert 'data-mode="simple"' in simple
+        assert 'data-mode="advanced"' in advanced_option
+        toolbar.update_ui_mode_toggle()
+        web = cast(MagicMock, toolbar.web)
+        web.eval.assert_called_once_with(
+            f"setUiMode({'true' if advanced else 'false'})"
+        )
+        web.stdHtml.assert_not_called()
+
+
 def test_toggle_sits_in_the_right_tray() -> None:
     toolbar, _ = _toolbar(False)
     assert 'id="ui-mode"' in toolbar._right_tray_content()
@@ -130,7 +146,10 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
         )
         AnkiQt.set_advanced_ui(mw, True)
         mw.col.set_config_bool.assert_called_once_with(Config.Bool.ADVANCED_UI, True)
-        mw.toolbar.draw.assert_called_once()
+        # the toolbar control switches in place: a reload would clear the
+        # sync button's state
+        mw.toolbar.update_ui_mode_toggle.assert_called_once()
+        mw.toolbar.draw.assert_not_called()
         # a full reset would recompute the RWKV due counts
         mw.reset.assert_not_called()
         return mw
