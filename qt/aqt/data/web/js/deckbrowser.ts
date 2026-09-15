@@ -39,6 +39,7 @@ function replaceDeckTree(html: string) {
     if (!table) {
         return;
     }
-    table.innerHTML = html;
+    // the same newlines as around the rows of a freshly drawn page
+    table.innerHTML = "\n" + html + "\n";
     init();
 }
