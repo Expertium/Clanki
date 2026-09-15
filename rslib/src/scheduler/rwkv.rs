@@ -1144,9 +1144,10 @@ fn card_reviewed_today(card: &Card, timing: SchedTimingToday) -> bool {
 }
 
 /// The memory state of a card RWKV-Curve rescheduled to `s90`: its FSRS-7
-/// state with RWKV's S90, as an RWKV-Curve answer stores; a card without a
-/// usable FSRS-7 state gets the one whose own S90 is RWKV's (spec
-/// sched.fsrs7-sm2-conversion).
+/// state with RWKV's S90, as an RWKV-Curve answer stores (the internal and
+/// fast stabilities keep their values); a card without a usable FSRS-7
+/// state gets the one whose own S90 is RWKV's (spec
+/// sched.fsrs7-sm2-conversion, sched.rwkv-curve-reschedule).
 fn rwkv_rescheduled_memory_state(card: &Card, s90: f32, params: &[f32]) -> Result<FsrsMemoryState> {
     let valid = |value: f32| value.is_finite() && value > 0.0;
     let Some(existing) = card
@@ -1157,10 +1158,6 @@ fn rwkv_rescheduled_memory_state(card: &Card, s90: f32, params: &[f32]) -> Resul
     };
     Ok(FsrsMemoryState {
         stability: s90,
-        stability_fast: existing
-            .stability_fast
-            .filter(|stability| valid(*stability))
-            .or(Some(s90)),
         difficulty: Some(existing.difficulty)
             .filter(|difficulty| valid(*difficulty))
             .unwrap_or(5.0),
@@ -1374,6 +1371,56 @@ mod test {
         let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
         assert!((s90 - 20.0).abs() < 0.02, "{s90}");
         assert!(memory_state.stability_internal < 20.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-reschedule: like an
+    // RWKV-Curve answer, the reschedule changes only the S90 of an FSRS-7
+    // memory state; a card without a fast stability does not get RWKV's S90
+    // as one.
+    #[test]
+    fn apply_review_reschedule_changes_only_the_s90_of_a_memory_state() -> Result<()> {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let existing = [
+            FsrsMemoryState {
+                stability: 12.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 6.0,
+            },
+            FsrsMemoryState {
+                stability: 12.0,
+                stability_internal: 10.0,
+                stability_fast: Some(3.0),
+                difficulty: 6.0,
+            },
+        ];
+        for memory_state in existing {
+            let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32 + 3);
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 10;
+            card.memory_state = Some(memory_state);
+            col.add_card(&mut card)?;
+
+            col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
+                card_id: card.id,
+                interval_days: 30,
+                elapsed_days: 5,
+                s90: 42.0,
+                target_retention: None,
+            }])?;
+
+            let stored = col.storage.get_card(card.id)?.unwrap().memory_state;
+            assert_eq!(
+                stored,
+                Some(FsrsMemoryState {
+                    stability: 42.0,
+                    ..memory_state
+                })
+            );
+        }
         Ok(())
     }
 

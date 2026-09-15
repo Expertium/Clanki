@@ -121,6 +121,24 @@ other's.
 **Pinned by:** `rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes`
 (`rslib/src/scheduler/fsrs/memory_state.rs`).
 
+## sched.rwkv-curve-reschedule
+
+Given a review card that the RWKV-Curve reschedule reschedules
+(`deck-options.reschedule-on-change`), its memory state changes as on an
+RWKV-Curve answer: the S90 becomes RWKV-Curve's current S90
+(`sched.rwkv-curve-s90`), and the internal and fast stabilities keep their
+values — a card without a fast stability still has none. A card without a
+usable FSRS-7 state gets the FSRS-7 state whose own S90 is RWKV-Curve's
+(`sched.fsrs7-sm2-conversion`).
+
+**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): one algorithm's values
+must not mix into the other's; the reschedule wrote RWKV-Curve's S90 into
+FSRS-7's fast stability when the card had none, which an answer never does.
+
+**Pinned by:** `apply_review_reschedule_changes_only_the_s90_of_a_memory_state`,
+`apply_review_reschedule_without_memory_state_gets_an_fsrs7_state_with_that_s90`
+(`rslib/src/scheduler/rwkv.rs`).
+
 ## sched.rwkv-no-model-error
 
 Given a collection that runs RWKV-Curve or RWKV-Instant and no usable RWKV

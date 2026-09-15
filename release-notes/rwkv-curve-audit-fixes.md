@@ -4,3 +4,5 @@
 - When building RWKV-Curve's answer states fails, the answer buttons keep
   waiting. Before, they showed FSRS-7's intervals, and the answer stored them
   with RWKV-Curve's stability.
+- The RWKV-Curve reschedule no longer writes RWKV-Curve's stability into
+  FSRS-7's fast stability of a card that had none.
