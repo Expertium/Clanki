@@ -515,10 +515,8 @@ impl QueueBuilder {
 
         // the result is sorted by (key, hash, id) below, so the order the
         // cards were gathered in does not matter
-        let mut keys = ExactReviewOrderKeys::new(
-            self.context.timing,
-            self.context.sort_options.review_order,
-        );
+        let mut keys =
+            ExactReviewOrderKeys::new(self.context.timing, self.context.sort_options.review_order);
         let mut with_key = Vec::with_capacity(due_cards.len());
         for candidate in due_cards {
             let card_id = candidate.card.id;
