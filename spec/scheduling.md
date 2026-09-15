@@ -96,6 +96,55 @@ mixed a second algorithm into the screen.
 `test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-curve-buttons-wait
+
+Given a card whose preset runs RWKV-Curve, shown with its answer in the
+reviewer, the answer buttons appear only after RWKV-Curve has given the
+intervals for this showing of the card. Until then the button area shows
+"Waiting for RWKV-Curve…", the reviewer asks RWKV-Curve again (after 50 ms,
+doubling up to once a second), and answer keys and clicks do nothing. This
+covers every reason RWKV-Curve has no intervals yet: its state still loading,
+another RWKV task holding it, its state changing during the prediction, no
+prediction, a button without an interval, an error, or no RWKV runtime. Each
+prediction belongs to one showing: it is cleared before the next prediction
+and once an answer has used it, so a later showing of the same card never
+reuses its intervals or its S90. A preview in a filtered deck without
+rescheduling (no review intervals) and cards of FSRS-7 and RWKV-Instant
+presets never wait.
+
+**Why:** Andrew, 2026-09-15: the buttons must never show, and an answer must
+never store, the intervals of one algorithm while another is on. Before this
+entry, whenever RWKV-Curve had no intervals the buttons showed FSRS-7's and
+the answer stored them; and a prediction from an earlier showing of the card
+could supply the S90 of a later answer.
+
+**Pinned by:** `test_answer_buttons_wait_for_rwkv_curve_intervals`,
+`test_answers_are_ignored_while_rwkv_curve_intervals_are_pending`
+(`qt/tests/test_reviewer.py`);
+`test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
+`test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
+`test_set_answer_rwkv_metadata_clears_the_prediction`
+(`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-exact-elapsed
+
+Given a learning card that RWKV predicts for, the elapsed time RWKV gets is
+the exact time since the card's last review, the same as for review,
+relearning and filtered cards, and the same as the review history RWKV
+learns from. Only when the card's last review is unknown does it keep the
+scheduling state's elapsed time.
+
+**Why:** Andrew, 2026-09-15. Before this entry a learning card got the
+scheduling state's elapsed time, which rebuilds the last review time from the
+card's due time minus its current learning step. That is wrong whenever the
+card's delay did not come from that step: with no learning steps (a sub-day
+interval from the algorithm) it counted only from the due time, and a card
+studied ahead of its due time wrapped to about 49,700 days.
+
+**Pinned by:** `test_rwkv_review_input_uses_exact_elapsed_for_learning_cards`,
+`test_rwkv_review_input_keeps_state_elapsed_for_learning_without_history`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.sub-day-intervals
 
 Given a card scheduled by FSRS-7 or RWKV-Curve and the unrounded interval

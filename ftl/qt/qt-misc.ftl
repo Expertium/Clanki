@@ -75,6 +75,8 @@ qt-misc-layout-auto-enabled = Responsive layout enabled
 qt-misc-layout-vertical-enabled = Vertical layout enabled
 qt-misc-layout-horizontal-enabled = Horizontal layout enabled
 qt-misc-rwkv-filtered-deck-preparation-failed = RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt.
+# Shown instead of the answer buttons until RWKV-Curve has calculated the card's intervals.
+qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
 
 ## deprecated- these strings will be removed in the future, and do not need
 ## to be translated
