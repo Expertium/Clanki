@@ -3918,6 +3918,67 @@ def test_rwkv_review_input_uses_exact_elapsed_for_filtered_cards(
     assert review_input.current_elapsed_seconds == 30
 
 
+# Pins spec/scheduling.md#sched.rwkv-exact-elapsed: a learning card's elapsed
+# time is the time since its last review, not since the step came due.
+def test_rwkv_review_input_uses_exact_elapsed_for_learning_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    reviewer = _rwkv_reviewer()
+    reviewer._v3.states.current.Clear()
+    # the state counts from the card's due time: 30 seconds, not 90
+    reviewer._v3.states.current.normal.learning.elapsed_secs = 30
+    card = _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=1234,
+        last_review_time=now - 90,
+    )
+    card.type = 1
+    card.queue = 1
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.card_type == int(RwkvReviewState.LEARNING)
+    assert review_input.current_elapsed_days == 0
+    assert review_input.current_elapsed_seconds == 90
+
+
+def test_rwkv_review_input_keeps_state_elapsed_for_learning_without_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    reviewer = _rwkv_reviewer()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.normal.learning.elapsed_secs = 300
+
+    class DB:
+        def first(self, sql: str, card_id: int) -> None:
+            return None
+
+    reviewer.mw.col.db = DB()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card.type = 1
+    card.queue = 1
+
+    review_input = rwkv_review_input(
+        reviewer=reviewer,
+        card=card,
+        identity=RwkvReviewIdentity(card_id=1, note_id=10, deck_id=100, preset_id=1000),
+        ease=None,
+    )
+
+    assert review_input.current_elapsed_days is None
+    assert review_input.current_elapsed_seconds == 300
+
+
 def test_rwkv_review_input_falls_back_to_latest_eligible_review_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4219,6 +4280,82 @@ def test_set_answer_rwkv_metadata_sets_retrievability_and_selected_s90() -> None
     assert answer.rwkv_s90 == pytest.approx(20)
     assert answer.rwkv_retrievability == pytest.approx(0.62)
     assert answer.rwkv_review_kind == 1
+
+
+def _curve_prediction(card_id: int = 1) -> RwkvReviewerPrediction:
+    return RwkvReviewerPrediction(
+        card_id=card_id,
+        retrievability=0.62,
+        review_enabled=True,
+        interval_override_used=True,
+        s90_overrides=RwkvIntervalOverride(again=2, hard=5, good=10, easy=20),
+    )
+
+
+# Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a prediction serves
+# one answer; a later showing of the card cannot reuse its S90.
+def test_set_answer_rwkv_metadata_clears_the_prediction() -> None:
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    reviewer._rwkv_review_prediction = _curve_prediction()
+
+    rwkv_scheduler.set_answer_rwkv_metadata(SimpleNamespace(), reviewer, card, ease=4)
+    again = SimpleNamespace()
+    rwkv_scheduler.set_answer_rwkv_metadata(again, reviewer, card, ease=4)
+
+    assert reviewer._rwkv_review_prediction is None
+    assert not hasattr(again, "rwkv_s90")
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+
+
+# Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait
+def test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals() -> None:
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+    reviewer._rwkv_review_prediction = _curve_prediction(card_id=2)
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+    reviewer._rwkv_review_prediction = replace(
+        _curve_prediction(), interval_override_used=False
+    )
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+    reviewer._rwkv_review_prediction = _curve_prediction()
+    assert not rwkv_scheduler.answer_intervals_pending(reviewer, card)
+
+    # a preview in a filtered deck without rescheduling has no intervals
+    reviewer._rwkv_review_prediction = None
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.filtered.preview.scheduled_secs = 60
+    assert not rwkv_scheduler.answer_intervals_pending(reviewer, card)
+
+    # FSRS-7 and RWKV-Instant presets never wait
+    for fsrs_or_instant in (
+        _rwkv_reviewer(rwkv_review_enabled=False),
+        _rwkv_reviewer(
+            rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+        ),
+    ):
+        assert not rwkv_scheduler.answer_intervals_pending(fsrs_or_instant, card)
+
+
+# Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a failed prediction
+# leaves no stored prediction, so the buttons wait instead of showing FSRS's.
+def test_failed_rwkv_prediction_leaves_the_buttons_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    reviewer._rwkv_review_prediction = _curve_prediction()
+    states = SchedulingStates()
+    states.CopyFrom(reviewer._v3.states)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
+
+    returned = rwkv_scheduler.update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert returned is states
+    assert reviewer._rwkv_review_prediction is None
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
 
 
 def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ import aqt.reviewer as reviewer_module
 import aqt.rwkv_scheduler
 from anki.collection import OpChanges
 from aqt.reviewer import RefreshNeeded, Reviewer, SchedulingStates
+from aqt.utils import tr
 
 
 def scheduling_states_with_review_current() -> SchedulingStates:
@@ -518,6 +520,81 @@ def test_answer_buttons_wait_for_pending_scheduling_states() -> None:
     reviewer._showEaseButtons()
 
     assert progress.single_shots == 1
+
+
+def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait"""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    pending = [True]
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_pending",
+        lambda reviewer, card: pending[0],
+    )
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(
+        progress=SimpleNamespace(
+            single_shot=lambda delay, callback: shots.append((delay, callback))
+        ),
+        col=SimpleNamespace(
+            decks=SimpleNamespace(
+                config_dict_for_deck_id=lambda deck_id: {"stopTimerOnAnswer": False}
+            )
+        ),
+    )
+    reviewer.bottom = SimpleNamespace(web=SimpleNamespace(eval=evals.append))
+    reviewer.card = SimpleNamespace(id=7, current_deck_id=lambda: 1)
+    reviewer.state = "answer"
+    reviewer._answer_update_id = 3
+    reviewer._states_mutated = True
+    reviewer._scheduling_states_pending = False
+    reviewer._v3 = SimpleNamespace(states=scheduling_states_with_review_current())
+    reviewer._answerButtons = lambda: "BUTTONS 1d 3d"
+
+    reviewer._showEaseButtons()
+    # a second miss backs off without drawing the notice again
+    shots[-1][1]()
+
+    assert [delay for delay, _ in shots] == [50, 100]
+    assert len(evals) == 1
+    notice = json.dumps(tr.qt_misc_rwkv_curve_intervals_pending())[1:-1]
+    assert notice in evals[0]
+    assert "BUTTONS" not in evals[0]
+
+    # a retry for another card does nothing
+    reviewer.card = SimpleNamespace(id=8, current_deck_id=lambda: 1)
+    shots[-1][1]()
+    assert len(shots) == 2 and len(evals) == 1
+
+    reviewer.card = SimpleNamespace(id=7, current_deck_id=lambda: 1)
+    pending[0] = False
+    shots[-1][1]()
+
+    assert len(shots) == 2
+    assert evals[-1] == 'showAnswer("BUTTONS 1d 3d", false);'
+    assert reviewer._rwkv_intervals_retry_ms == 0
+
+
+def test_answers_are_ignored_while_rwkv_curve_intervals_are_pending(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait"""
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: True
+    )
+    monkeypatch.setattr(
+        reviewer_module.gui_hooks,
+        "reviewer_will_answer_card",
+        lambda *args: pytest.fail("answer went ahead without RWKV-Curve intervals"),
+    )
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(state="review")
+    reviewer.card = SimpleNamespace(id=7)
+    reviewer.state = "answer"
+    reviewer._answer_rendered = True
+
+    reviewer._answerCard(3)
 
 
 def test_answer_card_populates_empty_scheduling_states_before_answering(
@@ -2589,6 +2666,9 @@ def test_answer_card_updates_rwkv_state_used_by_other_card(
             reviewer,
             card_b,
         )
+        # card A's buttons got RWKV-Curve's intervals before it was answered
+        # (spec sched.rwkv-curve-buttons-wait)
+        aqt.rwkv_scheduler.update_reviewer_scheduling_states(states, reviewer, card_a)
         reviewer._answerCard(3)
         after = aqt.rwkv_scheduler.update_reviewer_scheduling_states(
             states,

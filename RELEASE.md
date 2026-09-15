@@ -22,6 +22,13 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- RWKV-Curve cards never show or store FSRS-7 intervals: until RWKV-Curve
+  has calculated a card's intervals, the reviewer shows "Waiting for
+  RWKV-Curve…" instead of the answer buttons and ignores answer keys. Before,
+  the buttons fell back to FSRS-7's intervals whenever RWKV was busy.
+- RWKV now gets the exact time since the last review for learning cards too.
+  Before, a learning card without learning steps counted only from its due
+  time, and one studied early got a wrong, very large elapsed time.
 - RWKV-Curve's intervals and stability (S90) are now the exact point where
   its forgetting curve meets the target retention. Before, a straight line
   between two search points made them slightly too long (0.27% on median,
