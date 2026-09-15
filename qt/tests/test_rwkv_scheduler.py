@@ -3094,6 +3094,13 @@ def test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals() -> N
         requests[0].good,
         requests[0].easy,
     ) == pytest.approx((0.2, 1.5, 9.4, 18.0))
+    # the S90s go along, for the young-leech check (spec sched.rwkv-curve-fuzz)
+    assert (
+        requests[0].again_s90,
+        requests[0].hard_s90,
+        requests[0].good_s90,
+        requests[0].easy_s90,
+    ) == pytest.approx((1, 2, 10, 19))
     # the backend's states are used, with each button's S90 as its stability
     assert updated.again.normal.relearning.learning.scheduled_secs == 120
     assert updated.good.normal.review.scheduled_days == 9
@@ -3110,11 +3117,18 @@ def test_rwkv_curve_states_only_send_supplied_ratings() -> None:
     card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
 
     rwkv_curve_scheduling_states(
-        reviewer, card, SchedulingStates(), RwkvIntervalOverride(good=10.5)
+        reviewer,
+        card,
+        SchedulingStates(),
+        RwkvIntervalOverride(good=10.5),
+        RwkvIntervalOverride(hard=4, good=12.5),
     )
 
     assert not requests[0].HasField("hard")
     assert requests[0].good == pytest.approx(10.5)
+    # an S90 goes only with its button's interval
+    assert not requests[0].HasField("hard_s90")
+    assert requests[0].good_s90 == pytest.approx(12.5)
 
 
 def test_rwkv_curve_states_without_backend_use_whole_days() -> None:
@@ -3266,9 +3280,9 @@ def test_backend_resident_current_intervals_require_runtime_support() -> None:
 
     def predict_current_intervals_many_from_warm_up(
         review_inputs: list[RwkvReviewInput],
-    ) -> list[tuple[float, int, int]]:
+    ) -> list[tuple[float, int, float, float]]:
         assert review_inputs == [review_input, review_input]
-        return [(0.5, 7, 12), (0.4, 0, 0)]
+        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
 
     runtime.predict_current_intervals_many_from_warm_up = (  # type: ignore[attr-defined]
         predict_current_intervals_many_from_warm_up
@@ -3277,7 +3291,12 @@ def test_backend_resident_current_intervals_require_runtime_support() -> None:
     assert backend.predict_current_intervals_inputs_from_warm_up(
         [review_input, review_input]
     ) == [
-        RwkvReviewPrediction(retrievability=0.5, current_interval=7, current_s90=12),
+        RwkvReviewPrediction(
+            retrievability=0.5,
+            current_interval=7,
+            current_interval_unrounded=6.2,
+            current_s90=12,
+        ),
         RwkvReviewPrediction(retrievability=0.4),
     ]
     assert backend.predict_current_intervals_inputs_from_warm_up([]) == []
@@ -3290,9 +3309,9 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
 
     def predict_current_intervals_many_from_warm_up(
         batch: list[tuple[object, ...]],
-    ) -> list[tuple[float, int, int]]:
+    ) -> list[tuple[float, int, float, float]]:
         rows.extend(batch)
-        return [(0.5, 7, 12), (0.4, 0, 0)]
+        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
 
     runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
     runtime._process = SimpleNamespace(
@@ -3308,7 +3327,7 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
     outputs = runtime.predict_current_intervals_many_from_warm_up(inputs)
 
     assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
-    assert outputs == [(0.5, 7, 12), (0.4, None, None)]
+    assert outputs == [(0.5, 7, 12, 6.2), (0.4, None, None, None)]
 
 
 def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
@@ -4241,6 +4260,49 @@ def test_failed_rwkv_prediction_leaves_the_buttons_waiting(
     assert returned is states
     assert reviewer._rwkv_review_prediction is None
     assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+
+
+def test_error_building_rwkv_curve_states_leaves_the_buttons_waiting() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: when building the
+    answer states from RWKV-Curve's intervals fails, no prediction is kept, so
+    the buttons wait and no answer stores RWKV's S90 with FSRS-7's states."""
+
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=0.62,
+                interval_overrides=RwkvIntervalOverride(
+                    again=1, hard=4, good=9, easy=18
+                ),
+                s90_overrides=RwkvIntervalOverride(again=2, hard=5, good=10, easy=19),
+            )
+
+    def failing_build(
+        request: scheduler_pb2.SchedulingStatesWithIntervalsRequest,
+    ) -> SchedulingStates:
+        raise RuntimeError("backend error while building the states")
+
+    set_reviewer_backend(Backend())
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col._backend = SimpleNamespace(
+        scheduling_states_with_intervals=failing_build
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.CopyFrom(reviewer._v3.states)
+
+    returned = rwkv_scheduler.update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert returned is states
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+    answer = SimpleNamespace(answered_at_millis=0)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert not hasattr(answer, "rwkv_s90")
 
 
 def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:
@@ -14334,7 +14396,7 @@ def test_apply_rwkv_review_reschedule_includes_target_retention() -> None:
         [
             rwkv_scheduler.RwkvReviewRescheduleItem(
                 card_id=1,
-                interval_days=12,
+                interval_days=12.4,
                 elapsed_days=4,
                 s90=9.5,
                 target_retention=0.50,
@@ -14344,7 +14406,36 @@ def test_apply_rwkv_review_reschedule_includes_target_retention() -> None:
 
     item = rpc.requests[0].items[0]
     assert item.card_id == 1
+    # unrounded (spec sched.rwkv-curve-reschedule)
+    assert item.interval == pytest.approx(12.4)
     assert item.target_retention == pytest.approx(0.50)
+
+
+def test_rwkv_reschedule_items_carry_the_unrounded_interval() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-reschedule: the reschedule sends
+    RWKV-Curve's unrounded current interval, not the whole days rounded up;
+    a backend with whole days only sends those."""
+
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+    items = rwkv_scheduler._rwkv_review_reschedule_items_from_input_predictions(
+        [(1, review_input), (2, review_input)],
+        [
+            RwkvReviewPrediction(
+                retrievability=0.8,
+                current_interval=11,
+                current_interval_unrounded=10.2,
+                current_s90=12.5,
+            ),
+            RwkvReviewPrediction(
+                retrievability=0.8, current_interval=11, current_s90=12.5
+            ),
+        ],
+    )
+
+    assert [item.interval_days for item in items] == [
+        pytest.approx(10.2),
+        pytest.approx(11.0),
+    ]
 
 
 def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(
@@ -15743,6 +15834,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                 tuple[int | None, ...],
                 tuple[int | None, ...],
                 tuple[float, float, float, float],
+                float | None,
             ]
         ]:
             self.requests.append(requests)
@@ -15755,6 +15847,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                     (1, 3, 7, 14),
                     (2, 4, 17, 28),
                     (0.75, 0.05, 0.15, 0.05),
+                    8.4,
                 ),
                 (
                     0.75,
@@ -15764,6 +15857,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                     (None, None, None, None),
                     (None, None, None, None),
                     (0.25, 0.10, 0.50, 0.15),
+                    None,
                 ),
             ]
 
@@ -15799,6 +15893,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     assert first is not None
     assert first.curve_retrievability == pytest.approx(0.65)
     assert first.current_interval == 9
+    assert first.current_interval_unrounded == pytest.approx(8.4)
     assert first.current_s90 == 19
     assert first.interval_overrides == RwkvIntervalOverride(
         again=1,
@@ -15816,6 +15911,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     assert second is not None
     assert second.curve_retrievability is None
     assert second.current_interval is None
+    assert second.current_interval_unrounded is None
     assert second.current_s90 is None
     assert second.interval_overrides == RwkvIntervalOverride()
     assert second.s90_overrides == RwkvIntervalOverride()

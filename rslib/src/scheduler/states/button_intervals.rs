@@ -91,8 +91,10 @@ pub(crate) fn button_intervals(
                 ctx.with_review_fuzz_and_delta(interval, minimum, maximum)
             }
             DayRule::Graduating | DayRule::Relearning => {
+                // fuzz and the load balancer take the unrounded interval, as
+                // for review cards; the minimum (at least 1) keeps it a day
                 let (minimum, maximum) = ctx.min_and_max_review_intervals(floor);
-                ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum)
+                ctx.with_review_fuzz_and_delta(interval, minimum, maximum)
             }
         };
         previous_days = Some(days);
@@ -255,6 +257,26 @@ mod test {
             panic!("good should be in days");
         };
         assert!(fuzz_delta_days > 0, "good is fuzzed");
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: a graduating or
+    // relearning button is fuzzed from its unrounded interval, like a review
+    // button, not from the interval rounded to whole days.
+    #[test]
+    fn graduating_buttons_are_fuzzed_from_the_unrounded_interval() {
+        let mut ctx = ctx();
+        ctx.fuzz_factor = Some(0.95);
+        // 3.4 days: fuzz range 2-5 (from 3 days it would be 2-4 -> 4);
+        // 6.6 days: fuzz range 5-8 (from 7 days it would be 5-9 -> 9)
+        for (interval, expected) in [(3.4, 5), (6.6, 8)] {
+            for rule in [DayRule::Graduating, DayRule::Relearning] {
+                let out = button_intervals(&ctx, [None, None, Some(interval), None], rule);
+                let Some(ButtonInterval::Days { days, .. }) = out[2] else {
+                    panic!("good should be in days");
+                };
+                assert_eq!(days, expected, "{interval} days, {rule:?}");
+            }
+        }
     }
 
     #[test]

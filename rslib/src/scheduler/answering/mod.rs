@@ -28,6 +28,8 @@ use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::config::BoolKey;
+use crate::config::StringKey;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
@@ -100,6 +102,11 @@ struct CardStateUpdater {
     fsrs_short_term_with_steps: bool,
     same_day_review_limit_reached: bool,
     fsrs_allow_short_term: bool,
+    /// When answering: FSRS-7's next memory state for the chosen button,
+    /// from the elapsed time up to the answer. It replaces the one the
+    /// answer's new state carries, which was computed when the card was
+    /// shown (spec sched.fsrs7-fractional-elapsed-time).
+    fsrs_answer_memory_state: Option<fsrs::MemoryState>,
 }
 
 impl CardStateUpdater {
@@ -182,11 +189,11 @@ impl CardStateUpdater {
             .map(|state| {
                 fsrs_memory_state_for_params(
                     &self.fsrs_preset.params,
-                    fsrs::MemoryState {
+                    self.fsrs_answer_memory_state.unwrap_or(fsrs::MemoryState {
                         stability: state.stability_internal,
                         difficulty: state.difficulty,
                         stability_fast: state.stability_fast.unwrap_or(state.stability_internal),
-                    },
+                    }),
                 )
             })
             .transpose()
@@ -339,11 +346,14 @@ impl Collection {
     /// or more gets review fuzz, the load balancer and sibling dispersal, and
     /// the day buttons stay in order (spec sched.sub-day-intervals,
     /// sched.rwkv-curve-fuzz). The intraday queue does not depend on the
-    /// preset's FSRS parameters here.
+    /// preset's FSRS parameters here. Each given S90 replaces FSRS's S90 of
+    /// that button: it is the next state's stability, and Again's is what
+    /// the "leech only if young" check compares.
     pub fn scheduling_states_with_intervals(
         &mut self,
         cid: CardId,
         intervals: [Option<f32>; 4],
+        s90s: [Option<f32>; 4],
     ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
         let note_id = card.note_id;
@@ -365,6 +375,13 @@ impl Collection {
                 }
             }
             state_ctx.fsrs_allow_short_term = true;
+            if let Some(next_s90) = state_ctx.fsrs_next_s90.as_mut() {
+                for (item, s90) in next_s90.iter_mut().zip(s90s) {
+                    if let Some(s90) = s90.filter(|days| days.is_finite() && *days > 0.0) {
+                        *item = s90;
+                    }
+                }
+            }
         }
         Ok(current.next_states(&state_ctx))
     }
@@ -423,7 +440,30 @@ impl Collection {
         let original = card.clone();
         let usn = self.usn()?;
 
-        let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
+        let mut updater = self.card_state_updater_at(
+            card,
+            answer.desired_retention_override,
+            answer.answered_at.as_secs(),
+        )?;
+        // the stored memory state follows the elapsed time up to the answer,
+        // as training and every rebuild from the review log see it; a custom
+        // scheduling script may have set its own (spec
+        // sched.fsrs7-fractional-elapsed-time)
+        if self
+            .get_config_string(StringKey::CardStateCustomizer)
+            .trim()
+            .is_empty()
+        {
+            updater.fsrs_answer_memory_state = updater.fsrs_next_states.as_ref().map(|states| {
+                match answer.rating {
+                    Rating::Again => &states.again,
+                    Rating::Hard => &states.hard,
+                    Rating::Good => &states.good,
+                    Rating::Easy => &states.easy,
+                }
+                .memory
+            });
+        }
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
         // If the states aren't equal, it's probably because some time has passed.
@@ -596,12 +636,20 @@ impl Collection {
         )
     }
 
+    /// FSRS computes the answer states when the collection `fsrs` switch is
+    /// on, and also while it is still off in a collection that runs
+    /// RWKV-Curve or RWKV-Instant (a new collection until its first
+    /// deck-options save): both need FSRS states. Nothing is written (spec
+    /// sched.rwkv-answers-with-fsrs-switch-off).
     fn fsrs_enabled(&self) -> bool {
         self.state
             .card_queues
             .as_ref()
             .map(|queues| queues.fsrs_enabled)
             .unwrap_or_else(|| self.get_config_bool(BoolKey::Fsrs))
+            || self
+                .effective_scheduling_algorithm()
+                .is_ok_and(|algorithm| algorithm != SchedulingAlgorithm::Fsrs7)
     }
 
     fn fsrs_short_term_with_steps_enabled(&self) -> bool {
@@ -614,8 +662,20 @@ impl Collection {
 
     fn card_state_updater(
         &mut self,
+        card: Card,
+        desired_retention_override: Option<f32>,
+    ) -> Result<CardStateUpdater> {
+        self.card_state_updater_at(card, desired_retention_override, TimestampSecs::now())
+    }
+
+    /// Like card_state_updater(), with FSRS's elapsed time (retrievability
+    /// and next states) measured up to `fsrs_now`: the answer time when
+    /// answering.
+    fn card_state_updater_at(
+        &mut self,
         mut card: Card,
         desired_retention_override: Option<f32>,
+        fsrs_now: TimestampSecs,
     ) -> Result<CardStateUpdater> {
         let timing = self.timing_today()?;
         let now = TimestampSecs::now();
@@ -667,7 +727,7 @@ impl Collection {
                 self.storage.time_of_last_review(card.id)?
             };
             let days_elapsed = last_review_time
-                .map(|last_review_time| fsrs_elapsed_days(last_review_time, now))
+                .map(|last_review_time| fsrs_elapsed_days(last_review_time, fsrs_now))
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
             let current_memory_state = card.memory_state.map(Into::into);
@@ -745,6 +805,7 @@ impl Collection {
             fsrs_short_term_with_steps,
             same_day_review_limit_reached,
             fsrs_allow_short_term,
+            fsrs_answer_memory_state: None,
         })
     }
 
@@ -939,7 +1000,7 @@ fn get_fuzz_seed_for_id_and_reps(card_id: CardId, card_reps: u32) -> Option<u64>
 
 /// Return a fuzz factor from the range `0.0..1.0`, using the provided seed.
 /// None if seed is None.
-fn get_fuzz_factor(seed: Option<u64>) -> Option<f32> {
+pub(crate) fn get_fuzz_factor(seed: Option<u64>) -> Option<f32> {
     seed.map(|s| StdRng::seed_from_u64(s).random_range(0.0..1.0))
 }
 
@@ -1006,10 +1067,14 @@ pub(crate) mod test {
         Ok(card.id)
     }
 
+    // With a custom scheduling script the answer's own memory state is stored
+    // (spec sched.fsrs7-fractional-elapsed-time); RWKV's S90 then replaces
+    // only its stability.
     #[test]
     fn rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_string_inner(StringKey::CardStateCustomizer, "// custom")?;
         let cid = add_due_review_card(
             &mut col,
             10,
@@ -1189,6 +1254,7 @@ pub(crate) mod test {
         let states = col.scheduling_states_with_intervals(
             cid,
             [Some(1.0), Some(12.0), Some(12.0), Some(12.0)],
+            [None; 4],
         )?;
         assert_eq!(review_days(states.again), 1);
         assert_eq!(review_days(states.hard), 12);
@@ -1197,8 +1263,11 @@ pub(crate) mod test {
 
         // a sub-day interval goes to the intraday queue, in seconds, and the
         // passing answer keeps the card's lapse count
-        let states = col
-            .scheduling_states_with_intervals(cid, [Some(0.25), Some(0.4), Some(2.0), Some(3.0)])?;
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [Some(0.25), Some(0.4), Some(2.0), Some(3.0)],
+            [None; 4],
+        )?;
         let CardState::Normal(NormalState::Relearning(again)) = states.again else {
             panic!("a sub-day Again should relearn");
         };
@@ -1211,14 +1280,132 @@ pub(crate) mod test {
         assert_eq!(review_days(states.good), 2);
         assert_eq!(review_days(states.easy), 3);
 
-        // without any supplied interval the outcome is FSRS's own
-        let supplied = col.scheduling_states_with_intervals(cid, [None; 4])?;
+        // without any supplied interval the outcome is FSRS's own. The two
+        // calls run a moment apart and FSRS-7's elapsed time is exact to the
+        // second, so the memory states may differ in the last digits.
+        let supplied = col.scheduling_states_with_intervals(cid, [None; 4], [None; 4])?;
         let fsrs = col.get_scheduling_states(cid)?;
+        let memory = |state: &CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.memory_state,
+            CardState::Normal(NormalState::Relearning(relearn)) => relearn.review.memory_state,
+            other => panic!("unexpected state {other:?}"),
+        };
+        let with_memory = |state: CardState, memory: Option<FsrsMemoryState>| match state {
+            CardState::Normal(NormalState::Review(mut review)) => {
+                review.memory_state = memory;
+                CardState::Normal(NormalState::Review(review))
+            }
+            CardState::Normal(NormalState::Relearning(mut relearn)) => {
+                relearn.learning.memory_state = memory;
+                relearn.review.memory_state = memory;
+                CardState::Normal(NormalState::Relearning(relearn))
+            }
+            other => other,
+        };
+        for (supplied, fsrs) in [supplied.again, supplied.hard, supplied.good, supplied.easy]
+            .into_iter()
+            .zip([fsrs.again, fsrs.hard, fsrs.good, fsrs.easy])
+        {
+            let (a, b) = (memory(&supplied).unwrap(), memory(&fsrs).unwrap());
+            let close = |x: f32, y: f32| (x - y).abs() <= 1e-4 * y.abs().max(1.0);
+            assert!(close(a.stability, b.stability), "{a:?} vs {b:?}");
+            assert!(
+                close(a.stability_internal, b.stability_internal),
+                "{a:?} vs {b:?}"
+            );
+            assert!(close(a.difficulty, b.difficulty), "{a:?} vs {b:?}");
+            assert!(
+                close(a.stability_fast.unwrap(), b.stability_fast.unwrap()),
+                "{a:?} vs {b:?}"
+            );
+            assert_eq!(with_memory(supplied, Some(b)), fsrs);
+        }
+
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-answers-with-fsrs-switch-off: a new
+    // collection runs RWKV-Curve while its `fsrs` switch is still off; the
+    // answer states still take RWKV-Curve's intervals (not SM-2's), RWKV-Instant
+    // answers with FSRS states, and nothing turns the switch on.
+    #[test]
+    fn rwkv_answers_use_fsrs_states_while_the_fsrs_switch_is_off() -> Result<()> {
+        let mut col = crate::collection::CollectionBuilder::default().build()?;
+        assert!(!col.get_config_bool(BoolKey::Fsrs));
         assert_eq!(
-            [supplied.again, supplied.hard, supplied.good, supplied.easy],
-            [fsrs.again, fsrs.hard, fsrs.good, fsrs.easy]
+            col.effective_scheduling_algorithm()?,
+            SchedulingAlgorithm::RwkvCurve
+        );
+        let cid = add_due_review_card(&mut col, 20, 0, None)?;
+        let review_days = |state: CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days,
+            other => panic!("expected a review state, got {other:?}"),
+        };
+
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [Some(3.0), Some(33.0), Some(77.0), Some(90.0)],
+            [None; 4],
+        )?;
+        assert_eq!(
+            [states.again, states.hard, states.good, states.easy].map(review_days),
+            [3, 33, 77, 90]
         );
 
+        // RWKV-Instant answers with FSRS states too
+        col.update_default_deck_config(|config| SchedulingAlgorithm::RwkvInstant.apply_to(config));
+        let CardState::Normal(NormalState::Review(good)) = col.get_scheduling_states(cid)?.good
+        else {
+            panic!("expected a review state");
+        };
+        assert!(good.memory_state.is_some());
+        assert!(!col.get_config_bool(BoolKey::Fsrs));
+
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-fuzz: RWKV-Curve's S90s become
+    // the next states' stabilities, and the "leech only if young" check
+    // compares RWKV-Curve's Again S90 with 21 days, whatever FSRS-7's is.
+    #[test]
+    fn rwkv_curve_s90s_decide_the_young_leech_check() -> Result<()> {
+        let intervals = [Some(0.3), Some(3.0), Some(8.0), Some(20.0)];
+        // (FSRS-7 stability, RWKV-Curve's Again S90, leeched)
+        for (fsrs7_stability, rwkv_again_s90, leeched) in [(2000.0, 5.0, true), (2.0, 30.0, false)]
+        {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.rwkv_review_enabled = true;
+                config.relearn_steps = vec![];
+                config.leech_threshold = 2;
+                config.leech_only_if_young = true;
+            });
+            // one lapse below the leech threshold
+            let cid = add_due_review_card(
+                &mut col,
+                30,
+                1,
+                Some(FsrsMemoryState {
+                    stability: fsrs7_stability,
+                    stability_internal: fsrs7_stability,
+                    stability_fast: None,
+                    difficulty: 5.0,
+                }),
+            )?;
+
+            let states = col.scheduling_states_with_intervals(
+                cid,
+                intervals,
+                [Some(rwkv_again_s90), Some(6.0), Some(9.0), Some(25.0)],
+            )?;
+
+            assert_eq!(states.again.leeched(), leeched, "{fsrs7_stability}");
+            let CardState::Normal(NormalState::Review(good)) = states.good else {
+                panic!("expected a review state");
+            };
+            assert_eq!(good.memory_state.unwrap().stability, 9.0);
+        }
         Ok(())
     }
 
@@ -1805,7 +1992,7 @@ pub(crate) mod test {
             col.add_note(&mut note, DeckId(1))?;
             let card_id = col.get_first_card().id;
 
-            let states = col.scheduling_states_with_intervals(card_id, intervals)?;
+            let states = col.scheduling_states_with_intervals(card_id, intervals, [None; 4])?;
             assert_eq!(is_intraday(states.again), intraday, "{limit:?}");
             assert_eq!(is_intraday(states.hard), intraday, "{limit:?}");
             assert!(!is_intraday(states.good), "{limit:?}");
@@ -2361,6 +2548,85 @@ pub(crate) mod test {
             let rounded = fsrs.current_retrievability(state, whole_days);
             assert!((seen - rounded).abs() > 1e-3, "{seen} vs {whole_days} days");
         }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-fractional-elapsed-time: the stored
+    // memory state comes from the time up to the answer, not up to the moment
+    // the card was shown; the interval shown is kept.
+    #[test]
+    fn fsrs7_answer_stores_the_memory_state_at_the_answer_time() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+        });
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Learn;
+        card.queue = CardQueue::Learn;
+        card.due = TimestampSecs::now().0 as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 0.5,
+            stability_internal: 0.5,
+            stability_fast: Some(0.2),
+            difficulty: 5.0,
+        });
+        let last_review = TimestampSecs::now().adding_secs(-60);
+        card.last_review_time = Some(last_review);
+        col.storage.update_card(&card)?;
+        let before = card.memory_state.unwrap();
+
+        // shown about 60 seconds after the last review, answered 10 minutes
+        // after that
+        let states = col.get_scheduling_states(card.id)?;
+        let answered_at = TimestampSecs(last_review.0 + 660);
+        col.answer_card(&mut CardAnswer {
+            card_id: card.id,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis(answered_at.0 * 1000),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: true,
+        })?;
+
+        let fsrs = FSRS::new(&low_retention_fsrs7_params())?;
+        let at_answer = fsrs
+            .next_states_with_elapsed_days(Some(before.into()), 0.9, 660.0 / 86_400.0)?
+            .good
+            .memory;
+        let stored = col
+            .storage
+            .get_card(card.id)?
+            .unwrap()
+            .memory_state
+            .unwrap();
+        assert!(
+            (stored.stability_internal - at_answer.stability).abs() < 1e-4,
+            "{} vs {}",
+            stored.stability_internal,
+            at_answer.stability
+        );
+        assert!((stored.difficulty - at_answer.difficulty).abs() < 1e-4);
+        let shown = match states.good {
+            CardState::Normal(NormalState::Learning(learn)) => learn.memory_state,
+            CardState::Normal(NormalState::Review(review)) => review.memory_state,
+            other => panic!("unexpected state {other:?}"),
+        }
+        .unwrap();
+        assert!(
+            (stored.stability_internal - shown.stability_internal).abs() > 1e-3,
+            "the show-time state must differ for this test to mean anything"
+        );
         Ok(())
     }
 }

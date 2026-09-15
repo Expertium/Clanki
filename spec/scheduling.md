@@ -33,7 +33,10 @@ configured fuzz range; and each day button sits at least one day above the
 day button before it. The resulting fuzz delta is recorded on the state and
 shown above the answer buttons when that preference is on. This applies to
 every card the preset schedules, new and learning cards included. The S90
-RWKV-Curve supplies for a button becomes that answer's stability.
+RWKV-Curve supplies for a button becomes that answer's stability, in the
+states the backend builds, and the "leech only if young" check
+(`leech_only_if_young`) compares RWKV-Curve's Again S90 with 21 days, not
+FSRS-7's (`sched.next-state-s90`).
 
 Before this entry, RWKV-Curve wrote its interval over the already-fuzzed FSRS
 state and set the delta to 0, so RWKV-Curve users got no fuzz and no sibling
@@ -43,8 +46,12 @@ dispersal at all.
 outcome_, not of FSRS; switching the interval source must not switch them off.
 Andrew, 2026-09-15: Again on a relearning card without steps follows the
 review rule, as upstream did (it had been fuzzed like a graduating card).
+Later the same day (audit of RWKV-Curve): the young-leech check must not
+use FSRS-7's S90 for an RWKV-Curve card, since two cards with the same
+RWKV-Curve intervals were leeches or not depending on FSRS-7.
 
-**Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`
+**Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`,
+`rwkv_curve_s90s_decide_the_young_leech_check`
 (`rslib/src/scheduler/answering/mod.rs`),
 `external_intervals_are_dispersed_away_from_siblings`
 (`rslib/src/scheduler/states/load_balancer.rs`),
@@ -54,6 +61,26 @@ review rule, as upstream did (it had been fuzzed like a graduating card).
 `test_rwkv_curve_states_only_send_supplied_ratings`,
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-answers-with-fsrs-switch-off
+
+Given a collection whose algorithm is RWKV-Curve or RWKV-Instant (the
+`schedulingAlgorithm` key, or before the collection has one, the Default
+preset's, `sched.one-global-algorithm`) and whose collection `fsrs` switch is
+still off — a new collection until the first deck-options save — the answer
+states are FSRS states, as with the switch on: RWKV-Curve's intervals replace
+FSRS's (`sched.rwkv-curve-fuzz`), and RWKV-Instant's answers store FSRS
+states. Nothing is written to turn the switch on, so a new, empty collection
+still needs no full sync (`sched.global-algorithm-migration`). Everything
+else that reads the switch is unchanged.
+
+**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): a new Clanki collection
+runs RWKV-Curve, but with the switch off the answer states were SM-2's, so
+the answer buttons and the answer used SM-2 intervals while RWKV-Curve's S90
+was stored — two algorithms in one answer.
+
+**Pinned by:** `rwkv_answers_use_fsrs_states_while_the_fsrs_switch_is_off`
+(`rslib/src/scheduler/answering/mod.rs`).
 
 ## sched.rwkv-curve-s90
 
@@ -100,6 +127,46 @@ other's.
 
 **Pinned by:** `rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes`
 (`rslib/src/scheduler/fsrs/memory_state.rs`).
+
+## sched.rwkv-curve-reschedule
+
+Given a review card that the RWKV-Curve reschedule reschedules
+(`deck-options.reschedule-on-change`), its new interval is RWKV-Curve's
+current interval — the unrounded day where the card's curve meets its target
+retention, found as for the answer intervals (`sched.sub-day-intervals`) —
+turned into whole days exactly as the FSRS-7 reschedule turns FSRS-7's
+unrounded interval into days: rounded to the nearest day like an answer, at
+least 1, at most the home preset's maximum interval, and not below the
+interval before the card's last review while the new interval still reaches
+it within the fuzz range; then the load balancer and Easy Days pick the day
+within the fuzz range (else plain review fuzz), seeded per card for its last
+review as in the FSRS-7 reschedule, and each rescheduled card counts toward
+the load of the cards after it. The card is due that many days after its
+last review.
+
+Its memory state changes as on an RWKV-Curve answer: the S90 becomes
+RWKV-Curve's current S90 (`sched.rwkv-curve-s90`), and the internal and fast
+stabilities keep their values — a card without a fast stability still has
+none. A card without a usable FSRS-7 state gets the FSRS-7 state whose own
+S90 is RWKV-Curve's (`sched.fsrs7-sm2-conversion`).
+
+**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): "RWKV-Curve should adopt
+fuzz/LB"; the reschedule rounded the crossing up (1.1 d gave 2 d where an
+answer gives 1 d), ignored the maximum interval, and put every card with
+the same interval on the same day. One algorithm's values must not mix into
+the other's: the reschedule wrote RWKV-Curve's S90 into FSRS-7's fast
+stability when the card had none, which an answer never does.
+
+**Pinned by:** `reschedule_turns_the_unrounded_interval_into_days_like_fsrs7`,
+`apply_review_reschedule_changes_only_the_s90_of_a_memory_state`,
+`apply_review_reschedule_without_memory_state_gets_an_fsrs7_state_with_that_s90`
+(`rslib/src/scheduler/rwkv.rs`);
+`rescheduled_interval_days_are_fuzzed_and_load_balanced`
+(`rslib/src/scheduler/fsrs/rescheduler.rs`);
+`current_intervals_from_warm_up_match_predict_many` (`rslib/src/rwkv/mod.rs`);
+`test_rwkv_reschedule_items_carry_the_unrounded_interval`,
+`test_apply_rwkv_review_reschedule_includes_target_retention`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-no-model-error
 
@@ -210,7 +277,10 @@ intervals for this showing of the card. Until then the button area shows
 doubling up to once a second), and answer keys and clicks do nothing. This
 covers every reason RWKV-Curve has no intervals yet: its state still loading,
 another RWKV task holding it, its state changing during the prediction, no
-prediction, a button without an interval, or an error; without a usable
+prediction, a button without an interval, or an error — also an error while
+the answer states are built from RWKV-Curve's intervals, after the
+prediction itself succeeded: no prediction is kept then, so an answer stores
+no RWKV-Curve S90 with states that are not RWKV-Curve's. Without a usable
 RWKV model it does not wait (`sched.rwkv-no-model-error`). Each
 prediction belongs to one showing: it is cleared before the next prediction
 and once an answer has used it, so a later showing of the same card never
@@ -230,6 +300,7 @@ could supply the S90 of a later answer.
 (`qt/tests/test_reviewer.py`);
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
 `test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
+`test_error_building_rwkv_curve_states_leaves_the_buttons_waiting`,
 `test_set_answer_rwkv_metadata_clears_the_prediction`
 (`qt/tests/test_rwkv_scheduler.py`).
 
@@ -273,7 +344,10 @@ Good, Easy:
 - a button of 12 hours or more gets whole days (at least 1) after review
   fuzz, and at least one day more than the day button before it: with all
   four at 12 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
-  Easy ≥ Good + 1.
+  Easy ≥ Good + 1. The fuzz range and the load balancer take the unrounded
+  interval for every card (new, learning, relearning and review), so, with
+  the same fuzz, 6.6 days gives the same range (5–8 days) on a new card as
+  on a review card.
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
@@ -304,6 +378,9 @@ RWKV-Curve's curve itself.
 Before this entry only learning and relearning answers under half a day
 went intraday, a review card's Again never did (it was clamped to the
 minimum lapse interval first), and RWKV-Curve rounded up to whole days.
+The FSRS-7 interval audit (2026-09-15; Andrew: fix it) found new, learning
+and relearning buttons fuzzed from the interval rounded to whole days (6.6
+days gave the range 5–9 days, a review card 5–8), an upstream leftover.
 
 **Pinned by:** `button_intervals::test::*`
 (`rslib/src/scheduler/states/button_intervals.rs`),
@@ -512,17 +589,28 @@ review, in fractional days, for every card: new, learning, relearning and
 review, in any queue. This is the same elapsed time training and the
 memory-state rebuild take from the review log (millisecond timestamps), so
 the model sees the same kind of input when it is trained and when it is
-used. The day rollover plays no part in it.
+used. The day rollover plays no part in it. The elapsed time runs up to the
+answer (the review log's timestamp), not up to the moment the card was
+shown: the memory state stored with an answer is FSRS-7's next state for the
+chosen button at that elapsed time, and the interval stays the one the
+button showed. With a custom scheduling script set, the memory state the
+answer carries is stored as it is (the script may have set it).
 
 **Why:** Andrew, 2026-09-15: FSRS-7 must use fractional, not integer,
 interval lengths as inputs, both in training and in deployment. Before this
 entry, review and interday-learning cards got whole days from the rollover
 (a review Monday 23:00 answered Wednesday 05:00 with a 04:00 rollover was
-2 days, not 1.25), while training used the exact 1.25.
+2 days, not 1.25), while training used the exact 1.25. The FSRS-7 interval
+audit (2026-09-15; Andrew: fix it) then found the stored memory state
+computed when the card was shown, so the model saw the elapsed time minus
+the answer time: a new card answered Good 20 seconds after being shown got a
+4.9% shorter next interval than a rebuild from the review log, Again 10.7%.
 
 **Pinned by:** `fsrs7_gets_fractional_elapsed_time_like_training`,
-`fsrs7_review_answer_uses_the_exact_elapsed_time`
-(`rslib/src/scheduler/answering/mod.rs`);
+`fsrs7_review_answer_uses_the_exact_elapsed_time`,
+`fsrs7_answer_stores_the_memory_state_at_the_answer_time`,
+`rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability` (the custom
+script case) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_interday_delta_uses_fractional_elapsed_time`,
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
