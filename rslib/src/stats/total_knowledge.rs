@@ -6,6 +6,7 @@
 //! far (the upper bound) and, under FSRS-7, the sum of their R. RWKV's sum
 //! is computed by the RWKV job in Python.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
@@ -254,10 +255,10 @@ struct FsrsCache(HashMap<usize, FSRS>);
 
 impl FsrsCache {
     fn get(&mut self, index: usize, preset: &FsrsPreset) -> Result<&FSRS> {
-        if !self.0.contains_key(&index) {
-            self.0.insert(index, preset.fsrs()?);
-        }
-        Ok(&self.0[&index])
+        Ok(match self.0.entry(index) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(preset.fsrs()?),
+        })
     }
 }
 

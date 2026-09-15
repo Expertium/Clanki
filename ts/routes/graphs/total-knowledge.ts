@@ -272,7 +272,7 @@ export function renderTotalKnowledge(
 export function tooltipText(point: TotalKnowledgePoint, date: Date): string {
     const known = point.known === null
         ? `${tr.statisticsTotalKnowledgeKnown()}: ${tr.cardStatsCalculating()}`
-        : tr.statisticsTotalKnowledgeKnownCards({ cards: localizedNumber(point.known, 1) });
+        : tr.statisticsTotalKnowledgeKnownCards({ cards: Math.round(point.known * 10) / 10 });
     return [
         localizedDate(date),
         `<span style="color:${KNOWN_COLOUR}">■</span> ${known}`,

@@ -111,7 +111,7 @@ test("the tooltip gives the day's date, known and reviewed cards", () => {
     const date = new Date(2026, 8, 15, 12);
     const lines = tooltipText({ day: 0, reviewed: 3, known: 2.46 }, date).split("<br>");
     expect(lines).toHaveLength(3);
-    expect(lines[1]).toContain(tr.statisticsTotalKnowledgeKnownCards({ cards: "2.5" }));
+    expect(lines[1]).toContain(tr.statisticsTotalKnowledgeKnownCards({ cards: 2.5 }));
     expect(lines[2]).toContain(tr.statisticsTotalKnowledgeReviewedCards({ cards: 3 }));
     expect(tooltipText({ day: 0, reviewed: 1, known: null }, date)).toContain(
         tr.cardStatsCalculating(),
