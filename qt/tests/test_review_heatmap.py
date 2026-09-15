@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from anki.collection import Config
 from anki.decks import DeckId
+from anki.utils import ids2str
 from aqt import review_heatmap
 from aqt.review_heatmap import (
     ADDON_NOTICE_SHOWN_KEY,
@@ -158,6 +160,134 @@ def test_input_fingerprint_follows_reviews_and_cards_only(tmp_path: Any) -> None
         scoped = reporter.input_fingerprint(current_deck_only=True)
         col.decks.id("Other::Child")
         assert reporter.input_fingerprint(current_deck_only=True) != scoped
+    finally:
+        col.close(downgrade=False)
+
+
+def test_render_keeps_one_cache_entry_per_place() -> None:
+    heatmap = _heatmap(enabled=True)
+    with patch.object(review_heatmap, "ActivityReporter") as reporter:
+        reporter.return_value.get_report.return_value = None
+        reporter.return_value.input_fingerprint.return_value = ("inputs", 1)
+        for _ in range(2):
+            heatmap.render(HeatmapView.deckbrowser, current_deck_only=False)
+            heatmap.render(HeatmapView.overview, current_deck_only=True)
+        # the deck list and the overview do not push each other out
+        assert reporter.return_value.get_report.call_count == 2
+
+
+def _reviews_per_day_in_one_query(
+    col: Any, settings: HeatmapSettings, current_deck_only: bool
+) -> list[tuple[int, int]]:
+    """What _cards_done returned when it grouped the whole review log on
+    every call: the reference its cache must match."""
+    reporter = ActivityReporter(col, settings)
+    where = []
+    if settings.exclude_manual_reschedules:
+        where.append("ease >= 1")
+    dids = reporter._deck_ids(current_deck_only)
+    if dids is not None:
+        where.append(f"cid IN (SELECT id FROM cards WHERE did IN {ids2str(dids)})")
+    elif settings.exclude_deleted_cards:
+        where.append("cid IN (SELECT id FROM cards)")
+    condition = f"WHERE {' AND '.join(where)}" if where else ""
+    offset_secs = reporter._offset() * 3600
+    return [
+        (day, count)
+        for day, count in col.db.all(
+            f"""
+SELECT CAST(STRFTIME('%s', id / 1000 - {offset_secs}, 'unixepoch',
+                     'localtime', 'start of day') AS int) AS day, COUNT()
+FROM revlog {condition}
+GROUP BY day ORDER BY day"""
+        )
+    ]
+
+
+def test_older_reviews_are_counted_once_and_newer_ones_every_time(
+    tmp_path: Any,
+) -> None:
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "heatmap.anki2"))
+    try:
+        other = col.decks.id("Other")
+        assert other is not None
+        card_ids = []
+        for deck in (DeckId(1), DeckId(1), other):
+            note = col.new_note(col.models.current())
+            note.fields[0] = f"front {len(card_ids)}"
+            col.add_note(note, deck)
+            card_ids += note.card_ids()
+
+        def add_review(card_id: int, days_ago: float, ease: int = 3) -> None:
+            review_id = int(time.time() * 1000) - int(days_ago * DAY * 1000)
+            col.db.execute(
+                "INSERT INTO revlog VALUES (?, ?, -1, ?, 1, 0, 2500, 1000, 1)",
+                review_id,
+                card_id,
+                ease,
+            )
+
+        for days_ago in (40, 12.5, 12.25, 3, 1):
+            add_review(card_ids[0], days_ago)
+        add_review(card_ids[1], 30)
+        add_review(card_ids[1], 20, ease=0)  # a manual reschedule
+        add_review(card_ids[2], 12.5)
+        col.decks.select(DeckId(1))
+        cache: dict[Any, Any] = {}
+        grouped: list[str] = []
+        settings = HeatmapSettings(exclude_deleted_cards=True)
+
+        def check() -> None:
+            for current_deck_only in (False, True):
+                reporter = ActivityReporter(col, settings, cache)
+                original = reporter._review_days
+
+                def review_days(dids: Any, condition: str) -> Any:
+                    grouped.append(condition.split()[1])
+                    return original(dids, condition)
+
+                reporter._review_days = review_days  # type: ignore[method-assign]
+                assert reporter._cards_done(
+                    current_deck_only, None
+                ) == _reviews_per_day_in_one_query(col, settings, current_deck_only)
+
+        check()
+        assert grouped == ["<", ">=", "<", ">="]  # one count per scope
+        grouped.clear()
+
+        # a new review is counted on its own; the older days are reused
+        add_review(card_ids[2], 0)
+        check()
+        assert grouped == [">=", ">="]
+        grouped.clear()
+
+        # moving an older card changes the current deck's older days only
+        col.set_deck([card_ids[2]], DeckId(1))
+        check()
+        assert grouped == [">=", "<", ">="]
+        grouped.clear()
+
+        # deleting a card with older reviews changes both
+        col.remove_notes([col.get_card(card_ids[0]).nid])
+        check()
+        assert grouped == ["<", ">=", "<", ">="]
+        grouped.clear()
+
+        # a review imported from the past is older: both are counted again
+        add_review(card_ids[1], 50)
+        check()
+        assert grouped == ["<", ">=", "<", ">="]
+
+        # the history start leaves out earlier days, as a filter on the day
+        reporter = ActivityReporter(col, settings, cache)
+        start = reporter._today() - 25 * DAY
+        assert reporter._cards_done(False, start) == [
+            row
+            for row in _reviews_per_day_in_one_query(col, settings, False)
+            if row[0] >= start
+        ]
     finally:
         col.close(downgrade=False)
 
