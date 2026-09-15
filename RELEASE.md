@@ -30,6 +30,17 @@ repeated here unless they materially affect a fork feature.
   RWKV-Curve and RWKV-Instant on (older builds, add-ons) is RWKV-Curve
   everywhere.
 - RWKV-Instant cards show no intervals above the answer buttons.
+- FSRS-7 is the only FSRS model. A preset without FSRS-7 parameters runs
+  with the FSRS-7 defaults, even if it has trained FSRS-6/5/4.5 parameters
+  (those stay stored, unused); the FSRS version selector is gone. On first
+  open, cards of such presets get their memory states computed again with
+  FSRS-7; due dates do not change. Optimizing always fits FSRS-7 with
+  same-day reviews, and rescheduling uses each card's full FSRS-7 memory
+  state.
+- FSRS-7 now sees the exact time since a card's last review when you answer
+  it, as it does in training. Before, review cards got whole days counted
+  from the day rollover, so FSRS-7 was trained on one kind of input and used
+  with another.
 - Deck options: "Don't play audio automatically" is now "Play audio
   automatically", on by default. Audio plays exactly as before.
 - New presets get 9999 maximum reviews/day and sort reviews by ascending

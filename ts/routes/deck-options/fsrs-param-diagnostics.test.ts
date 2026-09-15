@@ -3,15 +3,18 @@
 
 import { expect, test } from "vitest";
 
-import {
-    fsrsParamDiagnostics,
-    fsrsParamsSupportSameDayEvaluation,
-    OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
-} from "./fsrs-param-diagnostics";
+import { fsrsParamDiagnostics, OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING } from "./fsrs-param-diagnostics";
 
-test("accepts default and known FSRS parameter counts", () => {
-    for (const count of [0, 17, 19, 21, 34]) {
+// Pins spec/scheduling.md#sched.fsrs7-only: FSRS-7 only
+test("accepts the FSRS-7 defaults (empty) and 34 FSRS-7 parameters", () => {
+    for (const count of [0, 34]) {
         expect(fsrsParamDiagnostics(Array(count).fill(1)).valid).toBe(true);
+    }
+});
+
+test("rejects the parameter counts of older FSRS versions", () => {
+    for (const count of [17, 19, 21]) {
+        expect(fsrsParamDiagnostics(Array(count).fill(1)).valid).toBe(false);
     }
 });
 
@@ -35,7 +38,7 @@ test("flags outdated 35-parameter FSRS-7 preview params", () => {
 });
 
 test("reports non-finite FSRS parameter indexes and values", () => {
-    const params = Array(21).fill(1);
+    const params = Array(34).fill(1);
     params[2] = Number.NaN;
     params[5] = Number.POSITIVE_INFINITY;
 
@@ -45,12 +48,4 @@ test("reports non-finite FSRS parameter indexes and values", () => {
     expect(diagnostics.validCount).toBe(true);
     expect(diagnostics.nonFiniteIndexes).toStrictEqual([2, 5]);
     expect(diagnostics.nonFiniteValues).toStrictEqual(["NaN", "Infinity"]);
-});
-
-test("same-day evaluation is only supported for FSRS-7 parameter sets", () => {
-    expect(fsrsParamsSupportSameDayEvaluation(Array(34).fill(1))).toBe(true);
-
-    for (const count of [0, 17, 19, 21]) {
-        expect(fsrsParamsSupportSameDayEvaluation(Array(count).fill(1))).toBe(false);
-    }
 });

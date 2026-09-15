@@ -45,6 +45,10 @@ pub enum BoolKey {
     /// The removed "Skip learning/relearning queues with FSRS/RWKV" switch;
     /// only read to migrate it (spec sched.max-same-day-reviews).
     FsrsLearningQueuesDisabled,
+    /// Set once the collection was moved to FSRS-7 only (spec
+    /// sched.fsrs7-only): the memory states of presets that ran other
+    /// parameters were computed again.
+    Fsrs7OnlyMigrated,
     /// The "Reschedule cards on change" choice of the last deck-options
     /// save. Gates the schedule half of the post-sync FSRS reconcile pass
     /// (spec `sync.post-sync-reschedule-gate`).

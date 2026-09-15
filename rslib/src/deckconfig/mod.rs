@@ -149,43 +149,29 @@ impl Default for DeckConfig {
     }
 }
 
-impl DeckConfig {
-    fn params_usable_in_current_fsrs(params: &[f32]) -> bool {
-        matches!(params.len(), 17 | 19 | 21 | 34) && params.iter().all(|w| w.is_finite())
+/// The parameters Clanki runs FSRS-7 with (spec sched.fsrs7-only): the given
+/// FSRS-7 parameters when they are 34 finite values, else the FSRS-7 defaults.
+/// Clanki has no other FSRS model; stored FSRS-6/5/4 parameters are ignored.
+pub(crate) fn effective_fsrs7_params(params: &[f32]) -> &[f32] {
+    if params.len() == fsrs::DEFAULT_PARAMETERS.len() && params.iter().all(|w| w.is_finite()) {
+        params
+    } else {
+        &fsrs::DEFAULT_PARAMETERS
     }
+}
 
+impl DeckConfig {
     pub(crate) fn set_modified(&mut self, usn: Usn) {
         self.mtime_secs = TimestampSecs::now();
         self.usn = usn;
     }
 
-    pub fn selected_fsrs_params(&self) -> &[f32] {
-        match FsrsVersion::try_from(self.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-            FsrsVersion::Seven => &self.inner.fsrs_params_7,
-            FsrsVersion::Six => &self.inner.fsrs_params_6,
-            FsrsVersion::Five => &self.inner.fsrs_params_5,
-            FsrsVersion::Four => &self.inner.fsrs_params_4,
-        }
-    }
-
-    /// Retrieve FSRS params according to selected version. If selected params
-    /// are unusable, we fall back to best available params for compatibility
-    /// with existing collections that predate explicit version selection.
-    /// Returns an empty slice if none of the stored arrays are usable.
+    /// The FSRS-7 parameters this preset runs with: its stored FSRS-7
+    /// parameters, or the FSRS-7 defaults when it has none (never optimized)
+    /// or they are unusable. The stored version and the FSRS-6/5/4 slots are
+    /// kept for other clients but not read (spec sched.fsrs7-only).
     pub fn fsrs_params(&self) -> &[f32] {
-        if Self::params_usable_in_current_fsrs(self.selected_fsrs_params()) {
-            self.selected_fsrs_params()
-        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_7) {
-            &self.inner.fsrs_params_7
-        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_6) {
-            &self.inner.fsrs_params_6
-        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_5) {
-            &self.inner.fsrs_params_5
-        } else if Self::params_usable_in_current_fsrs(&self.inner.fsrs_params_4) {
-            &self.inner.fsrs_params_4
-        } else {
-            &[]
-        }
+        effective_fsrs7_params(&self.inner.fsrs_params_7)
     }
 
     /// The preset's "Max number of same-day reviews". It applies only while
@@ -586,24 +572,81 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn fsrs_params_respects_selected_version_when_usable() {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Six as i32;
-        config.inner.fsrs_params_6 = vec![1.0_f32; 21];
-        config.inner.fsrs_params_7 = vec![2.0_f32; 34];
-
-        assert_eq!(config.fsrs_params(), &[1.0_f32; 21]);
+    /// Trained FSRS-6 parameters, as an FSRS-6 optimizer would store them.
+    fn trained_fsrs6_params() -> Vec<f32> {
+        fsrs::FSRS6_DEFAULT_PARAMETERS
+            .iter()
+            .map(|w| w * 1.1)
+            .collect()
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-only: a preset that was never
+    // optimized for FSRS-7 runs the FSRS-7 defaults, whatever its stored
+    // version and FSRS-6 parameters. The FSRS-6 slot stays as stored.
     #[test]
-    fn fsrs_params_falls_back_for_legacy_configs() {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
-        config.inner.fsrs_params_7 = vec![1.0_f32, 2.0_f32, 3.0_f32];
-        config.inner.fsrs_params_6 = vec![2.0_f32; 21];
+    fn fsrs_params_without_fsrs7_params_are_the_fsrs7_defaults() {
+        for version in [
+            FsrsVersion::Six,
+            FsrsVersion::Seven,
+            FsrsVersion::Five,
+            FsrsVersion::Four,
+        ] {
+            let mut config = DeckConfig::default();
+            config.inner.fsrs_version = version as i32;
+            config.inner.fsrs_params_6 = trained_fsrs6_params();
+            config.inner.fsrs_params_5 = vec![1.5_f32; 19];
+            config.inner.fsrs_params_4 = vec![1.5_f32; 17];
+            assert!(config.inner.fsrs_params_7.is_empty());
 
-        assert_eq!(config.fsrs_params(), &[2.0_f32; 21]);
+            assert_eq!(config.fsrs_params(), &fsrs::DEFAULT_PARAMETERS[..]);
+            assert_eq!(config.inner.fsrs_params_6, trained_fsrs6_params());
+            assert_eq!(config.inner.fsrs_version, version as i32);
+        }
+
+        // a preset without any parameters too
+        assert_eq!(
+            DeckConfig::default().fsrs_params(),
+            &fsrs::DEFAULT_PARAMETERS[..]
+        );
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: 34 valid FSRS-7 parameters run
+    // as stored, even when the stored version is FSRS-6.
+    #[test]
+    fn fsrs_params_are_the_fsrs7_params_whatever_the_stored_version() {
+        let mut config = DeckConfig::default();
+        config.inner.fsrs_version = FsrsVersion::Six as i32;
+        config.inner.fsrs_params_6 = trained_fsrs6_params();
+        config.inner.fsrs_params_7 = vec![2.0_f32; 34];
+
+        assert_eq!(config.fsrs_params(), &[2.0_f32; 34]);
+        assert_eq!(config.inner.fsrs_params_6, trained_fsrs6_params());
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: FSRS-7 parameters that are not
+    // 34 finite values are unusable, so the preset runs the FSRS-7 defaults.
+    #[test]
+    fn unusable_fsrs7_params_give_the_fsrs7_defaults() {
+        let mut with_nan = vec![2.0_f32; 34];
+        with_nan[5] = f32::NAN;
+        let mut with_infinity = vec![2.0_f32; 34];
+        with_infinity[33] = f32::INFINITY;
+        for params in [
+            with_nan,
+            with_infinity,
+            vec![1.0_f32, 2.0, 3.0],
+            vec![2.0_f32; 35],
+            trained_fsrs6_params(),
+        ] {
+            let mut config = DeckConfig::default();
+            config.inner.fsrs_version = FsrsVersion::Seven as i32;
+            config.inner.fsrs_params_6 = trained_fsrs6_params();
+            config.inner.fsrs_params_7 = params.clone();
+
+            assert_eq!(config.fsrs_params(), &fsrs::DEFAULT_PARAMETERS[..]);
+            assert_eq!(config.inner.fsrs_params_6, trained_fsrs6_params());
+            assert_eq!(config.inner.fsrs_params_7.len(), params.len());
+        }
     }
 
     #[test]

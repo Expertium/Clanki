@@ -7,9 +7,8 @@ use std::collections::HashSet;
 use anki_proto::scheduler::ComputeMemoryStateResponse;
 use fsrs::FSRSItem;
 use fsrs::MemoryState;
+use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
-use fsrs::FSRS5_DEFAULT_DECAY;
-use fsrs::FSRS6_DEFAULT_DECAY;
 use itertools::Either;
 use itertools::Itertools;
 
@@ -21,7 +20,6 @@ use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
-use crate::scheduler::fsrs::params::include_same_day_for_params;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
@@ -72,20 +70,12 @@ pub struct FsrsDesiredRetentionForInterval {
     pub interval_target_desired_retention: f32,
 }
 
-/// Helper function to determine the appropriate decay value based on FSRS
-/// parameters
+/// The single decay value stored on cards (`card.decay`, read by other
+/// clients and custom scheduling). FSRS-7 uses a mixture curve; this is its
+/// first decay component, of the parameters the preset runs with (spec
+/// sched.fsrs7-only).
 pub(crate) fn get_decay_from_params(params: &[f32]) -> f32 {
-    if params.is_empty() {
-        FSRS6_DEFAULT_DECAY // default decay for FSRS-6
-    } else if params.len() < 21 {
-        FSRS5_DEFAULT_DECAY // default decay for FSRS-4.5 and FSRS-5
-    } else if params.len() >= 34 {
-        // FSRS-7 uses a mixture curve; expose the first decay component for
-        // compatibility with existing callers that expect a single decay value.
-        params[23]
-    } else {
-        params[20]
-    }
+    crate::deckconfig::effective_fsrs7_params(params)[23]
 }
 
 pub(crate) fn fsrs_current_retrievability_for_params(
@@ -315,10 +305,9 @@ impl Collection {
 
             let Some(req) = &req else {
                 let items = fsrs_items_for_memory_states(
-                    &FSRS::new(&[])?,
-                    &[],
+                    &FSRS::new(&DEFAULT_PARAMETERS)?,
+                    &DEFAULT_PARAMETERS,
                     revlog,
-                    timing.next_day_at,
                     0.9,
                     ignore_before,
                 )?;
@@ -349,7 +338,6 @@ impl Collection {
                 &fsrs,
                 params,
                 revlog,
-                timing.next_day_at,
                 req.historical_retention,
                 ignore_before,
             )?;
@@ -431,15 +419,14 @@ impl Collection {
                     // reschedule it
                     let days_elapsed = timing.next_day_at.elapsed_days_since(*last_review) as i32;
                     let previous_interval = last_info.previous_interval.unwrap_or(0);
-                    let interval = fsrs.next_interval(
-                        Some(
-                            card.memory_state
-                                .expect("We set it before this function is called")
-                                .stability,
-                        ),
+                    // the card's whole FSRS-7 state (internal and fast
+                    // stability, difficulty), not its S90 as a lone stability
+                    let interval = fsrs.next_interval_for_state(
+                        card.memory_state
+                            .expect("We set it before this function is called")
+                            .into(),
                         card.desired_retention
                             .expect("We set it before this function is called"),
-                        0,
                     );
                     let min_interval = minimum_review_fuzz_interval(
                         interval,
@@ -554,7 +541,6 @@ impl Collection {
                 &fsrs,
                 params,
                 revlog,
-                timing.next_day_at,
                 config.inner.historical_retention,
                 ignore_revlogs_before_ms_from_config(&config)?,
             )?;
@@ -1060,7 +1046,6 @@ impl Collection {
             &fsrs,
             params,
             revlog,
-            self.timing_today()?.next_day_at,
             historical_retention,
             fsrs_preset.ignore_revlogs_before_ms()?,
         )?;
@@ -1075,7 +1060,6 @@ impl Collection {
             card_id = card.id.0,
             preset_id = ?fsrs_preset.id,
             preset_name = fsrs_preset.name.as_str(),
-            fsrs_version = ?fsrs_preset.fsrs_version,
             params_len = params.len(),
             params_fingerprint = format_args!("{:016x}", params_fingerprint(params)),
             desired_retention = round_to_two_decimals(desired_retention),
@@ -1150,7 +1134,6 @@ pub(crate) fn fsrs_items_for_memory_states(
     fsrs: &FSRS,
     params: &[f32],
     revlogs: Vec<RevlogEntry>,
-    next_day_at: TimestampSecs,
     historical_retention: f32,
     ignore_revlogs_before: TimestampMillis,
 ) -> Result<Vec<(CardId, Option<FsrsItemForMemoryState>)>> {
@@ -1165,7 +1148,6 @@ pub(crate) fn fsrs_items_for_memory_states(
                     fsrs,
                     params,
                     group.collect(),
-                    next_day_at,
                     historical_retention,
                     ignore_revlogs_before,
                 )?,
@@ -1272,7 +1254,6 @@ pub(crate) fn fsrs_item_for_memory_state(
     fsrs: &FSRS,
     params: &[f32],
     entries: Vec<RevlogEntry>,
-    next_day_at: TimestampSecs,
     historical_retention: f32,
     ignore_revlogs_before: TimestampMillis,
 ) -> Result<Option<FsrsItemForMemoryState>> {
@@ -1280,13 +1261,7 @@ pub(crate) fn fsrs_item_for_memory_state(
         interval: f32,
         ease_factor: f32,
     }
-    if let Some(mut output) = reviews_for_fsrs(
-        entries,
-        next_day_at,
-        false,
-        ignore_revlogs_before,
-        include_same_day_for_params(params),
-    ) {
+    if let Some(mut output) = reviews_for_fsrs(entries, false, ignore_revlogs_before) {
         let mut item = output.fsrs_items.pop().unwrap().1;
         if output.revlogs_complete {
             Ok(Some(FsrsItemForMemoryState {
@@ -1367,21 +1342,20 @@ mod tests {
 
     // Pins spec/deck-options.md#deck-options.historical-retention-fixed: a
     // preset that stores 0.7 computes the same memory states as one that
-    // stores 0.9, because 0.9 is always used. FSRS-6 parameters, because
-    // FSRS-7 never reads the SM-2 retention.
+    // stores 0.9. Clanki runs FSRS-7 only (spec sched.fsrs7-only), and the
+    // FSRS-7 SM-2 conversion reads no retention at all, so the card gets the
+    // FSRS-7 defaults' conversion of its interval.
     #[test]
     fn stored_historical_retention_is_ignored() -> Result<()> {
         fn inferred_memory_state(stored_historical_retention: f32) -> Result<FsrsMemoryState> {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
             col.update_default_deck_config(|config| {
-                config.fsrs_version = FsrsVersion::Six as i32;
-                config.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.to_vec();
                 config.historical_retention = stored_historical_retention;
             });
             NoteAdder::basic(&mut col).add(&mut col);
             // A review card without a revlog: its memory state is inferred
-            // from the SM-2 interval and ease, which uses historical retention.
+            // from the SM-2 interval and ease.
             let mut card = col.get_first_card();
             card.ctype = CardType::Review;
             card.queue = CardQueue::Review;
@@ -1396,19 +1370,22 @@ mod tests {
         let with_stored_0_9 = inferred_memory_state(0.9)?;
         assert_eq!(with_stored_0_7, with_stored_0_9);
 
-        // The stored value would have mattered: the inference itself does
-        // depend on the retention it is given, and the cards got the 0.9 one.
-        let fsrs = FSRS::new(&FSRS6_DEFAULT_PARAMETERS)?;
-        let at_0_7 =
-            memory_state_from_sm2_with_params(&fsrs, &FSRS6_DEFAULT_PARAMETERS, 2.5, 100.0, 0.7)?;
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
         let at_0_9 =
-            memory_state_from_sm2_with_params(&fsrs, &FSRS6_DEFAULT_PARAMETERS, 2.5, 100.0, 0.9)?;
-        assert_ne!(at_0_7.stability, at_0_9.stability);
+            memory_state_from_sm2_with_params(&fsrs, &DEFAULT_PARAMETERS, 2.5, 100.0, 0.9)?;
         assert_int_eq(
             Some(with_stored_0_7),
             Some(fsrs_memory_state_for_fsrs(&fsrs, at_0_9)),
         );
         Ok(())
+    }
+
+    /// Valid FSRS-7 parameters that differ from the defaults: a slower decay
+    /// of the slow curve component.
+    fn other_fsrs7_params() -> Vec<f32> {
+        let mut params = DEFAULT_PARAMETERS.to_vec();
+        params[24] += 0.2;
+        params
     }
 
     fn make_review_card(col: &mut Collection, note_id: NoteId, stability: f32) -> Result<CardId> {
@@ -1753,7 +1730,6 @@ mod tests {
                 },
                 revlog(RevlogReviewKind::Review, 0),
             ],
-            TimestampSecs::now(),
             0.9,
             0.into(),
         )?
@@ -1791,7 +1767,6 @@ mod tests {
                 interval: 100,
                 ..revlog(RevlogReviewKind::Review, 100)
             }],
-            TimestampSecs::now(),
             0.9,
             0.into(),
         )?
@@ -1854,7 +1829,6 @@ mod tests {
                     ..revlog(RevlogReviewKind::Review, 1)
                 },
             ],
-            next_day_at,
             0.9,
             0.into(),
         )?
@@ -1889,17 +1863,12 @@ mod tests {
     {
         let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
         let revlogs = relearning_card_1779209293223_revlogs();
-        let next_day_at = TimestampSecs(1_779_292_800);
-        let reconstructed = fsrs_item_for_memory_state(
-            &fsrs,
-            &DEFAULT_PARAMETERS,
-            revlogs.clone(),
-            next_day_at,
-            0.9,
-            0.into(),
-        )?
-        .unwrap();
-        let legacy = reviews_for_fsrs(revlogs, next_day_at, false, 0.into(), false)
+        let reconstructed =
+            fsrs_item_for_memory_state(&fsrs, &DEFAULT_PARAMETERS, revlogs.clone(), 0.9, 0.into())?
+                .unwrap();
+        // The plain revlog conversion gives the same fractional elapsed time
+        // (spec sched.fsrs7-only: there is no whole-day conversion any more).
+        let converted = reviews_for_fsrs(revlogs, false, 0.into())
             .unwrap()
             .fsrs_items
             .pop()
@@ -1913,7 +1882,7 @@ mod tests {
             .map(|review| review.delta_t)
             .sum::<f32>()
             * 86_400.0;
-        let legacy_elapsed_secs = legacy
+        let converted_elapsed_secs = converted
             .reviews
             .iter()
             .map(|review| review.delta_t)
@@ -1921,11 +1890,7 @@ mod tests {
             * 86_400.0;
 
         assert!((reconstructed_elapsed_secs - 889.33).abs() < 0.01);
-        assert_eq!(legacy_elapsed_secs, 0.0);
-
-        let reconstructed_state = fsrs.memory_state(reconstructed.item, None)?;
-        let legacy_state = fsrs.memory_state(legacy, None)?;
-        assert!(reconstructed_state.stability > legacy_state.stability);
+        assert!((converted_elapsed_secs - 889.33).abs() < 0.01);
         Ok(())
     }
 
@@ -1998,15 +1963,8 @@ mod tests {
             ..Default::default()
         })
         .collect();
-        let item = fsrs_item_for_memory_state(
-            &fsrs,
-            &params,
-            revlogs.clone(),
-            TimestampSecs(1_779_292_800),
-            0.9,
-            0.into(),
-        )?
-        .unwrap();
+        let item =
+            fsrs_item_for_memory_state(&fsrs, &params, revlogs.clone(), 0.9, 0.into())?.unwrap();
         let elapsed_secs = item
             .item
             .reviews
@@ -2028,13 +1986,6 @@ mod tests {
     fn fsrs7_memory_state_reconstruction_uses_fractional_same_day_delta() -> Result<()> {
         let delta = reconstructed_same_day_delta(&DEFAULT_PARAMETERS)?;
         assert!((delta - (1.0 / 24.0)).abs() < 1e-6);
-        Ok(())
-    }
-
-    #[test]
-    fn fsrs6_memory_state_reconstruction_keeps_integer_same_day_delta() -> Result<()> {
-        let delta = reconstructed_same_day_delta(&DEFAULT_PARAMETERS[0..21])?;
-        assert_eq!(delta, 0.0);
         Ok(())
     }
 
@@ -2136,44 +2087,6 @@ mod tests {
     }
 
     #[test]
-    fn fsrs_math_helpers_match_inference_fsrs6() -> Result<()> {
-        let params = DEFAULT_PARAMETERS[0..21].to_vec();
-        let stability = 9.5;
-        let elapsed_days = 12.0;
-        let desired_retention = 0.9;
-        let target_retrievability = 0.9;
-
-        let expected = FSRS::new(&params)?.current_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-                stability_fast: stability,
-            },
-            elapsed_days,
-        );
-        let actual = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
-        assert!((actual - expected).abs() < 1e-6);
-
-        let expected_interval =
-            FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
-        let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
-        assert!((actual_interval - expected_interval).abs() < 1e-6);
-
-        let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-                stability_fast: stability,
-            },
-            target_retrievability,
-        );
-        let actual_interval_at_target =
-            fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)?;
-        assert!((actual_interval_at_target - expected_interval_at_target).abs() < 1e-6);
-        Ok(())
-    }
-
-    #[test]
     fn fsrs_interval_at_retrievability_batch_matches_singular_calls() -> Result<()> {
         let mut col = Collection::new();
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
@@ -2216,14 +2129,14 @@ mod tests {
         col.add_note(&mut fallback_note, DeckId(1))?;
         col.add_tags_to_notes(&[tagged_note.id], "medical")?;
 
-        let addon_params = vec![1.0; 21];
+        let addon_params = other_fsrs7_params();
         col.set_config(
             FSRS_PRESET_OVERLAY_CONFIG_KEY,
             &FsrsPresetOverlay {
                 presets: vec![AddonFsrsPreset {
                     id: "addon:test:medical".into(),
                     name: "Medical".into(),
-                    fsrs_version: AddonFsrsVersion::Six,
+                    fsrs_version: AddonFsrsVersion::Seven,
                     params: addon_params.clone(),
                     desired_retention: 0.81,
                     historical_retention: 0.71,
@@ -2261,6 +2174,10 @@ mod tests {
         assert_eq!(intervals.len(), 2);
         assert!((intervals[0] - expected_tagged).abs() < 1e-6);
         assert!((intervals[1] - expected_fallback).abs() < 1e-6);
+        require!(
+            expected_tagged != expected_fallback,
+            "test requires distinct presets"
+        );
         Ok(())
     }
 
@@ -2366,10 +2283,14 @@ mod tests {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-only: a preset whose stored version
+    // is FSRS-6, with FSRS-6 parameters and no FSRS-7 ones, runs the FSRS-7
+    // defaults.
     #[test]
-    fn fsrs_interval_at_retrievability_by_config_batch_uses_fsrs6_config() -> Result<()> {
+    fn fsrs_interval_at_retrievability_by_config_batch_runs_fsrs7_defaults_for_fsrs6_config(
+    ) -> Result<()> {
         let mut col = Collection::new();
-        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let params_6 = FSRS6_DEFAULT_PARAMETERS.to_vec();
         let config_id = set_selected_fsrs_params_for_deck(
             &mut col,
             DeckId(1),
@@ -2384,11 +2305,13 @@ mod tests {
             target_retrievability,
         )?[0];
         let expected = fsrs_interval_at_retrievability_for_params(
-            &params_6,
+            &DEFAULT_PARAMETERS,
             stability,
             target_retrievability,
         )?;
         assert!((actual - expected).abs() < 1e-6);
+        let config = col.get_deck_config(config_id, false)?.unwrap();
+        assert_eq!(config.inner.fsrs_params_6, params_6);
         Ok(())
     }
 
@@ -2396,7 +2319,7 @@ mod tests {
     fn fsrs_interval_at_retrievability_by_config_batch_supports_mixed_configs() -> Result<()> {
         let mut col = Collection::new();
         let params_7 = DEFAULT_PARAMETERS.to_vec();
-        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let other_params = other_fsrs7_params();
         let config_1 = set_selected_fsrs_params_for_deck(
             &mut col,
             DeckId(1),
@@ -2407,8 +2330,8 @@ mod tests {
         let config_2 = assign_new_fsrs_config_to_deck(
             &mut col,
             second_deck.id,
-            FsrsVersion::Six,
-            params_6.clone(),
+            FsrsVersion::Seven,
+            other_params.clone(),
         )?;
         require!(config_1 != config_2, "test requires different config ids");
 
@@ -2420,7 +2343,7 @@ mod tests {
         let expected_1 =
             fsrs_interval_at_retrievability_for_params(&params_7, 20.0, target_retrievability)?;
         let expected_2 =
-            fsrs_interval_at_retrievability_for_params(&params_6, 20.0, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_params(&other_params, 20.0, target_retrievability)?;
         assert_eq!(actual.len(), 2);
         assert!((actual[0] - expected_1).abs() < 1e-6);
         assert!((actual[1] - expected_2).abs() < 1e-6);
@@ -2432,7 +2355,7 @@ mod tests {
     ) -> Result<()> {
         let mut col = Collection::new();
         let params_7 = DEFAULT_PARAMETERS.to_vec();
-        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let other_params = other_fsrs7_params();
         let config_1 = set_selected_fsrs_params_for_deck(
             &mut col,
             DeckId(1),
@@ -2443,8 +2366,8 @@ mod tests {
         let config_2 = assign_new_fsrs_config_to_deck(
             &mut col,
             second_deck.id,
-            FsrsVersion::Six,
-            params_6.clone(),
+            FsrsVersion::Seven,
+            other_params.clone(),
         )?;
         let target_retrievability = 0.9;
         let request = vec![
@@ -2456,9 +2379,9 @@ mod tests {
         let actual =
             col.fsrs_interval_at_retrievability_for_configs(&request, target_retrievability)?;
         let expected = vec![
-            fsrs_interval_at_retrievability_for_params(&params_6, 8.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_params(&other_params, 8.0, target_retrievability)?,
             fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
-            fsrs_interval_at_retrievability_for_params(&params_6, 21.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_params(&other_params, 21.0, target_retrievability)?,
             fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
         ];
         assert_eq!(actual.len(), expected.len());
@@ -2472,12 +2395,16 @@ mod tests {
     fn fsrs_interval_at_retrievability_by_config_batch_matches_card_helper() -> Result<()> {
         let mut col = Collection::new();
         let params_7 = DEFAULT_PARAMETERS.to_vec();
-        let params_6 = DEFAULT_PARAMETERS[0..21].to_vec();
+        let other_params = other_fsrs7_params();
         let config_1 =
             set_selected_fsrs_params_for_deck(&mut col, DeckId(1), FsrsVersion::Seven, params_7)?;
         let second_deck = col.get_or_create_normal_deck("second-config-parity")?;
-        let config_2 =
-            assign_new_fsrs_config_to_deck(&mut col, second_deck.id, FsrsVersion::Six, params_6)?;
+        let config_2 = assign_new_fsrs_config_to_deck(
+            &mut col,
+            second_deck.id,
+            FsrsVersion::Seven,
+            other_params,
+        )?;
 
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note1 = nt.new_note();

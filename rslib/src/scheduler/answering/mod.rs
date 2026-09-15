@@ -30,7 +30,6 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
-use crate::deckconfig::FsrsVersion as PresetFsrsVersion;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
 use crate::prelude::*;
@@ -658,7 +657,6 @@ impl Collection {
                     &fsrs,
                     params,
                     revlog,
-                    timing.next_day_at,
                     fsrs_preset.historical_retention,
                     fsrs_preset.ignore_revlogs_before_ms()?,
                 )?;
@@ -670,9 +668,7 @@ impl Collection {
                 self.storage.time_of_last_review(card.id)?
             };
             let days_elapsed = last_review_time
-                .map(|last_review_time| {
-                    fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now)
-                })
+                .map(|last_review_time| fsrs_elapsed_days(last_review_time, now))
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
             let current_memory_state = card.memory_state.map(Into::into);
@@ -694,7 +690,6 @@ impl Collection {
                 card_id = card.id.0,
                 preset_id = ?fsrs_preset.id,
                 preset_name = fsrs_preset.name.as_str(),
-                fsrs_version = ?fsrs_preset.fsrs_version,
                 params_len = fsrs_preset.params.len(),
                 params_fingerprint = format_args!("{:016x}", params_fingerprint(&fsrs_preset.params)),
                 desired_retention = round_to_two_decimals(desired_retention),
@@ -729,24 +724,8 @@ impl Collection {
             }
             _ => false,
         };
-        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals);
-        // for older versions, parameters fitted without the short-term terms
-        // (w17 or w18 zero) keep sub-day intervals off.
-        let fsrs_allow_short_term = if fsrs_enabled {
-            let params = &fsrs_preset.params;
-            if fsrs_preset.fsrs_version == PresetFsrsVersion::Seven {
-                true
-            } else if params.len() >= 19 {
-                params[17] > 0.0 && params[18] > 0.0
-            } else if params.is_empty() {
-                // fallback to true when using default params
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
+        let fsrs_allow_short_term = fsrs_enabled;
         let original_deck = self
             .storage
             .get_deck(home_deck_id)?
@@ -834,19 +813,11 @@ impl Collection {
     }
 }
 
-pub(crate) fn fsrs_elapsed_days(
-    card: &Card,
-    last_review_time: TimestampSecs,
-    next_day_at: TimestampSecs,
-    now: TimestampSecs,
-) -> f32 {
-    if matches!(card.queue, CardQueue::Learn)
-        && matches!(card.ctype, CardType::Learn | CardType::Relearn)
-    {
-        (now.elapsed_secs_since(last_review_time).max(0) as f32) / 86_400.0
-    } else {
-        next_day_at.elapsed_days_since(last_review_time) as f32
-    }
+/// The elapsed time FSRS-7 sees when a card is answered: the exact time since
+/// the last review, in days, as in training (spec
+/// sched.fsrs7-fractional-elapsed-time).
+pub(crate) fn fsrs_elapsed_days(last_review_time: TimestampSecs, now: TimestampSecs) -> f32 {
+    (now.elapsed_secs_since(last_review_time).max(0) as f32) / 86_400.0
 }
 
 fn describe_next_state(
@@ -1438,7 +1409,7 @@ pub(crate) mod test {
 
         use crate::deckconfig::deck_config_inner_for_storage;
 
-        fn setup(legacy: bool) -> Result<(Collection, Card)> {
+        fn setup(legacy: bool, last_review: TimestampSecs) -> Result<(Collection, Card)> {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
             col.update_default_deck_config(|config| {
@@ -1522,13 +1493,15 @@ pub(crate) mod test {
                 stability_fast: None,
                 difficulty: 5.0,
             });
-            card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+            card.last_review_time = Some(last_review);
             col.storage.update_card(&card)?;
             Ok((col, card))
         }
 
-        let (mut clean_col, clean_card) = setup(false)?;
-        let (mut legacy_col, legacy_card) = setup(true)?;
+        // FSRS-7 sees the exact elapsed time, so both share the last review
+        let last_review = TimestampSecs::now().adding_secs(-5 * 86_400);
+        let (mut clean_col, clean_card) = setup(false, last_review)?;
+        let (mut legacy_col, legacy_card) = setup(true, last_review)?;
 
         // the preset loads, and the settings that still exist are intact
         let config = legacy_col
@@ -1548,10 +1521,19 @@ pub(crate) mod test {
         assert_eq!(legacy.desired_retention, clean.desired_retention);
         let clean_states = clean.fsrs_next_states.as_ref().unwrap();
         let legacy_states = legacy.fsrs_next_states.as_ref().unwrap();
-        assert_eq!(legacy_states.again.interval, clean_states.again.interval);
-        assert_eq!(legacy_states.hard.interval, clean_states.hard.interval);
-        assert_eq!(legacy_states.good.interval, clean_states.good.interval);
-        assert_eq!(legacy_states.easy.interval, clean_states.easy.interval);
+        // the two updaters may read the clock a second apart (fractional
+        // elapsed time), so equal up to a tiny tolerance
+        for (legacy_interval, clean_interval) in [
+            (legacy_states.again.interval, clean_states.again.interval),
+            (legacy_states.hard.interval, clean_states.hard.interval),
+            (legacy_states.good.interval, clean_states.good.interval),
+            (legacy_states.easy.interval, clean_states.easy.interval),
+        ] {
+            assert!(
+                (legacy_interval - clean_interval).abs() <= 1e-4 * clean_interval.max(1.0),
+                "{legacy_interval} vs {clean_interval}"
+            );
+        }
 
         // answering writes the fixed desired retention onto the card
         let states = legacy_col.get_scheduling_states(legacy_card.id)?;
@@ -2184,6 +2166,132 @@ pub(crate) mod test {
             col.undo()?;
             assert!(col.fsrs_enabled());
             assert!(col.fsrs_short_term_with_steps_enabled());
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: a preset that was never
+    // optimized (no FSRS-7 parameters, trained FSRS-6 ones, stored version
+    // FSRS-6) answers with the FSRS-7 defaults, not with the FSRS-6 model.
+    #[test]
+    fn unoptimized_preset_answers_with_the_fsrs7_defaults() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Six as i32;
+            config.fsrs_params_6 = fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec();
+            config.fsrs_params_7.clear();
+        });
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-10 * 86_400));
+        col.storage.update_card(&card)?;
+
+        let updater = col.card_state_updater(card.clone(), None)?;
+        let desired_retention = updater.desired_retention.unwrap();
+        let seen = updater.fsrs_next_states.as_ref().unwrap();
+        let state = card.memory_state.unwrap().into();
+        let fsrs7 = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?.next_states_with_elapsed_days(
+            Some(state),
+            desired_retention,
+            10.0,
+        )?;
+        let fsrs6 = FSRS::new(&fsrs::FSRS6_DEFAULT_PARAMETERS)?.next_states_with_elapsed_days(
+            Some(state),
+            desired_retention,
+            10.0,
+        )?;
+        // the updater may read the clock a second later than this test did
+        // (fractional elapsed time), so equal up to a tiny tolerance
+        for (seen, fsrs7, fsrs6) in [
+            (&seen.again, &fsrs7.again, &fsrs6.again),
+            (&seen.hard, &fsrs7.hard, &fsrs6.hard),
+            (&seen.good, &fsrs7.good, &fsrs6.good),
+            (&seen.easy, &fsrs7.easy, &fsrs6.easy),
+        ] {
+            assert!(
+                (seen.interval - fsrs7.interval).abs() < 1e-3,
+                "{} vs {}",
+                seen.interval,
+                fsrs7.interval
+            );
+            assert!((seen.memory.stability - fsrs7.memory.stability).abs() < 1e-3);
+            assert!((seen.memory.stability_fast - fsrs7.memory.stability_fast).abs() < 1e-3);
+            assert!((seen.memory.difficulty - fsrs7.memory.difficulty).abs() < 1e-3);
+            // and the FSRS-6 model would have given something else
+            assert!(
+                (seen.interval - fsrs6.interval).abs() > 0.1,
+                "{} vs FSRS-6 {}",
+                seen.interval,
+                fsrs6.interval
+            );
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-fractional-elapsed-time
+    #[test]
+    fn fsrs7_gets_fractional_elapsed_time_like_training() {
+        const HOUR: i64 = 3600;
+        const DAY: i64 = 86_400;
+        // last review Monday 23:00, answered Wednesday 05:00 (whatever the
+        // rollover): 1.25 days, as training takes it from the review log
+        let monday = 1_000 * DAY;
+        let last_review = TimestampSecs(monday + 23 * HOUR);
+        let now = TimestampSecs(monday + 2 * DAY + 5 * HOUR);
+        assert_eq!(fsrs_elapsed_days(last_review, now), 1.25);
+        // a clock earlier than the last review counts as no time
+        assert_eq!(fsrs_elapsed_days(now, last_review), 0.0);
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-fractional-elapsed-time
+    #[test]
+    fn fsrs7_review_answer_uses_the_exact_elapsed_time() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+        });
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 2;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 3.0,
+            stability_internal: 3.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        // reviewed 36 hours ago: 1.5 days, never a whole number of days
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-36 * 3600));
+        col.storage.update_card(&card)?;
+
+        let updater = col.card_state_updater(card.clone(), None)?;
+        let fsrs = FSRS::new(&low_retention_fsrs7_params())?;
+        let state = card.memory_state.unwrap().into();
+        let exact = fsrs.current_retrievability(state, 1.5);
+        let seen = updater.fsrs_review_retrievability.unwrap();
+        assert!((seen - exact).abs() < 1e-3, "{seen} vs {exact}");
+        for whole_days in [1.0, 2.0, 3.0] {
+            let rounded = fsrs.current_retrievability(state, whole_days);
+            assert!((seen - rounded).abs() > 1e-3, "{seen} vs {whole_days} days");
         }
         Ok(())
     }

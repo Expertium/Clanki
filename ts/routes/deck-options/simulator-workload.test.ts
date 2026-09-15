@@ -26,8 +26,10 @@ test("workload request keeps Help Me Decide menu settings", () => {
     const config = new DeckConfig({
         name: "Preset \"A\"",
         config: {
+            // FSRS-7 only: the stored version and FSRS-6 params are ignored
             fsrsVersion: DeckConfig_Config_FsrsVersion.SIX,
-            fsrsParams6: [1, 2, 3],
+            fsrsParams6: [4, 5, 6],
+            fsrsParams7: [1, 2, 3],
             desiredRetention: 0.91,
             newPerDay: 25,
             maximumReviewInterval: 123,

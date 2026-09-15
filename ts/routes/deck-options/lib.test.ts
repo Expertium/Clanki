@@ -282,10 +282,12 @@ test("clears incompatible FSRS params across presets for optimize all", () => {
     const defaultConfig = state.getConfigById(1n)!;
     const otherConfig = state.getConfigById(1618570764780n)!;
 
-    defaultConfig.config!.fsrsVersion = DeckConfig_Config_FsrsVersion.SEVEN;
     defaultConfig.config!.fsrsParams7 = Array(35).fill(1);
+    // FSRS-7 only: the stored version does not matter, and FSRS-6 params are
+    // neither checked nor cleared (spec sched.fsrs7-only)
     otherConfig.config!.fsrsVersion = DeckConfig_Config_FsrsVersion.SIX;
     otherConfig.config!.fsrsParams6 = [Number.NaN, ...Array(20).fill(1)];
+    otherConfig.config!.fsrsParams7 = [Number.NaN, ...Array(33).fill(1)];
 
     expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([
         "another one",
@@ -293,7 +295,7 @@ test("clears incompatible FSRS params across presets for optimize all", () => {
     ]);
     expect(state.clearIncompatibleFsrsParams()).toBe(2);
     expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([]);
-    expect(get(state.currentConfig).fsrsParams6).toStrictEqual([]);
+    expect(get(state.currentConfig).fsrsParams7).toStrictEqual([]);
 
     const out = state.dataForSaving(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
     expect(out.configs!.map((config) => config.name)).toStrictEqual([
@@ -301,7 +303,8 @@ test("clears incompatible FSRS params across presets for optimize all", () => {
         "another one",
     ]);
     expect(out.configs![0].config!.fsrsParams7).toStrictEqual([]);
-    expect(out.configs![1].config!.fsrsParams6).toStrictEqual([]);
+    expect(out.configs![1].config!.fsrsParams7).toStrictEqual([]);
+    expect(out.configs![1].config!.fsrsParams6).toHaveLength(21);
 });
 
 test("aux data", () => {

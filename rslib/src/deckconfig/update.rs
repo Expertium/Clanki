@@ -12,10 +12,8 @@ use anki_proto::deck_config::deck_configs_for_update::ConfigWithExtra;
 use anki_proto::deck_config::deck_configs_for_update::CurrentDeck;
 use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
-use fsrs::ComputeParametersVersion;
 use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
-use fsrs::FSRS6_DEFAULT_PARAMETERS;
 use tracing::debug;
 use tracing::warn;
 
@@ -56,13 +54,117 @@ pub struct UpdateDeckConfigsRequest {
 }
 
 impl Collection {
+    /// Clanki runs FSRS-7 only (spec sched.fsrs7-only). Once, when a
+    /// collection opens, the cards of every preset whose parameters changed
+    /// with that rule get their memory states computed again, with the
+    /// FSRS-7 parameters the preset now runs with: presets that were never
+    /// optimized (they ran the FSRS-6 defaults) and presets that ran FSRS-6,
+    /// FSRS-5 or FSRS-4.5 parameters. Due dates are not changed, and the
+    /// stored parameters of every version stay as they are.
+    ///
+    /// While FSRS is off there is nothing to migrate, and nothing is written:
+    /// writing the done flag would mark a new, empty collection as modified,
+    /// and its first sync would then need a full sync (upstream issue #5109).
+    /// Turning FSRS on computes every memory state again anyway; the next open
+    /// then runs the migration and sets the flag.
+    pub(crate) fn migrate_to_fsrs7_only(&mut self) -> Result<()> {
+        if self.get_config_bool(BoolKey::Fsrs7OnlyMigrated) || !self.get_config_bool(BoolKey::Fsrs)
+        {
+            return Ok(());
+        }
+        let changed: HashMap<DeckConfigId, DeckConfig> = self
+            .storage
+            .all_deck_config()?
+            .into_iter()
+            .filter(|config| legacy_fsrs_params(config) != config.fsrs_params())
+            .map(|config| (config.id, config))
+            .collect();
+        let mut decks_by_config: HashMap<DeckConfigId, Vec<DeckId>> = HashMap::new();
+        let mut deck_desired_retention = HashMap::new();
+        for deck in self.storage.get_all_decks()? {
+            let Ok(normal) = deck.normal() else {
+                continue;
+            };
+            let config_id = DeckConfigId(normal.config_id);
+            if changed.contains_key(&config_id) {
+                decks_by_config.entry(config_id).or_default().push(deck.id);
+            }
+            if let Some(desired_retention) = normal.desired_retention {
+                deck_desired_retention.insert(deck.id, desired_retention);
+            }
+        }
+        let review_fuzz_config = self.review_fuzz_config();
+        let total_presets = decks_by_config.len() as u32;
+        let entries = decks_by_config
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (config_id, deck_ids))| {
+                let config = &changed[&config_id];
+                Ok(UpdateMemoryStateEntry {
+                    req: Some(UpdateMemoryStateRequest {
+                        params: config.fsrs_params().to_vec(),
+                        preset_desired_retention: config.inner.desired_retention,
+                        max_interval: config.inner.maximum_review_interval,
+                        review_fuzz_config,
+                        reschedule: false,
+                        historical_retention: HISTORICAL_RETENTION,
+                        deck_desired_retention: deck_desired_retention.clone(),
+                    }),
+                    search: Node::Search(SearchNode::DeckIdsWithoutChildren(comma_separated_ids(
+                        &deck_ids,
+                    ))),
+                    ignore_before: ignore_revlogs_before_ms_from_config(config)?,
+                    preset_name: config.name.clone(),
+                    current_preset: idx as u32 + 1,
+                    total_presets,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !entries.is_empty() {
+            self.transact_no_undo(|col| col.update_memory_state(entries))?;
+        }
+        self.transact_no_undo(|col| {
+            col.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
+            Ok(())
+        })
+    }
+}
+
+/// The parameters a preset ran with before Clanki became FSRS-7 only: the
+/// slot of its stored FSRS version, else the first usable slot, else none
+/// (the FSRS-6 defaults). Kept only to decide which presets
+/// migrate_to_fsrs7_only must recompute.
+fn legacy_fsrs_params(config: &DeckConfig) -> &[f32] {
+    let usable = |params: &[f32]| {
+        matches!(params.len(), 17 | 19 | 21 | 34) && params.iter().all(|w| w.is_finite())
+    };
+    let inner = &config.inner;
+    let selected: &[f32] =
+        match FsrsVersion::try_from(inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
+            FsrsVersion::Seven => &inner.fsrs_params_7,
+            FsrsVersion::Six => &inner.fsrs_params_6,
+            FsrsVersion::Five => &inner.fsrs_params_5,
+            FsrsVersion::Four => &inner.fsrs_params_4,
+        };
+    [
+        selected,
+        &inner.fsrs_params_7,
+        &inner.fsrs_params_6,
+        &inner.fsrs_params_5,
+        &inner.fsrs_params_4,
+    ]
+    .into_iter()
+    .find(|params| usable(params))
+    .unwrap_or(&[])
+}
+
+impl Collection {
     /// Information required for the deck options screen.
     pub fn get_deck_configs_for_update(
         &mut self,
         deck: DeckId,
     ) -> Result<anki_proto::deck_config::DeckConfigsForUpdate> {
         let mut defaults = DeckConfig::default();
-        defaults.inner.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.into();
         defaults.inner.fsrs_params_7 = DEFAULT_PARAMETERS.into();
         defaults.inner.fsrs_version = FsrsVersion::Seven as i32;
         let last_optimize = self.get_config_i32(I32ConfigKey::LastFsrsOptimize) as u32;
@@ -115,31 +217,6 @@ impl Collection {
         // grab the config and sort it
         let mut config = self.storage.all_deck_config()?;
         config.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        // pre-fill empty fsrs params with older params
-        config.iter_mut().for_each(|c| {
-            if c.inner.fsrs_params_7.is_empty() {
-                c.inner.fsrs_params_7 = if !c.inner.fsrs_params_6.is_empty() {
-                    c.inner.fsrs_params_6.clone()
-                } else if c.inner.fsrs_params_5.is_empty() {
-                    c.inner.fsrs_params_4.clone()
-                } else {
-                    c.inner.fsrs_params_5.clone()
-                };
-            }
-            if c.inner.fsrs_version == FsrsVersion::Seven as i32 && c.inner.fsrs_params_7.is_empty()
-            {
-                c.inner.fsrs_version = if !c.inner.fsrs_params_6.is_empty() {
-                    FsrsVersion::Six as i32
-                } else if !c.inner.fsrs_params_5.is_empty() {
-                    FsrsVersion::Five as i32
-                } else if !c.inner.fsrs_params_4.is_empty() {
-                    FsrsVersion::Four as i32
-                } else {
-                    FsrsVersion::Seven as i32
-                };
-            }
-        });
-
         // combine with use counts
         let counts = self.get_deck_config_use_counts()?;
         Ok(config
@@ -266,13 +343,6 @@ impl Collection {
                 today.clone_into(&mut conf.inner.ignore_revlogs_before_date);
             }
 
-            // If the user has provided empty FSRS6 params, zero out any
-            // old params as well, so we don't fall back on them, which would
-            // be surprising as they're not shown in the GUI.
-            if conf.inner.fsrs_params_6.is_empty() {
-                conf.inner.fsrs_params_5.clear();
-                conf.inner.fsrs_params_4.clear();
-            }
             // check the provided parameters are valid before we save them
             FSRS::new(conf.fsrs_params())?;
             self.add_or_update_deck_config(conf)?;
@@ -506,22 +576,13 @@ impl Collection {
             };
             let ignore_revlogs_before_ms = ignore_revlogs_before_ms_from_config(config)?;
             let num_of_relearning_steps = config.inner.relearn_steps.len();
-            let current_params = config.selected_fsrs_params().to_vec();
+            let current_params = config.fsrs_params().to_vec();
             let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
                 search: &search,
                 ignore_revlogs_before: ignore_revlogs_before_ms,
                 current_params: &current_params,
                 num_of_relearning_steps,
-                include_same_day_reviews: fsrs7_optimize_include_same_day_reviews(config),
                 enable_scheduling_penalties: fsrs7_enable_scheduling_penalties(config),
-                model_version_override: Some(
-                    match FsrsVersion::try_from(config.inner.fsrs_version)
-                        .unwrap_or(FsrsVersion::Seven)
-                    {
-                        FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
-                        _ => ComputeParametersVersion::Fsrs6,
-                    },
-                ),
             })?;
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
@@ -540,7 +601,7 @@ impl Collection {
                         continue;
                     }
                     debug!(preset = output.name, params = ?params.params, "optimized FSRS preset");
-                    *selected_fsrs_params_mut(&mut req.configs[output.index]) = params.params;
+                    req.configs[output.index].inner.fsrs_params_7 = params.params;
                 }
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
                 Err(err) => {
@@ -551,25 +612,6 @@ impl Collection {
         let today = self.timing_today()?.days_elapsed as i32;
         self.set_config_i32_inner(I32ConfigKey::LastFsrsOptimize, today)?;
         Ok(())
-    }
-}
-
-fn selected_fsrs_params_mut(config: &mut DeckConfig) -> &mut Vec<f32> {
-    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => &mut config.inner.fsrs_params_7,
-        FsrsVersion::Six => &mut config.inner.fsrs_params_6,
-        FsrsVersion::Five => &mut config.inner.fsrs_params_5,
-        FsrsVersion::Four => &mut config.inner.fsrs_params_4,
-    }
-}
-
-/// FSRS-7 always trains on same-day reviews. Earlier builds stored a
-/// `fsrs7IncludeSameDayOptimize` flag in the preset's `other` bag; it is
-/// ignored (spec deck-options.fsrs-only-controls).
-fn fsrs7_optimize_include_same_day_reviews(config: &DeckConfig) -> Option<bool> {
-    match FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => Some(true),
-        _ => None,
     }
 }
 
@@ -632,24 +674,201 @@ fn update_day_limit(day_limit: &mut Option<DayLimit>, new_limit: Option<u32>, to
 
 #[cfg(test)]
 mod test {
+    use fsrs::FSRS6_DEFAULT_PARAMETERS;
+
     use super::*;
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
     use crate::deckconfig::NewCardInsertOrder;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
     use crate::tests::open_test_collection_with_learning_card;
     use crate::tests::open_test_collection_with_relearning_card;
+    use crate::tests::DeckAdder;
+    use crate::tests::NoteAdder;
     use crate::timestamp::TimestampSecs;
 
-    // Pins spec/deck-options.md#deck-options.fsrs-only-controls
-    #[test]
-    fn fsrs7_optimize_always_includes_same_day_reviews() -> Result<()> {
-        let mut config = DeckConfig::default();
-        config.inner.fsrs_version = FsrsVersion::Seven as i32;
-        config.inner.other = serde_json::to_vec(&serde_json::json!({
-            "fsrs7IncludeSameDayOptimize": false,
-        }))?;
-        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), Some(true));
+    /// A review card in `deck` with three real reviews, whose memory state
+    /// was computed with `params` (as the build that ran them did).
+    fn reviewed_card_with_memory_state(
+        col: &mut Collection,
+        deck: DeckId,
+        params: &[f32],
+    ) -> Result<Card> {
+        let note = NoteAdder::basic(col).deck(deck).add(col);
+        let mut card = col.storage.all_cards_of_note(note.id)?.pop().unwrap();
+        let now = TimestampMillis::now().0;
+        for (days_ago, review_kind, interval) in [
+            (40, RevlogReviewKind::Learning, 0),
+            (30, RevlogReviewKind::Review, 10),
+            (15, RevlogReviewKind::Review, 20),
+        ] {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(now - days_ago * 86_400_000),
+                    cid: card.id,
+                    button_chosen: 3,
+                    review_kind,
+                    interval,
+                    ease_factor: 2500,
+                    ..Default::default()
+                },
+                false,
+            )?;
+        }
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 20;
+        card.due = col.timing_today()?.days_elapsed as i32 + 5;
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-15 * 86_400));
+        let fsrs = FSRS::new(params)?;
+        let item = fsrs_item_for_memory_state(
+            &fsrs,
+            params,
+            col.storage.get_revlog_entries_for_card(card.id)?,
+            HISTORICAL_RETENTION,
+            0.into(),
+        )?;
+        card.set_memory_state(&fsrs, params, item, HISTORICAL_RETENTION)?;
+        col.storage.update_card(&card)?;
+        Ok(card)
+    }
 
-        config.inner.fsrs_version = FsrsVersion::Six as i32;
-        assert_eq!(fsrs7_optimize_include_same_day_reviews(&config), None);
+    // Pins spec/scheduling.md#sched.fsrs7-only: once, when a collection opens,
+    // the cards of presets that ran other parameters get their memory states
+    // computed again with the FSRS-7 parameters they now run with. Due dates
+    /// Timing only, not run by default: copy a real collection to a temp
+    /// folder and time the one-time FSRS-7 migration on it. Set
+    /// CLANKI_TIME_MIGRATION to the collection file.
+    #[test]
+    #[ignore]
+    fn time_migrate_to_fsrs7_only_on_a_real_collection() -> Result<()> {
+        let Ok(path) = std::env::var("CLANKI_TIME_MIGRATION") else {
+            return Ok(());
+        };
+        let dir = tempfile::tempdir()?;
+        let copy = dir.path().join("collection.anki2");
+        std::fs::copy(path, &copy)?;
+        let mut col = crate::collection::CollectionBuilder::new(&copy)
+            .set_server(true)
+            .build()?;
+        let cards = col
+            .storage
+            .db
+            .query_row("select count() from cards", [], |r| r.get::<_, i64>(0))?;
+        let start = std::time::Instant::now();
+        col.migrate_to_fsrs7_only()?;
+        eprintln!(
+            "migrate_to_fsrs7_only: {} cards, {:.1} s",
+            cards,
+            start.elapsed().as_secs_f64()
+        );
+        Ok(())
+    }
+
+    // and stored parameters stay; presets already on FSRS-7 are not touched.
+    #[test]
+    fn migrate_to_fsrs7_only_recomputes_memory_states_once() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool_inner(BoolKey::Fsrs, true)?;
+        // a preset that ran the FSRS-6 defaults and was never optimized for
+        // FSRS-7
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Six as i32;
+            config.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.to_vec();
+            config.fsrs_params_7.clear();
+        });
+        // a preset already on FSRS-7
+        let fsrs7_params = DEFAULT_PARAMETERS.map(|w| w * 1.05).to_vec();
+        let fsrs7_deck = DeckAdder::new("fsrs7")
+            .with_config(|config| {
+                config.inner.rwkv_review_enabled = false;
+                config.inner.fsrs_version = FsrsVersion::Seven as i32;
+                config.inner.fsrs_params_7 = fsrs7_params.clone();
+            })
+            .add(&mut col);
+        let fsrs6_card =
+            reviewed_card_with_memory_state(&mut col, DeckId(1), &FSRS6_DEFAULT_PARAMETERS)?;
+        let mut fsrs7_card =
+            reviewed_card_with_memory_state(&mut col, fsrs7_deck.id, &fsrs7_params)?;
+        // a dummy state, so a recompute would be visible
+        fsrs7_card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 42.0,
+            stability_fast: Some(21.0),
+            difficulty: 4.0,
+        });
+        col.storage.update_card(&fsrs7_card)?;
+        assert!(!col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
+
+        col.migrate_to_fsrs7_only()?;
+        assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
+
+        // the FSRS-6 preset's card now has the FSRS-7 defaults' memory state
+        let migrated = col.storage.get_card(fsrs6_card.id)?.unwrap();
+        assert_ne!(migrated.memory_state, fsrs6_card.memory_state);
+        let mut fresh = migrated.clone();
+        fresh.memory_state = None;
+        col.recompute_fsrs_data_for_card(&mut fresh)?;
+        assert!(fresh.memory_state.is_some());
+        // storage rounds the memory state, so compare the stored forms
+        col.storage.update_card(&fresh)?;
+        let fresh = col.storage.get_card(fresh.id)?.unwrap();
+        assert_eq!(migrated.memory_state, fresh.memory_state);
+        assert_eq!(
+            col.fsrs_preset_for_card(&migrated)?.params,
+            DEFAULT_PARAMETERS
+        );
+        // not rescheduled
+        assert_eq!(migrated.due, fsrs6_card.due);
+        assert_eq!(migrated.interval, fsrs6_card.interval);
+        // the stored parameters stay as they were
+        let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(config.inner.fsrs_version, FsrsVersion::Six as i32);
+        assert_eq!(
+            config.inner.fsrs_params_6,
+            FSRS6_DEFAULT_PARAMETERS.to_vec()
+        );
+        assert!(config.inner.fsrs_params_7.is_empty());
+
+        // the FSRS-7 preset's card is not touched
+        let untouched = col.storage.get_card(fsrs7_card.id)?.unwrap();
+        assert_eq!(untouched.memory_state, fsrs7_card.memory_state);
+        assert_eq!(untouched.due, fsrs7_card.due);
+
+        // the migration runs once
+        let mut changed_later = migrated.clone();
+        changed_later.memory_state = Some(FsrsMemoryState {
+            stability: 7.0,
+            stability_internal: 7.0,
+            stability_fast: Some(3.0),
+            difficulty: 6.0,
+        });
+        col.storage.update_card(&changed_later)?;
+        col.migrate_to_fsrs7_only()?;
+        assert_eq!(
+            col.storage.get_card(fsrs6_card.id)?.unwrap().memory_state,
+            changed_later.memory_state
+        );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: with FSRS off the migration
+    // writes nothing, so a new collection stays unmodified (upstream issue
+    // #5109: its first sync must not need a full sync).
+    #[test]
+    fn migrate_to_fsrs7_only_writes_nothing_while_fsrs_is_off() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(!col.get_config_bool(BoolKey::Fsrs));
+        let modified_before = col.storage.get_collection_timestamps()?.collection_change;
+        col.migrate_to_fsrs7_only()?;
+        assert!(!col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
+        assert_eq!(
+            col.storage.get_collection_timestamps()?.collection_change,
+            modified_before
+        );
         Ok(())
     }
 
@@ -885,8 +1104,9 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-only
     #[test]
-    fn valid_fsrs7_params_are_preferred_on_update() -> Result<()> {
+    fn fsrs6_shaped_fsrs7_params_run_the_fsrs7_defaults_on_update() -> Result<()> {
         let mut col = Collection::new();
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         let mut input = UpdateDeckConfigsRequest {
@@ -905,21 +1125,25 @@ mod test {
             fsrs: false,
             review_fuzz_config: Default::default(),
         };
-        let expected = vec![
+        // 21 values are FSRS-6 parameters, not FSRS-7 ones: the save keeps
+        // them as stored, but the preset runs the FSRS-7 defaults.
+        let fsrs6_shaped = vec![
             0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
             1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
         ];
         input.configs[0].inner.fsrs_params_6 = vec![1.0; 21];
-        input.configs[0].inner.fsrs_params_7 = expected.clone();
+        input.configs[0].inner.fsrs_params_7 = fsrs6_shaped.clone();
         col.update_deck_configs(input)?;
 
         let stored = col.get_deck_config(DeckConfigId(1), true)?.unwrap();
-        assert_eq!(stored.fsrs_params(), &expected);
+        assert_eq!(stored.inner.fsrs_params_7, fsrs6_shaped);
+        assert_eq!(stored.inner.fsrs_params_6, vec![1.0; 21]);
+        assert_eq!(stored.fsrs_params(), &DEFAULT_PARAMETERS[..]);
         Ok(())
     }
 
     #[test]
-    fn valid_35_param_fsrs7_is_preferred_on_update() -> Result<()> {
+    fn valid_34_param_fsrs7_is_preferred_on_update() -> Result<()> {
         let mut col = Collection::new();
         let output = col.get_deck_configs_for_update(DeckId(1))?;
         let mut input = UpdateDeckConfigsRequest {

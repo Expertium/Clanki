@@ -21,7 +21,6 @@ use fsrs::SimulatorCardUpdateFn;
 use fsrs::SimulatorCardUpdatePhase;
 use fsrs::SimulatorConfig;
 use fsrs::SimulatorEventFn;
-use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -370,7 +369,6 @@ impl Collection {
         req: &SimulateFsrsReviewRequest,
         default_review_costs: [f32; 4],
     ) -> Result<HelpMeDecideReviewTimeModel> {
-        let next_day_at = self.timing_today()?.next_day_at;
         let guard = self.search_cards_into_table(&req.search, SortMode::NoOrder)?;
         let revlogs = guard
             .col
@@ -380,7 +378,6 @@ impl Collection {
         build_help_me_decide_review_time_model_from_revlogs(
             &revlogs,
             &req.params,
-            next_day_at,
             req.help_me_decide_enforce_monotonic_success_grade_probs
                 .unwrap_or(false),
             default_review_costs,
@@ -553,8 +550,9 @@ impl Collection {
 
     pub fn simulate_review(
         &mut self,
-        req: SimulateFsrsReviewRequest,
+        mut req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsReviewResponse> {
+        req.params = normalized_fsrs_parameters(&req.params)?;
         let (config, cards, preset_router) = self.simulate_request_to_config_inner(&req, true)?;
         let result = simulate_workload_for_desired_retention(
             &config,
@@ -581,8 +579,9 @@ impl Collection {
 
     pub fn simulate_workload(
         &mut self,
-        req: SimulateFsrsReviewRequest,
+        mut req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
+        req.params = normalized_fsrs_parameters(&req.params)?;
         let total_start = Instant::now();
         let (mut config, cards, preset_router) =
             self.simulate_request_to_config_inner(&req, true)?;
@@ -1171,31 +1170,10 @@ impl Card {
     }
 }
 
+/// The FSRS-7 parameters a simulation runs with (spec sched.fsrs7-only):
+/// anything but 34 finite values means the FSRS-7 defaults.
 pub(crate) fn normalized_fsrs_parameters(params: &[f32]) -> Result<Vec<f32>> {
-    let converted = match params.len() {
-        0 => DEFAULT_PARAMETERS.to_vec(),
-        17 => {
-            let mut parameters = params.to_vec();
-            parameters[4] = parameters[5].mul_add(2.0, parameters[4]);
-            parameters[5] = parameters[5].mul_add(3.0, 1.0).ln() / 3.0;
-            parameters[6] += 0.5;
-            parameters.extend_from_slice(&[0.0, 0.0, 0.0, fsrs::FSRS5_DEFAULT_DECAY]);
-            parameters
-        }
-        19 => {
-            let mut parameters = params.to_vec();
-            parameters.extend_from_slice(&[0.0, fsrs::FSRS5_DEFAULT_DECAY]);
-            parameters
-        }
-        21 => params.to_vec(),
-        34 => params.to_vec(),
-        _ => invalid_input!("invalid FSRS parameter count"),
-    };
-    if converted.iter().any(|w| !w.is_finite()) {
-        invalid_input!("invalid FSRS parameter values")
-    } else {
-        Ok(converted)
-    }
+    Ok(crate::deckconfig::effective_fsrs7_params(params).to_vec())
 }
 
 #[cfg(test)]
@@ -1453,8 +1431,8 @@ mod tests {
                 presets: vec![AddonFsrsPreset {
                     id: "addon:test:route".into(),
                     name: "Route".into(),
-                    fsrs_version: AddonFsrsVersion::Six,
-                    params: vec![1.0; 21],
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: vec![1.0; 34],
                     desired_retention: 0.85,
                     historical_retention: 0.9,
                     ignore_revlogs_before_date: String::new(),
@@ -1500,7 +1478,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(tagged_young.as_slice(), DEFAULT_PARAMETERS.as_slice());
-        assert_eq!(tagged_mature.as_slice(), vec![1.0; 21].as_slice());
+        assert_eq!(tagged_mature.as_slice(), vec![1.0; 34].as_slice());
         assert_eq!(untagged_mature.as_slice(), DEFAULT_PARAMETERS.as_slice());
 
         Ok(())
