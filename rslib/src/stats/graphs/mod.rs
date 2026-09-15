@@ -56,13 +56,15 @@ impl Collection {
             Some(search),
         )?;
         let all = search.trim().is_empty();
-        guard.col.graph_data(search, all, days)
+        let searched_cards = guard.cards;
+        guard.col.graph_data(search, all, searched_cards, days)
     }
 
     fn graph_data(
         &mut self,
         search: &str,
         all: bool,
+        searched_cards: usize,
         days: u32,
     ) -> Result<anki_proto::stats::GraphsResponse> {
         let timing = self.timing_today()?;
@@ -78,8 +80,14 @@ impl Collection {
         let revlog = if all {
             self.storage.get_all_revlog_entries(revlog_start)?
         } else {
-            self.storage
-                .get_revlog_entries_for_searched_cards_after_stamp(revlog_start)?
+            let collection_cards: u32 =
+                self.storage
+                    .db
+                    .query_row("select count() from cards", [], |row| row.get(0))?;
+            self.storage.get_revlog_entries_for_searched_cards_after_stamp(
+                revlog_start,
+                searched_cards * 2 >= collection_cards as usize,
+            )?
         };
         let cards = self.storage.all_searched_cards()?;
         let algorithm = self.effective_scheduling_algorithm()?;
@@ -99,45 +107,45 @@ impl Collection {
                         .collect()
                 }),
         };
-        let fsrs_cards: Vec<Card> = cards
-            .iter()
-            .filter(|card| card.memory_state.is_some())
-            .cloned()
-            .collect();
-        let fsrs_preset_start = std::time::Instant::now();
-        let fsrs_presets_by_card = self.fsrs_presets_for_cards(&fsrs_cards)?;
-        tracing::debug!(
-            searched_cards = cards.len(),
-            rwkv_scored_cards = rwkv_retrievability_scores
-                .as_ref()
-                .map(|scores| scores.len())
-                .unwrap_or_default(),
-            fsrs_cards = fsrs_cards.len(),
-            elapsed_ms = fsrs_preset_start.elapsed().as_secs_f64() * 1000.0,
-            "resolved FSRS presets for stats graphs"
-        );
         let mut fsrs_by_preset = HashMap::new();
         let mut fsrs_curve_by_preset = HashMap::new();
         let mut fsrs_preset_by_card = HashMap::new();
-        let fsrs_build_start = std::time::Instant::now();
-        for (card_id, fsrs_preset) in fsrs_presets_by_card {
-            let preset_id = fsrs_preset.id.clone();
-            fsrs_preset_by_card.insert(card_id, preset_id.clone());
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                fsrs_by_preset.entry(preset_id.clone())
-            {
-                entry.insert(fsrs_preset.fsrs()?);
-                if let Some(curve) = Fsrs7Curve::new(&fsrs_preset.params) {
-                    fsrs_curve_by_preset.insert(preset_id, curve);
+        // only FSRS-7's retrievability reads the cards' FSRS presets; RWKV
+        // shows none of FSRS-7's values (spec ui.stats-one-algorithm)
+        if algorithm == SchedulingAlgorithm::Fsrs7 {
+            let fsrs_cards: Vec<Card> = cards
+                .iter()
+                .filter(|card| card.memory_state.is_some())
+                .cloned()
+                .collect();
+            let fsrs_preset_start = std::time::Instant::now();
+            let fsrs_presets_by_card = self.fsrs_presets_for_cards(&fsrs_cards)?;
+            tracing::debug!(
+                searched_cards = cards.len(),
+                fsrs_cards = fsrs_cards.len(),
+                elapsed_ms = fsrs_preset_start.elapsed().as_secs_f64() * 1000.0,
+                "resolved FSRS presets for stats graphs"
+            );
+            let fsrs_build_start = std::time::Instant::now();
+            for (card_id, fsrs_preset) in fsrs_presets_by_card {
+                let preset_id = fsrs_preset.id.clone();
+                fsrs_preset_by_card.insert(card_id, preset_id.clone());
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    fsrs_by_preset.entry(preset_id.clone())
+                {
+                    entry.insert(fsrs_preset.fsrs()?);
+                    if let Some(curve) = Fsrs7Curve::new(&fsrs_preset.params) {
+                        fsrs_curve_by_preset.insert(preset_id, curve);
+                    }
                 }
             }
+            tracing::debug!(
+                presets = fsrs_by_preset.len(),
+                cards = fsrs_preset_by_card.len(),
+                elapsed_ms = fsrs_build_start.elapsed().as_secs_f64() * 1000.0,
+                "built FSRS instances for stats graphs"
+            );
         }
-        tracing::debug!(
-            presets = fsrs_by_preset.len(),
-            cards = fsrs_preset_by_card.len(),
-            elapsed_ms = fsrs_build_start.elapsed().as_secs_f64() * 1000.0,
-            "built FSRS instances for stats graphs"
-        );
         let ctx = GraphsContext {
             revlog,
             days_elapsed: timing.days_elapsed,
@@ -206,6 +214,107 @@ impl Collection {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
+    use crate::revlog::RevlogReviewKind;
+    use crate::tests::DeckAdder;
+    use crate::tests::NoteAdder;
+
+    /// 40 cards in two decks, of every type and queue, with reviews of
+    /// every kind over the last two years.
+    fn collection_with_reviews() -> Result<Collection> {
+        let mut col = Collection::new();
+        let other = DeckAdder::new("Other").add(&mut col).id;
+        let now = TimestampSecs::now();
+        for i in 0..40i64 {
+            let deck = if i % 3 == 0 { other } else { DeckId(1) };
+            NoteAdder::basic(&mut col)
+                .fields(&[&format!("front {i}"), "back"])
+                .deck(deck)
+                .add(&mut col);
+        }
+        let mut cards = col.storage.get_all_cards();
+        cards.sort_by_key(|card| card.id);
+        for (i, card) in cards.iter_mut().enumerate() {
+            let i = i as i64;
+            if i % 5 != 0 {
+                card.ctype = [CardType::Learn, CardType::Review, CardType::Relearn][i as usize % 3];
+                card.queue = match i % 7 {
+                    0 => CardQueue::Suspended,
+                    1 => CardQueue::UserBuried,
+                    _ => CardQueue::Review,
+                };
+                card.interval = (i * 13 % 90) as u32;
+                card.due = (i * 7 % 50) as i32;
+                card.ease_factor = 1300 + (i * 97 % 1500) as u16;
+                if i % 2 == 0 {
+                    card.memory_state = Some(FsrsMemoryState {
+                        stability: 1.0 + (i * 3) as f32,
+                        stability_internal: 1.0 + (i * 3) as f32,
+                        stability_fast: None,
+                        difficulty: 1.0 + (i % 9) as f32,
+                    });
+                    card.last_review_time = Some(now.adding_secs(-86_400 * (i % 30)));
+                }
+            }
+            col.storage.update_card(card)?;
+            for review in 0..(i % 6) {
+                let kind = [
+                    RevlogReviewKind::Learning,
+                    RevlogReviewKind::Review,
+                    RevlogReviewKind::Relearning,
+                    RevlogReviewKind::Filtered,
+                    RevlogReviewKind::Manual,
+                    RevlogReviewKind::Rescheduled,
+                ][((i + review) % 6) as usize];
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(
+                            now.adding_secs(-(i * 17 + review * 101) * 3_600).0 * 1000
+                                + i * 10
+                                + review,
+                        ),
+                        cid: card.id,
+                        button_chosen: ((i + review) % 5) as u8,
+                        interval: (i * review) as i32,
+                        last_interval: [-600, 0, 1, 20, 21, 45][((i * 3 + review) % 6) as usize],
+                        ease_factor: 2500,
+                        taken_millis: (i * 1000 + review) as u32,
+                        review_kind: kind,
+                        ..Default::default()
+                    },
+                    false,
+                )?;
+            }
+        }
+        Ok(col)
+    }
+
+    // Both ways of reading the searched cards' reviews give the same rows.
+    #[test]
+    fn searched_reviews_are_the_same_read_by_card_or_in_order() -> Result<()> {
+        let mut col = collection_with_reviews()?;
+        let start = TimestampSecs::now().adding_secs(-86_400 * 200);
+        for search in ["", "deck:Default", "deck:Other", "is:suspended", "deck:none"] {
+            for after in [TimestampSecs(0), start] {
+                let guard = col.search_cards_into_table(search, SortMode::NoOrder)?;
+                let mut by_card = guard
+                    .col
+                    .storage
+                    .get_revlog_entries_for_searched_cards_after_stamp(after, false)?;
+                let mut in_order = guard
+                    .col
+                    .storage
+                    .get_revlog_entries_for_searched_cards_after_stamp(after, true)?;
+                by_card.sort_by_key(|entry| entry.id);
+                in_order.sort_by_key(|entry| entry.id);
+                assert_eq!(by_card, in_order);
+                assert!(search == "deck:none" || !by_card.is_empty());
+            }
+        }
+        Ok(())
+    }
 
     // Pins spec/ui.md#ui.mode-switch: the Stats page learns the UI mode
     // with its data.
