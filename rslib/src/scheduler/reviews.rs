@@ -15,6 +15,7 @@ use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::collection::Collection;
 use crate::config::StringKey;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::error::Result;
 use crate::prelude::*;
 use crate::scheduler::timing::is_unix_epoch_timestamp;
@@ -188,17 +189,23 @@ impl Collection {
             .map(|options| (CardId(options.card_id), options))
             .collect();
         let rating = input.rating;
+        // Under RWKV-Curve only the caller can supply the states: FSRS-7's
+        // must never stand in for RWKV-Curve's (spec sched.grade-now-rwkv-curve).
+        let states_required =
+            self.effective_scheduling_algorithm()? == SchedulingAlgorithm::RwkvCurve;
 
         self.transact(Op::GradeNow, |col| {
             for &card_id in &cids {
-                let options = card_options_by_id.remove(&card_id);
-                let desired_retention_override = options
-                    .as_ref()
-                    .and_then(|options| options.desired_retention_override);
+                let options = card_options_by_id.remove(&card_id).unwrap_or_default();
+                let desired_retention_override = options.desired_retention_override;
                 let mut states: anki_proto::scheduler::SchedulingStates =
-                    if let Some(states) = options.and_then(|options| options.scheduling_states) {
+                    if let Some(states) = options.scheduling_states {
                         states
                     } else {
+                        require!(
+                        !states_required,
+                        "Grade Now under RWKV-Curve needs RWKV-Curve's states for card {card_id}"
+                    );
                         col.get_scheduling_states_with_desired_retention_override(
                             card_id,
                             desired_retention_override,
@@ -221,9 +228,9 @@ impl Collection {
                     milliseconds_taken: 0,
                     answered_at_millis: TimestampMillis::now().into(),
                     desired_retention_override,
-                    rwkv_s90: None,
-                    rwkv_retrievability: None,
-                    rwkv_review_kind: None,
+                    rwkv_s90: options.rwkv_s90,
+                    rwkv_retrievability: options.rwkv_retrievability,
+                    rwkv_review_kind: options.rwkv_review_kind,
                 }
                 .into();
                 // Process the card without updating queues yet
@@ -239,6 +246,10 @@ impl Collection {
 mod test {
     use super::*;
     use crate::prelude::*;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::states::CardState;
+    use crate::scheduler::states::NormalState;
 
     #[test]
     fn grade_now_desired_retention_override_is_saved() -> Result<()> {
@@ -269,12 +280,185 @@ mod test {
             card_options: vec![anki_proto::scheduler::grade_now_request::CardOptions {
                 card_id: card.id.into(),
                 desired_retention_override: Some(0.72),
-                scheduling_states: None,
+                ..Default::default()
             }],
         })?;
 
         let card = col.storage.get_card(card.id)?.unwrap();
         assert_eq!(card.desired_retention, Some(0.72));
+
+        Ok(())
+    }
+
+    fn add_due_review_card(col: &mut Collection) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 20;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(crate::card::FsrsMemoryState {
+            stability: 20.0,
+            stability_internal: 20.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-20 * 86_400));
+        col.storage.update_card(&card)?;
+        Ok(card.id)
+    }
+
+    fn good_options(
+        card_id: CardId,
+        states: Option<anki_proto::scheduler::SchedulingStates>,
+    ) -> anki_proto::scheduler::grade_now_request::CardOptions {
+        anki_proto::scheduler::grade_now_request::CardOptions {
+            card_id: card_id.into(),
+            scheduling_states: states,
+            rwkv_s90: Some(80.0),
+            rwkv_retrievability: Some(0.83),
+            rwkv_review_kind: Some(1),
+            ..Default::default()
+        }
+    }
+
+    fn grade_good(
+        col: &mut Collection,
+        options: anki_proto::scheduler::grade_now_request::CardOptions,
+    ) -> Result<OpOutput<()>> {
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![options.card_id],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![options],
+        })
+    }
+
+    // Pins spec/scheduling.md#sched.grade-now-rwkv-curve: under RWKV-Curve,
+    // Grade Now answers with the RWKV-Curve states its caller supplies,
+    // exactly as the reviewer answers with them, and refuses a card without
+    // them instead of answering it with FSRS-7's.
+    #[test]
+    fn grade_now_under_rwkv_curve_answers_like_the_reviewer_and_never_with_fsrs7() -> Result<()> {
+        let mut col = crate::collection::CollectionBuilder::default().build()?;
+        assert_eq!(
+            col.effective_scheduling_algorithm()?,
+            SchedulingAlgorithm::RwkvCurve
+        );
+        let graded = add_due_review_card(&mut col)?;
+        let reviewed = add_due_review_card(&mut col)?;
+        let intervals = [Some(3.0), Some(33.0), Some(77.0), Some(90.0)];
+        let s90s = [Some(4.0), Some(35.0), Some(80.0), Some(95.0)];
+
+        // without RWKV-Curve's states nothing is answered: FSRS-7 would have
+        // given this card its own Good interval
+        let CardState::Normal(NormalState::Review(fsrs7_good)) =
+            col.get_scheduling_states(graded)?.good
+        else {
+            panic!("expected a review state");
+        };
+        assert_ne!(fsrs7_good.scheduled_days, 77);
+        assert!(grade_good(&mut col, good_options(graded, None)).is_err());
+        assert_eq!(col.storage.get_card(graded)?.unwrap().interval, 20);
+        assert!(col.storage.get_revlog_entries_for_card(graded)?.is_empty());
+
+        // with them, the card gets RWKV-Curve's interval and S90, as the
+        // reviewer's answer with the same states gives the other card
+        let states = col.scheduling_states_with_intervals(graded, intervals, s90s)?;
+        grade_good(&mut col, good_options(graded, Some(states.into())))?;
+        assert_eq!(col.can_undo(), Some(&Op::GradeNow));
+        let states = col.scheduling_states_with_intervals(reviewed, intervals, s90s)?;
+        col.answer_card(&mut CardAnswer {
+            card_id: reviewed,
+            current_state: states.current,
+            new_state: states.good,
+            rating: crate::scheduler::answering::Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: Some(80.0),
+            rwkv_retrievability: Some(0.83),
+            rwkv_review_kind: Some(1),
+            from_queue: false,
+        })?;
+
+        let graded_card = col.storage.get_card(graded)?.unwrap();
+        let reviewed_card = col.storage.get_card(reviewed)?.unwrap();
+        assert_eq!(graded_card.interval, 77);
+        assert_eq!(graded_card.memory_state.unwrap().stability, 80.0);
+        assert_eq!(
+            (
+                graded_card.interval,
+                graded_card.due,
+                graded_card.queue,
+                graded_card.ctype,
+                graded_card.memory_state,
+                graded_card.desired_retention,
+            ),
+            (
+                reviewed_card.interval,
+                reviewed_card.due,
+                reviewed_card.queue,
+                reviewed_card.ctype,
+                reviewed_card.memory_state,
+                reviewed_card.desired_retention,
+            )
+        );
+        let graded_log = col.storage.get_revlog_entries_for_card(graded)?;
+        let reviewed_log = col.storage.get_revlog_entries_for_card(reviewed)?;
+        assert_eq!(graded_log.len(), 1);
+        let row = |entry: &RevlogEntry| {
+            (
+                entry.button_chosen,
+                entry.interval,
+                entry.last_interval,
+                entry.ease_factor,
+                entry.review_kind,
+            )
+        };
+        assert_eq!(row(&graded_log[0]), row(&reviewed_log[0]));
+        assert_eq!(graded_log[0].review_kind, RevlogReviewKind::Review);
+        let cached: Vec<f32> = col
+            .storage
+            .db
+            .prepare("select prediction from search_stats_rwkv_review_retrievability")?
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(cached.len(), 2);
+        assert!(cached.iter().all(|value| (value - 0.83).abs() < 1e-6));
+
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.grade-now-rwkv-curve: RWKV-Instant has no
+    // intervals of its own; Grade Now answers with the FSRS states its
+    // reviewer stores, and keeps the review kind the caller gives.
+    #[test]
+    fn grade_now_under_rwkv_instant_answers_with_fsrs_states() -> Result<()> {
+        let mut col = crate::collection::CollectionBuilder::default().build()?;
+        col.update_default_deck_config(|config| SchedulingAlgorithm::RwkvInstant.apply_to(config));
+        assert_eq!(
+            col.effective_scheduling_algorithm()?,
+            SchedulingAlgorithm::RwkvInstant
+        );
+        let cid = add_due_review_card(&mut col)?;
+        let CardState::Normal(NormalState::Review(fsrs_good)) =
+            col.get_scheduling_states(cid)?.good
+        else {
+            panic!("expected a review state");
+        };
+
+        let mut options = good_options(cid, None);
+        options.rwkv_s90 = None;
+        options.rwkv_review_kind = Some(3);
+        grade_good(&mut col, options)?;
+
+        let card = col.storage.get_card(cid)?.unwrap();
+        assert_eq!(card.interval, fsrs_good.scheduled_days);
+        let log = col.storage.get_revlog_entries_for_card(cid)?;
+        assert_eq!(log[0].review_kind, RevlogReviewKind::Filtered);
 
         Ok(())
     }

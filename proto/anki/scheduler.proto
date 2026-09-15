@@ -352,6 +352,12 @@ message GradeNowRequest {
     int64 card_id = 1;
     optional float desired_retention_override = 2;
     optional SchedulingStates scheduling_states = 3;
+    // What the reviewer's answer carries for an RWKV card (see CardAnswer).
+    // Under RWKV-Curve every card needs `scheduling_states` holding
+    // RWKV-Curve's states (spec sched.grade-now-rwkv-curve).
+    optional float rwkv_s90 = 4;
+    optional float rwkv_retrievability = 5;
+    optional uint32 rwkv_review_kind = 6;
   }
 
   repeated int64 card_ids = 1;

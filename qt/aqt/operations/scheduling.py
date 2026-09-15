@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TypeVar
 
@@ -93,6 +94,58 @@ def set_due_date_dialog(
         )
 
 
+@dataclass(frozen=True)
+class GradeNowResult:
+    changes: OpChanges
+    answered_card_ids: tuple[CardId, ...]
+    # RWKV-Curve gave no intervals for these cards, so they were not answered
+    unanswered_card_ids: tuple[CardId, ...]
+
+
+def grade_cards_now(
+    col: Collection,
+    card_ids: Sequence[int],
+    ease: int,
+    card_options: Sequence[GradeNowCardOptions] = (),
+    *,
+    reviewer: object | None = None,
+) -> GradeNowResult:
+    """Answer each card with `ease` (1 Again, 2 Hard, 3 Good, 4 Easy) as the
+    reviewer would, in one undoable step, without the GUI (spec
+    sched.grade-now-rwkv-curve). Under RWKV-Curve a card RWKV-Curve gives no
+    intervals for is left unanswered and listed in `unanswered_card_ids`.
+    Blocks while RWKV predicts, so call it off the main thread.
+
+    `reviewer` is the running reviewer, whose RWKV state follows the
+    answers; by default the main window's when `col` is its collection.
+    """
+    from aqt import rwkv_scheduler
+
+    if reviewer is None:
+        mw = aqt.mw
+        reviewer = (
+            getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+            if mw is not None and getattr(mw, "col", None) is col
+            else SimpleNamespace(mw=SimpleNamespace(col=col))
+        )
+    cards = rwkv_scheduler.rwkv_grade_now_cards(
+        reviewer, card_ids, ease, tuple(card_options)
+    )
+    answered = tuple(CardId(card_id) for card_id in cards.answered_card_ids)
+    unanswered = tuple(CardId(card_id) for card_id in cards.unanswered_card_ids)
+    if not answered:
+        return GradeNowResult(OpChanges(), answered, unanswered)
+
+    reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, answered)
+    changes = col._backend.grade_now(
+        card_ids=answered,
+        rating=rwkv_scheduler.grade_now_rating(ease),
+        card_options=cards.card_options,
+    )
+    rwkv_scheduler.record_grade_now_answers(reconciliation)
+    return GradeNowResult(changes, answered, unanswered)
+
+
 def grade_now(
     *,
     parent: QWidget,
@@ -100,44 +153,23 @@ def grade_now(
     ease: int,
     card_options: Sequence[GradeNowCardOptions] | None = None,
 ) -> CollectionOp[OpChanges]:
-    assert aqt.mw
-    mw = aqt.mw
     card_ids = tuple(card_ids)
     card_options = tuple(card_options or ())
-    if ease == 1:
-        rating = CardAnswer.AGAIN
-    elif ease == 2:
-        rating = CardAnswer.HARD
-    elif ease == 3:
-        rating = CardAnswer.GOOD
-    else:
-        rating = CardAnswer.EASY
+    result: list[GradeNowResult] = []
 
     def grade_now_v3(col: Collection) -> OpChanges:
-        from aqt import rwkv_scheduler
+        result.append(grade_cards_now(col, card_ids, ease, card_options))
+        return result[0].changes
 
-        reviewer = getattr(mw, "reviewer", None)
-        reconciliation = (
-            rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, card_ids)
-            if reviewer is not None
-            else None
-        )
-        changes = col._backend.grade_now(
-            card_ids=card_ids,
-            rating=rating,
-            card_options=card_options,
-        )
-        rwkv_scheduler.record_grade_now_answers(reconciliation)
-        return changes
+    def done(_: OpChanges) -> None:
+        lines = [
+            tr.scheduling_graded_cards_done(cards=len(result[0].answered_card_ids))
+        ]
+        if skipped := len(result[0].unanswered_card_ids):
+            lines.append(tr.qt_misc_rwkv_curve_grade_now_skipped(cards=skipped))
+        tooltip("<br>".join(lines), parent=parent)
 
-    return CollectionOp(
-        parent,
-        grade_now_v3,
-    ).success(
-        lambda _: tooltip(
-            tr.scheduling_graded_cards_done(cards=len(card_ids)), parent=parent
-        )
-    )
+    return CollectionOp(parent, grade_now_v3).success(done)
 
 
 def forget_cards(
