@@ -96,9 +96,11 @@ class DeckBrowser:
 
     def redraw_for_ui_mode(self) -> None:
         """Redraw after a Simple/Advanced switch without touching the due
-        counts (spec ui.mode-switch): the tree already on screen is reused."""
+        counts (spec ui.mode-switch). Of the deck list, only the bottom bar
+        reads the mode (the Import button), so only it is drawn again; the
+        page with the tree already on screen stays as it is."""
         if hasattr(self, "_render_data"):
-            self._renderPage(reuse=True)
+            self._drawButtons()
         else:
             self.refresh()
 

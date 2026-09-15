@@ -140,21 +140,30 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
     mw.deckBrowser.redraw_for_ui_mode.assert_not_called()
 
 
-def test_deck_browser_mode_redraw_reuses_the_tree_on_screen() -> None:
+def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
     browser = cast(
         Any,
         SimpleNamespace(
             _render_data=object(),
             _renderPage=MagicMock(),
+            _drawButtons=MagicMock(),
             refresh=MagicMock(),
         ),
     )
     DeckBrowser.redraw_for_ui_mode(browser)
-    browser._renderPage.assert_called_once_with(reuse=True)
+    # the page with the tree on screen does not read the mode
+    browser._drawButtons.assert_called_once()
+    browser._renderPage.assert_not_called()
     browser.refresh.assert_not_called()
 
     # nothing rendered yet: a normal refresh
-    browser = cast(Any, SimpleNamespace(_renderPage=MagicMock(), refresh=MagicMock()))
+    browser = cast(
+        Any,
+        SimpleNamespace(
+            _renderPage=MagicMock(), _drawButtons=MagicMock(), refresh=MagicMock()
+        ),
+    )
     DeckBrowser.redraw_for_ui_mode(browser)
     browser._renderPage.assert_not_called()
+    browser._drawButtons.assert_not_called()
     browser.refresh.assert_called_once()
