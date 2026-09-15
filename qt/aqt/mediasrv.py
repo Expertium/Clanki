@@ -1613,6 +1613,8 @@ def _extract_collection_post_request(path: str) -> DynamicRequest | NotFound:
     if handler := post_handlers.get(path):
         # convert bytes/None into response
         def wrapped() -> Response:
+            # e.g. an optimization started by the deck options page
+            aqt.mw.taskman.collection_use_started()
             try:
                 import inspect
 
@@ -1631,6 +1633,8 @@ def _extract_collection_post_request(path: str) -> DynamicRequest | NotFound:
             except Exception as exc:
                 print(traceback.format_exc())
                 response = _text_response(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            finally:
+                aqt.mw.taskman.collection_use_finished()
             return response
 
         return wrapped

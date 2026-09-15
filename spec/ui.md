@@ -84,3 +84,26 @@ link, disabling the add-on, the one-time notice);
 (`qt/tests/test_preferences.py`);
 `review_heatmap_is_on_by_default_and_a_reviewing_preference`
 (`rslib/src/preferences.rs`).
+
+## ui.periodic-backup-waits
+
+Given the periodic backup check (every 5 minutes while a profile is open),
+Clanki skips the check while the reviewer is open (a card's question or
+answer on screen, including Show Answer and the answer buttons) and while
+anything else uses the collection: a background task queued or running on
+the collection (such as the rescheduling after a deck-options save, an
+RWKV-Curve reschedule or a sync) or a request from a web page (such as an
+FSRS optimization started from deck options). A skipped check makes no
+backup; the next check outside the reviewer with the collection free makes
+it, under the usual rules (the minimum interval between backups, and only
+when the collection changed). Backups made by the user (File > Create
+Backup) and the backup on close are not affected.
+
+**Why:** Andrew, 2026-09-15: a periodic backup holds the collection while it
+copies it, so an answer, an optimization or a reschedule that comes at the
+same time waits, and the "Processing..." window appeared during reviews.
+
+**Pinned by:** `test_periodic_backup_waits_for_reviews_and_other_collection_work`,
+`test_collection_busy_counts_queued_and_running_collection_tasks`
+(`qt/tests/test_main.py`); `test_web_page_backend_request_counts_as_collection_use`
+(`qt/tests/test_mediasrv.py`).

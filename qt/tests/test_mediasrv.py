@@ -380,6 +380,31 @@ class TestRwkvReschedule:
         assert calls == [(mw, deck_id)]
 
 
+def test_web_page_backend_request_counts_as_collection_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt
+    from aqt.mediasrv import _extract_collection_post_request, app, post_handlers
+    from aqt.taskman import TaskManager
+
+    mw = SimpleNamespace(col=object())
+    mw.weakref = lambda: mw  # type: ignore[attr-defined]
+    mw.taskman = TaskManager(mw)  # type: ignore[attr-defined]
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+    busy_during_request: list[bool] = []
+
+    def handler() -> bytes:
+        busy_during_request.append(mw.taskman.collection_busy())
+        raise RuntimeError("the count must drop after a failure too")
+
+    monkeypatch.setitem(post_handlers, "clankiTestRequest", handler)
+    with app.test_request_context(method="POST"):
+        _extract_collection_post_request("clankiTestRequest")()
+
+    assert busy_during_request == [True]
+    assert not mw.taskman.collection_busy()
+
+
 class TestCheckDynamicRequestPermissions:
     """A missing Content-type header must abort(403), not raise KeyError."""
 

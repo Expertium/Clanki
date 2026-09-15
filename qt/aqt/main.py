@@ -1838,7 +1838,12 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def on_periodic_backup_timer(self) -> None:
-        """Create a backup if enough time has elapsed and collection changed."""
+        """Create a backup if enough time has elapsed and collection changed.
+        Not while reviewing, and not while anything else uses the collection,
+        such as an optimization or a reschedule (spec ui.periodic-backup-waits);
+        a later check makes it then."""
+        if self.state == "review" or self.taskman.collection_busy():
+            return
         self._create_backup_with_progress(user_initiated=False)
 
     def on_create_backup_now(self) -> None:

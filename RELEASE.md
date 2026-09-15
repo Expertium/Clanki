@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The periodic backup (checked every 5 minutes) waits while you review, and
+  while an FSRS optimization, a reschedule, a sync or another task uses the
+  collection. Before, it could make an answer wait, with a "Processing..."
+  window.
 - RWKV-Curve cards never show or store FSRS-7 intervals: until RWKV-Curve
   has calculated a card's intervals, the reviewer shows "Waiting for
   RWKV-Curve…" instead of the answer buttons and ignores answer keys. Before,
