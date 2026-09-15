@@ -22,10 +22,6 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- The collection file is read through a memory map: large reads, such as a sorted
-  browser search or the deck list after other screens, are faster (a sorted
-  search of a 159k-card collection: 430 to 286 ms). The pages share the
-  system's file cache, so this adds no private memory.
 - The next states that add-ons and custom-scheduling scripts get now carry the
   S90 (the time until recall falls to 90%) as `stability`; FSRS-7's internal
   stability stays in `stability_internal`. The simulator's R*f(S) graph weights
