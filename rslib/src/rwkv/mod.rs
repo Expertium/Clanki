@@ -4611,47 +4611,21 @@ fn write_state_cache_id_encodings(
     Ok(())
 }
 
+/// Whole days until `curve` reaches `target_retention`: the unrounded
+/// crossing (`unrounded_interval_for_curve`) rounded up, at least 1 day and
+/// at most `max_interval_days`.
 fn interval_for_curve(
     curve: &ReviewCurve,
     target_retention: f32,
     max_interval_days: u32,
 ) -> Option<u32> {
-    if !(0.0..=1.0).contains(&target_retention) || max_interval_days < 1 {
-        return None;
-    }
-
-    let days = interval_search_days(max_interval_days);
-    let mut previous: Option<(u32, f32)> = None;
-    for day in days {
-        let retrievability = predict_curve(curve, day as f32 * SECONDS_PER_DAY as f32);
-        if let Some((previous_day, previous_retrievability)) = previous {
-            if retrievability <= target_retention {
-                let span = day - previous_day;
-                let denominator = previous_retrievability - retrievability;
-                let interpolated = if denominator <= 0.0 {
-                    day as f32
-                } else {
-                    previous_day as f32
-                        + span as f32 * (previous_retrievability - target_retention) / denominator
-                };
-                return Some(clamped_interval_days(interpolated, max_interval_days));
-            }
-        } else if retrievability <= target_retention {
-            return Some(day.clamp(1, max_interval_days));
-        }
-
-        previous = Some((day, retrievability));
-    }
-
-    Some(max_interval_days)
+    unrounded_interval_for_curve(curve, target_retention, max_interval_days)
+        .map(|days| clamped_interval_days(days, max_interval_days))
 }
 
 /// The unrounded day where `curve` reaches `target_retention`, for
-/// RWKV-Curve's S90 (spec sched.rwkv-curve-s90): searched inside the first
-/// day on `SUB_DAY_SEARCH_POINTS` when the curve is at or below the target
-/// after one day, then on the whole-day grid of `interval_for_curve`, with
-/// linear interpolation between points; rounded up to whole days (at least
-/// 1) it equals `interval_for_curve`.
+/// RWKV-Curve's S90 (spec sched.rwkv-curve-s90), found on the curve itself
+/// by `crossings_on_grid`.
 fn unrounded_interval_for_curve(
     curve: &ReviewCurve,
     target_retention: f32,
@@ -4660,119 +4634,10 @@ fn unrounded_interval_for_curve(
     if !(0.0..=1.0).contains(&target_retention) || max_interval_days < 1 {
         return None;
     }
-    let margin_at =
-        |days: f32| predict_curve(curve, days * SECONDS_PER_DAY as f32) - target_retention;
-
-    let mut points = Vec::new();
-    if margin_at(1.0) <= 0.0 {
-        points.extend(SUB_DAY_SEARCH_POINTS);
-    }
-    points.extend(
-        interval_search_days(max_interval_days)
-            .into_iter()
-            .map(|day| day as f32),
-    );
-
-    let maximum = max_interval_days as f32;
-    let mut previous: Option<(f32, f32)> = None;
-    for point in points {
-        let margin = margin_at(point);
-        if margin <= 0.0 {
-            let crossing = match previous {
-                Some((previous_point, previous_margin)) => {
-                    let denominator = previous_margin - margin;
-                    if denominator <= 0.0 {
-                        point
-                    } else {
-                        previous_point + (point - previous_point) * previous_margin / denominator
-                    }
-                }
-                None => point,
-            };
-            return Some(crossing.min(maximum));
-        }
-        previous = Some((point, margin));
-    }
-    Some(maximum)
-}
-
-// the whole-day search, kept as the tests' oracle for the unrounded one
-#[cfg(test)]
-fn intervals_for_answer_curves(
-    curves: [&ReviewCurve; 4],
-    target_retentions: [f32; 4],
-    max_interval_days: u32,
-    enforce_grade_order: bool,
-) -> [Option<u32>; 4] {
-    if !enforce_grade_order
-        || max_interval_days < 1
-        || target_retentions
-            .iter()
-            .any(|target| !(0.0..=1.0).contains(target))
-    {
-        return std::array::from_fn(|index| {
-            interval_for_curve(curves[index], target_retentions[index], max_interval_days)
-        });
-    }
-
-    intervals_for_pava_adjusted_samples(target_retentions, max_interval_days, |day| {
-        std::array::from_fn(|index| {
-            predict_curve(curves[index], day as f32 * SECONDS_PER_DAY as f32)
-        })
-    })
-}
-
-// the whole-day search, kept as the tests' oracle for the unrounded one
-#[cfg(test)]
-fn intervals_for_pava_adjusted_samples(
-    target_retentions: [f32; 4],
-    max_interval_days: u32,
-    mut retrievabilities_for_day: impl FnMut(u32) -> [f32; 4],
-) -> [Option<u32>; 4] {
-    if max_interval_days < 1
-        || target_retentions
-            .iter()
-            .any(|target| !(0.0..=1.0).contains(target))
-    {
-        return [None; 4];
-    }
-
-    let mut intervals = [None; 4];
-    let mut previous: [Option<(u32, f32)>; 4] = [None; 4];
-    for day in interval_search_days(max_interval_days) {
-        // Pool distance-to-target values rather than raw probabilities so that
-        // per-grade target retentions retain the same crossing-order guarantee.
-        let retrievabilities = retrievabilities_for_day(day);
-        let margins =
-            std::array::from_fn(|index| retrievabilities[index] - target_retentions[index]);
-        let adjusted_margins = pava_non_decreasing(margins);
-
-        for index in 0..4 {
-            if intervals[index].is_some() {
-                continue;
-            }
-
-            let margin = adjusted_margins[index];
-            if margin <= 0.0 {
-                intervals[index] = Some(match previous[index] {
-                    Some((previous_day, previous_margin)) => interpolated_crossing_interval(
-                        previous_day,
-                        previous_margin,
-                        day,
-                        margin,
-                        max_interval_days,
-                    ),
-                    None => day.clamp(1, max_interval_days),
-                });
-            }
-            previous[index] = Some((day, margin));
-        }
-        if intervals.iter().all(Option::is_some) {
-            break;
-        }
-    }
-
-    std::array::from_fn(|index| Some(intervals[index].unwrap_or(max_interval_days)))
+    let margins_at =
+        |days: f32| [predict_curve(curve, days * SECONDS_PER_DAY as f32) - target_retention];
+    let [crossing] = crossings_on_grid(max_interval_days, margins_at);
+    Some(crossing)
 }
 
 /// Points (days) searched inside the first day when an answer curve reaches
@@ -4795,11 +4660,10 @@ const SUB_DAY_SEARCH_POINTS: [f32; 14] = [
 ];
 
 /// Unrounded answer intervals in days, for the reviewer (spec
-/// sched.sub-day-intervals). A crossing inside the first day is searched on
-/// `SUB_DAY_SEARCH_POINTS`; later crossings use the same day grid and linear
-/// interpolation as `intervals_for_answer_curves`, whose whole-day results
-/// equal these rounded up. With grade order enforced, the distance to each
-/// grade's target is pooled across grades at every point, as there.
+/// sched.sub-day-intervals), found on the curves themselves by
+/// `crossings_on_grid`. With grade order enforced, the distance to each
+/// grade's target is pooled across grades (`pava_non_decreasing`) wherever
+/// the curves are evaluated, so the crossings come out in grade order.
 fn unrounded_intervals_for_answer_curves(
     curves: [&ReviewCurve; 4],
     target_retentions: [f32; 4],
@@ -4820,7 +4684,21 @@ fn unrounded_intervals_for_answer_curves(
             margins
         }
     };
+    let crossings = crossings_on_grid(max_interval_days, margins_at);
+    std::array::from_fn(|index| valid[index].then_some(crossings[index]))
+}
 
+/// Where each decreasing margin (a curve minus its target, in days) first
+/// reaches 0, at most `max_interval_days` (spec sched.sub-day-intervals,
+/// sched.rwkv-curve-s90). The day grid of `interval_search_days` (with
+/// `SUB_DAY_SEARCH_POINTS` first when some margin is already at or below 0
+/// after one day) brackets each crossing; `crossing_between` then finds it
+/// on the margin itself. A margin at or below 0 at the first point is
+/// bracketed from 0; one that never reaches 0 gives the maximum.
+fn crossings_on_grid<const N: usize>(
+    max_interval_days: u32,
+    margins_at: impl Fn(f32) -> [f32; N],
+) -> [f32; N] {
     let mut points = Vec::new();
     if margins_at(1.0).iter().any(|margin| *margin <= 0.0) {
         points.extend(SUB_DAY_SEARCH_POINTS);
@@ -4832,57 +4710,83 @@ fn unrounded_intervals_for_answer_curves(
     );
 
     let maximum = max_interval_days as f32;
-    let mut intervals: [Option<f32>; 4] = [None; 4];
-    let mut previous: [Option<(f32, f32)>; 4] = [None; 4];
+    let mut crossings: [Option<f32>; N] = [None; N];
+    let mut previous: [Option<(f32, f32)>; N] = [None; N];
+    let mut at_zero: Option<[f32; N]> = None;
     for point in points {
         let margins = margins_at(point);
-        for index in 0..4 {
-            if intervals[index].is_some() {
+        for index in 0..N {
+            if crossings[index].is_some() {
                 continue;
             }
             let margin = margins[index];
             if margin <= 0.0 {
-                let crossing = match previous[index] {
-                    Some((previous_point, previous_margin)) => {
-                        let denominator = previous_margin - margin;
-                        if denominator <= 0.0 {
-                            point
-                        } else {
-                            previous_point
-                                + (point - previous_point) * previous_margin / denominator
-                        }
-                    }
-                    None => point,
+                let (low, low_margin) = previous[index].unwrap_or_else(|| {
+                    (0.0, at_zero.get_or_insert_with(|| margins_at(0.0))[index])
+                });
+                let crossing = if low_margin > 0.0 {
+                    crossing_between(low, low_margin, point, margin, |days| {
+                        margins_at(days)[index]
+                    })
+                } else {
+                    point
                 };
-                intervals[index] = Some(crossing.min(maximum));
+                crossings[index] = Some(crossing.min(maximum));
             }
             previous[index] = Some((point, margin));
         }
-        if intervals.iter().all(Option::is_some) {
+        if crossings.iter().all(Option::is_some) {
             break;
         }
     }
-
-    std::array::from_fn(|index| valid[index].then(|| intervals[index].unwrap_or(maximum)))
+    crossings.map(|crossing| crossing.unwrap_or(maximum))
 }
 
-// the whole-day search, kept as the tests' oracle for the unrounded one
-#[cfg(test)]
-fn interpolated_crossing_interval(
-    previous_day: u32,
-    previous_margin: f32,
-    day: u32,
-    margin: f32,
-    max_interval_days: u32,
-) -> u32 {
-    let span = day - previous_day;
-    let denominator = previous_margin - margin;
-    let interpolated = if denominator <= 0.0 {
-        day as f32
-    } else {
-        previous_day as f32 + span as f32 * previous_margin / denominator
-    };
-    clamped_interval_days(interpolated, max_interval_days)
+/// The day in (low, high] where the decreasing `margin` reaches 0, given
+/// `low_margin > 0 >= high_margin`: a regula falsi search (Illinois variant)
+/// on the curve itself, to about a second (or a millionth of the interval,
+/// where f32 days cannot resolve a second). It starts from the straight line
+/// between the two points, which alone lands late because the curve bends
+/// upward, and returns the earliest day found at or below the target.
+fn crossing_between(
+    low: f32,
+    low_margin: f32,
+    high: f32,
+    high_margin: f32,
+    margin: impl Fn(f32) -> f32,
+) -> f32 {
+    const MAX_STEPS: usize = 64;
+    let (mut low, mut low_margin) = (low as f64, low_margin as f64);
+    let (mut high, mut high_margin) = (high as f64, high_margin as f64);
+    // which end the previous step moved: -1 low, 1 high
+    let mut last_moved = 0;
+    for _ in 0..MAX_STEPS {
+        let tolerance = (1.0 / SECONDS_PER_DAY as f64).max(high * 1e-6);
+        if high - low <= tolerance || low_margin <= high_margin {
+            break;
+        }
+        let mut day = (low * high_margin - high * low_margin) / (high_margin - low_margin);
+        if !(day > low && day < high) {
+            day = 0.5 * (low + high);
+        }
+        let day_margin = margin(day as f32) as f64;
+        if day_margin > 0.0 {
+            low = day;
+            low_margin = day_margin;
+            if last_moved == -1 {
+                high_margin *= 0.5;
+            }
+            last_moved = -1;
+        } else {
+            high = day;
+            high_margin = day_margin;
+            if last_moved == 1 {
+                low_margin *= 0.5;
+            }
+            last_moved = 1;
+        }
+    }
+    high as f32
 }
 
 fn pava_non_decreasing(values: [f32; 4]) -> [f32; 4] {
@@ -9482,16 +9386,17 @@ order by e.id, e.cid
 
     #[test]
     fn pava_crossings_are_ordered_with_per_grade_targets() {
-        let targets = [0.50, 0.625, 0.75, 0.875];
+        // margins that cross 0 at 80, 20, 60 and 90 days; pooled, the first
+        // two cross together at 50
         let raw_crossing_days = [80.0, 20.0, 60.0, 90.0];
-
-        let intervals = intervals_for_pava_adjusted_samples(targets, 100, |day| {
-            std::array::from_fn(|index| {
-                targets[index] + (raw_crossing_days[index] - day as f32) / 1_024.0
-            })
+        let crossings = crossings_on_grid(100, |day| {
+            pava_non_decreasing(std::array::from_fn(|index| {
+                (raw_crossing_days[index] - day) / 1_024.0
+            }))
         });
-
-        assert_eq!(intervals, [Some(50), Some(50), Some(60), Some(90)]);
+        for (crossing, expected) in crossings.into_iter().zip([50.0, 50.0, 60.0, 90.0]) {
+            assert!((crossing - expected).abs() < 1e-3, "{crossings:?}");
+        }
     }
 
     fn basis_curve(basis_index: usize) -> ReviewCurve {
@@ -9503,27 +9408,57 @@ order by e.id, e.cid
         }
     }
 
-    // Pins spec/scheduling.md#sched.sub-day-intervals: the unrounded answer
-    // intervals round up to exactly the whole-day intervals, with and
-    // without grade order.
+    /// A basis curve's time constant in days: its curve is 0.9^(t/s), so it
+    /// meets 90% at t = s (up to predict_curve's 1e-5 floor).
+    fn basis_s90_days(basis_index: usize) -> f32 {
+        let s_space_raw = linspace_exp(basis_index, NUM_CURVES, 18.5);
+        (0.1 + (s_space_raw - 1.0) * (22.0_f32 - 18.5).exp()) / SECONDS_PER_DAY as f32
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-s90 and
+    // sched.sub-day-intervals: an interval is where RWKV-Curve's own curve
+    // meets the target (not a straight line between grid points).
     #[test]
-    fn unrounded_answer_intervals_round_up_to_the_day_intervals() {
-        for bases in [
-            [3, 10, 20, 30],
-            [40, 60, 80, 100],
-            [100, 80, 90, 110],
-            [1, 2, 3, 4],
-        ] {
-            let curves = bases.map(basis_curve);
-            let refs = std::array::from_fn(|index| &curves[index]);
+    fn intervals_are_where_the_curve_meets_the_target() {
+        // one exponential: exactly its time constant
+        for basis in [30, 40, 50, 60, 70, 80, 90, 100] {
+            let expected = basis_s90_days(basis);
+            let s90 = unrounded_interval_for_curve(&basis_curve(basis), 0.9, 36_500).unwrap();
+            assert!(
+                (s90 - expected).abs() <= 1e-4 * expected + 2.0 / SECONDS_PER_DAY as f32,
+                "basis {basis}: {s90} vs {expected}"
+            );
+        }
+        // mixtures, with and without grade order: the curve is at the target
+        // at the interval and still above it a few seconds before
+        let mixture = |bases: [usize; 3]| {
+            let mut weights = vec![0.0; NUM_CURVES];
+            for basis in bases {
+                weights[basis] = 1.0 / 3.0;
+            }
+            ReviewCurve {
+                ahead_logits: vec![0.0],
+                weights,
+            }
+        };
+        let curves = [
+            mixture([20, 60, 90]),
+            mixture([40, 70, 100]),
+            mixture([50, 80, 110]),
+            mixture([60, 90, 120]),
+        ];
+        let refs = std::array::from_fn(|index| &curves[index]);
+        for target in [0.8, 0.9, 0.95] {
             for enforce in [false, true] {
-                let unrounded =
-                    unrounded_intervals_for_answer_curves(refs, [0.9; 4], 36_500, enforce);
-                let days = intervals_for_answer_curves(refs, [0.9; 4], 36_500, enforce);
-                let rounded = unrounded.map(|interval| {
-                    interval.map(|interval| clamped_interval_days(interval, 36_500))
-                });
-                assert_eq!(rounded, days, "bases {bases:?} enforce {enforce}");
+                let intervals =
+                    unrounded_intervals_for_answer_curves(refs, [target; 4], 36_500, enforce);
+                for (index, interval) in intervals.into_iter().enumerate() {
+                    let interval = interval.unwrap();
+                    let at = |days: f32| predict_curve(refs[index], days * SECONDS_PER_DAY as f32);
+                    assert!(at(interval) <= target + 1e-6, "{target} {enforce} {index}");
+                    let earlier = interval - 5.0 / SECONDS_PER_DAY as f32 - interval * 2e-6;
+                    assert!(at(earlier) > target, "{target} {enforce} {index}");
+                }
             }
         }
     }
@@ -9614,8 +9549,8 @@ order by e.id, e.cid
         ];
         let curve_refs = std::array::from_fn(|index| &curves[index]);
 
-        let raw = intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, false);
-        let adjusted = intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, true);
+        let raw = unrounded_intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, false);
+        let adjusted = unrounded_intervals_for_answer_curves(curve_refs, [0.75; 4], 36_500, true);
 
         assert!(raw[0] > raw[1]);
         assert!(adjusted

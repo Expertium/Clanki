@@ -63,16 +63,17 @@ stability stored on answer, `sched.rwkv-curve-fuzz`) — is the point in days,
 unrounded, where RWKV-Curve's forgetting curve meets 90% recall: searched on
 the same points as the answer intervals (`sched.sub-day-intervals`),
 including the points inside the first day when the curve is at or below 90%
-after one day, with linear interpolation between points. It can be under one
-day. Rounded up to whole days (at least 1) it equals the S90 before this
-entry. The answer S90s keep grade order the same way as the answer
-intervals when that is enforced.
+after one day; the grid points bracket the crossing and the crossing itself
+is found on the curve, as for the answer intervals. It can be under one day.
+The answer S90s keep grade order the same way as the answer intervals when
+that is enforced.
 
 **Why:** Andrew, 2026-09-15: RWKV-Curve's S90 should be fractional, like
 FSRS-7's. Before this entry it was searched on whole days only and rounded up
 to whole days, at least 1.
 
-**Pinned by:** `rwkv_curve_s90_is_unrounded` (`rslib/src/rwkv/mod.rs`).
+**Pinned by:** `rwkv_curve_s90_is_unrounded`,
+`intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`).
 
 ## sched.rwkv-instant-no-intervals
 
@@ -118,9 +119,15 @@ Good, Easy:
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
-when a curve reaches its target before day 1, with linear interpolation
-between points as for later days; rounded up to whole days these unrounded
-intervals equal the whole-day intervals RWKV computed before. FSRS-7 uses
+when a curve reaches its target before day 1, then on the day grid (every
+day up to 30, then growing by half each step, up to the maximum interval).
+The grid points only bracket each crossing (from 0 when the first point is
+already below the target); the interval is the point where RWKV-Curve's own
+curve meets the target, found on the curve by a regula falsi search to about
+a second. RWKV-Curve's curve (a weighted mix of exponentials) has no closed
+form for that point, and a straight line between two grid points lands late
+because the curve bends upward (by 0.27% on median, up to 6.9% between one
+and two days). FSRS-7 uses
 the intraday queue whatever its parameters, and so does RWKV-Curve
 (`sched.fsrs7-only`: there is no other FSRS model). Once a card has had its
 preset's maximum of
@@ -133,7 +140,9 @@ ordering rule for mixed sub-day and day buttons is the one he approved.
 Later the same day, after an audit showed that a sub-day interval longer
 than the time left until the day rollover is cut short at the rollover:
 "Anything >=12h rounds up to 1d" (a shorter interval that crosses the
-rollover stays due at the rollover).
+rollover stays due at the rollover). The same audit showed the straight
+line between grid points overshooting; Andrew chose to find the crossing on
+RWKV-Curve's curve itself.
 Before this entry only learning and relearning answers under half a day
 went intraday, a review card's Again never did (it was clamped to the
 minimum lapse interval first), and RWKV-Curve rounded up to whole days.
@@ -142,7 +151,8 @@ minimum lapse interval first), and RWKV-Curve rounded up to whole days.
 (`rslib/src/scheduler/states/button_intervals.rs`),
 `scheduling_states_with_intervals_apply_the_fsrs_rules`
 (`rslib/src/scheduler/answering/mod.rs`),
-`unrounded_answer_intervals_round_up_to_the_day_intervals`,
+`intervals_are_where_the_curve_meets_the_target`,
+`pava_crossings_are_ordered_with_per_grade_targets`,
 `a_fast_forgetting_curve_gives_a_sub_day_interval`,
 `unrounded_intervals_are_not_rounded_after_the_first_day`
 (`rslib/src/rwkv/mod.rs`); the existing learning, relearning and review

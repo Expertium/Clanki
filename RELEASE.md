@@ -22,6 +22,14 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- RWKV-Curve's intervals and stability (S90) are now the exact point where
+  its forgetting curve meets the target retention. Before, a straight line
+  between two search points made them slightly too long (0.27% on median,
+  up to 6.9% for intervals of one to two days).
+- Answer intervals of 12 hours or more are whole days (at least 1 day);
+  shorter ones still go to the intraday queue. Again on a relearning card
+  without relearning steps is held to the minimum lapse interval and not
+  fuzzed, as on a review card.
 - Under RWKV-Curve and RWKV-Instant, the review sort orders
   "Retrievability ascending/descending" and "Relative overdueness" now rank
   cards by RWKV: RWKV-Curve's predicted recall (over the desired retention,
