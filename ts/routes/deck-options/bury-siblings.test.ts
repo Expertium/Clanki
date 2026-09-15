@@ -3,7 +3,7 @@
 
 import { expect, test } from "vitest";
 
-import { applyBurySiblings, type BurySettings, burySiblingsFromConfig } from "./bury-siblings";
+import { applyBurySiblings, type BurySettings, burySiblingsFromConfig, burySiblingsPartlyOn } from "./bury-siblings";
 
 // Pins spec/deck-options.md#deck-options.simple-view (the Bury siblings switch)
 
@@ -17,6 +17,14 @@ test("the switch reads as on only when all three bury settings are on", () => {
     expect(burySiblingsFromConfig(settings(true, false, false))).toBe(false);
     expect(burySiblingsFromConfig(settings(true, true, false))).toBe(false);
     expect(burySiblingsFromConfig(settings(false, true, true))).toBe(false);
+});
+
+test("some but not all bury settings on reads as partly on", () => {
+    expect(burySiblingsPartlyOn(settings(true, false, false))).toBe(true);
+    expect(burySiblingsPartlyOn(settings(true, true, false))).toBe(true);
+    expect(burySiblingsPartlyOn(settings(false, true, true))).toBe(true);
+    expect(burySiblingsPartlyOn(settings(true, true, true))).toBe(false);
+    expect(burySiblingsPartlyOn(settings(false, false, false))).toBe(false);
 });
 
 test("turning the switch on or off sets all three settings", () => {

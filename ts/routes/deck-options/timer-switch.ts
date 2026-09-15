@@ -17,6 +17,16 @@ export function onScreenTimerFromConfig(config: TimerSettings): boolean {
 }
 
 /**
+ * The timer is shown but does not stop on answer (set in Advanced mode): the
+ * switch reads as on and shows a "Partly on" caption
+ * (spec deck-options.simple-view). Stopping a timer that is not shown
+ * changes nothing, so that combination reads as plainly off.
+ */
+export function onScreenTimerPartlyOn(config: TimerSettings): boolean {
+    return config.showTimer && !config.stopTimerOnAnswer;
+}
+
+/**
  * Sets both settings to `on`, in place, and returns the config. A no-op when
  * the switch already reads as `on`, so showing a preset writes nothing: a
  * preset that shows the timer without stopping it keeps that until the switch

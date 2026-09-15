@@ -22,6 +22,9 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Simple mode: when only some of the settings behind "Bury siblings" or
+  "On-screen timer" are on (set in Advanced mode), the switch shows "Partly
+  on (set in Advanced mode)" under it.
 - Deck options: the Algorithm dropdown shows a short description under each
   algorithm, and its revert button restores RWKV-Curve (the new-preset
   default). The highlighted entry in any dropdown now opens on the current

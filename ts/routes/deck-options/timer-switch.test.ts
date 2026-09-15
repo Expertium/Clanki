@@ -3,7 +3,7 @@
 
 import { expect, test } from "vitest";
 
-import { applyOnScreenTimer, onScreenTimerFromConfig, type TimerSettings } from "./timer-switch";
+import { applyOnScreenTimer, onScreenTimerFromConfig, onScreenTimerPartlyOn, type TimerSettings } from "./timer-switch";
 
 // Pins spec/deck-options.md#deck-options.simple-view (the On-screen timer switch)
 
@@ -23,6 +23,14 @@ test("turning the switch on or off sets both settings", () => {
     expect(applyOnScreenTimer(settings(false, true), true)).toEqual(settings(true, true));
     expect(applyOnScreenTimer(settings(true, true), false)).toEqual(settings(false, false));
     expect(applyOnScreenTimer(settings(true, false), false)).toEqual(settings(false, false));
+});
+
+test("a shown timer that does not stop on answer reads as partly on", () => {
+    expect(onScreenTimerPartlyOn(settings(true, false))).toBe(true);
+    expect(onScreenTimerPartlyOn(settings(true, true))).toBe(false);
+    expect(onScreenTimerPartlyOn(settings(false, false))).toBe(false);
+    // stopping a timer that is not shown changes nothing
+    expect(onScreenTimerPartlyOn(settings(false, true))).toBe(false);
 });
 
 test("a preset that already reads as the switch value is left alone", () => {

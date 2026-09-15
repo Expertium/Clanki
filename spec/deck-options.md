@@ -249,7 +249,13 @@ on while `showTimer` is on; turning it on or off writes `showTimer` and
 `stopTimerOnAnswer` together. Showing a preset writes nothing: a preset
 whose stored settings do not match its switch value (some bury settings on,
 or the timer shown without stopping on answer) keeps them until the switch
-is toggled. The revert button of each combined switch restores off.
+is toggled. Such a preset shows the caption "Partly on (set in Advanced
+mode)" under the switch: Bury siblings when some but not all three bury
+settings are on (the switch reads as off; turning it on writes all three),
+On-screen timer when the timer is shown but does not stop on answer (the
+switch reads as on). A timer that is hidden but set to stop on answer reads
+as plainly off, since stopping a hidden timer changes nothing. The revert
+button of each combined switch restores off.
 
 Given the flag on (Advanced mode), the screen has the per-topic sections
 (Daily limits, New cards, Lapses, Display order, Algorithm, RWKV, Burying,

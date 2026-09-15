@@ -698,6 +698,9 @@ deck-config-fsrs-simulator-y-axis-title-time = Review Time/Day
 deck-config-fsrs-simulator-y-axis-title-count = Review Count/Day
 deck-config-fsrs-simulator-y-axis-title-memorized = Memorized Total
 deck-config-bury-siblings = Bury siblings
+# Caption under a Simple-mode switch that stands for several Advanced-mode
+# settings, when only some of them are on.
+deck-config-partly-on = Partly on (set in Advanced mode)
 # Help text of the Simple-mode "Bury siblings" switch, shown before the
 # three per-type explanations.
 deck-config-bury-siblings-simple-tooltip =
