@@ -232,13 +232,6 @@ impl Collection {
              create temporary table {EXACT_RETRIEVABILITY_TABLE}(\
                 cid integer primary key, fsrs_r real, rwkv_r real, rwkv_curve_r real, s90 real)"
         ))?;
-        let ids_start = Instant::now();
-        let ids: Vec<i64> = {
-            let mut stmt = self.storage.db.prepare("select id from cards")?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
-            rows.collect::<std::result::Result<_, _>>()?
-        };
-        let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
         let timing = self.timing_today()?;
         let rwkv_stats_scores =
             self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, stats_search);
@@ -272,13 +265,8 @@ impl Collection {
             .map(|scores| scores.len())
             .unwrap_or(0);
         let load_start = Instant::now();
-        let cards = ids
-            .into_iter()
-            .map(|cid| {
-                let card_id = CardId(cid);
-                self.storage.get_card(card_id)?.or_not_found(card_id)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // every card, in one scan (the table's rows do not depend on the order)
+        let cards = self.storage.all_cards()?;
         let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
         let card_count = cards.len();
         let preset_start = Instant::now();
@@ -317,16 +305,18 @@ impl Collection {
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
         let insert_start = Instant::now();
-        let mut insert = self.storage.db.prepare_cached(&format!(
-            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) \
-             values (?, ?, ?, ?, ?)"
-        ))?;
-        for (cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) in rows_to_insert {
-            insert.execute(rusqlite::params![cid, fsrs_r, rwkv_r, rwkv_curve_r, s90])?;
-        }
+        self.storage.in_savepoint("exact_retrievability", || {
+            let mut insert = self.storage.db.prepare_cached(&format!(
+                "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) \
+                 values (?, ?, ?, ?, ?)"
+            ))?;
+            for (cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) in rows_to_insert {
+                insert.execute(rusqlite::params![cid, fsrs_r, rwkv_r, rwkv_curve_r, s90])?;
+            }
+            Ok(())
+        })?;
         tracing::debug!(
             cards = card_count,
-            ids_elapsed_ms,
             load_elapsed_ms,
             preset_elapsed_ms,
             metric_elapsed_ms,

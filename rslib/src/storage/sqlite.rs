@@ -674,6 +674,31 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Run `func` inside a savepoint named `name`: its writes commit together
+    /// on success (nested in any open transaction) and are rolled back on
+    /// error. Many single-row writes outside a transaction would each commit
+    /// on their own, which dominates filling a temporary table.
+    pub(crate) fn in_savepoint<T>(
+        &self,
+        name: &str,
+        func: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.db.execute_batch(&format!("savepoint {name}"))?;
+        match func() {
+            Ok(value) => {
+                self.db.execute_batch(&format!("release {name}"))?;
+                Ok(value)
+            }
+            Err(err) => {
+                // the original error is the one to report
+                let _ = self
+                    .db
+                    .execute_batch(&format!("rollback to {name}; release {name}"));
+                Err(err)
+            }
+        }
+    }
+
     //////////////////////////////////////////
 
     /// true if corrupt/can't access
