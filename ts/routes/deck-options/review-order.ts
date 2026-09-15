@@ -14,8 +14,8 @@ export const DIFFICULTY_REVIEW_ORDERS: readonly ReviewCardOrder[] = [
     ReviewCardOrder.EASE_DESCENDING,
 ];
 
-/** The review sort order new presets get: least likely to be recalled first. */
-export const DEFAULT_REVIEW_ORDER = ReviewCardOrder.RETRIEVABILITY_ASCENDING;
+/** The review sort order new presets get: most likely to be recalled first. */
+export const DEFAULT_REVIEW_ORDER = ReviewCardOrder.RETRIEVABILITY_DESCENDING;
 
 export function isDifficultyReviewOrder(order: ReviewCardOrder): boolean {
     return DIFFICULTY_REVIEW_ORDERS.includes(order);

@@ -20,11 +20,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { algorithmHelpSettings } from "./algorithm-help";
     import { applyPlayAudio, playAudioFromConfig } from "./autoplay-switch";
     import AlgorithmRows from "./AlgorithmRows.svelte";
-    import { applyBurySiblings, burySiblingsFromConfig } from "./bury-siblings";
+    import {
+        applyBurySiblings,
+        burySiblingsFromConfig,
+        burySiblingsPartlyOn,
+    } from "./bury-siblings";
     import DailyLimitRows from "./DailyLimitRows.svelte";
     import EasyDaysRows from "./EasyDaysRows.svelte";
     import type { DeckOptionsState } from "./lib";
-    import { applyOnScreenTimer, onScreenTimerFromConfig } from "./timer-switch";
+    import {
+        applyOnScreenTimer,
+        onScreenTimerFromConfig,
+        onScreenTimerPartlyOn,
+    } from "./timer-switch";
 
     /**
      * The Simple-mode page: one section with the settings listed in
@@ -176,6 +184,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {settings.burySiblings.title}
                 </SettingTitle>
             </SwitchRow>
+            {#if burySiblingsPartlyOn($config)}
+                <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
+            {/if}
         </Item>
 
         <Item>
@@ -203,9 +214,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         {settings.onScreenTimer.title}
                     </SettingTitle>
                 </SwitchRow>
+                {#if onScreenTimerPartlyOn($config)}
+                    <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
+                {/if}
             </div>
         </Item>
 
         <EasyDaysRows {state} openHelp={() => openHelp("easyDays")} />
     </DynamicallySlottable>
 </TitledContainer>
+
+<style lang="scss">
+    .partly-on {
+        color: var(--fg-subtle);
+        font-size: 0.85em;
+        margin-top: -0.25em;
+    }
+</style>

@@ -450,8 +450,8 @@ impl Default for DeckConfSchema11 {
             new_mix: 0,
             new_per_day_minimum: 0,
             interday_learning_mix: 0,
-            // RetrievabilityAscending (spec deck-options.new-preset-defaults)
-            review_order: 7,
+            // RetrievabilityDescending (spec deck-options.new-preset-defaults)
+            review_order: 11,
             new_sort_order: 0,
             new_gather_priority: 0,
             bury_interday_learning: false,
