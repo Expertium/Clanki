@@ -1350,7 +1350,7 @@ def card_stats() -> bytes:
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
     response: CardStatsResponse | None = None
     card: Any | None = None
-    if hook_count == 0 and not aqt.rwkv_scheduler.has_reviewer_prediction(reviewer):
+    if hook_count == 0:
         response = CardStatsResponse()
         response.ParseFromString(raw_output)
         card = aqt.mw.col.get_card(CardId(response.card_id))

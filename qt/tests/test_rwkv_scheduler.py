@@ -9928,7 +9928,8 @@ def test_reviewer_rwkv_redo_reapplies_review_state_with_new_counter() -> None:
     assert runtime.runtime_review_count == 0
 
 
-def test_reviewer_rwkv_disabled_keeps_intervals_but_reports_diagnostics() -> None:
+# Pins spec/ui.md#ui.fsrs7-no-rwkv-values
+def test_fsrs7_card_gets_no_rwkv_prediction_and_no_card_info_rows() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
@@ -9942,22 +9943,47 @@ def test_reviewer_rwkv_disabled_keeps_intervals_but_reports_diagnostics() -> Non
     assert rwkv_review_enabled(reviewer, card) is False
     assert updated.good.normal.review.scheduled_days == 3
     assert updated.good.normal.review.fuzz_delta_days == 3
-    assert current_reviewer_retrievability(reviewer, card) == pytest.approx(0.45)
-    diagnostics = current_reviewer_diagnostics(
-        reviewer,
-        card,
-        fallback_source="FSRS",
+    # a loaded model predicts nothing for an FSRS-7 card
+    assert current_reviewer_retrievability(reviewer, card) is None
+    assert current_reviewer_diagnostics(reviewer, card, fallback_source="FSRS") is None
+    assert (
+        rwkv_card_info_rows(reviewer=reviewer, card=card, fallback_source="FSRS") == []
     )
-    assert diagnostics is not None
-    assert diagnostics.retrievability_source == "FSRS (RWKV disabled)"
-    assert rwkv_card_info_rows(
-        reviewer=reviewer,
-        card=card,
-        fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "45%"),
-        ("Retrievability source", "FSRS (RWKV disabled)"),
-    ]
+
+
+# Pins spec/ui.md#ui.fsrs7-no-rwkv-values
+def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured: list[bool] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: configured.append(True) or False,
+    )
+    set_reviewer_backend(None)
+    published: list[tuple[str, list[tuple[int, float]]]] = []
+    backend = SimpleNamespace(
+        set_rwkv_stats_graph_scores=lambda **kwargs: published.append(
+            (kwargs["search"], list(kwargs["scores"]))
+        )
+    )
+    algorithm = {"schedulingAlgorithm": "fsrs7"}
+    col = SimpleNamespace(
+        get_config=lambda key, default=None: algorithm.get(key, default),
+        _backend=backend,
+    )
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+    status = prepare_stats_retrievability_scores(reviewer, "deck:current")
+
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    # no model is loaded, and stale RWKV scores are dropped
+    assert configured == []
+    assert published == [("deck:current", [])]
+
+    algorithm["schedulingAlgorithm"] = "rwkvCurve"
+    assert rwkv_scheduler.rwkv_collection_active(reviewer)
 
 
 def test_rwkv_review_enabled_reads_legacy_fsrs_other_key() -> None:
@@ -15411,7 +15437,22 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
     ]
 
 
-def test_reviewer_rwkv_prediction_is_a_query_until_review_recorded() -> None:
+def _card_runs_rwkv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bare reviewers below have no presets: their card counts as an RWKV
+    card with a ready state (an FSRS-7 card gets no prediction, spec
+    ui.fsrs7-no-rwkv-values)."""
+    for name in (
+        "rwkv_review_active",
+        "_reviewer_backend_ready_for_review",
+        "_reviewer_backend_warmed_up",
+    ):
+        monkeypatch.setattr(rwkv_scheduler, name, lambda *args: True)
+
+
+def test_reviewer_rwkv_prediction_is_a_query_until_review_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _card_runs_rwkv(monkeypatch)
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
@@ -16401,6 +16442,7 @@ def test_configure_reviewer_backend_uses_srs_benchmark_override(monkeypatch) -> 
     ]
     reviewer = SimpleNamespace()
     card = SimpleNamespace(id=1)
+    _card_runs_rwkv(monkeypatch)
     update_reviewer_scheduling_states(
         SchedulingStates(),
         reviewer,
