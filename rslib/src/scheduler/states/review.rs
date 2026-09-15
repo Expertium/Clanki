@@ -6,6 +6,7 @@ use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
 use super::CardState;
+use super::FsrsGrade;
 use super::LearnState;
 use super::RelearnState;
 use super::SchedulingStates;
@@ -143,7 +144,7 @@ impl ReviewState {
             (
                 states.again.interval.clamp(minimum as f32, maximum as f32),
                 0,
-                Some(states.again.memory.into()),
+                ctx.fsrs_next_memory_state(FsrsGrade::Again),
             )
         } else {
             let (minimum, maximum) = ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval);
@@ -216,7 +217,7 @@ impl ReviewState {
             fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: (self.ease_factor + EASE_FACTOR_HARD_DELTA).max(MINIMUM_EASE_FACTOR),
-            memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into()),
+            memory_state: ctx.fsrs_next_memory_state(FsrsGrade::Hard),
             ..self
         }
     }
@@ -231,7 +232,7 @@ impl ReviewState {
             scheduled_days,
             fuzz_delta_days,
             elapsed_days: 0,
-            memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into()),
+            memory_state: ctx.fsrs_next_memory_state(FsrsGrade::Good),
             ..self
         }
     }
@@ -247,7 +248,7 @@ impl ReviewState {
             fuzz_delta_days,
             elapsed_days: 0,
             ease_factor: self.ease_factor + EASE_FACTOR_EASY_DELTA,
-            memory_state: ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into()),
+            memory_state: ctx.fsrs_next_memory_state(FsrsGrade::Easy),
             ..self
         }
     }
@@ -356,8 +357,8 @@ fn leech_young_enough(scheduled_days: u32, ctx: &StateContext) -> bool {
     if !ctx.leech_only_if_young {
         true
     } else if ctx.fsrs_next_states.is_some() {
-        ctx.fsrs_again_s90
-            .is_some_and(|stability| stability < YOUNG_LEECH_THRESHOLD_DAYS as f32)
+        ctx.fsrs_next_s90
+            .is_some_and(|s90| s90[FsrsGrade::Again as usize] < YOUNG_LEECH_THRESHOLD_DAYS as f32)
     } else {
         scheduled_days < YOUNG_LEECH_THRESHOLD_DAYS
     }
@@ -463,10 +464,10 @@ mod test {
             ..Default::default()
         };
 
-        ctx.fsrs_again_s90 = Some(21.0);
+        ctx.fsrs_next_s90 = Some([21.0, 22.0, 23.0, 24.0]);
         assert!(!state.answer_again(&ctx, None).leeched());
 
-        ctx.fsrs_again_s90 = Some(20.99);
+        ctx.fsrs_next_s90 = Some([20.99, 22.0, 23.0, 24.0]);
         assert!(state.answer_again(&ctx, None).leeched());
     }
 
