@@ -895,8 +895,9 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
 
 
 def set_advanced_ui() -> bytes:
-    """The deck-options Simple | Advanced switch: the same collection flag as
-    the main window's switch, which redraws at once (spec ui.mode-switch)."""
+    """The Simple | Advanced switch of deck options and of the Stats page: the
+    same collection flag as the main window's switch, which redraws at once
+    (spec ui.mode-switch)."""
     value = generic_pb2.Bool()
     value.ParseFromString(request.data)
     aqt.mw.taskman.run_on_main(lambda: aqt.mw.set_advanced_ui(value.val))

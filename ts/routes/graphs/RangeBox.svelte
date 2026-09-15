@@ -6,6 +6,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import * as tr from "@generated/ftl";
     import type { Writable } from "svelte/store";
 
+    import UiModeSwitch from "$lib/components/UiModeSwitch.svelte";
+
     import { daysToRevlogRange, RevlogRange } from "./graph-helpers";
     import InputBox from "./InputBox.svelte";
 
@@ -19,6 +21,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let days: Writable<number>;
     export let search: Writable<string>;
+    /** The Simple | Advanced switch, when the page has a Simple view. */
+    export let advancedUi: Writable<boolean> | null = null;
 
     let revlogRange = daysToRevlogRange($days);
     let searchRange: SearchRange;
@@ -68,6 +72,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <div class="range-box">
     <div class="spin" class:loading>◐</div>
+    {#if advancedUi}
+        <div class="ui-mode-corner">
+            <UiModeSwitch {advancedUi} tooltip={tr.statisticsUiModeTooltip()} />
+        </div>
+    {/if}
 
     <InputBox>
         <label>
@@ -165,5 +174,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     .range-box-pad {
         height: 1.5em;
+    }
+
+    /* top right, like the switch in deck options and the main window */
+    .ui-mode-corner {
+        position: absolute;
+        top: 0.5em;
+        inset-inline-end: 1.5em;
     }
 </style>

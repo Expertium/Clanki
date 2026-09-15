@@ -41,14 +41,19 @@ screen has the same "Simple | Advanced" control at the right end of its top
 bar: a click switches the page between its two views at once, keeping any
 unsaved changes, and writes the same flag through the main window, which
 redraws as above; it does not wait for Save, and closing without saving
-keeps the new mode. Hidden settings keep their stored values and keep
-taking effect.
+keeps the new mode. The Stats page has the same control at the top right of
+its top bar, with the same effect: in Simple mode the page shows only the
+Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
+order; Advanced mode shows every graph. The page takes the mode when it
+loads and from its own switch. Hidden settings keep their stored values and
+keep taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
 active side filled. 2026-09-15: deck options get the switch too, always in
 step with the main window's, so switching needs no closing and reopening of
-deck options. The RWKV reschedule actions are power-user tools. A user
+deck options. Later the same day: the Stats page gets it too, and Simple
+mode there shows only Reviews, Card Counts, Retention and Total Knowledge. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
 installed).
@@ -59,7 +64,9 @@ reset),
 `advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
 `test_deck_options_mode_switch_sets_the_main_window_mode`
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
-once" (`ts/tests/e2e/deck-options.test.ts`).
+once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
+(`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
+graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
 
 ## ui.review-heatmap
 
