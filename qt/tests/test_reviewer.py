@@ -2727,7 +2727,7 @@ def test_two_button_mode_maps_answer_keys() -> None:
     reviewer = _button_reviewer(two_button=True)
     assert [Reviewer._ease_for_answer_key(reviewer, k) for k in (1, 2, 3, 4)] == [
         1,
-        3,
+        None,
         3,
         None,
     ]
