@@ -4696,6 +4696,8 @@ fn unrounded_interval_for_curve(
     Some(maximum)
 }
 
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn intervals_for_answer_curves(
     curves: [&ReviewCurve; 4],
     target_retentions: [f32; 4],
@@ -4720,6 +4722,8 @@ fn intervals_for_answer_curves(
     })
 }
 
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn intervals_for_pava_adjusted_samples(
     target_retentions: [f32; 4],
     max_interval_days: u32,
@@ -4862,6 +4866,8 @@ fn unrounded_intervals_for_answer_curves(
     std::array::from_fn(|index| valid[index].then(|| intervals[index].unwrap_or(maximum)))
 }
 
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn interpolated_crossing_interval(
     previous_day: u32,
     previous_margin: f32,

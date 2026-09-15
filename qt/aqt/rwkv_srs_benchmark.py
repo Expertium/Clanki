@@ -863,7 +863,7 @@ class _RustRwkvRuntime:
     def predict_current_intervals_many_from_warm_up(
         self,
         review_inputs: Sequence[RwkvReviewInput],
-    ) -> Sequence[tuple[float, int | None, int | None]]:
+    ) -> Sequence[tuple[float, int | None, float | None]]:
         """Query-only current interval and S90 per input from the resident state.
 
         One forward pass per card, no state bytes across the bridge, GIL
