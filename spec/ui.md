@@ -24,8 +24,10 @@ Given a collection, the interface is in Simple mode unless the collection flag
 `advancedUi` is on. The mode is switched from a two-state control that reads
 "Simple | Advanced" with the active side filled, placed in the right tray of
 the main-window toolbar (top right), and from View > Advanced UI
-(Ctrl+Shift+U); both write the flag at once and redraw the toolbar and, on
-the deck list, the bottom row from the tree already on screen. The switch
+(Ctrl+Shift+U); both write the flag at once, switch the toolbar control in
+place (the toolbar is not reloaded, so the sync button keeps its "sync
+needed" colour and its spinner) and, on the deck list, redraw the bottom row
+from the tree already on screen. The switch
 never recomputes the due counts: the mode does not affect dueness, so a
 full main-window reset (which would rebuild the RWKV counts, slowly and
 with "…" placeholders meanwhile) is not done. In
@@ -53,7 +55,10 @@ Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
 active side filled. 2026-09-15: deck options get the switch too, always in
 step with the main window's, so switching needs no closing and reopening of
 deck options. Later the same day: the Stats page gets it too, and Simple
-mode there shows only Reviews, Card Counts, Retention and Total Knowledge. The RWKV reschedule actions are power-user tools. A user
+mode there shows only Reviews, Card Counts, Retention and Total Knowledge;
+and the toolbar control switches in place (Andrew: "in place it is"): the
+reload before cleared the sync button's colour and spinner until the next
+redraw. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
 installed).

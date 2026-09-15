@@ -1730,7 +1730,9 @@ title="{}" {}>{}</button>""".format(
             return
         self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
-        self.toolbar.draw()
+        # in place: a toolbar reload would clear the sync button's colour and
+        # spinner (spec ui.mode-switch)
+        self.toolbar.update_ui_mode_toggle()
         # Only the deck list's bottom row depends on the mode, so it is
         # redrawn from the data already on screen. A full reset() would
         # recompute the RWKV due counts (slow, and "..." meanwhile) for a
