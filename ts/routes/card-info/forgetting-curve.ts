@@ -60,7 +60,7 @@ export function stabilityS90(
     stabilityFast = stability,
     difficulty = 5.0,
 ): number {
-    if (!params || params.length < FSRS7_PARAM_COUNT) {
+    if (!params || params.length !== FSRS7_PARAM_COUNT) {
         return stability;
     }
 

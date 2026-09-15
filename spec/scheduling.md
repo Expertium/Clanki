@@ -405,7 +405,10 @@ optimized runs FSRS-7 with the defaults, even when it holds trained FSRS-6,
 FSRS-5 or FSRS-4.5 parameters. The stored FSRS version and the FSRS-6/5/4.5
 parameter sets are kept in the collection unchanged (other clients read
 them) and are ignored everywhere: answering, memory states, rescheduling,
-the simulator, and the retrievability shown in the browser and card info.
+the simulator, the review-retrievability calibration data, and the
+retrievability shown in the browser and card info. FSRS-7 has 34
+parameters: 35 values come from an older, pre-release FSRS-7 preview, and
+fewer than 34 from FSRS-6 or older; neither is FSRS-7.
 There is
 no FSRS version selector. Add-on preset overlays are FSRS-7 too: an overlay
 whose parameters are not 34 finite values runs with the FSRS-7 defaults (its
@@ -432,6 +435,9 @@ reschedule treated a card's S90 as its only stability.
 
 **Pinned by:** the `fsrs7_only_*` tests in `rslib/src/deckconfig/mod.rs`
 and `rslib/src/deckconfig/update.rs` (including the migration);
+`fsrs7_only_calibration_predictions_without_fsrs7_params_use_the_defaults`
+in `rslib/src/scheduler/fsrs/params.rs`;
+`ts/routes/card-info/forgetting-curve.test.ts` (`stabilityS90`);
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
