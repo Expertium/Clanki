@@ -4,9 +4,10 @@
 //! What each answer button schedules under FSRS-7 and RWKV-Curve (spec
 //! `sched.sub-day-intervals`).
 //!
-//! A button whose unrounded interval is under one day stays unrounded: it
+//! A button whose unrounded interval is under 12 hours stays unrounded: it
 //! goes to the intraday learning queue, in seconds, without review fuzz. A
-//! button at one day or more gets whole days after review fuzz. Among the day
+//! button at 12 hours or more gets whole days (at least one) after review
+//! fuzz. Among the day
 //! buttons each is at least one day above the day button before it (Again <
 //! Hard < Good < Easy); among the sub-day buttons each is at least as long as
 //! the sub-day button before it.
@@ -15,11 +16,15 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
+/// Unrounded intervals from this many days on are scheduled in whole days:
+/// "Anything >=12h rounds up to 1d" (Andrew, 2026-09-15).
+pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ButtonInterval {
-    /// Under a day: the intraday learning queue, in seconds.
+    /// Under 12 hours: the intraday learning queue, in seconds.
     Secs(u32),
-    /// A day or more: whole days after fuzz, and how far fuzz moved them.
+    /// 12 hours or more: whole days after fuzz, and how far fuzz moved them.
     Days { days: u32, fuzz_delta_days: i32 },
 }
 
@@ -51,7 +56,7 @@ pub(crate) fn button_intervals(
         let Some(interval) = interval else {
             continue;
         };
-        if sub_day_allowed && interval < 1.0 {
+        if sub_day_allowed && interval < SUB_DAY_LIMIT_DAYS {
             let secs =
                 fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs).max(previous_secs);
             previous_secs = secs;
@@ -139,16 +144,31 @@ mod test {
 
     #[test]
     fn sub_day_buttons_stay_unrounded_and_never_go_backwards() {
-        let out = button_intervals(&ctx(), all(0.01, 0.005, 0.25, 0.5), DayRule::Graduating);
+        let out = button_intervals(&ctx(), all(0.01, 0.005, 0.25, 0.4), DayRule::Graduating);
         // 0.005 d is shorter than Again's 0.01 d, so it is raised to it
-        assert_eq!(out, [secs(864), secs(864), secs(21_600), secs(43_200)]);
+        assert_eq!(out, [secs(864), secs(864), secs(21_600), secs(34_560)]);
     }
 
     #[test]
     fn mixed_buttons_chain_only_among_the_day_buttons() {
-        let out = button_intervals(&ctx(), all(0.1, 0.75, 1.2, 1.4), DayRule::Graduating);
+        let out = button_intervals(&ctx(), all(0.1, 0.2, 1.2, 1.4), DayRule::Graduating);
         // Good is the first day button (floor 1 day); Easy is one above it
-        assert_eq!(out, [secs(8640), secs(64_800), days(1), days(2)]);
+        assert_eq!(out, [secs(8640), secs(17_280), days(1), days(2)]);
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: 12 hours or more is
+    // a whole day, for review cards too.
+    #[test]
+    fn twelve_hours_or_more_is_a_whole_day() {
+        for rule in [
+            DayRule::Graduating,
+            DayRule::Review {
+                previous_interval: 1,
+            },
+        ] {
+            let out = button_intervals(&ctx(), all(0.25, 0.5, 0.75, 0.99), rule);
+            assert_eq!(out, [secs(21_600), days(1), days(2), days(3)], "{rule:?}");
+        }
     }
 
     #[test]

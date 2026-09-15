@@ -98,7 +98,7 @@ Good, Easy:
 
 - a button decided by a remaining learning or relearning step keeps the
   step's delay and takes no part in what follows;
-- a button whose unrounded interval is under one day (24 hours) goes to the
+- a button whose unrounded interval is under 12 hours goes to the
   intraday learning queue with that interval in seconds, unrounded and
   without review fuzz (at least the preset's minimum interval, 1 second by
   default), and at least as long as the sub-day button before it; a
@@ -106,9 +106,10 @@ Good, Easy:
   relearning card with no remaining steps (a passing answer keeps its lapse
   count, and the card's interval field holds a whole number of days, at
   least 1);
-- a button of one day or more gets whole days after review fuzz, and at
-  least one day more than the day button before it: with all four at a day
-  or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and Easy ≥ Good + 1.
+- a button of 12 hours or more gets whole days (at least 1) after review
+  fuzz, and at least one day more than the day button before it: with all
+  four at 12 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
+  Easy ≥ Good + 1.
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
@@ -124,6 +125,10 @@ intraday queue for it, and a sub-day interval rounds up to one day.
 **Why:** Andrew, 2026-09-15: both FSRS-7 and RWKV-Curve should freely
 schedule intervals under a day for any card and any answer button; the
 ordering rule for mixed sub-day and day buttons is the one he approved.
+Later the same day, after an audit showed that a sub-day interval longer
+than the time left until the day rollover is cut short at the rollover:
+"Anything >=12h rounds up to 1d" (a shorter interval that crosses the
+rollover stays due at the rollover).
 Before this entry only learning and relearning answers under half a day
 went intraday, a review card's Again never did (it was clamped to the
 minimum lapse interval first), and RWKV-Curve rounded up to whole days.

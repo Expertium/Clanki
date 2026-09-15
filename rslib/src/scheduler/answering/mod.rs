@@ -1163,7 +1163,7 @@ pub(crate) mod test {
         // a sub-day interval goes to the intraday queue, in seconds, and the
         // passing answer keeps the card's lapse count
         let states = col
-            .scheduling_states_with_intervals(cid, [Some(0.25), Some(0.5), Some(2.0), Some(3.0)])?;
+            .scheduling_states_with_intervals(cid, [Some(0.25), Some(0.4), Some(2.0), Some(3.0)])?;
         let CardState::Normal(NormalState::Relearning(again)) = states.again else {
             panic!("a sub-day Again should relearn");
         };
@@ -1171,7 +1171,7 @@ pub(crate) mod test {
         let CardState::Normal(NormalState::Relearning(hard)) = states.hard else {
             panic!("a sub-day Hard should use the intraday queue");
         };
-        assert_eq!(hard.learning.scheduled_secs, 43_200);
+        assert_eq!(hard.learning.scheduled_secs, 34_560);
         assert_eq!(hard.review.lapses, 0);
         assert_eq!(review_days(states.good), 2);
         assert_eq!(review_days(states.easy), 3);
@@ -1756,7 +1756,7 @@ pub(crate) mod test {
     #[test]
     fn max_same_day_reviews_limits_rwkv_curve_intervals() -> Result<()> {
         // sub-day RWKV-Curve intervals for Again and Hard
-        let intervals = [Some(0.01), Some(0.5), Some(2.0), Some(5.0)];
+        let intervals = [Some(0.01), Some(0.4), Some(2.0), Some(5.0)];
         for (limit, intraday) in [(None, true), (Some(0), false)] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
