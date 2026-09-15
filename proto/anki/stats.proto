@@ -122,6 +122,9 @@ message GraphsResponse {
     float sum_by_note = 4;
     Series fsrs = 5;
     Series rwkv = 6;
+    // An RWKV collection whose RWKV scores for this search are not ready
+    // yet: the page shows "Calculating…" (spec ui.stats-one-algorithm).
+    bool rwkv_pending = 7;
   }
   message FutureDue {
     map<int32, uint32> future_due = 1;
@@ -220,6 +223,10 @@ message GraphsResponse {
   bool fsrs = 13;
   Intervals stability = 14;
   TrueRetentionStats true_retention = 15;
+  // The collection's algorithm: the page draws only its values (spec
+  // ui.stats-one-algorithm).
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm scheduling_algorithm =
+      16;
 }
 
 message GraphPreferences {

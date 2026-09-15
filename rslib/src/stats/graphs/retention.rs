@@ -150,6 +150,7 @@ mod tests {
             fsrs_by_preset: Default::default(),
             fsrs_preset_by_card: Default::default(),
             rwkv_retrievability_scores: None,
+            algorithm: crate::deckconfig::algorithm::SchedulingAlgorithm::Fsrs7,
             next_day_start: NEXT_DAY_START,
             days_elapsed: 10,
             local_offset_secs: 0,

@@ -32,8 +32,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let tableData: TableDatum[] = [];
     let range = IntervalRange.Percentile95;
 
-    $: if (sourceData) {
-        intervalData = gatherIntervalData(sourceData.stability!);
+    $: if (sourceData?.stability) {
+        intervalData = gatherIntervalData(sourceData.stability);
     }
 
     $: if (intervalData) {
@@ -52,7 +52,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const all = tr.statisticsRangeAllTime();
 </script>
 
-{#if sourceData?.fsrs}
+<!-- RWKV-Instant has no stability (spec ui.stats-one-algorithm) -->
+{#if sourceData?.fsrs && sourceData.stability}
     <Graph {title} {subtitle}>
         <InputBox>
             <label>

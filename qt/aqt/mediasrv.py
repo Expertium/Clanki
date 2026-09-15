@@ -1455,6 +1455,10 @@ def graphs() -> Response:
     prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
         reviewer,
         request_proto.search,
+        # RWKV-Curve's graph shows the Curve's R (spec ui.stats-one-algorithm)
+        prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
+            reviewer
+        ),
     )
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()

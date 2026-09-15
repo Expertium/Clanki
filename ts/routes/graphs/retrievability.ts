@@ -62,7 +62,18 @@ const fsrsColour = "#2f9e44";
 const rwkvColour = "#d6a21d";
 
 export function shouldShowRetrievabilityGraph(data: GraphsResponse | null): boolean {
-    return Boolean(data?.fsrs || data?.retrievability?.rwkv);
+    return Boolean(
+        data?.fsrs || data?.retrievability?.rwkv || data?.retrievability?.rwkvPending,
+    );
+}
+
+/**
+ * An RWKV collection whose RWKV scores are not ready: the graph shows
+ * "Calculating…" instead of any other algorithm's values (spec
+ * ui.stats-one-algorithm).
+ */
+export function rwkvScoresPending(data: GraphsResponse | null): boolean {
+    return Boolean(data?.retrievability?.rwkvPending);
 }
 
 function gatherSeries(data: ProtobufRetrievabilitySeries): SeriesData {
