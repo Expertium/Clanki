@@ -426,7 +426,7 @@ class Toolbar:
             pressed = "true" if active else "false"
             return (
                 f'<a class="{classes}" tabindex="-1" href="#" role="button" '
-                f'aria-pressed="{pressed}" '
+                f'data-mode="{value}" aria-pressed="{pressed}" '
                 f"onclick=\"return pycmd('uimode:{value}')\">{label}</a>"
             )
 
@@ -437,6 +437,13 @@ class Toolbar:
             + option("advanced", tr.qt_misc_ui_mode_advanced(), advanced)
             + "</div>"
         )
+
+    def update_ui_mode_toggle(self) -> None:
+        """Switch the Simple | Advanced control in place. The toolbar page is
+        not reloaded, so the sync button keeps its colour and spinner (spec
+        ui.mode-switch)."""
+        advanced = "true" if self.mw.advanced_ui() else "false"
+        self.web.eval(f"setUiMode({advanced})")
 
     # Sync
     ######################################################################

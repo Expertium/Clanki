@@ -166,3 +166,17 @@ test("the deck-options switch changes the view at once", async ({ page }) => {
         await setAdvancedUi(page, false);
     }
 });
+
+// Pins spec/deck-options.md#deck-options.simple-view: Easy Days is collapsed
+// behind its expander only in Simple mode; Advanced mode shows the sliders.
+test("Easy Days is collapsed in Simple mode and open in Advanced mode", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    await page.goto("/deck-options/1");
+    await expect(page.locator("details.easy-days")).toHaveCount(1);
+    expect(await visibleCount(page, "Monday")).toBe(0);
+
+    await setAdvancedUi(page, true);
+    await page.goto("/deck-options/1");
+    await expect(page.locator("details.easy-days")).toHaveCount(0);
+    expect(await visibleCount(page, "Monday")).toBeGreaterThan(0);
+});
