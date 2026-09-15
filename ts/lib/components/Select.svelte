@@ -242,6 +242,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         slot="floating"
         scrollable
         --popover-width={popoverWidth}
+        --dropdown-highlight-bg="color-mix(in srgb, var(--highlight-bg) 55%, transparent)"
         id={ids.popover}
         on:revealed={revealed}
     >

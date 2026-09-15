@@ -799,4 +799,4 @@ deck-config-rwkv-instant-retention-info =
     RWKV-Instant does not use intervals. Desired retention still controls
     your workload: a card becomes due when RWKV predicts that its retention
     has dropped to this value. The number of due cards changes after every
-    review. If it does not, RWKV-Instant is not working as expected.
+    review.
