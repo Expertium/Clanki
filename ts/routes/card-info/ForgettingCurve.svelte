@@ -14,7 +14,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderForgettingCurve,
         TimeRange,
         calculateMaxDays,
-        filterRevlog,
+        chartRevlog,
+        type RwkvCurvePoints,
     } from "./forgetting-curve";
     import { defaultGraphBounds } from "../graphs/graph-helpers";
     import HoverColumns from "../graphs/HoverColumns.svelte";
@@ -22,11 +23,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let revlog: RevlogEntry[];
     export let desiredRetention: number;
     export let fsrsParams: number[] = [];
+    export let rwkvCurve: RwkvCurvePoints | undefined = undefined;
     let svg: HTMLElement | SVGElement | null = null;
     const bounds = defaultGraphBounds();
     const title = tr.cardStatsFsrsForgettingCurveTitle();
 
-    $: filteredRevlog = filterRevlog(revlog);
+    $: filteredRevlog = chartRevlog(revlog, rwkvCurve);
     $: maxDays = calculateMaxDays(filteredRevlog, TimeRange.AllTime);
 
     let defaultTimeRange = TimeRange.Week;
@@ -49,6 +51,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         bounds,
         desiredRetention,
         fsrsParams,
+        rwkvCurve,
     );
 </script>
 

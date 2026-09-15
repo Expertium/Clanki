@@ -89,6 +89,30 @@ export function stabilityS90(
     return (low + high) / 2;
 }
 
+/**
+ * RWKV-Curve's forgetting curve after the card's last review, for a card whose
+ * preset runs RWKV-Curve (spec ui.card-info-rwkv-curve): recall at each elapsed
+ * day (ascending), and the curve's S90. Without points RWKV has no curve for
+ * the card yet, and the chart stops at the last review.
+ */
+export interface RwkvCurvePoints {
+    elapsedDays: number[];
+    recall: number[];
+    s90?: number;
+}
+
+/** The recall of `curve` at `days`, linear between its points. */
+export function rwkvRecallAt(curve: RwkvCurvePoints, days: number): number {
+    const xs = curve.elapsedDays;
+    const high = xs.findIndex((x) => x >= days);
+    if (high <= 0) {
+        return curve.recall[high === 0 ? 0 : xs.length - 1];
+    }
+    const low = high - 1;
+    const fraction = (days - xs[low]) / (xs[high] - xs[low]);
+    return curve.recall[low] + (curve.recall[high] - curve.recall[low]) * fraction;
+}
+
 interface DataPoint {
     date: Date;
     daysSinceFirstLearn: number;
@@ -139,10 +163,21 @@ export function filterRevlog(revlog: RevlogEntry[]): RevlogEntry[] {
     return result.filter((entry) => filterRevlogEntryByReviewKind(entry));
 }
 
+/**
+ * The reviews the chart starts its segments at: all of them, or for an
+ * RWKV-Curve card only the last one, because only RWKV's curve after it is
+ * known and the chart never mixes two algorithms (spec ui.card-info-rwkv-curve).
+ */
+export function chartRevlog(revlog: RevlogEntry[], rwkvCurve?: RwkvCurvePoints): RevlogEntry[] {
+    const filtered = filterRevlog(revlog);
+    return rwkvCurve ? filtered.slice(0, 1) : filtered;
+}
+
 export function prepareData(
     revlog: RevlogEntry[],
     maxDays: number,
     params: number[],
+    rwkvCurve?: RwkvCurvePoints,
 ) {
     const data: DataPoint[] = [];
     let lastReviewTime = 0;
@@ -231,19 +266,24 @@ export function prepareData(
     if (data.length === 0) {
         return [];
     }
+    if (rwkvCurve && rwkvCurve.elapsedDays.length === 0) {
+        return filterDataByTimeRange(data, maxDays);
+    }
+    // after the last review, an RWKV-Curve card follows RWKV's own curve
+    const lastSegmentRecall = rwkvCurve
+        ? (days: number) => rwkvRecallAt(rwkvCurve, days)
+        : (days: number) => forgettingCurve(lastStability, lastStabilityFast, lastDifficulty, days, params);
+    if (rwkvCurve?.s90 !== undefined) {
+        lastStabilityS90 = rwkvCurve.s90;
+        data[data.length - 1].stabilityS90 = lastStabilityS90;
+    }
 
     const now = Date.now() / 1000;
     const totalDaysSinceLastReview = (now - lastReviewTime) / 86400;
     let elapsedDays = 0;
     while (elapsedDays < totalDaysSinceLastReview - step) {
         elapsedDays += step;
-        const retrievability = forgettingCurve(
-            lastStability,
-            lastStabilityFast,
-            lastDifficulty,
-            elapsedDays,
-            params,
-        );
+        const retrievability = lastSegmentRecall(elapsedDays);
         data.push({
             date: new Date((lastReviewTime + elapsedDays * 86400) * 1000),
             daysSinceFirstLearn: data[data.length - 1].daysSinceFirstLearn + step,
@@ -254,13 +294,7 @@ export function prepareData(
         });
     }
     daysSinceFirstLearn += totalDaysSinceLastReview;
-    const retrievability = forgettingCurve(
-        lastStability,
-        lastStabilityFast,
-        lastDifficulty,
-        totalDaysSinceLastReview,
-        params,
-    );
+    const retrievability = lastSegmentRecall(totalDaysSinceLastReview);
     data.push({
         date: new Date(now * 1000),
         daysSinceFirstLearn: daysSinceFirstLearn,
@@ -274,13 +308,7 @@ export function prepareData(
     let previewDaysElapsed = 0;
     while (previewDaysElapsed < previewDays) {
         previewDaysElapsed += step;
-        const retrievability = forgettingCurve(
-            lastStability,
-            lastStabilityFast,
-            lastDifficulty,
-            elapsedDays + previewDaysElapsed,
-            params,
-        );
+        const retrievability = lastSegmentRecall(elapsedDays + previewDaysElapsed);
         data.push({
             date: new Date((now + previewDaysElapsed * 86400) * 1000),
             daysSinceFirstLearn: data[data.length - 1].daysSinceFirstLearn + step,
@@ -316,16 +344,18 @@ export function renderForgettingCurve(
     bounds: GraphBounds,
     desiredRetention: number,
     params?: number[],
+    rwkvCurve?: RwkvCurvePoints,
 ) {
     const svg = select(svgElem);
     const trans = svg.transition().duration(600) as any;
-    if (filteredRevlog.length === 0 || params?.length !== FSRS7_PARAM_COUNT) {
+    const noRwkvCurveYet = rwkvCurve !== undefined && rwkvCurve.elapsedDays.length === 0;
+    if (filteredRevlog.length === 0 || params?.length !== FSRS7_PARAM_COUNT || noRwkvCurveYet) {
         setDataAvailable(svg, false);
         return;
     }
     const maxDays = calculateMaxDays(filteredRevlog, timeRange);
 
-    const data = prepareData(filteredRevlog, maxDays, params);
+    const data = prepareData(filteredRevlog, maxDays, params, rwkvCurve);
 
     if (data.length === 0) {
         setDataAvailable(svg, false);
