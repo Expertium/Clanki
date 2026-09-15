@@ -23,11 +23,12 @@ Given a card whose preset has **"Use RWKV-Curve for answer intervals"**
 enabled, the unrounded interval RWKV-Curve supplies for each button replaces
 FSRS's interval for that button, and the answer states are then built by the
 same rules as FSRS intervals (`sched.sub-day-intervals`): a sub-day interval
-goes to the intraday queue; an interval of a day or more gets the same review
-fuzz, the same load balancer, the same sibling dispersal
+goes to the intraday queue; an interval of 12 hours or more gets the same
+review fuzz, the same load balancer, the same sibling dispersal
 (`sched.sibling-dispersal-gate`), the same 90-day load-balance limit, and the
-same floors — Again on a review card is clamped but not fuzzed; Hard, Good
-and Easy each keep the previous interval when it still lies within the
+same floors — Again on a review card, and on a relearning card without
+relearning steps, is clamped to the minimum lapse interval but not fuzzed;
+Hard, Good and Easy of a review card each keep the previous interval when it still lies within the
 configured fuzz range; and each day button sits at least one day above the
 day button before it. The resulting fuzz delta is recorded on the state and
 shown above the answer buttons when that preference is on. This applies to
@@ -40,11 +41,15 @@ dispersal at all.
 
 **Why:** fuzz and sibling dispersal are properties of the _scheduling
 outcome_, not of FSRS; switching the interval source must not switch them off.
+Andrew, 2026-09-15: Again on a relearning card without steps follows the
+review rule, as upstream did (it had been fuzzed like a graduating card).
 
 **Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`
 (`rslib/src/scheduler/answering/mod.rs`),
 `external_intervals_are_dispersed_away_from_siblings`
-(`rslib/src/scheduler/states/load_balancer.rs`);
+(`rslib/src/scheduler/states/load_balancer.rs`),
+`relearning_again_is_clamped_without_fuzz`
+(`rslib/src/scheduler/states/button_intervals.rs`);
 `test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals`,
 `test_rwkv_curve_states_only_send_supplied_ratings`,
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
@@ -58,16 +63,19 @@ stability stored on answer, `sched.rwkv-curve-fuzz`) — is the point in days,
 unrounded, where RWKV-Curve's forgetting curve meets 90% recall: searched on
 the same points as the answer intervals (`sched.sub-day-intervals`),
 including the points inside the first day when the curve is at or below 90%
-after one day, with linear interpolation between points. It can be under one
-day. Rounded up to whole days (at least 1) it equals the S90 before this
-entry. The answer S90s keep grade order the same way as the answer
-intervals when that is enforced.
+after one day; the grid points bracket the crossing and the crossing itself
+is found on the curve, as for the answer intervals. It can be under one day.
+The answer S90s keep grade order the same way as the answer intervals when
+that is enforced. A preview answer (a filtered deck that does not
+reschedule) stores no S90: the card's memory state is left as it was.
 
 **Why:** Andrew, 2026-09-15: RWKV-Curve's S90 should be fractional, like
 FSRS-7's. Before this entry it was searched on whole days only and rounded up
 to whole days, at least 1.
 
-**Pinned by:** `rwkv_curve_s90_is_unrounded` (`rslib/src/rwkv/mod.rs`).
+**Pinned by:** `rwkv_curve_s90_is_unrounded`,
+`intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`);
+`preview` (`rslib/src/scheduler/answering/preview.rs`).
 
 ## sched.rwkv-instant-no-intervals
 
@@ -98,7 +106,7 @@ Good, Easy:
 
 - a button decided by a remaining learning or relearning step keeps the
   step's delay and takes no part in what follows;
-- a button whose unrounded interval is under one day (24 hours) goes to the
+- a button whose unrounded interval is under 12 hours goes to the
   intraday learning queue with that interval in seconds, unrounded and
   without review fuzz (at least the preset's minimum interval, 1 second by
   default), and at least as long as the sub-day button before it; a
@@ -106,15 +114,22 @@ Good, Easy:
   relearning card with no remaining steps (a passing answer keeps its lapse
   count, and the card's interval field holds a whole number of days, at
   least 1);
-- a button of one day or more gets whole days after review fuzz, and at
-  least one day more than the day button before it: with all four at a day
-  or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and Easy ≥ Good + 1.
+- a button of 12 hours or more gets whole days (at least 1) after review
+  fuzz, and at least one day more than the day button before it: with all
+  four at 12 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
+  Easy ≥ Good + 1.
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
-when a curve reaches its target before day 1, with linear interpolation
-between points as for later days; rounded up to whole days these unrounded
-intervals equal the whole-day intervals RWKV computed before. FSRS-7 uses
+when a curve reaches its target before day 1, then on the day grid (every
+day up to 30, then growing by half each step, up to the maximum interval).
+The grid points only bracket each crossing (from 0 when the first point is
+already below the target); the interval is the point where RWKV-Curve's own
+curve meets the target, found on the curve by a regula falsi search to about
+a second. RWKV-Curve's curve (a weighted mix of exponentials) has no closed
+form for that point, and a straight line between two grid points lands late
+because the curve bends upward (by 0.27% on median, up to 6.9% between one
+and two days). FSRS-7 uses
 the intraday queue whatever its parameters, and so does RWKV-Curve
 (`sched.fsrs7-only`: there is no other FSRS model). Once a card has had its
 preset's maximum of
@@ -124,6 +139,12 @@ intraday queue for it, and a sub-day interval rounds up to one day.
 **Why:** Andrew, 2026-09-15: both FSRS-7 and RWKV-Curve should freely
 schedule intervals under a day for any card and any answer button; the
 ordering rule for mixed sub-day and day buttons is the one he approved.
+Later the same day, after an audit showed that a sub-day interval longer
+than the time left until the day rollover is cut short at the rollover:
+"Anything >=12h rounds up to 1d" (a shorter interval that crosses the
+rollover stays due at the rollover). The same audit showed the straight
+line between grid points overshooting; Andrew chose to find the crossing on
+RWKV-Curve's curve itself.
 Before this entry only learning and relearning answers under half a day
 went intraday, a review card's Again never did (it was clamped to the
 minimum lapse interval first), and RWKV-Curve rounded up to whole days.
@@ -132,7 +153,8 @@ minimum lapse interval first), and RWKV-Curve rounded up to whole days.
 (`rslib/src/scheduler/states/button_intervals.rs`),
 `scheduling_states_with_intervals_apply_the_fsrs_rules`
 (`rslib/src/scheduler/answering/mod.rs`),
-`unrounded_answer_intervals_round_up_to_the_day_intervals`,
+`intervals_are_where_the_curve_meets_the_target`,
+`pava_crossings_are_ordered_with_per_grade_targets`,
 `a_fast_forgetting_curve_gives_a_sub_day_interval`,
 `unrounded_intervals_are_not_rounded_after_the_first_day`
 (`rslib/src/rwkv/mod.rs`); the existing learning, relearning and review

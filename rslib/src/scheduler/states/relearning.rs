@@ -57,7 +57,7 @@ impl RelearnState {
                 (!good_step).then_some(states.good.interval),
                 Some(states.easy.interval),
             ],
-            DayRule::Graduating,
+            DayRule::Relearning,
         )
     }
 

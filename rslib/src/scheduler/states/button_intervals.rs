@@ -4,9 +4,10 @@
 //! What each answer button schedules under FSRS-7 and RWKV-Curve (spec
 //! `sched.sub-day-intervals`).
 //!
-//! A button whose unrounded interval is under one day stays unrounded: it
+//! A button whose unrounded interval is under 12 hours stays unrounded: it
 //! goes to the intraday learning queue, in seconds, without review fuzz. A
-//! button at one day or more gets whole days after review fuzz. Among the day
+//! button at 12 hours or more gets whole days (at least one) after review
+//! fuzz. Among the day
 //! buttons each is at least one day above the day button before it (Again <
 //! Hard < Good < Easy); among the sub-day buttons each is at least as long as
 //! the sub-day button before it.
@@ -15,11 +16,15 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
+/// Unrounded intervals from this many days on are scheduled in whole days:
+/// "Anything >=12h rounds up to 1d" (Andrew, 2026-09-15).
+pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ButtonInterval {
-    /// Under a day: the intraday learning queue, in seconds.
+    /// Under 12 hours: the intraday learning queue, in seconds.
     Secs(u32),
-    /// A day or more: whole days after fuzz, and how far fuzz moved them.
+    /// 12 hours or more: whole days after fuzz, and how far fuzz moved them.
     Days { days: u32, fuzz_delta_days: i32 },
 }
 
@@ -30,7 +35,11 @@ pub(crate) enum DayRule {
     /// fuzzed (fuzz applies when the card leaves relearning); Hard, Good and
     /// Easy keep the previous interval while it lies within the fuzz range.
     Review { previous_interval: u32 },
-    /// A new, learning or relearning card: every day button is fuzzed.
+    /// A relearning card: Again follows the review rule (clamped to the
+    /// minimum lapse interval, not fuzzed); Hard, Good and Easy leave
+    /// relearning and are fuzzed like `Graduating`.
+    Relearning,
+    /// A new or learning card: every day button is fuzzed.
     Graduating,
 }
 
@@ -51,7 +60,7 @@ pub(crate) fn button_intervals(
         let Some(interval) = interval else {
             continue;
         };
-        if sub_day_allowed && interval < 1.0 {
+        if sub_day_allowed && interval < SUB_DAY_LIMIT_DAYS {
             let secs =
                 fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs).max(previous_secs);
             previous_secs = secs;
@@ -61,7 +70,7 @@ pub(crate) fn button_intervals(
 
         let floor = previous_days.map_or(1, |days| days + 1);
         let (days, fuzz_delta_days) = match rule {
-            DayRule::Review { .. } if index == 0 => {
+            DayRule::Review { .. } | DayRule::Relearning if index == 0 => {
                 let (minimum, maximum) =
                     ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval.max(floor));
                 let days = interval
@@ -81,7 +90,7 @@ pub(crate) fn button_intervals(
                 let (minimum, maximum) = ctx.min_and_max_review_intervals(minimum);
                 ctx.with_review_fuzz_and_delta(interval, minimum, maximum)
             }
-            DayRule::Graduating => {
+            DayRule::Graduating | DayRule::Relearning => {
                 let (minimum, maximum) = ctx.min_and_max_review_intervals(floor);
                 ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum)
             }
@@ -139,16 +148,31 @@ mod test {
 
     #[test]
     fn sub_day_buttons_stay_unrounded_and_never_go_backwards() {
-        let out = button_intervals(&ctx(), all(0.01, 0.005, 0.25, 0.5), DayRule::Graduating);
+        let out = button_intervals(&ctx(), all(0.01, 0.005, 0.25, 0.4), DayRule::Graduating);
         // 0.005 d is shorter than Again's 0.01 d, so it is raised to it
-        assert_eq!(out, [secs(864), secs(864), secs(21_600), secs(43_200)]);
+        assert_eq!(out, [secs(864), secs(864), secs(21_600), secs(34_560)]);
     }
 
     #[test]
     fn mixed_buttons_chain_only_among_the_day_buttons() {
-        let out = button_intervals(&ctx(), all(0.1, 0.75, 1.2, 1.4), DayRule::Graduating);
+        let out = button_intervals(&ctx(), all(0.1, 0.2, 1.2, 1.4), DayRule::Graduating);
         // Good is the first day button (floor 1 day); Easy is one above it
-        assert_eq!(out, [secs(8640), secs(64_800), days(1), days(2)]);
+        assert_eq!(out, [secs(8640), secs(17_280), days(1), days(2)]);
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: 12 hours or more is
+    // a whole day, for review cards too.
+    #[test]
+    fn twelve_hours_or_more_is_a_whole_day() {
+        for rule in [
+            DayRule::Graduating,
+            DayRule::Review {
+                previous_interval: 1,
+            },
+        ] {
+            let out = button_intervals(&ctx(), all(0.25, 0.5, 0.75, 0.99), rule);
+            assert_eq!(out, [secs(21_600), days(1), days(2), days(3)], "{rule:?}");
+        }
     }
 
     #[test]
@@ -213,6 +237,24 @@ mod test {
             panic!("hard should be in days");
         };
         assert!(hard >= 4);
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-fuzz: Again on a relearning
+    // card follows the review rule; the other buttons graduate with fuzz.
+    #[test]
+    fn relearning_again_is_clamped_without_fuzz() {
+        let mut ctx = ctx();
+        ctx.fuzz_factor = Some(0.99);
+        ctx.minimum_lapse_interval = 3;
+        let out = button_intervals(&ctx, all(1.5, 5.0, 30.0, 40.0), DayRule::Relearning);
+        assert_eq!(out[0], days(3));
+        let Some(ButtonInterval::Days {
+            fuzz_delta_days, ..
+        }) = out[2]
+        else {
+            panic!("good should be in days");
+        };
+        assert!(fuzz_delta_days > 0, "good is fuzzed");
     }
 
     #[test]

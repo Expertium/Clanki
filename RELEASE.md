@@ -22,6 +22,14 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- RWKV-Curve's intervals and stability (S90) are now the exact point where
+  its forgetting curve meets the target retention. Before, a straight line
+  between two search points made them slightly too long (0.27% on median,
+  up to 6.9% for intervals of one to two days).
+- Answer intervals of 12 hours or more are whole days (at least 1 day);
+  shorter ones still go to the intraday queue. Again on a relearning card
+  without relearning steps is held to the minimum lapse interval and not
+  fuzzed, as on a review card.
 - Under RWKV-Curve and RWKV-Instant, the review sort orders
   "Retrievability ascending/descending" and "Relative overdueness" now rank
   cards by RWKV: RWKV-Curve's predicted recall (over the desired retention,
@@ -85,12 +93,13 @@ repeated here unless they materially affect a fork feature.
   (shown as 9999). It applies to FSRS and RWKV-Curve alike, and only to
   presets without learning steps; the row shows only then. A collection
   that had the switch on gets 0 on every preset.
-- FSRS-7 and RWKV-Curve can schedule intervals under a day for any card and
-  any answer button: such an answer goes to the intraday queue with its exact
-  interval. Answers of a day or more stay in whole days, and each day button
-  is at least one day longer than the one before it (Hard ≥ Again + 1, Good
-  ≥ Hard + 1, Easy ≥ Good + 1). Before, only learning answers under half a
-  day went intraday, and RWKV-Curve always rounded up to whole days.
+- FSRS-7 and RWKV-Curve can schedule intervals under 12 hours for any card
+  and any answer button: such an answer goes to the intraday queue with its
+  exact interval. Answers of 12 hours or more are whole days (at least 1),
+  and each day button is at least one day longer than the one before it
+  (Hard ≥ Again + 1, Good ≥ Hard + 1, Easy ≥ Good + 1). Before, only learning
+  answers under half a day went intraday, and RWKV-Curve always rounded up
+  to whole days.
 - Switching between Simple and Advanced no longer recomputes the due counts
   (the mode does not affect dueness); the switch is fast and the deck list
   keeps its counts instead of showing "…".
