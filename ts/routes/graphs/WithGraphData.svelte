@@ -218,7 +218,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         updateScheduled = true;
         Promise.resolve().then(() => {
             updateScheduled = false;
-            updateSourceData(pendingSearch, pendingDays, pendingGraphs, activeRequestId);
+            updateSourceData(
+                pendingSearch,
+                pendingDays,
+                pendingGraphs,
+                activeRequestId,
+            );
         });
     }
 

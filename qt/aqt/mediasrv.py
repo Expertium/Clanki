@@ -1470,8 +1470,7 @@ def _card_stats_fallback_retrievability_source(response: CardStatsResponse) -> s
 def _graphs_request_wants_retrievability(request_proto: GraphsRequest) -> bool:
     """A request names the graphs it wants; none named = every graph."""
     return (
-        not request_proto.graphs
-        or GraphsRequest.RETRIEVABILITY in request_proto.graphs
+        not request_proto.graphs or GraphsRequest.RETRIEVABILITY in request_proto.graphs
     )
 
 
