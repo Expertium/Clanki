@@ -415,6 +415,13 @@ impl QueueSortOptions {
             )
     }
 
+    /// Relative overdueness in an RWKV preset ranks by RWKV's own measure
+    /// (spec sched.rwkv-relative-overdueness), never FSRS's.
+    fn rwkv_relative_overdueness_from_rwkv(&self) -> bool {
+        (self.rwkv_review_enabled || self.rwkv_review_instant_order_enabled)
+            && matches!(self.review_order, ReviewCardOrder::RelativeOverdueness)
+    }
+
     fn gather_review_order(&self) -> ReviewCardOrder {
         if (self.rwkv_review_enabled || self.rwkv_review_instant_order_enabled)
             && matches!(
@@ -1065,6 +1072,97 @@ mod test {
         assert!(first_queue.contains(&card1.id));
         assert!(first_queue.contains(&card2.id));
         assert_eq!(col.queue_as_ids(deck.id), first_queue);
+        Ok(())
+    }
+
+    /// An RWKV-Curve deck sorted by relative overdueness, desired retention
+    /// 0.9, with one due review card per (interval, days since last review,
+    /// FSRS stability).
+    fn rwkv_curve_relative_overdueness_deck(
+        col: &mut Collection,
+        cards: &[(u32, i64, f32)],
+    ) -> Result<(DeckId, Vec<CardId>)> {
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("RWKV")?;
+        let mut conf = DeckConfig::default();
+        conf.inner.review_order = ReviewCardOrder::RelativeOverdueness as i32;
+        conf.inner.rwkv_review_enabled = true;
+        conf.inner.desired_retention = 0.9;
+        col.add_or_update_deck_config(&mut conf)?;
+        deck.normal_mut()?.config_id = conf.id.0;
+        col.add_or_update_deck(&mut deck)?;
+        let today = col.timing_today()?.days_elapsed as i32;
+        let mut ids = Vec::new();
+        for &(interval, elapsed_days, stability) in cards {
+            let id = add_memory_state_card(
+                col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                today,
+                elapsed_days * 86_400,
+                stability,
+            )?;
+            let mut card = col.storage.get_card(id)?.unwrap();
+            card.interval = interval;
+            card.desired_retention = None;
+            col.storage.update_card(&card)?;
+            ids.push(id);
+        }
+        Ok((deck.id, ids))
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-relative-overdueness: RWKV-Curve's
+    // curve retrievability over the target retention ranks a scored card; an
+    // unscored card uses the exponential curve through its RWKV interval; the
+    // FSRS memory state plays no part.
+    #[test]
+    fn rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs() -> Result<()> {
+        let mut col = Collection::new();
+        let (deck_id, ids) = rwkv_curve_relative_overdueness_deck(
+            &mut col,
+            &[
+                // unscored, twice its interval: 0.9^(2 - 1) = 0.9
+                (10, 20, 100.0),
+                // scored 0.5: 0.5 / 0.9 = 0.56
+                (10, 11, 100.0),
+                // unscored, due exactly: 0.9^0 = 1; its tiny FSRS stability
+                // would put it first under FSRS
+                (10, 10, 0.01),
+            ],
+        )?;
+        col.set_rwkv_stats_graph_score_entries(
+            String::new(),
+            HashMap::from([(
+                ids[1],
+                crate::collection::RwkvStatsGraphScoreEntry {
+                    retrievability: 0.5,
+                    curve_retrievability: Some(0.5),
+                    intervening_reviews: None,
+                    target_retention: None,
+                    curve_due: true,
+                },
+            )]),
+        )?;
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[1], ids[0], ids[2]]);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-relative-overdueness: with no RWKV
+    // scores at all, the order is the time since the last review over the RWKV
+    // interval, most overdue first.
+    #[test]
+    fn rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval() -> Result<()> {
+        let mut col = Collection::new();
+        let (deck_id, ids) = rwkv_curve_relative_overdueness_deck(
+            &mut col,
+            &[(20, 30, 1.0), (4, 12, 1.0), (1, 1, 1.0), (10, 25, 1.0)],
+        )?;
+        // elapsed / interval: 1.5, 3, 1, 2.5
+        assert_eq!(
+            col.queue_as_ids(deck_id),
+            vec![ids[1], ids[3], ids[0], ids[2]]
+        );
         Ok(())
     }
 

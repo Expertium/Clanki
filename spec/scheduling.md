@@ -102,6 +102,31 @@ state tests; `test_rwkv_curve_states_*` and
 `test_unrounded_interval_from_recall_curve_keeps_sub_day_crossings`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-relative-overdueness
+
+Given a preset running RWKV-Curve or RWKV-Instant whose review sort order is
+"Relative overdueness", when the study queue gathers due review cards and
+interday learning cards that it does not rank by RWKV-Instant queue scores,
+it ranks them by RWKV's own measure, lowest first, and applies the daily
+limits in that order. A card with an RWKV-Curve retrievability score for
+today gets that retrievability divided by its target retention (the card's
+desired retention, else the preset's), the key RWKV-Instant ranks its
+scores by. A card without a score gets the value of the exponential
+forgetting curve through the interval RWKV scheduled for it:
+target ^ (days since the last review / interval − 1) — 1 when the card is
+due exactly, less the more it is overdue. Ties go by a hash of card id and
+modification time, then card id. The FSRS memory state plays no part.
+
+**Why:** Andrew, 2026-09-15: only one algorithm at a time, and asked which
+measure the order should use, he chose "RWKV curve scores" (falling back to
+RWKV's interval for unscored cards). Before this entry the order came from
+an SQL function that applied a one-component FSRS forgetting curve to the
+card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's.
+
+**Pinned by:** `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
+`rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.max-same-day-reviews
 
 Given a card whose preset is scheduled by FSRS (any version, RWKV-Curve and

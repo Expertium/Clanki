@@ -627,6 +627,67 @@ fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
     }
 }
 
+/// The relative-overdueness sort key of due cards in RWKV presets (spec
+/// sched.rwkv-relative-overdueness): RWKV-Curve's retrievability over the
+/// card's target retention, the key RWKV-Instant ranks its scores by
+/// (`relative_overdueness`). A card the RWKV process has not scored today
+/// gets the value of the exponential curve through the interval RWKV
+/// scheduled, `target ^ (elapsed / interval - 1)`: 1 when the card is due
+/// exactly, less the more it is overdue. Lower keys come first.
+pub(crate) fn rwkv_relative_overdueness_keys(
+    col: &mut Collection,
+    card_ids: &[CardId],
+    timing: SchedTimingToday,
+) -> Result<HashMap<CardId, f32>> {
+    let curve_scores = col.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, None);
+    let mut cards = col.all_cards_for_ids(card_ids, false)?;
+    col.populate_rwkv_last_review_times(&mut cards)?;
+    let without_card_target: Vec<_> = cards
+        .iter()
+        .filter(|card| card_desired_retention(card).is_none())
+        .cloned()
+        .collect();
+    let presets = col.fsrs_presets_for_cards(&without_card_target)?;
+    let mut keys = HashMap::with_capacity(cards.len());
+    for card in &cards {
+        let Some(target) = card_desired_retention(card)
+            .or_else(|| presets.get(&card.id).map(|preset| preset.desired_retention))
+            .filter(|target| valid_card_desired_retention(*target))
+        else {
+            continue;
+        };
+        let key = match curve_scores
+            .as_ref()
+            .and_then(|scores| scores.get(&card.id))
+            .filter(|r| r.is_finite())
+        {
+            Some(&retrievability) => relative_overdueness(retrievability, target),
+            None => {
+                let elapsed_days = rwkv_elapsed_days_since_last_review(card, timing);
+                let interval_days = card.interval.max(1) as f32;
+                target.powf(elapsed_days / interval_days - 1.0)
+            }
+        };
+        if key.is_finite() {
+            keys.insert(card.id, key);
+        }
+    }
+    Ok(keys)
+}
+
+fn rwkv_elapsed_days_since_last_review(card: &Card, timing: SchedTimingToday) -> f32 {
+    let elapsed_secs = match card.last_review_time {
+        Some(last_review_time) => timing.now.elapsed_secs_since_clamped(last_review_time),
+        None => {
+            let review_day = (card.original_or_current_due() as i64)
+                .saturating_sub(card.interval as i64)
+                .max(0) as u32;
+            timing.days_elapsed.saturating_sub(review_day) * 86_400
+        }
+    };
+    elapsed_secs as f32 / 86_400.0
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) target_retention: f32,

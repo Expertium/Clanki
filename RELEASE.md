@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Under RWKV-Curve and RWKV-Instant, the review sort order "Relative
+  overdueness" now ranks cards by RWKV: RWKV-Curve's predicted recall
+  over the desired retention, or, for a card RWKV has not scored yet, how
+  far past its RWKV interval it is. Before, it used a broken FSRS formula.
 - FSRS-7 is the only FSRS model. A preset without FSRS-7 parameters runs
   with the FSRS-7 defaults, even if it has trained FSRS-6/5/4.5 parameters
   (those stay stored, unused); the FSRS version selector is gone. On first

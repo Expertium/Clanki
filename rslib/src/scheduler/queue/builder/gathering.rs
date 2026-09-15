@@ -18,6 +18,7 @@ use crate::decks::limits::LimitKind;
 use crate::prelude::*;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
+use crate::scheduler::rwkv::rwkv_relative_overdueness_keys;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_relative_overdueness;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
@@ -657,6 +658,13 @@ impl QueueBuilder {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
+        if self
+            .context
+            .sort_options
+            .rwkv_relative_overdueness_from_rwkv()
+        {
+            return self.gather_due_cards_by_rwkv_relative_overdueness(col, kind);
+        }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
             self.context.sort_options.gather_review_order(),
@@ -677,6 +685,57 @@ impl QueueBuilder {
                 Ok(true)
             },
         )
+    }
+
+    /// RWKV presets sorted by relative overdueness take RWKV's own measure
+    /// (spec sched.rwkv-relative-overdueness), not FSRS's: every due card of
+    /// `kind` is ranked by `rwkv_relative_overdueness_keys`, then the limits
+    /// apply in that order.
+    fn gather_due_cards_by_rwkv_relative_overdueness(
+        &mut self,
+        col: &mut Collection,
+        kind: DueCardKind,
+    ) -> Result<()> {
+        let mut due_cards = Vec::new();
+        col.storage.for_each_due_card_in_active_decks(
+            self.context.timing,
+            ReviewCardOrder::Day,
+            kind,
+            self.context.fsrs,
+            |card| {
+                due_cards.push(card);
+                Ok(true)
+            },
+        )?;
+        let card_ids: Vec<_> = due_cards.iter().map(|card| card.id).collect();
+        let keys = rwkv_relative_overdueness_keys(col, &card_ids, self.context.timing)?;
+        let mut with_key: Vec<_> = due_cards
+            .into_iter()
+            .map(|card| {
+                let key = keys.get(&card.id).copied().unwrap_or(f32::INFINITY);
+                (card, key, fnvhash_due_card(&card))
+            })
+            .collect();
+        with_key.sort_by(|(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
+            key_a
+                .total_cmp(key_b)
+                .then_with(|| hash_a.cmp(hash_b))
+                .then_with(|| card_a.id.cmp(&card_b.id))
+        });
+        for (card, _, _) in with_key {
+            if self.limits.root_limit_reached(LimitKind::Review) {
+                break;
+            }
+            if !self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::Review)?
+                && self.add_due_card(card)
+            {
+                self.limits
+                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
+            }
+        }
+        Ok(())
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
