@@ -679,15 +679,30 @@ order by e.id, e.cid"
         Ok((rows, active_ignored_review_ids))
     }
 
+    /// The searched cards' reviews since `after`, in no particular order.
+    /// `many_cards`: the search matched a large part of the collection. The
+    /// review log is then read in id order, keeping the searched cards' rows
+    /// (`+cid` keeps SQLite off the cid index), instead of one index lookup
+    /// per card, whose scattered reads cost several times more per row once
+    /// most rows match.
     pub(crate) fn get_revlog_entries_for_searched_cards_after_stamp(
         &self,
         after: TimestampSecs,
+        many_cards: bool,
     ) -> Result<Vec<RevlogEntry>> {
-        self.db
-            .prepare_cached(concat!(
+        let sql = if many_cards {
+            concat!(
+                include_str!("get.sql"),
+                " where id >= ? and +cid in (select cid from search_cids)"
+            )
+        } else {
+            concat!(
                 include_str!("get.sql"),
                 " where cid in (select cid from search_cids) and id >= ?"
-            ))?
+            )
+        };
+        self.db
+            .prepare_cached(sql)?
             .query_and_then([after.0 * 1000], row_to_revlog_entry)?
             .collect()
     }

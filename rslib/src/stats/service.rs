@@ -23,7 +23,7 @@ impl crate::services::StatsService for Collection {
         &mut self,
         input: anki_proto::stats::GraphsRequest,
     ) -> error::Result<anki_proto::stats::GraphsResponse> {
-        self.graph_data_for_search(&input.search, input.days)
+        self.graph_data_for_graphs(&input.search, input.days, &input.graphs)
     }
 
     fn get_graph_preferences(&mut self) -> error::Result<anki_proto::stats::GraphPreferences> {

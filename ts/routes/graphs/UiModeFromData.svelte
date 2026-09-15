@@ -11,9 +11,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let data: GraphsResponse;
     export let advancedUi: Writable<boolean>;
     export let known: boolean;
+    /** The mode the page's own switch chose, until a data load reports it:
+     * a load the switch started can run before the main window has stored
+     * the new mode, and must not switch the page back. */
+    export let switchChoice: boolean | null = null;
 
     $: {
-        advancedUi.set(data.advancedUi);
+        if (switchChoice === null || switchChoice === data.advancedUi) {
+            advancedUi.set(data.advancedUi);
+            switchChoice = null;
+        }
         known = true;
     }
 </script>

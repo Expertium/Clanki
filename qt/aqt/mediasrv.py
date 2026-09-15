@@ -1467,20 +1467,32 @@ def _card_stats_fallback_retrievability_source(response: CardStatsResponse) -> s
     return "FSRS" if response.HasField("memory_state") else "SM2"
 
 
+def _graphs_request_wants_retrievability(request_proto: GraphsRequest) -> bool:
+    """A request names the graphs it wants; none named = every graph."""
+    return (
+        not request_proto.graphs or GraphsRequest.RETRIEVABILITY in request_proto.graphs
+    )
+
+
 def graphs() -> Response:
     start = time.monotonic()
     request_proto = GraphsRequest()
     request_proto.ParseFromString(request.data)
     reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
     prepare_start = time.monotonic()
-    prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
-        reviewer,
-        request_proto.search,
-        # RWKV-Curve's graph shows the Curve's R (spec ui.stats-one-algorithm)
-        prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
-            reviewer
-        ),
-    )
+    # only the Retrievability graph draws RWKV's values: a request without it
+    # (the Stats page in Simple mode) needs no RWKV scores
+    if _graphs_request_wants_retrievability(request_proto):
+        prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
+            reviewer,
+            request_proto.search,
+            # RWKV-Curve's graph shows the Curve's R (spec ui.stats-one-algorithm)
+            prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
+                reviewer
+            ),
+        )
+    else:
+        prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()
     output = raw_backend_request("graphs")()
