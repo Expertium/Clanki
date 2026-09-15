@@ -181,6 +181,26 @@ def _is_review_heatmap_addon(module: str) -> bool:
     return module in ADDON_DIRS
 
 
+def _is_ankiconnect_addon(module: str, name: object = None) -> bool:
+    from aqt.ankiconnect import is_ankiconnect_addon
+
+    return is_ankiconnect_addon(module, name)
+
+
+def _refuse_ankiconnect_addon() -> None:
+    """Clanki has AnkiConnect built in (spec ankiconnect.addon-blocked): the
+    add-on stays disabled and the built-in one is turned on instead, since
+    that is what the user was after."""
+    from aqt import ankiconnect
+
+    service = ankiconnect.instance()
+    if service is not None and not service.settings.enabled:
+        from dataclasses import replace
+
+        service.apply_settings(replace(service.settings, enabled=True))
+    showInfo(tr.preferences_ankiconnect_addon_blocked(), textFormat="plain")
+
+
 class AddonManager:
     exts: list[str] = [".ankiaddon", ".zip"]
     _manifest_schema: dict = {
@@ -365,6 +385,11 @@ class AddonManager:
             # ui.review-heatmap)
             showInfo(tr.preferences_heatmap_addon_blocked(), textFormat="plain")
             should_enable = False
+        if should_enable is True and _is_ankiconnect_addon(
+            module, getattr(addon, "provided_name", None)
+        ):
+            _refuse_ankiconnect_addon()
+            should_enable = False
         if should_enable is True:
             conflicting = self._disableConflicting(module)
             if conflicting:
@@ -485,6 +510,7 @@ class AddonManager:
             conflicts = manifest.get("conflicts", [])
             found_conflicts = self._disableConflicting(package, conflicts)
             meta = self.addonMeta(package)
+            previously_installed = bool(meta)
             gui_hooks.addon_manager_will_install_addon(self, package)
             self._install(package, zfile)
             gui_hooks.addon_manager_did_install_addon(self, package)
@@ -502,6 +528,12 @@ class AddonManager:
             # (spec ui.review-heatmap)
             meta["disabled"] = True
             showInfo(tr.preferences_heatmap_addon_blocked(), textFormat="plain")
+        if _is_ankiconnect_addon(package, manifest.get("name")):
+            # installed, but never enabled; an update of a copy already
+            # installed (the add-on update check) stays disabled silently
+            meta["disabled"] = True
+            if not previously_installed:
+                _refuse_ankiconnect_addon()
 
         self.writeAddonMeta(package, meta)
 

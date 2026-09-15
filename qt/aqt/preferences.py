@@ -434,6 +434,7 @@ class Preferences(QDialog):
 
         self.setup_language()
         self.setup_video_driver()
+        self.setup_ankiconnect()
 
         self.setupOptions()
 
@@ -454,6 +455,7 @@ class Preferences(QDialog):
         if restart_required:
             showInfo(tr.preferences_changes_will_take_effect_when_you())
 
+        self.ankiconnect_tab.save()
         self.updateOptions()
 
     def on_theme_changed(self, index: int) -> None:
@@ -466,6 +468,21 @@ class Preferences(QDialog):
             if regexp.search(key):
                 del self.prof[key]
         showInfo(tr.preferences_reset_window_sizes_complete())
+
+    # Global: AnkiConnect
+    ######################################################################
+
+    def setup_ankiconnect(self) -> None:
+        """The AnkiConnect tab, after Review Heatmap (spec
+        ankiconnect.settings). Its settings are global, like the add-on's."""
+        from aqt.ankiconnect_prefs import AnkiConnectPreferences
+
+        self.ankiconnect_tab = AnkiConnectPreferences(self.mw)
+        self.form.tabWidget.insertTab(
+            self.form.tabWidget.indexOf(self.heatmap_tab) + 1,
+            self.ankiconnect_tab,
+            tr.preferences_ankiconnect_tab(),
+        )
 
     # legacy - one of Henrik's add-ons is currently wrapping them
 
