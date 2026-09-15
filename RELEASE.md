@@ -7,14 +7,17 @@ repeated here unless they materially affect a fork feature.
 
 ## Maintenance
 
-- Add user-visible fork changes to **Unreleased** in the same commit as the
-  change.
+- Add each user-visible fork change in the same commit as the change, as one
+  new file in [`release-notes/`](./release-notes/README.md); editing this
+  file in every pull request made them all conflict. The files move into
+  **Unreleased** at release time.
 - Describe outcomes for users rather than implementation details or commit
   titles.
 - Include fixes, new behavior, compatibility changes, migrations, and notable
   performance or security changes. Omit formatting, tests, CI-only changes, and
   routine upstream synchronization.
-- Before publishing, rename **Unreleased** to the intended application version
+- Before publishing, move the `release-notes/` files into **Unreleased**,
+  rename **Unreleased** to the intended application version
   and date, then add a new empty **Unreleased** section above it. Release build
   numbers may be recorded separately when useful.
 - Treat [`.version`](./.version) as authoritative if this file and the build

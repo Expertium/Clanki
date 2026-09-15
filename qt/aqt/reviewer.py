@@ -2036,15 +2036,15 @@ timeboxReps = 0;
             self.mw.progress.single_shot(50, self._showEaseButtons)
             return
         middle = self._answerButtons()
-        conf = self.mw.col.decks.config_dict_for_deck_id(self.card.current_deck_id())
-        stop_timer = json.dumps(conf["stopTimerOnAnswer"])
+        # showAnswer() leaves the on-screen timer running: the presets' "Stop
+        # on-screen timer on answer" is not used (spec review.timer-keeps-running)
         if aqt.rwkv_scheduler.answer_intervals_pending(self, self.card):
-            self._wait_for_rwkv_curve_intervals(stop_timer)
+            self._wait_for_rwkv_curve_intervals()
             return
         self._rwkv_intervals_retry_ms = 0
-        self.bottom.web.eval(f"showAnswer({json.dumps(middle)}, {stop_timer});")
+        self.bottom.web.eval(f"showAnswer({json.dumps(middle)});")
 
-    def _wait_for_rwkv_curve_intervals(self, stop_timer: str) -> None:
+    def _wait_for_rwkv_curve_intervals(self) -> None:
         """RWKV-Curve has not given this card's intervals yet: show a notice
         instead of the buttons and ask again, backing off to once a second.
         FSRS intervals never stand in (spec sched.rwkv-curve-buttons-wait)."""
@@ -2055,7 +2055,7 @@ timeboxReps = 0;
                 "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
                 % html.escape(tr.qt_misc_rwkv_curve_intervals_pending())
             )
-            self.bottom.web.eval(f"showAnswer({json.dumps(notice)}, {stop_timer});")
+            self.bottom.web.eval(f"showAnswer({json.dumps(notice)});")
         delay = min(max(delay * 2, RWKV_INTERVALS_FIRST_RETRY_MS), 1000)
         self._rwkv_intervals_retry_ms = delay
         card_id = self.card.id

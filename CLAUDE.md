@@ -365,9 +365,11 @@ Run `just` (or `just --list`) to see all available commands.
 
 ## Release notes
 
-When developing a user-visible feature, update `RELEASE.md` in the same
-change, even if the feature has not been released yet. Add it to the existing
-unreleased section so the release notes remain current throughout development.
+When developing a user-visible feature, add its release note in the same
+change, even if the feature has not been released yet: one new file
+`release-notes/<short-topic>.md` per change, never an edit of `RELEASE.md`,
+so open pull requests do not conflict (`release-notes/README.md`). The files
+are moved into `RELEASE.md` at release time.
 
 ## Releases
 
