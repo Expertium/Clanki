@@ -2658,3 +2658,50 @@ def test_two_button_mode_maps_answer_keys() -> None:
         3,
         4,
     ]
+
+
+class _AnswerButtonsSched:
+    def describe_next_states(self, states: SchedulingStates) -> list[str]:
+        return ["10m", "2d", "3d", "7d"]
+
+
+@pytest.mark.parametrize("hidden", [False, True])
+def test_answer_buttons_show_no_intervals_for_rwkv_instant(
+    monkeypatch: pytest.MonkeyPatch, hidden: bool
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-instant-no-intervals"""
+    monkeypatch.setattr(reviewer_module, "V3Scheduler", _AnswerButtonsSched)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "update_reviewer_scheduling_states",
+        lambda states, reviewer, card: states,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_hidden", lambda reviewer, card: hidden
+    )
+    monkeypatch.setattr(
+        aqt, "mw", SimpleNamespace(pm=SimpleNamespace(get_answer_key=lambda i: None))
+    )
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=1)
+    reviewer._v3 = SimpleNamespace(states=scheduling_states_with_review_current())
+    reviewer.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            sched=_AnswerButtonsSched(),
+            conf={"estTimes": True},
+            get_config_bool=lambda key: False,
+        )
+    )
+    reviewer._answerButtonList = lambda: (
+        (1, "Again"),
+        (2, "Hard"),
+        (3, "Good"),
+        (4, "Easy"),
+    )
+
+    html = reviewer._answerButtons()
+
+    for label in ("Again", "Hard", "Good", "Easy"):
+        assert label in html
+    for interval in ("10m", "2d", "3d", "7d"):
+        assert (interval in html) is not hidden

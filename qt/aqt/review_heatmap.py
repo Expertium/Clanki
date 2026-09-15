@@ -337,6 +337,36 @@ class ActivityReporter:
         )
         return compute_activity(history, forecast, today, self._offset())
 
+    def input_fingerprint(self, current_deck_only: bool) -> tuple[Any, ...]:
+        """Everything a report reads, cheaply: equal fingerprints give equal
+        reports. The collection's modified time is not used, because
+        collapsing a deck or a config write changes it without changing the
+        report. The report reads each card's deck, due day and queue: a
+        change of any of them changes one of the sums below, unless changes
+        cancel out exactly within one second (the resolution of a card's
+        modified time). Reviews are only added or removed, never edited:
+        that changes the review count, and a removal followed by a new
+        review also changes the newest id (both read from indexes; a sum
+        over the review log would take ~90 ms on a large collection)."""
+        cards = self._col.db.first(
+            "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
+        )
+        # two queries: together SQLite reads every row (~60 ms on 1.3M
+        # reviews); apart, both are answered from the b-tree (<1 ms)
+        reviews = (
+            self._col.db.scalar("SELECT count() FROM revlog"),
+            self._col.db.scalar("SELECT max(id) FROM revlog"),
+        )
+        dids = self._deck_ids(current_deck_only)
+        return (
+            self._today(),
+            self._offset(),
+            self._col.sched.today,
+            None if dids is None else tuple(dids),
+            tuple(cards),
+            reviews,
+        )
+
     def _offset(self) -> int:
         """The 'next day starts at' hour."""
         return int(self._col.get_config("rollover", DEFAULT_ROLLOVER))
@@ -676,21 +706,18 @@ class ReviewHeatmap:
         settings = self.settings()
         if not settings.shows(view) and not settings.streak_stats_always:
             return ""
-        deck_id = int(col.decks.get_current_id()) if current_deck_only else 0
+        reporter = ActivityReporter(col, settings)
         key = (
             view,
             current_deck_only,
-            deck_id,
-            col.mod,
             history_days,
             forecast_days,
             settings,
+            reporter.input_fingerprint(current_deck_only),
         )
         if self._cache is not None and self._cache.key == key:
             return self._cache.html
-        report = ActivityReporter(col, settings).get_report(
-            current_deck_only, history_days, forecast_days
-        )
+        report = reporter.get_report(current_deck_only, history_days, forecast_days)
         html = render_report(report, view, current_deck_only, settings)
         self._cache = _RenderCache(html, key)
         return html

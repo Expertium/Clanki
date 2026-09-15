@@ -14,22 +14,39 @@ else:
 | RWKV-Curve   | on                | on                           | off                                        |
 | RWKV-Instant | on                | off                          | on                                         |
 
-Two stored states cannot be represented and are normalized when the preset is
-shown, so that saving writes the represented state: a preset with both RWKV
-flags on reads as RWKV-Curve and `rwkv_review_instant_order_enabled` is
-cleared; a collection whose `fsrs` switch is off has it turned on, whatever
-the preset's RWKV flags. Presets that are not opened are not touched, and
-nothing is written until the user saves. The underlying flags, their storage in the
-`jschoreels.rwkv` bag, and the scheduler behavior behind each one are
-unchanged; only the way the screen sets them is.
+One algorithm schedules a preset at any time. A preset stored with both RWKV
+flags on (written by an older build or an add-on) is RWKV-Curve everywhere:
+whenever the collection loads it — from the database or from sync JSON — the
+backend reads `rwkv_review_instant_order_enabled` as off, and so does the Qt
+code that reads the stored JSON, so no RWKV-Instant queue order, due count,
+search or answer-button rule applies to it. The stored flag itself is
+cleared the next time the preset is saved. A collection whose `fsrs` switch
+is off has it turned on when the deck-options screen shows a preset, and
+nothing is written until the user saves. The underlying flags, their
+storage in the `jschoreels.rwkv` bag, and the scheduler behavior behind
+each single algorithm are unchanged.
+
+In the open dropdown each algorithm shows a short description under its
+name (FSRS-7: each card's grades and the time between reviews only, the least
+accurate; RWKV-Curve: the default, a neural network that uses more
+information but not card content, with intervals like FSRS-7;
+RWKV-Instant: the same network, best at keeping retention at the desired
+level, no intervals, dueness decided again after each review, possibly
+unintuitive). The revert button restores
+the new-preset algorithm, RWKV-Curve (`deck-options.new-preset-defaults`).
 
 **Why:** the three switches were independent and could be combined in ways
 the user did not mean; desired retention was also only editable inside the
 FSRS block even though RWKV reads it, which the dropdown resolves by keeping
-FSRS on for every RWKV mode.
+FSRS on for every RWKV mode. Andrew, 2026-09-15: there must only be one
+algorithm at any given time, and each choice needs a description.
 
 **Pinned by:** `ts/routes/deck-options/scheduler-choice.test.ts`;
-`ts/tests/e2e/deck-options.test.ts` checks that no FSRS switch remains.
+`ts/tests/e2e/deck-options.test.ts` checks that no FSRS switch remains;
+`a_preset_stored_with_both_rwkv_modes_reads_as_rwkv_curve`
+(`rslib/src/deckconfig/fork_fields.rs`);
+`test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## deck-options.first-intervals
 

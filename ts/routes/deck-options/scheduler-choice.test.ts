@@ -7,6 +7,9 @@ vi.mock("@generated/ftl", () => ({
     deckConfigSchedulerChoiceFsrs: () => "FSRS-7",
     deckConfigSchedulerChoiceRwkvCurve: () => "RWKV-Curve",
     deckConfigSchedulerChoiceRwkvInstant: () => "RWKV-Instant",
+    deckConfigSchedulerChoiceFsrsDescription: () => "fsrs text",
+    deckConfigSchedulerChoiceRwkvCurveDescription: () => "curve text",
+    deckConfigSchedulerChoiceRwkvInstantDescription: () => "instant text",
 }));
 
 import {
@@ -58,4 +61,12 @@ test("the FSRS switch never changes the value: SM-2 is not selectable", () => {
         schedulerChoiceFromFlags({ fsrs: false, rwkvCurve: false, rwkvInstant: true }),
     ).toBe(SchedulerChoice.RWKV_INSTANT);
     expect(schedulerChoices().map((choice) => choice.value)).toEqual(ALL);
+});
+
+test("each algorithm has its own description in the dropdown", () => {
+    expect(schedulerChoices().map((choice) => choice.description)).toEqual([
+        "fsrs text",
+        "curve text",
+        "instant text",
+    ]);
 });

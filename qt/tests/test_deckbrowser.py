@@ -80,3 +80,124 @@ def test_review_limit_refresh_clears_pending_and_unlimited_labels(browser):
     assert refresh_labels()[0] == " (/10)"
     tree.children[0].review_count = 10
     assert refresh_labels() == ["", ""]
+
+
+def _collapsible(browser, monkeypatch):
+    """A deck browser whose page was drawn once, with the collapse op and
+    the page reload replaced by recorders."""
+    from aqt import deckbrowser
+
+    child = DeckTreeNode(deck_id=2, name="child", level=2)
+    parent = DeckTreeNode(deck_id=1, name="parent", children=[child], level=1)
+    tree = DeckTreeNode(children=[parent])
+    browser._render_data = SimpleNamespace(
+        tree=tree, current_deck_id=1, studied_today="studied"
+    )
+    browser._rendered_stats = browser._renderStats()
+    scripts: list[str] = []
+    reloads: list[bool] = []
+    browser.web = SimpleNamespace(eval=scripts.append)
+    browser._renderPage = lambda reuse=False: reloads.append(reuse)
+    browser.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            decks=SimpleNamespace(
+                find_deck_in_tree=lambda tree, did: parent if did == 1 else None
+            )
+        )
+    )
+    ops: list[bool] = []
+    monkeypatch.setattr(
+        deckbrowser,
+        "set_deck_collapsed",
+        lambda **kwargs: SimpleNamespace(
+            run_in_background=lambda initiator: ops.append(kwargs["collapsed"])
+        ),
+    )
+    return parent, scripts, reloads, ops
+
+
+def test_collapse_swaps_the_deck_table_without_reloading(browser, monkeypatch):
+    from aqt import gui_hooks
+
+    monkeypatch.setattr(gui_hooks.webview_will_set_content, "_hooks", [])
+    monkeypatch.setattr(gui_hooks.deck_browser_did_render, "_hooks", [])
+    monkeypatch.setattr(gui_hooks.deck_browser_will_render_content, "_hooks", [])
+    parent, scripts, reloads, ops = _collapsible(browser, monkeypatch)
+
+    browser._collapse(1)
+
+    assert parent.collapsed and ops == [True] and reloads == []
+    assert len(scripts) == 1 and scripts[0].startswith("replaceDeckTree(")
+    # the swapped rows are the rows a full draw would put in the table
+    assert browser._renderDeckTree(browser._render_data.tree) in json_arg(scripts[0])
+
+
+def json_arg(script: str) -> str:
+    import json
+
+    return json.loads(script[len("replaceDeckTree(") : -len(");")])
+
+
+def addon_handler(*args):
+    pass
+
+
+addon_handler.__module__ = "1234567890.addon"
+
+
+@pytest.mark.parametrize(
+    "hook_name",
+    ["webview_will_set_content", "deck_browser_did_render"],
+)
+def test_collapse_reloads_when_an_addon_decorates_the_page(
+    browser, monkeypatch, hook_name
+):
+    from aqt import gui_hooks
+
+    for name in ("webview_will_set_content", "deck_browser_did_render"):
+        handlers = [addon_handler] if name == hook_name else []
+        monkeypatch.setattr(getattr(gui_hooks, name), "_hooks", handlers)
+    monkeypatch.setattr(gui_hooks.deck_browser_will_render_content, "_hooks", [])
+    _, scripts, reloads, _ = _collapsible(browser, monkeypatch)
+
+    browser._collapse(1)
+
+    assert scripts == [] and reloads == [True]
+
+
+def test_collapse_reloads_when_the_stats_section_would_change(browser, monkeypatch):
+    from aqt import gui_hooks
+
+    monkeypatch.setattr(gui_hooks.webview_will_set_content, "_hooks", [])
+    monkeypatch.setattr(gui_hooks.deck_browser_did_render, "_hooks", [])
+
+    def add_stats(deck_browser, content):
+        content.stats += "<div>new</div>"
+
+    monkeypatch.setattr(
+        gui_hooks.deck_browser_will_render_content, "_hooks", [add_stats]
+    )
+    _, scripts, reloads, _ = _collapsible(browser, monkeypatch)
+
+    browser._collapse(1)
+
+    assert scripts == [] and reloads == [True]
+
+
+def test_collapse_reloads_when_the_table_gets_a_script(browser, monkeypatch):
+    from aqt import gui_hooks
+
+    monkeypatch.setattr(gui_hooks.webview_will_set_content, "_hooks", [])
+    monkeypatch.setattr(gui_hooks.deck_browser_did_render, "_hooks", [])
+
+    def add_script(deck_browser, content):
+        content.tree += "<SCRIPT>decorate()</script>"
+
+    monkeypatch.setattr(
+        gui_hooks.deck_browser_will_render_content, "_hooks", [add_script]
+    )
+    _, scripts, reloads, _ = _collapsible(browser, monkeypatch)
+
+    browser._collapse(1)
+
+    assert scripts == [] and reloads == [True]

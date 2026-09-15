@@ -131,6 +131,25 @@ class DataModel(QAbstractTableModel):
         """Get row if it is cached, regardless of staleness."""
         return self._rows.get(self.get_item(index))
 
+    def count_enabled_cells(self, selection: QItemSelection) -> int:
+        """The same number as `len(selection.indexes())`: the cells of the
+        selection whose `flags()` are enabled and selectable. Qt calls
+        `flags()` in Python for every cell to get it, which takes seconds for
+        a large selection; this reads the row cache once instead."""
+        disabled = {item for item, row in self._rows.items() if row.is_disabled}
+        count = 0
+        for i in range(len(selection)):
+            selection_range = selection[i]
+            if not selection_range.isValid():
+                continue
+            rows = range(selection_range.top(), selection_range.bottom() + 1)
+            if disabled:
+                enabled = sum(1 for row in rows if self._items[row] not in disabled)
+            else:
+                enabled = len(rows)
+            count += enabled * selection_range.width()
+        return count
+
     # Reset
 
     def mark_cache_stale(self) -> None:
@@ -206,11 +225,10 @@ class DataModel(QAbstractTableModel):
         return None
 
     def get_item_rows(self, items: Sequence[ItemId]) -> list[int]:
-        rows = []
-        for row, i in enumerate(self._items):
-            if i in items:
-                rows.append(row)
-        return rows
+        # a set makes this O(n + m) instead of O(n * m): restoring a 50k-card
+        # selection after a new search took seconds with the list
+        wanted = set(items)
+        return [row for row, i in enumerate(self._items) if i in wanted]
 
     def get_card_row(self, card_id: CardId) -> int | None:
         return self.get_item_row(self._state.get_item_from_card_id(card_id))
