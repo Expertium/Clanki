@@ -36,6 +36,7 @@ use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
+use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::preset::FsrsPreset;
@@ -109,24 +110,16 @@ impl CardStateUpdater {
         &'a self,
         load_balancer_ctx: Option<LoadBalancerContext<'a>>,
     ) -> Result<StateContext<'a>> {
-        let fsrs_again_s90 = if self.config.inner.leech_only_if_young {
-            self.fsrs_next_states
-                .as_ref()
-                .map(|states| {
-                    fsrs_memory_state_for_params(
-                        &self.fsrs_preset.params,
-                        fsrs::MemoryState {
-                            stability: states.again.memory.stability,
-                            difficulty: states.again.memory.difficulty,
-                            stability_fast: states.again.memory.stability_fast,
-                        },
-                    )
-                    .map(|state| state.stability)
-                })
-                .transpose()?
-        } else {
-            None
-        };
+        let fsrs_next_s90 = self
+            .fsrs_next_states
+            .as_ref()
+            .map(|states| -> Result<_> {
+                Ok(fsrs_next_states_s90(
+                    &FSRS::new(&self.fsrs_preset.params)?,
+                    states,
+                ))
+            })
+            .transpose()?;
 
         Ok(StateContext {
             fuzz_factor: get_fuzz_factor(self.fuzz_seed),
@@ -142,7 +135,7 @@ impl CardStateUpdater {
             fsrs_minimum_interval_secs: self.config.inner.fsrs_minimum_interval_secs,
             leech_threshold: self.config.inner.leech_threshold,
             leech_only_if_young: self.config.inner.leech_only_if_young,
-            fsrs_again_s90,
+            fsrs_next_s90,
             load_balancer_ctx: load_balancer_ctx
                 .map(|load_balancer_ctx| load_balancer_ctx.set_fuzz_seed(self.fuzz_seed)),
             relearn_steps: self.relearn_steps(),
@@ -1101,6 +1094,42 @@ pub(crate) mod test {
         let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
         assert!((s90 - 20.0).abs() < 0.02, "{s90}");
         assert!(memory_state.stability_internal < 20.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.next-state-s90: each answer's next state
+    // carries its S90 as the memory state's stability, like a stored card,
+    // and FSRS-7's internal stability in its own field.
+    #[test]
+    fn next_states_carry_the_s90_as_stability() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let cid = add_due_review_card(
+            &mut col,
+            10,
+            0,
+            Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            }),
+        )?;
+        let states = col.get_scheduling_states(cid)?;
+        let fsrs = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        for state in [states.again, states.hard, states.good, states.easy] {
+            let memory_state = match state {
+                CardState::Normal(NormalState::Review(review)) => review.memory_state,
+                CardState::Normal(NormalState::Relearning(relearn)) => {
+                    relearn.learning.memory_state
+                }
+                other => panic!("expected a review or relearning state, got {other:?}"),
+            }
+            .unwrap();
+            let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+            assert_eq!(memory_state.stability, s90);
+            assert_ne!(memory_state.stability, memory_state.stability_internal);
+        }
         Ok(())
     }
 
