@@ -508,7 +508,7 @@ mod test {
     ) -> Result<()> {
         let mut conf = DeckConfig::default();
         conf.inner.review_order = ReviewCardOrder::Day as i32;
-        conf.inner.rwkv_review_enabled = true;
+        conf.inner.rwkv_review_enabled = false;
         conf.inner.rwkv_review_instant_order_enabled = true;
         conf.inner.rwkv_review_allow_same_day_review = allow_same_day_review;
         conf.inner.rwkv_review_min_intervening_reviews = 0;

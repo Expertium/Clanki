@@ -26,6 +26,14 @@ repeated here unless they materially affect a fork feature.
   overdueness" now ranks cards by RWKV: RWKV-Curve's predicted recall
   over the desired retention, or, for a card RWKV has not scored yet, how
   far past its RWKV interval it is. Before, it used a broken FSRS formula.
+- Deck options: the Algorithm dropdown shows a short description under each
+  algorithm, and its revert button restores RWKV-Curve (the new-preset
+  default). The highlighted entry in any dropdown now opens on the current
+  value instead of the value it had when the page opened.
+- Only one algorithm schedules a preset at a time: a preset stored with both
+  RWKV-Curve and RWKV-Instant on (older builds, add-ons) is RWKV-Curve
+  everywhere.
+- RWKV-Instant cards show no intervals above the answer buttons.
 - FSRS-7 is the only FSRS model. A preset without FSRS-7 parameters runs
   with the FSRS-7 defaults, even if it has trained FSRS-6/5/4.5 parameters
   (those stay stored, unused); the FSRS version selector is gone. On first

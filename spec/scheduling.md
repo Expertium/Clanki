@@ -50,6 +50,25 @@ outcome_, not of FSRS; switching the interval source must not switch them off.
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-instant-no-intervals
+
+Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
+on and `rwkv_review_enabled` off, `deck-options.scheduler-choice`), the
+answer buttons show no next-review interval and no fuzz delta, whatever the
+"Show next review time above answer buttons" preference says. The buttons,
+their labels and shortcuts, and the states stored on answer (FSRS states,
+whose due dates RWKV-Instant reorders) are unchanged. Cards of FSRS-7 and
+RWKV-Curve presets show their intervals as before.
+
+**Why:** Andrew, 2026-09-15: RWKV-Instant has no intervals, so none may be
+shown above its answer buttons, ever; the FSRS intervals it showed before
+mixed a second algorithm into the screen.
+
+**Pinned by:** `test_answer_buttons_show_no_intervals_for_rwkv_instant`
+(`qt/tests/test_reviewer.py`),
+`test_one_algorithm_per_preset_both_rwkv_modes_read_as_curve`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.sub-day-intervals
 
 Given a card scheduled by FSRS-7 or RWKV-Curve and the unrounded interval
