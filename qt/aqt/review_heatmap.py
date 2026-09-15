@@ -758,7 +758,7 @@ class ReviewHeatmap:
         elif command == "modeswitch":
             self._cycle_setting("mode", list(CALENDAR_MODES), context)
         elif command == "themeswitch":
-            self._cycle_setting("colors", list(COLOR_SCHEMES), context)
+            self._cycle_colors(context)
         # the add-on's contribution links are not ported
         return (True, None)
 
@@ -788,6 +788,35 @@ class ReviewHeatmap:
         save_settings(col, replace(settings, **changes))
         self.redraw(context)
 
+    def _cycle_colors(self, context: Any) -> None:
+        """Save the next colour scheme. The schemes are CSS only (one
+        `rh-theme-*` class on each heatmap), so on the deck list and the deck
+        overview the class is swapped in the open page instead of drawing the
+        page again; other screens are redrawn."""
+
+        from aqt.deckbrowser import DeckBrowser
+        from aqt.overview import Overview
+
+        col = self.mw.col
+        if col is None:
+            return
+        settings = self.settings()
+        values = list(COLOR_SCHEMES)
+        following = values[(values.index(settings.colors) + 1) % len(values)]
+        save_settings(col, replace(settings, colors=following))
+        web = getattr(context, "web", None)
+        if not isinstance(context, (DeckBrowser, Overview)) or web is None:
+            self.redraw(context)
+            return
+        web.eval(theme_swap_js(following))
+        # the deck list compares its next stats with the drawn ones before
+        # redrawing its tree in place; they now carry the new class
+        rendered_stats = getattr(context, "_rendered_stats", None)
+        if isinstance(rendered_stats, str):
+            context._rendered_stats = rendered_stats.replace(
+                f"rh-theme-{settings.colors}", f"rh-theme-{following}"
+            )
+
     def redraw_current_screen(self) -> None:
         state = getattr(self.mw, "state", None)
         if state == "deckBrowser":
@@ -810,6 +839,19 @@ class ReviewHeatmap:
             refresh = getattr(context, "refresh", None)
             if callable(refresh):
                 refresh()
+
+
+def theme_swap_js(colors: str) -> str:
+    """JS that gives every heatmap on the page the `rh-theme-{colors}` class
+    in place of its current theme class."""
+
+    themes = json.dumps([f"rh-theme-{name}" for name in COLOR_SCHEMES])
+    return (
+        "document.querySelectorAll('.rh-container').forEach(function (e) {"
+        f"e.classList.remove.apply(e.classList, {themes});"
+        f"e.classList.add({json.dumps(f'rh-theme-{colors}')});"
+        "});"
+    )
 
 
 def disable_review_heatmap_addon(addon_manager: object) -> list[str]:
