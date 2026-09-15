@@ -481,3 +481,58 @@ def test_the_addon_notice_is_shown_only_once() -> None:
     assert len(shown) == 1
     assert mw.pm.meta[ADDON_NOTICE_SHOWN_KEY] is True
     mw.pm.save.assert_called_once()
+
+
+# Pins spec/ui.md#ui.review-heatmap
+def test_enabling_the_review_heatmap_addon_is_refused_with_a_message() -> None:
+    from aqt.addons import AddonManager
+
+    written: list[bool] = []
+    for folder, expect_enabled in (("1771074083", False), ("other_addon", True)):
+        addon = SimpleNamespace(enabled=False, human_name=lambda: folder)
+        manager = MagicMock()
+        manager.addon_meta.return_value = addon
+        manager._disableConflicting.return_value = []
+        manager.write_addon_meta.side_effect = lambda meta: written.append(meta.enabled)
+        with (
+            patch("aqt.addons.showInfo") as show_info,
+            patch("aqt.addons.tr") as tr,
+        ):
+            AddonManager.toggleEnabled(manager, folder, enable=True)
+        assert addon.enabled is expect_enabled
+        if expect_enabled:
+            show_info.assert_not_called()
+        else:
+            show_info.assert_called_once_with(
+                tr.preferences_heatmap_addon_blocked.return_value, textFormat="plain"
+            )
+    assert written == [False, True]
+
+
+# Pins spec/ui.md#ui.review-heatmap
+def test_installing_the_review_heatmap_addon_leaves_it_disabled() -> None:
+    import io
+    import zipfile
+
+    from aqt.addons import AddonManager
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w"):
+        pass
+    manager = MagicMock()
+    manager.readManifestFile.return_value = {
+        "package": "1771074083",
+        "name": "Review Heatmap",
+    }
+    manager._manifest_schema = {"properties": {}}
+    manager.addonMeta.return_value = {"name": "Review Heatmap"}
+    manager._disableConflicting.return_value = []
+    with (
+        patch("aqt.addons.showInfo") as show_info,
+        patch("aqt.addons.tr"),
+        patch("aqt.addons.gui_hooks"),
+    ):
+        AddonManager.install(manager, archive, force_enable=True)
+    package, meta = manager.writeAddonMeta.call_args.args
+    assert package == "1771074083" and meta["disabled"] is True
+    show_info.assert_called_once()
