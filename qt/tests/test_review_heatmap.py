@@ -10,9 +10,11 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from anki.collection import Config
+from anki.decks import DeckId
 from aqt import review_heatmap
 from aqt.review_heatmap import (
     ADDON_NOTICE_SHOWN_KEY,
+    ActivityReporter,
     HeatmapSettings,
     HeatmapView,
     ReviewHeatmap,
@@ -99,20 +101,65 @@ def test_nothing_is_drawn_while_the_preference_is_off() -> None:
     assert content.table == "<table></table>"
 
 
-def test_render_uses_the_reporter_and_caches_per_collection_mod() -> None:
+def test_render_uses_the_reporter_and_caches_per_input_fingerprint() -> None:
     heatmap = _heatmap(enabled=True)
     heatmap.mw.col.mod = 1
-    heatmap.mw.col.decks.get_current_id.return_value = 7
     with patch.object(review_heatmap, "ActivityReporter") as reporter:
         reporter.return_value.get_report.return_value = None
+        reporter.return_value.input_fingerprint.return_value = ("inputs", 1)
         first = heatmap.render(HeatmapView.deckbrowser, current_deck_only=False)
         second = heatmap.render(HeatmapView.deckbrowser, current_deck_only=False)
         assert first == second and "rh-container" in first
         assert reporter.return_value.get_report.call_count == 1
-        # a collection change invalidates the cache
+        # a collection change that the report does not read keeps the cache
         heatmap.mw.col.mod = 2
         heatmap.render(HeatmapView.deckbrowser, current_deck_only=False)
+        assert reporter.return_value.get_report.call_count == 1
+        # a change of what the report reads invalidates it
+        reporter.return_value.input_fingerprint.return_value = ("inputs", 2)
+        heatmap.render(HeatmapView.deckbrowser, current_deck_only=False)
         assert reporter.return_value.get_report.call_count == 2
+
+
+def test_input_fingerprint_follows_reviews_and_cards_only(tmp_path: Any) -> None:
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "heatmap.anki2"))
+    try:
+        note = col.new_note(col.models.current())
+        note.fields[0] = "front"
+        col.add_note(note, DeckId(1))
+        reporter = ActivityReporter(col, HeatmapSettings())
+        base = reporter.input_fingerprint(current_deck_only=False)
+
+        # config writes and collapsing a deck change col.mod, not the report
+        col.set_config("someUnrelatedKey", 42)
+        deck = col.decks.get(DeckId(1))
+        assert deck is not None
+        deck["collapsed"] = not deck["collapsed"]
+        col.decks.save(deck)
+        assert reporter.input_fingerprint(current_deck_only=False) == base
+
+        # moving a card to another deck changes it
+        other = col.decks.id("Other")
+        assert other is not None
+        col.set_deck(note.card_ids(), other)
+        moved = reporter.input_fingerprint(current_deck_only=False)
+        assert moved != base
+
+        # a review changes it
+        col.decks.select(other)
+        card = col.sched.getCard()
+        assert card is not None
+        col.sched.answerCard(card, 3)
+        assert reporter.input_fingerprint(current_deck_only=False) != moved
+
+        # a new subdeck changes the current-deck scope
+        scoped = reporter.input_fingerprint(current_deck_only=True)
+        col.decks.id("Other::Child")
+        assert reporter.input_fingerprint(current_deck_only=True) != scoped
+    finally:
+        col.close(downgrade=False)
 
 
 def test_clicking_a_day_opens_the_browser_with_the_search() -> None:
