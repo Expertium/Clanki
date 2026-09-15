@@ -35,7 +35,11 @@ pub(crate) enum DayRule {
     /// fuzzed (fuzz applies when the card leaves relearning); Hard, Good and
     /// Easy keep the previous interval while it lies within the fuzz range.
     Review { previous_interval: u32 },
-    /// A new, learning or relearning card: every day button is fuzzed.
+    /// A relearning card: Again follows the review rule (clamped to the
+    /// minimum lapse interval, not fuzzed); Hard, Good and Easy leave
+    /// relearning and are fuzzed like `Graduating`.
+    Relearning,
+    /// A new or learning card: every day button is fuzzed.
     Graduating,
 }
 
@@ -66,7 +70,7 @@ pub(crate) fn button_intervals(
 
         let floor = previous_days.map_or(1, |days| days + 1);
         let (days, fuzz_delta_days) = match rule {
-            DayRule::Review { .. } if index == 0 => {
+            DayRule::Review { .. } | DayRule::Relearning if index == 0 => {
                 let (minimum, maximum) =
                     ctx.min_and_max_review_intervals(ctx.minimum_lapse_interval.max(floor));
                 let days = interval
@@ -86,7 +90,7 @@ pub(crate) fn button_intervals(
                 let (minimum, maximum) = ctx.min_and_max_review_intervals(minimum);
                 ctx.with_review_fuzz_and_delta(interval, minimum, maximum)
             }
-            DayRule::Graduating => {
+            DayRule::Graduating | DayRule::Relearning => {
                 let (minimum, maximum) = ctx.min_and_max_review_intervals(floor);
                 ctx.with_review_fuzz_and_delta(interval.round().max(1.0), minimum, maximum)
             }
@@ -233,6 +237,24 @@ mod test {
             panic!("hard should be in days");
         };
         assert!(hard >= 4);
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-fuzz: Again on a relearning
+    // card follows the review rule; the other buttons graduate with fuzz.
+    #[test]
+    fn relearning_again_is_clamped_without_fuzz() {
+        let mut ctx = ctx();
+        ctx.fuzz_factor = Some(0.99);
+        ctx.minimum_lapse_interval = 3;
+        let out = button_intervals(&ctx, all(1.5, 5.0, 30.0, 40.0), DayRule::Relearning);
+        assert_eq!(out[0], days(3));
+        let Some(ButtonInterval::Days {
+            fuzz_delta_days, ..
+        }) = out[2]
+        else {
+            panic!("good should be in days");
+        };
+        assert!(fuzz_delta_days > 0, "good is fuzzed");
     }
 
     #[test]

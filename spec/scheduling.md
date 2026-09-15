@@ -23,11 +23,12 @@ Given a card whose preset has **"Use RWKV-Curve for answer intervals"**
 enabled, the unrounded interval RWKV-Curve supplies for each button replaces
 FSRS's interval for that button, and the answer states are then built by the
 same rules as FSRS intervals (`sched.sub-day-intervals`): a sub-day interval
-goes to the intraday queue; an interval of a day or more gets the same review
-fuzz, the same load balancer, the same sibling dispersal
+goes to the intraday queue; an interval of 12 hours or more gets the same
+review fuzz, the same load balancer, the same sibling dispersal
 (`sched.sibling-dispersal-gate`), the same 90-day load-balance limit, and the
-same floors — Again on a review card is clamped but not fuzzed; Hard, Good
-and Easy each keep the previous interval when it still lies within the
+same floors — Again on a review card, and on a relearning card without
+relearning steps, is clamped to the minimum lapse interval but not fuzzed;
+Hard, Good and Easy of a review card each keep the previous interval when it still lies within the
 configured fuzz range; and each day button sits at least one day above the
 day button before it. The resulting fuzz delta is recorded on the state and
 shown above the answer buttons when that preference is on. This applies to
@@ -40,11 +41,15 @@ dispersal at all.
 
 **Why:** fuzz and sibling dispersal are properties of the _scheduling
 outcome_, not of FSRS; switching the interval source must not switch them off.
+Andrew, 2026-09-15: Again on a relearning card without steps follows the
+review rule, as upstream did (it had been fuzzed like a graduating card).
 
 **Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`
 (`rslib/src/scheduler/answering/mod.rs`),
 `external_intervals_are_dispersed_away_from_siblings`
-(`rslib/src/scheduler/states/load_balancer.rs`);
+(`rslib/src/scheduler/states/load_balancer.rs`),
+`relearning_again_is_clamped_without_fuzz`
+(`rslib/src/scheduler/states/button_intervals.rs`);
 `test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals`,
 `test_rwkv_curve_states_only_send_supplied_ratings`,
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
