@@ -436,6 +436,8 @@ pub struct ReviewPredictionOutput {
     pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
+    /// `current_interval` unrounded, in days (spec sched.rwkv-curve-reschedule).
+    pub current_interval_unrounded: Option<f32>,
     /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
     /// sched.rwkv-curve-s90).
     pub current_s90: Option<f32>,
@@ -453,9 +455,18 @@ pub struct ReviewPredictionOutput {
 pub struct ReviewIntervalPrediction {
     pub retrievability: f32,
     pub current_interval: Option<u32>,
+    /// `current_interval` unrounded, in days (spec sched.rwkv-curve-reschedule).
+    pub current_interval_unrounded: Option<f32>,
     /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
     /// sched.rwkv-curve-s90).
     pub current_s90: Option<f32>,
+}
+
+/// See `RwkvInference::current_intervals`.
+struct CurrentIntervals {
+    whole_days: Option<u32>,
+    unrounded: Option<f32>,
+    s90: Option<f32>,
 }
 
 pub struct RwkvInference {
@@ -665,7 +676,7 @@ impl RwkvInference {
             .as_ref()
             .map(|heads| self.answer_intervals(&input, heads))
             .unwrap_or(([None; 4], [None; 4]));
-        let (current_interval, current_s90) = self.current_intervals(&input, &heads);
+        let current = self.current_intervals(&input, &heads);
         let curve_retrievability = current_curve_retrievability(&input, &heads.curve);
 
         let card_state = serialize_module_state(&heads.next_state.card);
@@ -682,8 +693,8 @@ impl RwkvInference {
             retrievability: heads.retrievability,
             curve_retrievability,
             button_probabilities: heads.button_probabilities,
-            current_interval,
-            current_s90,
+            current_interval: current.whole_days,
+            current_s90: current.s90,
             intervals,
             s90s,
             card_state,
@@ -725,8 +736,7 @@ impl RwkvInference {
                 let query_heads = &heads[0];
                 let answer_heads = &heads[1..];
                 let (intervals, s90s) = self.answer_intervals(&request.input, answer_heads);
-                let (current_interval, current_s90) =
-                    self.current_intervals(&request.input, query_heads);
+                let current = self.current_intervals(&request.input, query_heads);
                 ReviewPredictionOutput {
                     retrievability: query_heads.retrievability,
                     curve_retrievability: current_curve_retrievability(
@@ -734,8 +744,9 @@ impl RwkvInference {
                         &query_heads.curve,
                     ),
                     button_probabilities: query_heads.button_probabilities,
-                    current_interval,
-                    current_s90,
+                    current_interval: current.whole_days,
+                    current_interval_unrounded: current.unrounded,
+                    current_s90: current.s90,
                     intervals,
                     s90s,
                 }
@@ -831,11 +842,12 @@ impl RwkvInference {
             .iter()
             .zip(heads)
             .map(|(input, heads)| {
-                let (current_interval, current_s90) = self.current_intervals(input, &heads);
+                let current = self.current_intervals(input, &heads);
                 ReviewIntervalPrediction {
                     retrievability: heads.retrievability,
-                    current_interval,
-                    current_s90,
+                    current_interval: current.whole_days,
+                    current_interval_unrounded: current.unrounded,
+                    current_s90: current.s90,
                 }
             })
             .collect())
@@ -1426,20 +1438,22 @@ insert into segments (
         )
     }
 
-    fn current_intervals(
-        &self,
-        input: &ReviewInput,
-        heads: &ReviewHeads,
-    ) -> (Option<u32>, Option<f32>) {
+    /// The current interval where the curve meets the target retention, in
+    /// whole days (`interval_for_curve`) and unrounded (for the RWKV-Curve
+    /// reschedule, spec sched.rwkv-curve-reschedule), and the current S90.
+    fn current_intervals(&self, input: &ReviewInput, heads: &ReviewHeads) -> CurrentIntervals {
         let target_retention = input.target_retentions[2].unwrap_or(self.target_retention);
-        (
-            interval_for_curve(&heads.curve, target_retention, self.max_interval_days),
-            unrounded_interval_for_curve(
+        let unrounded =
+            unrounded_interval_for_curve(&heads.curve, target_retention, self.max_interval_days);
+        CurrentIntervals {
+            whole_days: unrounded.map(|days| clamped_interval_days(days, self.max_interval_days)),
+            unrounded,
+            s90: unrounded_interval_for_curve(
                 &heads.curve,
                 S90_TARGET_RETENTION,
                 self.max_interval_days,
             ),
-        )
+        }
     }
 
     pub fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {
@@ -1845,11 +1859,11 @@ insert into segments (
             .into_iter()
             .zip(inputs)
             .map(|(heads, input)| {
-                let (current_interval, current_s90) = self.current_intervals(input, &heads);
+                let current = self.current_intervals(input, &heads);
                 RwkvWorkloadQueryPrediction {
                     retrievability: heads.retrievability,
-                    current_interval,
-                    current_s90,
+                    current_interval: current.whole_days,
+                    current_s90: current.s90,
                 }
             })
             .collect()
@@ -9010,6 +9024,16 @@ order by e.id, e.cid
         for (expected, actual) in expected.iter().zip(&actual) {
             assert_eq!(expected.retrievability, actual.retrievability);
             assert_eq!(expected.current_interval, actual.current_interval);
+            assert_eq!(
+                expected.current_interval_unrounded,
+                actual.current_interval_unrounded
+            );
+            assert_eq!(
+                actual.current_interval,
+                actual
+                    .current_interval_unrounded
+                    .map(|days| clamped_interval_days(days, 36_500))
+            );
             assert_eq!(expected.current_s90, actual.current_s90);
             with_interval += usize::from(actual.current_interval.is_some());
         }

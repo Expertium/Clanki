@@ -124,20 +124,42 @@ other's.
 ## sched.rwkv-curve-reschedule
 
 Given a review card that the RWKV-Curve reschedule reschedules
-(`deck-options.reschedule-on-change`), its memory state changes as on an
-RWKV-Curve answer: the S90 becomes RWKV-Curve's current S90
-(`sched.rwkv-curve-s90`), and the internal and fast stabilities keep their
-values — a card without a fast stability still has none. A card without a
-usable FSRS-7 state gets the FSRS-7 state whose own S90 is RWKV-Curve's
-(`sched.fsrs7-sm2-conversion`).
+(`deck-options.reschedule-on-change`), its new interval is RWKV-Curve's
+current interval — the unrounded day where the card's curve meets its target
+retention, found as for the answer intervals (`sched.sub-day-intervals`) —
+turned into whole days exactly as the FSRS-7 reschedule turns FSRS-7's
+unrounded interval into days: rounded to the nearest day like an answer, at
+least 1, at most the home preset's maximum interval, and not below the
+interval before the card's last review while the new interval still reaches
+it within the fuzz range; then the load balancer and Easy Days pick the day
+within the fuzz range (else plain review fuzz), seeded per card for its last
+review as in the FSRS-7 reschedule, and each rescheduled card counts toward
+the load of the cards after it. The card is due that many days after its
+last review.
 
-**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): one algorithm's values
-must not mix into the other's; the reschedule wrote RWKV-Curve's S90 into
-FSRS-7's fast stability when the card had none, which an answer never does.
+Its memory state changes as on an RWKV-Curve answer: the S90 becomes
+RWKV-Curve's current S90 (`sched.rwkv-curve-s90`), and the internal and fast
+stabilities keep their values — a card without a fast stability still has
+none. A card without a usable FSRS-7 state gets the FSRS-7 state whose own
+S90 is RWKV-Curve's (`sched.fsrs7-sm2-conversion`).
 
-**Pinned by:** `apply_review_reschedule_changes_only_the_s90_of_a_memory_state`,
+**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): "RWKV-Curve should adopt
+fuzz/LB"; the reschedule rounded the crossing up (1.1 d gave 2 d where an
+answer gives 1 d), ignored the maximum interval, and put every card with
+the same interval on the same day. One algorithm's values must not mix into
+the other's: the reschedule wrote RWKV-Curve's S90 into FSRS-7's fast
+stability when the card had none, which an answer never does.
+
+**Pinned by:** `reschedule_turns_the_unrounded_interval_into_days_like_fsrs7`,
+`apply_review_reschedule_changes_only_the_s90_of_a_memory_state`,
 `apply_review_reschedule_without_memory_state_gets_an_fsrs7_state_with_that_s90`
-(`rslib/src/scheduler/rwkv.rs`).
+(`rslib/src/scheduler/rwkv.rs`);
+`rescheduled_interval_days_are_fuzzed_and_load_balanced`
+(`rslib/src/scheduler/fsrs/rescheduler.rs`);
+`current_intervals_from_warm_up_match_predict_many` (`rslib/src/rwkv/mod.rs`);
+`test_rwkv_reschedule_items_carry_the_unrounded_interval`,
+`test_apply_rwkv_review_reschedule_includes_target_retention`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-no-model-error
 

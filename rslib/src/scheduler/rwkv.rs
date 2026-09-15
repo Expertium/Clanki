@@ -18,6 +18,7 @@ use crate::card::Card;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::config::BoolKey;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::deckconfig::ReviewCardOrder;
@@ -25,8 +26,12 @@ use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
+use crate::scheduler::answering::get_fuzz_seed;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
+use crate::scheduler::fsrs::memory_state::get_last_revlog_info;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
+use crate::scheduler::fsrs::rescheduler::rescheduled_interval_days;
+use crate::scheduler::fsrs::rescheduler::Rescheduler;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
 use crate::search::Node;
@@ -40,7 +45,8 @@ const RWKV_HISTORY_HASH_DOMAIN: &[u8] = b"anki-rwkv-state-cache-history-v1\0";
 
 pub(crate) struct RwkvReviewRescheduleItem {
     pub(crate) card_id: CardId,
-    pub(crate) interval_days: u32,
+    /// RWKV-Curve's current interval, unrounded days.
+    pub(crate) interval: f32,
     pub(crate) elapsed_days: u32,
     pub(crate) s90: f32,
     pub(crate) target_retention: Option<f32>,
@@ -211,6 +217,9 @@ impl Collection {
             .collect()
     }
 
+    /// Gives each review card RWKV-Curve's current interval, turned into days
+    /// as FSRS-7's reschedule turns its interval into days (spec
+    /// sched.rwkv-curve-reschedule), and RWKV-Curve's S90.
     pub(crate) fn apply_rwkv_review_reschedule(
         &mut self,
         items: Vec<RwkvReviewRescheduleItem>,
@@ -219,9 +228,19 @@ impl Collection {
         let usn = self.usn()?;
 
         self.transact(Op::Custom("RWKV reschedule".into()), |col| {
+            let mut rescheduler = if col.get_config_bool(BoolKey::LoadBalancerEnabled) {
+                Some(Rescheduler::new(col)?)
+            } else {
+                None
+            };
+            let review_fuzz_config = col.review_fuzz_config();
+            let mut max_intervals: HashMap<DeckConfigId, u32> = HashMap::new();
             let mut updated = 0;
             for item in items {
-                require!(item.interval_days >= 1, "invalid RWKV interval");
+                require!(
+                    item.interval.is_finite() && item.interval > 0.0,
+                    "invalid RWKV interval"
+                );
                 require!(item.s90.is_finite() && item.s90 > 0.0, "invalid RWKV S90");
                 if let Some(target_retention) = item.target_retention {
                     require!(
@@ -238,7 +257,39 @@ impl Collection {
                 }
 
                 let original = card.clone();
-                card.interval = item.interval_days;
+                let home_deck_id = card.original_or_current_deck_id();
+                let deckconfig_id = col
+                    .get_deck(home_deck_id)?
+                    .or_not_found(home_deck_id)?
+                    .config_id()
+                    .or_invalid("home deck is filtered")?;
+                let max_interval = match max_intervals.get(&deckconfig_id) {
+                    Some(max_interval) => *max_interval,
+                    None => {
+                        let max_interval = col
+                            .home_deck_config(Some(deckconfig_id), home_deck_id)?
+                            .inner
+                            .maximum_review_interval
+                            .max(1);
+                        max_intervals.insert(deckconfig_id, max_interval);
+                        max_interval
+                    }
+                };
+                let previous_interval =
+                    get_last_revlog_info(&col.storage.get_revlog_entries_for_card(card.id)?)
+                        .get(&card.id)
+                        .and_then(|info| info.previous_interval)
+                        .unwrap_or(0);
+                card.interval = rescheduled_interval_days(
+                    rescheduler.as_ref(),
+                    item.interval,
+                    previous_interval,
+                    max_interval,
+                    item.elapsed_days,
+                    deckconfig_id,
+                    get_fuzz_seed(&card, true),
+                    review_fuzz_config,
+                );
                 let params = col.fsrs_preset_for_card(&card)?.params;
                 card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90, &params)?);
                 if let Some(target_retention) = item.target_retention {
@@ -250,11 +301,12 @@ impl Collection {
                 } else {
                     &mut card.due
                 };
-                *due = rwkv_rescheduled_due_day(
-                    timing.days_elapsed,
-                    item.elapsed_days,
-                    item.interval_days,
-                );
+                let new_due =
+                    rwkv_rescheduled_due_day(timing.days_elapsed, item.elapsed_days, card.interval);
+                if let Some(rescheduler) = &mut rescheduler {
+                    rescheduler.update_due_cnt_per_day(*due, new_due, deckconfig_id);
+                }
+                *due = new_due;
 
                 col.update_card_inner(&mut card, original, usn)?;
                 updated += 1;
@@ -1319,7 +1371,7 @@ mod test {
         let revlogs_before = col.storage.get_revlog_entries_for_card(card.id)?.len();
         let result = col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
             card_id: card.id,
-            interval_days: 12,
+            interval: 12.0,
             elapsed_days: 4,
             s90: 9.5,
             target_retention: Some(0.75),
@@ -1354,7 +1406,7 @@ mod test {
 
         col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
             card_id: card.id,
-            interval_days: 25,
+            interval: 25.0,
             elapsed_days: 4,
             s90: 20.0,
             target_retention: None,
@@ -1371,6 +1423,68 @@ mod test {
         let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
         assert!((s90 - 20.0).abs() < 0.02, "{s90}");
         assert!(memory_state.stability_internal < 20.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-reschedule: the reschedule
+    // turns RWKV-Curve's unrounded interval into days as FSRS-7's reschedule
+    // does (`rescheduled_interval_days`): rounded like an answer, at most the
+    // home preset's maximum interval, and not below the previous interval
+    // while the new one still reaches it within the fuzz range. Unit tests
+    // have no fuzz seed; the fuzz and the load balancer of that shared step
+    // are pinned by `rescheduled_interval_days_are_fuzzed_and_load_balanced`.
+    #[test]
+    fn reschedule_turns_the_unrounded_interval_into_days_like_fsrs7() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+            config.maximum_review_interval = 100;
+        });
+        let today = col.timing_today()?.days_elapsed as i32;
+        let reschedule = |col: &mut Collection,
+                          interval: f32,
+                          last_interval: Option<i32>|
+         -> Result<(u32, i32)> {
+            let mut card = Card::new(NoteId(10), 0, DeckId(1), today + 3);
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 10;
+            col.add_card(&mut card)?;
+            if let Some(last_interval) = last_interval {
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(card.id.0 + 1_000),
+                        cid: card.id,
+                        button_chosen: 3,
+                        interval: 10,
+                        last_interval,
+                        review_kind: RevlogReviewKind::Review,
+                        ..Default::default()
+                    },
+                    false,
+                )?;
+            }
+            col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
+                card_id: card.id,
+                interval,
+                elapsed_days: 7,
+                s90: 20.0,
+                target_retention: None,
+            }])?;
+            let updated = col.storage.get_card(card.id)?.unwrap();
+            Ok((updated.interval, updated.due - today))
+        };
+
+        // rounded to the nearest day, as an answer rounds
+        assert_eq!(reschedule(&mut col, 1.1, None)?.0, 1);
+        assert_eq!(reschedule(&mut col, 2.4, None)?.0, 2);
+        assert_eq!(reschedule(&mut col, 10.2, None)?.0, 10);
+        // at most the preset's maximum interval, due counted from the last review
+        assert_eq!(reschedule(&mut col, 400.0, None)?, (100, 93));
+        // 29 days after a review whose previous interval was 30: 30 is still in
+        // 29's fuzz range, so the interval does not drop below it
+        assert_eq!(reschedule(&mut col, 29.0, Some(30))?.0, 30);
+        assert_eq!(reschedule(&mut col, 29.0, None)?.0, 29);
         Ok(())
     }
 
@@ -1406,7 +1520,7 @@ mod test {
 
             col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
                 card_id: card.id,
-                interval_days: 30,
+                interval: 30.0,
                 elapsed_days: 5,
                 s90: 42.0,
                 target_retention: None,
@@ -1437,7 +1551,7 @@ mod test {
         for target_retention in [0.0, 1.0] {
             let result = col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
                 card_id: card.id,
-                interval_days: 12,
+                interval: 12.0,
                 elapsed_days: 4,
                 s90: 9.5,
                 target_retention: Some(target_retention),

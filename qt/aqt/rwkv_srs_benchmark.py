@@ -747,6 +747,9 @@ class _RustRwkvRuntime:
                     else None
                 ),
                 current_interval=_optional_interval(current_interval),
+                current_interval_unrounded=_optional_unrounded_interval(
+                    current_interval_unrounded
+                ),
                 current_s90=_optional_unrounded_interval(current_s90),
                 interval_overrides=_unrounded_interval_override_from_tuple(intervals),
                 s90_overrides=_unrounded_interval_override_from_tuple(s90s),
@@ -762,6 +765,7 @@ class _RustRwkvRuntime:
                 intervals,
                 s90s,
                 button_probabilities,
+                current_interval_unrounded,
             ) in outputs
         ]
 
@@ -863,8 +867,9 @@ class _RustRwkvRuntime:
     def predict_current_intervals_many_from_warm_up(
         self,
         review_inputs: Sequence[RwkvReviewInput],
-    ) -> Sequence[tuple[float, int | None, float | None]]:
-        """Query-only current interval and S90 per input from the resident state.
+    ) -> Sequence[tuple[float, int | None, float | None, float | None]]:
+        """Query-only current interval, S90 and unrounded current interval
+        per input from the resident state.
 
         One forward pass per card, no state bytes across the bridge, GIL
         released in Rust. Used by "Reschedule cards with RWKV-Curve".
@@ -901,8 +906,9 @@ class _RustRwkvRuntime:
                 float(retrievability),
                 int(current_interval) if current_interval else None,
                 float(current_s90) if current_s90 else None,
+                float(unrounded) if unrounded else None,
             )
-            for retrievability, current_interval, current_s90 in outputs
+            for retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     def predict_memorised_retrievability_from_warm_up(

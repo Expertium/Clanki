@@ -239,3 +239,41 @@ pub(crate) fn rescheduled_interval_days(
             )
         })
 }
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-reschedule (the step the
+    // FSRS-7 and RWKV-Curve reschedules share): with the cards' fuzz seeds,
+    // cards given the same interval spread over its fuzz range, through the
+    // load balancer and through plain review fuzz.
+    #[test]
+    fn rescheduled_interval_days_are_fuzzed_and_load_balanced() -> Result<()> {
+        let mut col = Collection::new();
+        let load_balancer = Rescheduler::new(&mut col)?;
+        let config = ReviewFuzzConfig::default();
+        let (lower, upper) = constrained_fuzz_bounds(50.0, 1, 36_500, config);
+        for rescheduler in [None, Some(&load_balancer)] {
+            let days = (0..20)
+                .map(|seed| {
+                    rescheduled_interval_days(
+                        rescheduler,
+                        50.0,
+                        0,
+                        36_500,
+                        5,
+                        DeckConfigId(1),
+                        Some(1_000 + seed),
+                        config,
+                    )
+                })
+                .collect::<HashSet<_>>();
+            assert!(days.len() > 3, "{days:?}");
+            assert!(days.iter().all(|day| (lower..=upper).contains(day)), "{days:?}");
+        }
+        Ok(())
+    }
+}

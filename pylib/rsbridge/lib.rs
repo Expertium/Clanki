@@ -239,6 +239,8 @@ impl RwkvInference {
         ))
     }
 
+    /// The last element is the current interval unrounded, in days (spec
+    /// sched.rwkv-curve-reschedule).
     fn predict_many(
         &mut self,
         requests: &Bound<'_, PyAny>,
@@ -251,6 +253,7 @@ impl RwkvInference {
             RwkvUnroundedIntervalTuple,
             RwkvUnroundedIntervalTuple,
             RwkvProbabilityTuple,
+            Option<f32>,
         )>,
     > {
         let mut parsed_requests = Vec::new();
@@ -272,6 +275,7 @@ impl RwkvInference {
                             unrounded_interval_tuple(output.intervals),
                             unrounded_interval_tuple(output.s90s),
                             probability_tuple(output.button_probabilities),
+                            output.current_interval_unrounded,
                         )
                     })
                     .collect()
@@ -308,14 +312,15 @@ impl RwkvInference {
     }
 
     /// Query-only current interval and S90 per input from the resident
-    /// warm-up state; returns `(retrievability, current_interval, current_s90)`
-    /// with `0` standing for "no interval"; the S90 is unrounded days (spec
-    /// sched.rwkv-curve-s90). Releases the GIL while predicting.
+    /// warm-up state; returns `(retrievability, current_interval, current_s90,
+    /// current_interval_unrounded)` with `0` standing for "no interval"; the
+    /// S90 and the last value are unrounded days (spec sched.rwkv-curve-s90,
+    /// sched.rwkv-curve-reschedule). Releases the GIL while predicting.
     fn predict_current_intervals_many_from_warm_up(
         &mut self,
         py: Python<'_>,
         inputs: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<(f32, u32, f32)>> {
+    ) -> PyResult<Vec<(f32, u32, f32, f32)>> {
         let mut parsed_inputs = Vec::new();
         for input in inputs.try_iter()? {
             parsed_inputs.push(parse_rwkv_review_input(&input?)?);
@@ -333,6 +338,7 @@ impl RwkvInference {
                         output.retrievability,
                         output.current_interval.unwrap_or(0),
                         output.current_s90.unwrap_or(0.0),
+                        output.current_interval_unrounded.unwrap_or(0.0),
                     )
                 })
                 .collect()

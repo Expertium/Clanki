@@ -3266,9 +3266,9 @@ def test_backend_resident_current_intervals_require_runtime_support() -> None:
 
     def predict_current_intervals_many_from_warm_up(
         review_inputs: list[RwkvReviewInput],
-    ) -> list[tuple[float, int, int]]:
+    ) -> list[tuple[float, int, float, float]]:
         assert review_inputs == [review_input, review_input]
-        return [(0.5, 7, 12), (0.4, 0, 0)]
+        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
 
     runtime.predict_current_intervals_many_from_warm_up = (  # type: ignore[attr-defined]
         predict_current_intervals_many_from_warm_up
@@ -3277,7 +3277,12 @@ def test_backend_resident_current_intervals_require_runtime_support() -> None:
     assert backend.predict_current_intervals_inputs_from_warm_up(
         [review_input, review_input]
     ) == [
-        RwkvReviewPrediction(retrievability=0.5, current_interval=7, current_s90=12),
+        RwkvReviewPrediction(
+            retrievability=0.5,
+            current_interval=7,
+            current_interval_unrounded=6.2,
+            current_s90=12,
+        ),
         RwkvReviewPrediction(retrievability=0.4),
     ]
     assert backend.predict_current_intervals_inputs_from_warm_up([]) == []
@@ -3290,9 +3295,9 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
 
     def predict_current_intervals_many_from_warm_up(
         batch: list[tuple[object, ...]],
-    ) -> list[tuple[float, int, int]]:
+    ) -> list[tuple[float, int, float, float]]:
         rows.extend(batch)
-        return [(0.5, 7, 12), (0.4, 0, 0)]
+        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
 
     runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
     runtime._process = SimpleNamespace(
@@ -3308,7 +3313,7 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
     outputs = runtime.predict_current_intervals_many_from_warm_up(inputs)
 
     assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
-    assert outputs == [(0.5, 7, 12), (0.4, None, None)]
+    assert outputs == [(0.5, 7, 12, 6.2), (0.4, None, None, None)]
 
 
 def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:
@@ -14375,7 +14380,7 @@ def test_apply_rwkv_review_reschedule_includes_target_retention() -> None:
         [
             rwkv_scheduler.RwkvReviewRescheduleItem(
                 card_id=1,
-                interval_days=12,
+                interval_days=12.4,
                 elapsed_days=4,
                 s90=9.5,
                 target_retention=0.50,
@@ -14385,7 +14390,36 @@ def test_apply_rwkv_review_reschedule_includes_target_retention() -> None:
 
     item = rpc.requests[0].items[0]
     assert item.card_id == 1
+    # unrounded (spec sched.rwkv-curve-reschedule)
+    assert item.interval == pytest.approx(12.4)
     assert item.target_retention == pytest.approx(0.50)
+
+
+def test_rwkv_reschedule_items_carry_the_unrounded_interval() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-reschedule: the reschedule sends
+    RWKV-Curve's unrounded current interval, not the whole days rounded up;
+    a backend with whole days only sends those."""
+
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+    items = rwkv_scheduler._rwkv_review_reschedule_items_from_input_predictions(
+        [(1, review_input), (2, review_input)],
+        [
+            RwkvReviewPrediction(
+                retrievability=0.8,
+                current_interval=11,
+                current_interval_unrounded=10.2,
+                current_s90=12.5,
+            ),
+            RwkvReviewPrediction(
+                retrievability=0.8, current_interval=11, current_s90=12.5
+            ),
+        ],
+    )
+
+    assert [item.interval_days for item in items] == [
+        pytest.approx(10.2),
+        pytest.approx(11.0),
+    ]
 
 
 def test_prepare_stats_retrievability_scores_waits_for_pending_warmup(
@@ -15784,6 +15818,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                 tuple[int | None, ...],
                 tuple[int | None, ...],
                 tuple[float, float, float, float],
+                float | None,
             ]
         ]:
             self.requests.append(requests)
@@ -15796,6 +15831,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                     (1, 3, 7, 14),
                     (2, 4, 17, 28),
                     (0.75, 0.05, 0.15, 0.05),
+                    8.4,
                 ),
                 (
                     0.75,
@@ -15805,6 +15841,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
                     (None, None, None, None),
                     (None, None, None, None),
                     (0.25, 0.10, 0.50, 0.15),
+                    None,
                 ),
             ]
 
@@ -15840,6 +15877,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     assert first is not None
     assert first.curve_retrievability == pytest.approx(0.65)
     assert first.current_interval == 9
+    assert first.current_interval_unrounded == pytest.approx(8.4)
     assert first.current_s90 == 19
     assert first.interval_overrides == RwkvIntervalOverride(
         again=1,
@@ -15857,6 +15895,7 @@ def test_embedded_rust_runtime_batches_bridge_predictions() -> None:
     assert second is not None
     assert second.curve_retrievability is None
     assert second.current_interval is None
+    assert second.current_interval_unrounded is None
     assert second.current_s90 is None
     assert second.interval_overrides == RwkvIntervalOverride()
     assert second.s90_overrides == RwkvIntervalOverride()
