@@ -14,6 +14,7 @@ ui.review-heatmap). The calendar itself is drawn by the add-on's JS bundle
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
@@ -301,12 +302,29 @@ def compute_activity(
     )
 
 
+@dataclass
+class _OlderReviews:
+    """Reviews per day of the reviews before `cutoff` (a review-log id), and
+    what they were counted from."""
+
+    key: tuple[Any, ...]
+    cutoff: int
+    days: dict[int, int]
+
+
 class ActivityReporter:
     """Reads review history and the due forecast from the collection."""
 
-    def __init__(self, col: Collection, settings: HeatmapSettings) -> None:
+    def __init__(
+        self,
+        col: Collection,
+        settings: HeatmapSettings,
+        older_reviews: dict[Any, _OlderReviews] | None = None,
+    ) -> None:
         self._col = col
         self._settings = settings
+        # per set of decks counted; kept between reporters by ReviewHeatmap
+        self._older_reviews = {} if older_reviews is None else older_reviews
 
     def get_report(
         self,
@@ -427,26 +445,91 @@ class ActivityReporter:
     def _cards_done(
         self, current_deck_only: bool, start: int | None
     ) -> list[Sequence[int]]:
-        """Reviews per day, grouped in local time with the rollover applied."""
+        """Reviews per day, grouped in local time with the rollover applied,
+        from the day `start` on.
 
+        A review's day depends on that review alone, so the reviews before a
+        cut-off are counted once and kept (grouping 1.3M reviews takes about
+        2 s), and only the newer ones are counted on each call."""
+        dids = self._deck_ids(current_deck_only)
+        older = self._older_review_days(dids)
+        days = dict(older.days)
+        for day, count in self._review_days(dids, f"id >= {older.cutoff}").items():
+            days[day] = days.get(day, 0) + count
+        return [
+            (day, days[day]) for day in sorted(days) if start is None or day >= start
+        ]
+
+    def _review_days(self, dids: list[int] | None, condition: str) -> dict[int, int]:
+        """Reviews per day of the reviews that meet `condition`."""
         offset_secs = self._offset() * 3600
-        where = []
-        if start is not None:
-            where.append(f"day >= {int(start)}")
+        where = [condition]
         if self._settings.exclude_manual_reschedules:
             where.append("ease >= 1")
-        dids = self._deck_ids(current_deck_only)
+        # EXISTS looks up each review's card; IN would first collect the ids
+        # of every card, which costs more than the few newer reviews
+        card = "SELECT 1 FROM cards WHERE cards.id = revlog.cid"
         if dids is not None:
-            where.append(f"cid IN (SELECT id FROM cards WHERE did IN {ids2str(dids)})")
+            where.append(f"EXISTS ({card} AND did IN {ids2str(dids)})")
         elif self._settings.exclude_deleted_cards:
-            where.append("cid IN (SELECT id FROM cards)")
-        condition = f"WHERE {' AND '.join(where)}" if where else ""
-        return self._col.db.all(
+            where.append(f"EXISTS ({card})")
+        rows = self._col.db.all(
             f"""
 SELECT CAST(STRFTIME('%s', id / 1000 - {offset_secs}, 'unixepoch',
                      'localtime', 'start of day') AS int) AS day, COUNT()
-FROM revlog {condition}
-GROUP BY day ORDER BY day"""
+FROM revlog WHERE {" AND ".join(where)}
+GROUP BY day"""
+        )
+        return {day: count for day, count in rows}
+
+    def _older_review_days(self, dids: list[int] | None) -> _OlderReviews:
+        scope = None if dids is None else tuple(dids)
+        older = self._older_reviews.get(scope)
+        if older is not None and older.key == self._older_key(dids, older.cutoff):
+            return older
+        cutoff = int(time.time() * 1000)
+        # the key is read before the reviews: a review added in between
+        # makes the next call count again, never the reverse
+        key = self._older_key(dids, cutoff)
+        days = self._review_days(dids, f"id < {cutoff}")
+        older = self._older_reviews[scope] = _OlderReviews(key, cutoff, days)
+        return older
+
+    def _older_key(self, dids: list[int] | None, cutoff: int) -> tuple[Any, ...]:
+        """What the counts of the reviews before `cutoff` read. Reviews are
+        only added or removed, never edited, so the number of reviews before
+        the cut-off and the newest of them show a change (both from the
+        review log's index). Of the cards, only those created before the
+        cut-off can have such reviews: a change in which of them exist, or in
+        which of them are in the decks counted, changes their number or the
+        sum of their ids. The local time zone and the rollover hour decide
+        the days."""
+        db = self._col.db
+        reviews = (
+            db.scalar("SELECT count() FROM revlog")
+            - db.scalar("SELECT count() FROM revlog WHERE id >= ?", cutoff),
+            db.scalar("SELECT max(id) FROM revlog WHERE id < ?", cutoff),
+        )
+        cards: Any = None
+        if dids is not None:
+            cards = db.first(
+                f"SELECT count(), total(id) FROM cards WHERE id < ? AND did IN {ids2str(dids)}",
+                cutoff,
+            )
+        elif self._settings.exclude_deleted_cards:
+            cards = db.first(
+                "SELECT count(), total(id) FROM cards WHERE id < ?", cutoff
+            )
+        return (
+            self._col.path,
+            self._offset(),
+            db.scalar(
+                "SELECT STRFTIME('%s', 'now', 'localtime') - STRFTIME('%s', 'now')"
+            ),
+            self._settings.exclude_manual_reschedules,
+            self._settings.exclude_deleted_cards,
+            reviews,
+            None if cards is None else tuple(cards),
         )
 
     def _cards_due(
@@ -678,7 +761,10 @@ class ReviewHeatmap:
 
     def __init__(self, mw: AnkiQt) -> None:
         self.mw = mw
-        self._cache: _RenderCache | None = None
+        # one entry per place drawn (deck list, overview, stats period), so
+        # going between the deck list and a deck draws neither again
+        self._cache: dict[tuple[Any, ...], _RenderCache] = {}
+        self._older_reviews: dict[Any, _OlderReviews] = {}
 
     def enabled(self) -> bool:
         col = self.mw.col
@@ -706,20 +792,15 @@ class ReviewHeatmap:
         settings = self.settings()
         if not settings.shows(view) and not settings.streak_stats_always:
             return ""
-        reporter = ActivityReporter(col, settings)
-        key = (
-            view,
-            current_deck_only,
-            history_days,
-            forecast_days,
-            settings,
-            reporter.input_fingerprint(current_deck_only),
-        )
-        if self._cache is not None and self._cache.key == key:
-            return self._cache.html
+        reporter = ActivityReporter(col, settings, self._older_reviews)
+        place = (view, current_deck_only, history_days, forecast_days)
+        key = (settings, reporter.input_fingerprint(current_deck_only))
+        cached = self._cache.get(place)
+        if cached is not None and cached.key == key:
+            return cached.html
         report = reporter.get_report(current_deck_only, history_days, forecast_days)
         html = render_report(report, view, current_deck_only, settings)
-        self._cache = _RenderCache(html, key)
+        self._cache[place] = _RenderCache(html, key)
         return html
 
     def render_for_stats(self, period: int, whole_collection: bool) -> str:
