@@ -3,11 +3,12 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import type { GraphsRequest_Graph } from "@generated/anki/stats_pb";
     import { GraphsRequest, GraphsResponse } from "@generated/anki/stats_pb";
     import { getGraphPreferences, setGraphPreferences } from "@generated/backend";
     import { postProtoWithResponse } from "@generated/post";
     import { onDestroy, tick } from "svelte";
-    import type { Writable } from "svelte/store";
+    import { type Writable, writable } from "svelte/store";
 
     import { autoSavingPrefs } from "$lib/sveltelib/preferences";
 
@@ -15,6 +16,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let search: Writable<string>;
     export let days: Writable<number>;
+    /** The graphs to ask the backend for: [] = every graph; null = none yet
+     * (the page does not know yet which graphs it shows). */
+    export let graphs: Writable<GraphsRequest_Graph[] | null> = writable([]);
 
     const prefsPromise = autoSavingPrefs(
         () => getGraphPreferences({}),
@@ -28,29 +32,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const rwkvStatsMaxRetries = Number.POSITIVE_INFINITY;
 
     let sourceData: GraphsResponse | null = null;
+    /** Whether sourceData holds every graph. */
+    let sourceComplete = false;
     let loading = true;
     let activeRequestId = 0;
     let inFlightKey = "";
     let inFlightGraphs: Promise<GraphDataResponse> | null = null;
     let currentSearch = $search;
     let currentDays = $days;
+    let currentGraphs = $graphs;
     let pendingSearch = $search;
     let pendingDays = $days;
+    let pendingGraphs: GraphsRequest_Graph[] = [];
     let updateScheduled = false;
     let rwkvStatsRetryKey = "";
     let rwkvStatsRetryCount = 0;
     let rwkvStatsRetryTimer: number | undefined;
     $: currentSearch = $search;
     $: currentDays = $days;
-    $: scheduleSourceDataUpdate($search, $days);
+    $: currentGraphs = $graphs;
+    $: if ($graphs !== null) {
+        scheduleSourceDataUpdate($search, $days, $graphs);
+    }
 
     interface GraphDataResponse {
         data: GraphsResponse;
         rwkvStatsPending: boolean;
     }
 
-    function graphDataKey(search: string, days: number): string {
-        return `${days}\0${search}`;
+    function graphDataKey(
+        search: string,
+        days: number,
+        graphs: GraphsRequest_Graph[],
+    ): string {
+        return `${days}\0${graphs.join(",")}\0${search}`;
     }
 
     function graphDebugLoggingEnabled(): boolean {
@@ -73,18 +88,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    function graphData(search: string, days: number): Promise<GraphDataResponse> {
-        const key = graphDataKey(search, days);
+    function graphData(
+        search: string,
+        days: number,
+        graphs: GraphsRequest_Graph[],
+    ): Promise<GraphDataResponse> {
+        const key = graphDataKey(search, days, graphs);
         if (inFlightGraphs && inFlightKey === key) {
             return inFlightGraphs;
         }
 
         inFlightKey = key;
         const start = performance.now();
-        logGraphTiming("graphs request started", { search, days });
+        logGraphTiming("graphs request started", { search, days, graphs });
         inFlightGraphs = postProtoWithResponse(
             "graphs",
-            new GraphsRequest({ search, days }),
+            new GraphsRequest({ search, days, graphs }),
             GraphsResponse,
         )
             .then(({ output, headers }) => ({
@@ -122,10 +141,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function handleRwkvStatsRetry(
         search: string,
         days: number,
+        graphs: GraphsRequest_Graph[],
         requestId: number,
         rwkvStatsPending: boolean,
     ): boolean {
-        const key = graphDataKey(search, days);
+        const key = graphDataKey(search, days, graphs);
         resetRwkvStatsRetryForKey(key);
         if (!rwkvStatsPending) {
             clearRwkvStatsRetryTimer();
@@ -159,7 +179,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             if (
                 requestId !== activeRequestId ||
                 search !== currentSearch ||
-                days !== currentDays
+                days !== currentDays ||
+                graphs !== currentGraphs
             ) {
                 logGraphTiming("graphs RWKV stats retry ignored", {
                     search,
@@ -175,15 +196,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 requestId,
                 retry,
             });
-            scheduleSourceDataUpdate(search, days);
+            scheduleSourceDataUpdate(search, days, graphs);
         }, rwkvStatsRetryDelayMs);
         return true;
     }
 
-    function scheduleSourceDataUpdate(search: string, days: number): void {
+    function scheduleSourceDataUpdate(
+        search: string,
+        days: number,
+        graphs: GraphsRequest_Graph[],
+    ): void {
         pendingSearch = search;
         pendingDays = days;
-        resetRwkvStatsRetryForKey(graphDataKey(search, days));
+        pendingGraphs = graphs;
+        resetRwkvStatsRetryForKey(graphDataKey(search, days, graphs));
         activeRequestId += 1;
         if (updateScheduled) {
             return;
@@ -192,13 +218,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         updateScheduled = true;
         Promise.resolve().then(() => {
             updateScheduled = false;
-            updateSourceData(pendingSearch, pendingDays, activeRequestId);
+            updateSourceData(pendingSearch, pendingDays, pendingGraphs, activeRequestId);
         });
     }
 
     async function updateSourceData(
         search: string,
         days: number,
+        graphs: GraphsRequest_Graph[],
         requestId: number,
     ): Promise<void> {
         // ensure the fast-loading preferences come first
@@ -227,7 +254,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }, 2000);
         }
         try {
-            const data = await graphData(search, days);
+            const data = await graphData(search, days, graphs);
             logGraphTiming("graphs data received", {
                 search,
                 days,
@@ -239,9 +266,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             if (requestId === activeRequestId) {
                 const applyStart = performance.now();
                 sourceData = data.data;
+                sourceComplete = graphs.length === 0;
                 const retryPending = handleRwkvStatsRetry(
                     search,
                     days,
+                    graphs,
                     requestId,
                     data.rwkvStatsPending,
                 );
@@ -289,5 +318,5 @@ graph data, as it gets updated as the user changes options, and we don't want
 the current graphs to disappear until the new graphs have finished loading.
 -->
 {#await prefsPromise then prefs}
-    <slot {revlogRange} {prefs} {sourceData} {loading} />
+    <slot {revlogRange} {prefs} {sourceData} {sourceComplete} {loading} />
 {/await}

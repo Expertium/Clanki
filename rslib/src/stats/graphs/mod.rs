@@ -16,6 +16,7 @@ mod today;
 use std::collections::HashMap;
 
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
+use anki_proto::stats::graphs_request::Graph;
 use fsrs::FSRS;
 
 use crate::config::BoolKey;
@@ -44,11 +45,50 @@ struct GraphsContext {
     local_offset_secs: i64,
 }
 
+/// The graphs a request asks for: every graph when it names none.
+#[derive(Clone, Copy)]
+struct WantedGraphs(u32);
+
+impl WantedGraphs {
+    fn new(graphs: &[i32]) -> Self {
+        if graphs.is_empty() {
+            return Self(u32::MAX);
+        }
+        Self(
+            graphs
+                .iter()
+                .filter(|graph| (0..32).contains(*graph))
+                .fold(0, |bits, graph| bits | 1 << graph),
+        )
+    }
+
+    fn has(self, graph: Graph) -> bool {
+        self.0 & 1 << graph as u32 != 0
+    }
+
+    fn any(self, graphs: &[Graph]) -> bool {
+        graphs.iter().any(|graph| self.has(*graph))
+    }
+}
+
 impl Collection {
+    /// Every graph.
+    #[cfg(test)]
     pub(crate) fn graph_data_for_search(
         &mut self,
         search: &str,
         days: u32,
+    ) -> Result<anki_proto::stats::GraphsResponse> {
+        self.graph_data_for_graphs(search, days, &[])
+    }
+
+    /// The graphs named in `graphs` (`GraphsRequest.Graph`); none = every
+    /// graph.
+    pub(crate) fn graph_data_for_graphs(
+        &mut self,
+        search: &str,
+        days: u32,
+        graphs: &[i32],
     ) -> Result<anki_proto::stats::GraphsResponse> {
         let guard = self.search_cards_into_table_with_stats_search(
             search,
@@ -57,7 +97,13 @@ impl Collection {
         )?;
         let all = search.trim().is_empty();
         let searched_cards = guard.cards;
-        guard.col.graph_data(search, all, searched_cards, days)
+        guard.col.graph_data(
+            search,
+            all,
+            searched_cards,
+            days,
+            WantedGraphs::new(graphs),
+        )
     }
 
     fn graph_data(
@@ -66,6 +112,7 @@ impl Collection {
         all: bool,
         searched_cards: usize,
         days: u32,
+        wanted: WantedGraphs,
     ) -> Result<anki_proto::stats::GraphsResponse> {
         let timing = self.timing_today()?;
         let revlog_start = if days > 0 {
@@ -77,7 +124,16 @@ impl Collection {
         };
         let offset = self.local_utc_offset_for_user()?;
         let local_offset_secs = offset.local_minus_utc() as i64;
-        let revlog = if all {
+        // only the graphs asked for read the review log or the cards
+        let revlog = if !wanted.any(&[
+            Graph::Reviews,
+            Graph::TrueRetention,
+            Graph::Today,
+            Graph::Hours,
+            Graph::Buttons,
+        ]) {
+            vec![]
+        } else if all {
             self.storage.get_all_revlog_entries(revlog_start)?
         } else {
             let collection_cards: u32 =
@@ -89,9 +145,24 @@ impl Collection {
                 searched_cards * 2 >= collection_cards as usize,
             )?
         };
-        let cards = self.storage.all_searched_cards()?;
+        let cards = if wanted.any(&[
+            Graph::Added,
+            Graph::FutureDue,
+            Graph::Intervals,
+            Graph::Stability,
+            Graph::Eases,
+            Graph::Difficulty,
+            Graph::CardCounts,
+            Graph::Retrievability,
+        ]) {
+            self.storage.all_searched_cards()?
+        } else {
+            vec![]
+        };
         let algorithm = self.effective_scheduling_algorithm()?;
+        let retrievability = wanted.has(Graph::Retrievability);
         let rwkv_retrievability_scores = match algorithm {
+            _ if !retrievability => None,
             SchedulingAlgorithm::Fsrs7 => None,
             SchedulingAlgorithm::RwkvInstant => {
                 self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, Some(search))
@@ -110,9 +181,8 @@ impl Collection {
         let mut fsrs_by_preset = HashMap::new();
         let mut fsrs_curve_by_preset = HashMap::new();
         let mut fsrs_preset_by_card = HashMap::new();
-        // only FSRS-7's retrievability reads the cards' FSRS presets; RWKV
-        // shows none of FSRS-7's values (spec ui.stats-one-algorithm)
-        if algorithm == SchedulingAlgorithm::Fsrs7 {
+        // only FSRS-7's retrievability reads the cards' FSRS presets
+        if retrievability && algorithm == SchedulingAlgorithm::Fsrs7 {
             let fsrs_cards: Vec<Card> = cards
                 .iter()
                 .filter(|card| card.memory_state.is_some())
@@ -158,23 +228,36 @@ impl Collection {
             next_day_start: timing.next_day_at,
             local_offset_secs,
         };
-        let (eases, difficulty) = ctx.eases();
+        let (eases, difficulty) = if wanted.any(&[Graph::Eases, Graph::Difficulty]) {
+            let (eases, difficulty) = ctx.eases();
+            (Some(eases), Some(difficulty))
+        } else {
+            (None, None)
+        };
         let resp = anki_proto::stats::GraphsResponse {
-            added: Some(ctx.added_days()),
-            reviews: Some(ctx.review_counts_and_times()),
-            true_retention: Some(ctx.calculate_true_retention()),
-            future_due: Some(ctx.future_due()),
-            intervals: Some(ctx.intervals()),
+            added: wanted.has(Graph::Added).then(|| ctx.added_days()),
+            reviews: wanted
+                .has(Graph::Reviews)
+                .then(|| ctx.review_counts_and_times()),
+            true_retention: wanted
+                .has(Graph::TrueRetention)
+                .then(|| ctx.calculate_true_retention()),
+            future_due: wanted.has(Graph::FutureDue).then(|| ctx.future_due()),
+            intervals: wanted.has(Graph::Intervals).then(|| ctx.intervals()),
             // RWKV-Instant has no stability, RWKV no difficulty
-            stability: (algorithm != SchedulingAlgorithm::RwkvInstant).then(|| ctx.stability()),
-            eases: Some(eases),
-            difficulty: (algorithm == SchedulingAlgorithm::Fsrs7).then_some(difficulty),
-            today: Some(ctx.today()),
-            hours: Some(ctx.hours()),
-            buttons: Some(ctx.buttons()),
-            card_counts: Some(ctx.card_counts()),
+            stability: (wanted.has(Graph::Stability)
+                && algorithm != SchedulingAlgorithm::RwkvInstant)
+                .then(|| ctx.stability()),
+            eases: eases.filter(|_| wanted.has(Graph::Eases)),
+            difficulty: difficulty.filter(|_| {
+                wanted.has(Graph::Difficulty) && algorithm == SchedulingAlgorithm::Fsrs7
+            }),
+            today: wanted.has(Graph::Today).then(|| ctx.today()),
+            hours: wanted.has(Graph::Hours).then(|| ctx.hours()),
+            buttons: wanted.has(Graph::Buttons).then(|| ctx.buttons()),
+            card_counts: wanted.has(Graph::CardCounts).then(|| ctx.card_counts()),
             rollover_hour: self.rollover_for_current_scheduler()? as u32,
-            retrievability: Some(ctx.retrievability()),
+            retrievability: retrievability.then(|| ctx.retrievability()),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
@@ -213,6 +296,8 @@ impl Collection {
 
 #[cfg(test)]
 mod test {
+    use anki_proto::stats::GraphsResponse;
+
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
@@ -220,6 +305,22 @@ mod test {
     use crate::revlog::RevlogReviewKind;
     use crate::tests::DeckAdder;
     use crate::tests::NoteAdder;
+
+    const ALL_GRAPHS: [Graph; 13] = [
+        Graph::Added,
+        Graph::Reviews,
+        Graph::TrueRetention,
+        Graph::FutureDue,
+        Graph::Intervals,
+        Graph::Stability,
+        Graph::Eases,
+        Graph::Difficulty,
+        Graph::Today,
+        Graph::Hours,
+        Graph::Buttons,
+        Graph::CardCounts,
+        Graph::Retrievability,
+    ];
 
     /// 40 cards in two decks, of every type and queue, with reviews of
     /// every kind over the last two years.
@@ -289,6 +390,82 @@ mod test {
             }
         }
         Ok(col)
+    }
+
+    /// The graphs of `full` in `graphs`, and its always-sent fields.
+    fn only(full: &GraphsResponse, graphs: &[Graph]) -> GraphsResponse {
+        let has = |graph| graphs.contains(&graph);
+        GraphsResponse {
+            added: full.added.clone().filter(|_| has(Graph::Added)),
+            reviews: full.reviews.clone().filter(|_| has(Graph::Reviews)),
+            true_retention: full.true_retention.filter(|_| has(Graph::TrueRetention)),
+            future_due: full.future_due.clone().filter(|_| has(Graph::FutureDue)),
+            intervals: full.intervals.clone().filter(|_| has(Graph::Intervals)),
+            stability: full.stability.clone().filter(|_| has(Graph::Stability)),
+            eases: full.eases.clone().filter(|_| has(Graph::Eases)),
+            difficulty: full.difficulty.clone().filter(|_| has(Graph::Difficulty)),
+            today: full.today.filter(|_| has(Graph::Today)),
+            hours: full.hours.clone().filter(|_| has(Graph::Hours)),
+            buttons: full.buttons.clone().filter(|_| has(Graph::Buttons)),
+            card_counts: full.card_counts.filter(|_| has(Graph::CardCounts)),
+            retrievability: full
+                .retrievability
+                .clone()
+                .filter(|_| has(Graph::Retrievability)),
+            ..full.clone()
+        }
+    }
+
+    fn ask(col: &mut Collection, search: &str, days: u32, graphs: &[Graph]) -> GraphsResponse {
+        let graphs: Vec<i32> = graphs.iter().map(|graph| *graph as i32).collect();
+        col.graph_data_for_graphs(search, days, &graphs).unwrap()
+    }
+
+    // A request naming graphs gets those graphs of the full response, the
+    // same values, and no others.
+    #[test]
+    fn a_graph_list_gives_those_graphs_of_the_full_response() -> Result<()> {
+        let mut col = collection_with_reviews()?;
+        // FSRS-7: its retrievability depends on the second it is computed in
+        let not_r: Vec<Graph> = ALL_GRAPHS
+            .into_iter()
+            .filter(|graph| *graph != Graph::Retrievability)
+            .collect();
+        for search in ["", "deck:Default", "-deck:Other is:review"] {
+            for days in [365, 0] {
+                let full = only(&ask(&mut col, search, days, &[]), &not_r);
+                assert_eq!(ask(&mut col, search, days, &not_r), full);
+                for graph in &not_r {
+                    assert_eq!(ask(&mut col, search, days, &[*graph]), only(&full, &[*graph]));
+                }
+                assert!(full.difficulty.is_some() && full.stability.is_some());
+            }
+        }
+        // RWKV-Curve, scored: every value is exact, whenever it is computed
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let scores = col
+            .storage
+            .get_all_cards()
+            .iter()
+            .enumerate()
+            .map(|(i, card)| (card.id, [0.25, 0.5, 0.75][i % 3]))
+            .collect();
+        col.set_rwkv_stats_graph_scores("deck:Default".into(), scores)?;
+        for search in ["", "deck:Default", "deck:Other", "-deck:Other is:review"] {
+            for days in [365, 31, 0] {
+                let full = ask(&mut col, search, days, &[]);
+                assert_eq!(ask(&mut col, search, days, &ALL_GRAPHS), full);
+                for graph in ALL_GRAPHS {
+                    assert_eq!(ask(&mut col, search, days, &[graph]), only(&full, &[graph]));
+                }
+                let simple = [Graph::Reviews, Graph::CardCounts, Graph::TrueRetention];
+                assert_eq!(ask(&mut col, search, days, &simple), only(&full, &simple));
+                // the full response has every graph the algorithm shows
+                assert!(full.added.is_some() && full.reviews.is_some());
+                assert!(full.retrievability.is_some() && full.difficulty.is_none());
+            }
+        }
+        Ok(())
     }
 
     // Both ways of reading the searched cards' reviews give the same rows.

@@ -213,6 +213,58 @@ class TestGraphs:
         assert response.headers.get("Content-Type") == "application/binary"
         assert response.headers.get(RWKV_STATS_PENDING_HEADER) == expected_header
 
+    @pytest.mark.parametrize(
+        ("graphs", "prepared"),
+        [
+            ((), True),
+            (("RETRIEVABILITY", "REVIEWS"), True),
+            (("REVIEWS", "CARD_COUNTS", "TRUE_RETENTION"), False),
+        ],
+    )
+    def test_graphs_prepare_rwkv_scores_only_for_the_retrievability_graph(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        graphs: tuple[str, ...],
+        prepared: bool,
+    ) -> None:
+        import aqt
+        from anki.stats_pb2 import GraphsRequest
+        from aqt.mediasrv import RWKV_STATS_PENDING_HEADER, app
+        from aqt.mediasrv import graphs as graphs_handler
+        from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
+
+        calls: list[str] = []
+
+        def prepare(
+            reviewer: object, search: str, **kwargs: object
+        ) -> RwkvStatsPreparationStatus:
+            calls.append(search)
+            return RwkvStatsPreparationStatus.PENDING
+
+        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
+            prepare,
+        )
+        monkeypatch.setattr(
+            "aqt.mediasrv.raw_backend_request",
+            lambda endpoint: lambda: b"graph-data",
+        )
+
+        data = GraphsRequest(
+            search="deck:current",
+            days=365,
+            graphs=[getattr(GraphsRequest, name) for name in graphs],
+        ).SerializeToString()
+        with app.test_request_context(data=data):
+            response = graphs_handler()
+
+        assert calls == (["deck:current"] if prepared else [])
+        assert response.get_data() == b"graph-data"
+        assert response.headers.get(RWKV_STATS_PENDING_HEADER) == (
+            "1" if prepared else None
+        )
+
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:
     path = os.path.join(tmpdir, filename)

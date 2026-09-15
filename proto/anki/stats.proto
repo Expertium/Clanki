@@ -94,8 +94,28 @@ message CardStatsResponse {
 }
 
 message GraphsRequest {
+  // The parts of GraphsResponse a caller can ask for.
+  enum Graph {
+    ADDED = 0;
+    REVIEWS = 1;
+    TRUE_RETENTION = 2;
+    FUTURE_DUE = 3;
+    INTERVALS = 4;
+    STABILITY = 5;
+    EASES = 6;
+    DIFFICULTY = 7;
+    TODAY = 8;
+    HOURS = 9;
+    BUTTONS = 10;
+    CARD_COUNTS = 11;
+    RETRIEVABILITY = 12;
+  }
   string search = 1;
   uint32 days = 2;
+  // The graphs to compute; the response leaves the others unset. Empty =
+  // every graph. The Stats page in Simple mode asks only for the graphs it
+  // shows.
+  repeated Graph graphs = 3;
 }
 
 message GraphsResponse {
