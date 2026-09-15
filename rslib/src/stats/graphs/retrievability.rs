@@ -69,12 +69,24 @@ impl GraphsContext {
                 .as_ref()
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
-            let fsrs_retrievability = card.memory_state.and_then(|state| {
-                let elapsed_seconds = card.seconds_since_last_review(&timing).unwrap_or_default();
-                let preset_id = self.fsrs_preset_by_card.get(&card.id)?;
-                let fsrs = self.fsrs_by_preset.get(preset_id)?;
-                Some(fsrs.current_retrievability(state.into(), elapsed_seconds as f32 / 86_400.0))
-            });
+            // only FSRS-7 shows FSRS-7's R, so RWKV skips computing it
+            let fsrs_retrievability =
+                card.memory_state
+                    .filter(|_| !rwkv_algorithm)
+                    .and_then(|state| {
+                        let elapsed_seconds =
+                            card.seconds_since_last_review(&timing).unwrap_or_default();
+                        let preset_id = self.fsrs_preset_by_card.get(&card.id)?;
+                        let state = state.into();
+                        let elapsed_days = elapsed_seconds as f32 / 86_400.0;
+                        self.fsrs_curve_by_preset
+                            .get(preset_id)
+                            .and_then(|curve| curve.retrievability(state, elapsed_days))
+                            .or_else(|| {
+                                let fsrs = self.fsrs_by_preset.get(preset_id)?;
+                                Some(fsrs.current_retrievability(state, elapsed_days))
+                            })
+                    });
 
             if rwkv_algorithm {
                 rwkv_series.record(card.note_id.0, rwkv_retrievability);

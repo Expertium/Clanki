@@ -13,6 +13,7 @@ use fsrs::FSRS;
 use itertools::Either;
 use itertools::Itertools;
 
+use super::curve::Fsrs7Curve;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
@@ -98,8 +99,22 @@ pub(crate) fn fsrs_current_retrievability_for_state(
     state: FsrsMemoryState,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
-    let retrievability = fsrs.current_retrievability(state.into(), elapsed_days.max(0.0));
+    fsrs_current_retrievability_for_memory_state(params, state.into(), elapsed_days)
+}
+
+/// `FSRS::new(params)?.current_retrievability(..)`, through the bit-identical
+/// scalar curve when it covers the input (see [`Fsrs7Curve`]).
+fn fsrs_current_retrievability_for_memory_state(
+    params: &[f32],
+    state: MemoryState,
+    elapsed_days: f32,
+) -> Result<f32> {
+    let elapsed_days = elapsed_days.max(0.0);
+    let retrievability =
+        match Fsrs7Curve::new(params).and_then(|curve| curve.retrievability(state, elapsed_days)) {
+            Some(retrievability) => retrievability,
+            None => FSRS::new(params)?.current_retrievability(state, elapsed_days),
+        };
     require!(retrievability.is_finite(), "invalid FSRS parameter values");
     Ok(retrievability)
 }
@@ -132,17 +147,15 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     stability: f32,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
-    let retrievability = fsrs.current_retrievability(
+    fsrs_current_retrievability_for_memory_state(
+        params,
         MemoryState {
             stability,
             difficulty: 5.0,
             stability_fast: stability,
         },
-        elapsed_days.max(0.0),
-    );
-    require!(retrievability.is_finite(), "invalid FSRS parameter values");
-    Ok(retrievability)
+        elapsed_days,
+    )
 }
 
 /// The interval at `desired_retention` of the FSRS-7 state whose S90 is
