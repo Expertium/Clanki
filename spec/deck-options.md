@@ -27,7 +27,7 @@ storage in the `jschoreels.rwkv` bag, and the scheduler behavior behind
 each single algorithm are unchanged.
 
 In the open dropdown each algorithm shows a short description under its
-name (FSRS-7: each card's grades and days between reviews only, the least
+name (FSRS-7: each card's grades and the time between reviews only, the least
 accurate; RWKV-Curve: the default, a neural network that uses more
 information but not card content, with intervals like FSRS-7;
 RWKV-Instant: the same network, best at keeping retention at the desired
