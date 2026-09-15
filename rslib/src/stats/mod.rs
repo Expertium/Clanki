@@ -5,5 +5,6 @@ mod card;
 mod graphs;
 mod service;
 mod today;
+mod total_knowledge;
 
 pub use today::studied_today;

@@ -1,5 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+use crate::backend::Backend;
 use crate::collection::Collection;
 use crate::error;
 use crate::revlog::RevlogReviewKind;
@@ -35,6 +36,27 @@ impl crate::services::StatsService for Collection {
         input: anki_proto::stats::GraphPreferences,
     ) -> error::Result<()> {
         self.set_graph_preferences(input)
+    }
+}
+
+impl crate::services::BackendStatsService for Backend {
+    /// Reads the collection under its lock, then computes with the
+    /// collection free (spec ui.stats-total-knowledge).
+    fn total_knowledge(
+        &self,
+        input: anki_proto::stats::TotalKnowledgeRequest,
+    ) -> error::Result<anki_proto::stats::TotalKnowledgeResponse> {
+        let start = std::time::Instant::now();
+        let data = self.with_col(|col| col.total_knowledge_input(&input.search))?;
+        let read_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let response = data.compute()?;
+        tracing::debug!(
+            days = response.reviewed_cards.len(),
+            read_ms,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "computed Total Knowledge"
+        );
+        Ok(response)
     }
 }
 

@@ -464,6 +464,16 @@ pub struct ReviewIntervalPrediction {
     pub current_s90: Option<f32>,
 }
 
+/// A card's days for `curve_retrievability_day_sums_from_warm_up`.
+#[derive(Debug, Clone, Copy)]
+pub struct RwkvCurveSpan {
+    pub card_id: i64,
+    /// The day of the card's last answered review.
+    pub review_day: i64,
+    pub first_day: i64,
+    pub last_day: i64,
+}
+
 /// See `RwkvInference::current_intervals`.
 struct CurrentIntervals {
     whole_days: Option<u32>,
@@ -853,6 +863,52 @@ impl RwkvInference {
                 }
             })
             .collect())
+    }
+
+    /// Total Knowledge under RWKV-Curve (spec ui.stats-total-knowledge): for
+    /// each span, the recall of the curve RWKV stored at the card's last
+    /// answered review in the warm-up, on each day from the span's
+    /// `first_day` through its `last_day`, at the whole days since the span's
+    /// `review_day`; summed per day over the spans. Returns the first day and
+    /// the sums from it. A card without a stored curve adds nothing.
+    pub fn curve_retrievability_day_sums_from_warm_up(
+        &self,
+        spans: &[RwkvCurveSpan],
+    ) -> (i64, Vec<f64>) {
+        let spans: Vec<&RwkvCurveSpan> = spans
+            .iter()
+            .filter(|span| span.first_day <= span.last_day)
+            .collect();
+        let (Some(first_day), Some(last_day)) = (
+            spans.iter().map(|span| span.first_day).min(),
+            spans.iter().map(|span| span.last_day).max(),
+        ) else {
+            return (0, vec![]);
+        };
+        let days = (last_day - first_day + 1) as usize;
+        let sums = spans
+            .par_iter()
+            .fold(
+                || vec![0.0; days],
+                |mut sums, span| {
+                    if let Some(curve) = self.curves.get(&span.card_id) {
+                        for day in span.first_day..=span.last_day {
+                            let elapsed_seconds = (day - span.review_day) * SECONDS_PER_DAY;
+                            sums[(day - first_day) as usize] +=
+                                predict_curve(curve, elapsed_seconds as f32) as f64;
+                        }
+                    }
+                    sums
+                },
+            )
+            .reduce(
+                || vec![0.0; days],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
+                    a
+                },
+            );
+        (first_day, sums)
     }
 
     pub fn predict_retrievability_many_after_review(
@@ -9040,6 +9096,74 @@ order by e.id, e.cid
             with_interval += usize::from(actual.current_interval.is_some());
         }
         assert!(with_interval > 0, "fixture should produce intervals");
+    }
+
+    // Pins spec/ui.md#ui.stats-total-knowledge: under RWKV-Curve, Total
+    // Knowledge reads each card's curve as RWKV stored it at the card's last
+    // review in the warm-up (the curve card info draws), on whole days.
+    #[test]
+    fn curve_day_sums_from_warm_up_are_the_stored_curves() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews = bulk_parity_reviews(120);
+        inference.warm_up_reviews(reviews.clone(), false).unwrap();
+        let mut card_ids: Vec<i64> = reviews.iter().map(|review| review.card_id).collect();
+        card_ids.sort_unstable();
+        card_ids.dedup();
+        assert!(card_ids.len() > 10, "fixture should cover many cards");
+
+        let spans: Vec<RwkvCurveSpan> = card_ids
+            .iter()
+            .enumerate()
+            .map(|(index, &card_id)| RwkvCurveSpan {
+                card_id,
+                review_day: 100 + index as i64 % 3,
+                first_day: 101 + index as i64 % 3,
+                last_day: 110 + index as i64 % 7,
+            })
+            .chain([
+                // a card without a curve adds nothing
+                RwkvCurveSpan {
+                    card_id: -1,
+                    review_day: 90,
+                    first_day: 95,
+                    last_day: 120,
+                },
+                // nor an empty span
+                RwkvCurveSpan {
+                    card_id: card_ids[0],
+                    review_day: 90,
+                    first_day: 99,
+                    last_day: 98,
+                },
+            ])
+            .collect();
+        let (first_day, sums) = inference.curve_retrievability_day_sums_from_warm_up(&spans);
+
+        assert_eq!(first_day, 95);
+        let mut expected = vec![0.0f64; sums.len()];
+        for span in spans.iter().filter(|span| span.card_id > 0) {
+            let elapsed_days: Vec<f32> = (span.first_day..=span.last_day)
+                .map(|day| (day - span.review_day) as f32)
+                .collect();
+            if let Some((recall, _)) = inference.card_curve(span.card_id, &elapsed_days) {
+                for (day, recall) in (span.first_day..=span.last_day).zip(recall) {
+                    expected[(day - first_day) as usize] += recall as f64;
+                }
+            }
+        }
+        assert_eq!(sums.len(), (120 - 95 + 1) as usize);
+        for (actual, expected) in sums.iter().zip(&expected) {
+            assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        }
+        assert!(sums[(102 - 95) as usize] > 1.0);
+        assert!(inference
+            .curve_retrievability_day_sums_from_warm_up(&[])
+            .1
+            .is_empty());
     }
 
     #[test]

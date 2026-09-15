@@ -289,6 +289,66 @@ RWKV has no difficulty and RWKV-Instant no stability.
 (`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
 
+## ui.stats-total-knowledge
+
+Given the Stats page, in both Simple and Advanced mode, the Total Knowledge
+graph shows, for each day from the first rating of a card in the page's
+search through today, two lines: the cards of the search rated at least
+once by that day (the upper bound), and the sum of the cards' R that day
+under the collection's algorithm only (`sched.one-global-algorithm`,
+`ui.stats-one-algorithm`). It always covers the whole review history; the
+page's period does not apply.
+
+A day is a scheduler day ("next day starts at" applies). A card's R on a
+day comes from its last event on or before that day: a rating that day
+gives 1; an earlier rating gives the algorithm's R at the whole days since
+it; a reset (Forget) gives 0 until the card's next rating (the card stays in
+the bound). Ratings are answers that affect scheduling: manual reschedules,
+resets and cram answers are not ratings.
+
+| Algorithm    | R after a rating                                                      | Drawn                              |
+| ------------ | --------------------------------------------------------------------- | ---------------------------------- |
+| FSRS-7       | FSRS-7's forgetting curve at the memory state after that rating       | at once                            |
+| RWKV-Curve   | the curve RWKV stores at that rating, at the whole days since it      | day by day, oldest first           |
+| RWKV-Instant | RWKV-Instant's prediction for the card on that day                    | day by day, oldest first           |
+
+FSRS-7 replays each card's whole history with its preset's FSRS-7
+parameters: every part of the history starts as the card's own memory state
+does after a reset or a relearn, so the days before a reset follow that part's
+replay. A rating FSRS-7 has no state for (a history without a learning step
+before the first interday review) gives 0 on the days after it. The
+replay runs in the backend off the main thread; while it runs the graph
+reads "Calculating…".
+
+Under RWKV the upper bound shows at once. A background RWKV job replays the
+collection's review history day by day with a separate RWKV runtime and
+sums the search's cards; the days it has not reached are blurred, and a
+vertical line sweeps from left to right as it goes. RWKV's history of a card
+starts at its latest learning start, as RWKV's scheduling does, so a card
+reset and learned again has R 0 on the days before that start. A second
+request for the same cards and collection state joins the running job; a
+finished result is kept for the session; closing the Stats window or
+leaving the page stops the job. With no usable RWKV model the graph reads
+"RWKV model not found" (`sched.rwkv-no-model-error`).
+
+**Why:** Andrew, 2026-09-15: port the Search Stats Extended add-on's
+"Memorised" graph natively as "Total Knowledge", with only the active
+algorithm, FSRS-7 with each card's preset parameters and a complete replay
+from the first review, the full history whatever the period, and for the
+slow RWKV a blurred bound with a sweep line; later the same day: shown in
+Simple mode too.
+
+**Pinned by:** `fsrs7_sums_match_the_cards_historical_memory_states`,
+`total_knowledge_covers_the_whole_history`,
+`a_reset_zeroes_r_until_the_next_rating`,
+`rwkv_collections_get_the_upper_bound_only`
+(`rslib/src/stats/total_knowledge.rs`); FSRS-7's curve is the scalar copy
+pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
+(`rslib/src/scheduler/fsrs/curve.rs`);
+`curve_day_sums_from_warm_up_are_the_stored_curves` (`rslib/src/rwkv/mod.rs`);
+`qt/tests/test_total_knowledge.py`;
+`ts/routes/graphs/total-knowledge.test.ts`.
+
 ## ui.browser-interval-average
 
 Given a Browser row with review or relearning cards, the Interval column

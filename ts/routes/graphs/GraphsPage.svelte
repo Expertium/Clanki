@@ -5,6 +5,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import { bridgeCommand } from "@tslib/bridgecommand";
     import type { Component } from "svelte";
+    import { setContext } from "svelte";
     import { writable } from "svelte/store";
 
     import { pageTheme } from "$lib/sveltelib/theme";
@@ -19,6 +20,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const search = writable(initialSearch);
     const days = writable(initialDays);
+    // for graphs that load their own data, such as Total Knowledge
+    setContext("graphsSearch", search);
 
     export let graphs: Component<any>[];
     /** The graphs Simple mode shows; null = every graph in both modes
