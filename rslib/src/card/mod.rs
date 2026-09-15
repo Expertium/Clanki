@@ -395,9 +395,18 @@ impl Collection {
                 count += 1;
                 let original = card.clone();
                 steps_adjuster.adjust_remaining_steps(col, &mut card)?;
+                // a card moved to an RWKV-Curve preset keeps RWKV-Curve's S90
+                // (spec sched.rwkv-curve-s90-kept)
+                let stored_s90 = card
+                    .memory_state
+                    .filter(|_| config.inner.rwkv_review_enabled)
+                    .map(|state| state.stability);
                 card.set_deck(deck_id);
                 if fsrs_enabled {
                     col.recompute_fsrs_data_for_card(&mut card)?;
+                    if let (Some(s90), Some(state)) = (stored_s90, card.memory_state.as_mut()) {
+                        state.stability = s90;
+                    }
                 }
                 col.update_card_inner(&mut card, original, usn)?;
             }
@@ -420,6 +429,7 @@ impl Collection {
                         review_fuzz_config: col.review_fuzz_config(),
                         reschedule: false,
                         deck_desired_retention,
+                        keep_stability: config.inner.rwkv_review_enabled,
                     }),
                     search: SearchBuilder::all(vec![
                         DeckIdsWithoutChildren(deck_id.to_string()).into(),
@@ -636,6 +646,9 @@ mod test {
         target_params[24] += 0.2;
         let target_deck = DeckAdder::new("target")
             .with_config(|config| {
+                // an FSRS-7 preset: an RWKV-Curve one keeps the stored S90
+                // (spec sched.rwkv-curve-s90-kept)
+                config.inner.rwkv_review_enabled = false;
                 config.inner.fsrs_version = FsrsVersion::Seven as i32;
                 config.inner.fsrs_params_7 = target_params.clone();
             })

@@ -128,6 +128,9 @@ impl Collection {
                         reschedule,
                         historical_retention: HISTORICAL_RETENTION,
                         deck_desired_retention: deck_desired_retention.clone(),
+                        // the FSRS-7 migration, a switch to FSRS-7 and its
+                        // reschedule: no stored S90 is RWKV-Curve's to keep
+                        keep_stability: false,
                     }),
                     search: Node::Search(SearchNode::DeckIdsWithoutChildren(comma_separated_ids(
                         &deck_ids,
@@ -513,6 +516,7 @@ impl Collection {
                                 reschedule: fsrs_reschedule_for_preset(fsrs_reschedule, c),
                                 historical_retention: HISTORICAL_RETENTION,
                                 deck_desired_retention: deck_desired_retention.clone(),
+                                keep_stability: c.inner.rwkv_review_enabled,
                             })
                         } else {
                             None

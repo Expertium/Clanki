@@ -342,6 +342,10 @@ pub(crate) struct UpdateMemoryStateRequest {
     pub review_fuzz_config: ReviewFuzzConfig,
     pub reschedule: bool,
     pub deck_desired_retention: HashMap<DeckId, f32>,
+    /// The preset runs RWKV-Curve: a card keeps the S90 stored in its memory
+    /// state, which RWKV-Curve wrote; only the FSRS-7 fields are computed
+    /// again (spec sched.rwkv-curve-s90-kept).
+    pub keep_stability: bool,
 }
 
 pub(crate) struct UpdateMemoryStateEntry {
@@ -456,6 +460,7 @@ impl Collection {
             let fsrs = FSRS::new(&req.params)?;
             let params = &req.params[..];
             let last_revlog_info = req.reschedule.then(|| get_last_revlog_info(&revlog));
+            let keep_stability = req.keep_stability;
             let items = fsrs_items_for_memory_states(
                 &fsrs,
                 params,
@@ -600,6 +605,7 @@ impl Collection {
                 &fsrs,
                 set_decay_and_desired_retention,
                 reschedule,
+                keep_stability,
                 usn,
                 on_updated_card,
             )?;
@@ -1051,12 +1057,14 @@ impl Collection {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_memory_state_for_cards_with_items(
         &mut self,
         items: Vec<(CardId, FsrsItemForMemoryState)>,
         fsrs: &FSRS,
         mut set_decay_and_desired_retention: impl FnMut(&mut Card),
         mut maybe_reschedule_card: impl FnMut(&mut Card, &mut Self, &FSRS) -> Result<()>,
+        keep_stability: bool,
         usn: Usn,
         mut on_updated_card: impl FnMut() -> Result<()>,
     ) -> Result<()> {
@@ -1091,7 +1099,11 @@ impl Collection {
                 let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
                 let original = card.clone();
                 set_decay_and_desired_retention(&mut card);
-                card.memory_state = Some(fsrs_memory_state_for_fsrs(fsrs, memory_state));
+                let mut memory_state = fsrs_memory_state_for_fsrs(fsrs, memory_state);
+                if let Some(stored) = card.memory_state.filter(|_| keep_stability) {
+                    memory_state.stability = stored.stability;
+                }
+                card.memory_state = Some(memory_state);
                 maybe_reschedule_card(&mut card, self, fsrs)?;
                 self.update_card_inner(&mut card, original, usn)?;
                 on_updated_card()?;
@@ -2153,6 +2165,93 @@ mod tests {
             rows_before,
             "rescheduling must not write review-log rows"
         );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-s90-kept
+    #[test]
+    fn rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "q")?;
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = make_review_card(&mut col, note.id, 30.0)?;
+        for days_ago in [40, 20, 5] {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    ease_factor: 2500,
+                    interval: 10,
+                    cid,
+                    ..revlog(RevlogReviewKind::Review, days_ago)
+                },
+                false,
+            )?;
+        }
+        // the S90 an RWKV-Curve answer stored
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        col.recompute_fsrs_data_for_card(&mut card)?;
+        card.memory_state.as_mut().unwrap().stability = 123.0;
+        col.storage.update_card(&card)?;
+        let fsrs7_state = |col: &mut Collection| -> FsrsMemoryState {
+            col.compute_memory_state(cid).unwrap().state.unwrap().into()
+        };
+        let stored_state = |col: &Collection| {
+            col.storage
+                .get_card(cid)
+                .unwrap()
+                .unwrap()
+                .memory_state
+                .unwrap()
+        };
+
+        // a preset change computes the FSRS-7 fields again, not the S90
+        let mut params = DEFAULT_PARAMETERS.to_vec();
+        params[0] += 1.0;
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            review_fuzz_config: Default::default(),
+        };
+        input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
+        input.configs[0].inner.fsrs_params_7 = params;
+        col.update_deck_configs(input)?;
+        let state = stored_state(&col);
+        let computed = fsrs7_state(&mut col);
+        assert_eq!(state.stability, 123.0);
+        // the stored state keeps three decimals
+        assert!((state.difficulty - computed.difficulty).abs() < 0.001);
+        assert!((state.stability_internal - computed.stability_internal).abs() < 0.001);
+
+        // so does a move to another RWKV-Curve deck
+        let curve = crate::tests::DeckAdder::new("curve")
+            .with_config(|config| config.inner.rwkv_review_enabled = true)
+            .add(&mut col);
+        col.set_deck(&[cid], curve.id)?;
+        assert_eq!(stored_state(&col).stability, 123.0);
+
+        // under FSRS-7 the S90 is FSRS-7's own
+        let fsrs = crate::tests::DeckAdder::new("fsrs")
+            .with_config(|config| config.inner.rwkv_review_enabled = false)
+            .add(&mut col);
+        col.set_deck(&[cid], fsrs.id)?;
+        let computed = fsrs7_state(&mut col);
+        assert_ne!(computed.stability, 123.0);
+        assert!((stored_state(&col).stability - computed.stability).abs() < 0.001);
         Ok(())
     }
 
