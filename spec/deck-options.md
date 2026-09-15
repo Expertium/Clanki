@@ -57,8 +57,9 @@ to RWKV-Instant.
 Given the deck-options screen, these controls appear only while FSRS-7 is
 the selected algorithm: the "Optimize All Presets" button (in Simple mode
 and in Advanced mode) and, in Advanced mode only (`deck-options.simple-view`),
-the FSRS parameters and the FSRS advanced section (Help Me Decide, the FSRS
-version selector, the search filter, Check Health, Evaluate where enabled,
+the FSRS parameters (FSRS-7 only, `sched.fsrs7-only`; there is no version
+selector) and the FSRS advanced section (Help Me Decide, the search filter,
+Check Health, Evaluate where enabled,
 and the FSRS simulator). Under RWKV-Curve and RWKV-Instant none of them is
 shown, and the "Compare RWKV with FSRS" action is gone. "Optimize All
 Presets" is the one optimize action: "Optimize Current Preset", its
@@ -176,9 +177,9 @@ their stored values and keep taking effect. With the flag off the whole page
 is one section (`deck-options.simple-view`); this entry lists what the RWKV
 section shows once the flag is on.
 
-Hidden under every algorithm: the FSRS version selector, so that the FSRS-7
-label stays true. (Under RWKV the FSRS controls are not shown at all; see
-`deck-options.fsrs-only-controls`.)
+There is no FSRS version selector: FSRS-7 is the only FSRS model
+(`sched.fsrs7-only`). (Under RWKV the FSRS controls are not shown at all;
+see `deck-options.fsrs-only-controls`.)
 
 Hidden: keep RWKV intervals in answer order; minimum reviews per day; faster
 approximate queue updates; queue update interval; update queue after reviewing;
@@ -355,8 +356,9 @@ Given any preset, historical retention is 0.9. A memory state inferred from
 SM-2 data (a card with no review log, or a truncated one) uses 0.9 whatever
 `historical_retention` the preset stores; the FSRS simulator and add-on
 preset overlays use 0.9 as well, and the value reported for a preset
-(`fsrs_preset_for_card`) is 0.9. Only FSRS-4/5/6 presets ever read the
-value: FSRS-7 infers a state from the interval alone. The control is gone
+(`fsrs_preset_for_card`) is 0.9. FSRS-7, the only model
+(`sched.fsrs7-only`), infers a state from the interval alone, so nothing
+reads the value. The control is gone
 from the screen; the proto field and the stored value stay, and are ignored.
 
 **Why:** Andrew, 2026-09-14: one setting less. The stored value only shaped

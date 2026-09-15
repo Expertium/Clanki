@@ -17,11 +17,6 @@ const S90_TARGET_RETRIEVABILITY = 0.9;
 const S_MAX = 36_500;
 const S90_SEARCH_STEPS = 32;
 
-function forgettingCurveFsrs6(stability: number, daysElapsed: number, decay: number): number {
-    const factor = Math.pow(0.9, 1 / -decay) - 1;
-    return Math.pow((daysElapsed / stability) * factor + 1.0, -decay);
-}
-
 function forgettingCurveFsrs7(
     stability: number,
     stabilityFast: number,
@@ -47,23 +42,20 @@ function forgettingCurveFsrs7(
     return Math.min(0.9999, Math.max(0.0001, retrievability * (1.0 - 2e-5) + 1e-5));
 }
 
+// FSRS-7 is the only model (spec sched.fsrs7-only); the backend always sends
+// its 34 parameters with a card's memory state.
 function forgettingCurve(
     stability: number,
     stabilityFast: number,
     difficulty: number,
     daysElapsed: number,
-    decay: number,
-    params: number[] | undefined,
+    params: number[],
 ): number {
-    if (params && params.length >= FSRS7_PARAM_COUNT) {
-        return forgettingCurveFsrs7(stability, stabilityFast, difficulty, daysElapsed, params);
-    }
-    return forgettingCurveFsrs6(stability, daysElapsed, decay);
+    return forgettingCurveFsrs7(stability, stabilityFast, difficulty, daysElapsed, params);
 }
 
 export function stabilityS90(
     stability: number,
-    decay: number,
     params: number[] | undefined,
     stabilityFast = stability,
     difficulty = 5.0,
@@ -75,7 +67,7 @@ export function stabilityS90(
     let low = 0;
     let high = Math.max(stability, 1);
     while (
-        forgettingCurve(stability, stabilityFast, difficulty, high, decay, params)
+        forgettingCurve(stability, stabilityFast, difficulty, high, params)
             > S90_TARGET_RETRIEVABILITY
         && high < S_MAX
     ) {
@@ -85,7 +77,7 @@ export function stabilityS90(
     for (let i = 0; i < S90_SEARCH_STEPS; i++) {
         const mid = (low + high) / 2;
         if (
-            forgettingCurve(stability, stabilityFast, difficulty, mid, decay, params)
+            forgettingCurve(stability, stabilityFast, difficulty, mid, params)
                 > S90_TARGET_RETRIEVABILITY
         ) {
             low = mid;
@@ -150,8 +142,7 @@ export function filterRevlog(revlog: RevlogEntry[]): RevlogEntry[] {
 export function prepareData(
     revlog: RevlogEntry[],
     maxDays: number,
-    decay: number,
-    params?: number[],
+    params: number[],
 ) {
     const data: DataPoint[] = [];
     let lastReviewTime = 0;
@@ -177,7 +168,6 @@ export function prepareData(
                 lastStabilityS90 = entry.memoryState?.stability
                     ?? stabilityS90(
                         lastStability,
-                        decay,
                         params,
                         lastStabilityFast,
                         lastDifficulty,
@@ -202,7 +192,6 @@ export function prepareData(
                     lastStabilityFast,
                     lastDifficulty,
                     elapsedDays,
-                    decay,
                     params,
                 );
                 data.push({
@@ -233,7 +222,6 @@ export function prepareData(
             lastStabilityS90 = entry.memoryState?.stability
                 ?? stabilityS90(
                     lastStability,
-                    decay,
                     params,
                     lastStabilityFast,
                     lastDifficulty,
@@ -254,7 +242,6 @@ export function prepareData(
             lastStabilityFast,
             lastDifficulty,
             elapsedDays,
-            decay,
             params,
         );
         data.push({
@@ -272,7 +259,6 @@ export function prepareData(
         lastStabilityFast,
         lastDifficulty,
         totalDaysSinceLastReview,
-        decay,
         params,
     );
     data.push({
@@ -293,7 +279,6 @@ export function prepareData(
             lastStabilityFast,
             lastDifficulty,
             elapsedDays + previewDaysElapsed,
-            decay,
             params,
         );
         data.push({
@@ -330,18 +315,17 @@ export function renderForgettingCurve(
     svgElem: SVGElement,
     bounds: GraphBounds,
     desiredRetention: number,
-    decay: number,
     params?: number[],
 ) {
     const svg = select(svgElem);
     const trans = svg.transition().duration(600) as any;
-    if (filteredRevlog.length === 0) {
+    if (filteredRevlog.length === 0 || params?.length !== FSRS7_PARAM_COUNT) {
         setDataAvailable(svg, false);
         return;
     }
     const maxDays = calculateMaxDays(filteredRevlog, timeRange);
 
-    const data = prepareData(filteredRevlog, maxDays, decay, params);
+    const data = prepareData(filteredRevlog, maxDays, params);
 
     if (data.length === 0) {
         setDataAvailable(svg, false);

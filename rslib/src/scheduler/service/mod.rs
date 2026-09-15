@@ -60,6 +60,7 @@ use fsrs::FSRS;
 use crate::backend::Backend;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::collection::RwkvStatsGraphScoreEntry;
+use crate::deckconfig::effective_fsrs7_params;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
@@ -366,18 +367,19 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::ComputeFsrsParamsRequest,
     ) -> Result<scheduler::ComputeFsrsParamsResponse> {
+        // FSRS-7 only, with same-day reviews (spec sched.fsrs7-only): the
+        // request's fsrs_version and include_same_day_reviews are ignored
+        let current_params = effective_fsrs7_params(&input.current_params).to_vec();
         self.compute_params(ComputeParamsRequest {
             search: &input.search,
             ignore_revlogs_before_ms: input.ignore_revlogs_before_ms.into(),
             current_preset: 1,
             total_presets: 1,
-            current_params: &input.current_params,
+            current_params: &current_params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
             health_check: input.health_check,
-            include_same_day_reviews: input.include_same_day_reviews,
             // always on (spec deck-options.fsrs-only-controls); the request field is ignored
             enable_scheduling_penalties: true,
-            model_version_override: input.fsrs_version.map(health_check_model_version),
         })
     }
 
@@ -389,15 +391,14 @@ impl crate::services::SchedulerService for Collection {
         let mut jobs = Vec::with_capacity(input.items.len());
 
         for (index, item) in input.items.into_iter().enumerate() {
+            let current_params = effective_fsrs7_params(&item.current_params).to_vec();
             let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
                 search: &item.search,
                 ignore_revlogs_before: item.ignore_revlogs_before_ms.into(),
-                current_params: &item.current_params,
+                current_params: &current_params,
                 num_of_relearning_steps: item.num_of_relearning_steps as usize,
-                include_same_day_reviews: item.include_same_day_reviews,
                 // always on (spec deck-options.fsrs-only-controls); the request field is ignored
                 enable_scheduling_penalties: true,
-                model_version_override: item.fsrs_version.map(health_check_model_version),
             })?;
             response_meta.push((item.id.clone(), item.name.clone()));
             jobs.push(ComputeParamsBatchInput {
@@ -429,15 +430,14 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
     ) -> Result<generic::UInt32> {
+        let params = effective_fsrs7_params(&input.params).to_vec();
         let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
             search: &input.search,
             ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
-            current_params: &input.params,
+            current_params: &params,
             num_of_relearning_steps: input.num_of_relearning_steps as usize,
-            include_same_day_reviews: input.include_same_day_reviews,
             // always on (spec deck-options.fsrs-only-controls); the request field is ignored
             enable_scheduling_penalties: true,
-            model_version_override: input.fsrs_version.map(health_check_model_version),
         })?;
         let context = FsrsReviewPredictionContext::from_prepared(&prepared);
         let count = self.compute_fsrs_review_retrievability_calibration_cache(
@@ -481,11 +481,8 @@ impl crate::services::SchedulerService for Collection {
         };
         let fsrs = FSRS::new(config.fsrs_params())?;
         let params = config.fsrs_params();
-        let fsrs_allow_short_term = if params.len() >= 19 {
-            params[17] > 0.0 && params[18] > 0.0
-        } else {
-            false
-        };
+        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
+        let fsrs_allow_short_term = true;
         // Always on (spec sched.same-day-steps-always-on); the request field
         // is kept for wire compatibility and ignored.
         let fsrs_short_term_with_steps_enabled = true;
@@ -605,15 +602,13 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::EvaluateParamsRequest,
     ) -> Result<scheduler::EvaluateParamsResponse> {
-        let model_version = health_check_model_version(input.fsrs_version);
+        // FSRS-7 with same-day reviews (spec sched.fsrs7-only); the request's
+        // fsrs_version and include_same_day_reviews* fields are ignored
         let ret = self.evaluate_params(
             &input.search,
             input.search_for_training.as_deref(),
             input.ignore_revlogs_before_ms.into(),
             input.num_of_relearning_steps as usize,
-            model_version,
-            input.include_same_day_reviews,
-            input.include_same_day_reviews_for_training,
             // always on (spec deck-options.fsrs-only-controls); the request field is ignored
             true,
         )?;
@@ -631,7 +626,6 @@ impl crate::services::SchedulerService for Collection {
             &input.params,
             &input.search,
             input.ignore_revlogs_before_ms.into(),
-            input.include_same_day_reviews,
         )?;
         Ok(scheduler::EvaluateParamsResponse {
             log_loss: ret.log_loss,
@@ -1071,7 +1065,7 @@ fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {
     FsrsPresetForCardResponse {
         id: fsrs_preset_id_to_string(preset.id),
         name: preset.name,
-        fsrs_version: preset.fsrs_version as i32,
+        fsrs_version: FsrsVersion::Seven as i32,
         params: preset.params,
         desired_retention: preset.desired_retention,
         historical_retention: preset.historical_retention,
@@ -1083,13 +1077,6 @@ fn fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
     match id {
         FsrsPresetId::DeckConfig(id) => id.0.to_string(),
         FsrsPresetId::Addon(id) => id,
-    }
-}
-
-fn health_check_model_version(fsrs_version: i32) -> ComputeParametersVersion {
-    match FsrsVersion::try_from(fsrs_version).unwrap_or(FsrsVersion::Seven) {
-        FsrsVersion::Seven => ComputeParametersVersion::Fsrs7,
-        FsrsVersion::Six | FsrsVersion::Five | FsrsVersion::Four => ComputeParametersVersion::Fsrs6,
     }
 }
 
@@ -1167,33 +1154,17 @@ fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSR
 
 #[cfg(test)]
 mod tests {
-    use fsrs::ComputeParametersVersion;
-
     use super::fsrs_preset_to_proto;
-    use super::health_check_model_version;
     use super::FsrsVersion;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
-
-    #[test]
-    fn health_check_uses_selected_fsrs6_or_fsrs7_family() {
-        assert_eq!(
-            health_check_model_version(FsrsVersion::Seven as i32),
-            ComputeParametersVersion::Fsrs7
-        );
-        assert_eq!(
-            health_check_model_version(FsrsVersion::Six as i32),
-            ComputeParametersVersion::Fsrs6
-        );
-    }
 
     #[test]
     fn fsrs_preset_response_exposes_preset_fields() {
         let response = fsrs_preset_to_proto(FsrsPreset {
             id: FsrsPresetId::Addon("addon:test".into()),
             name: "Test".into(),
-            fsrs_version: FsrsVersion::Seven,
-            params: vec![0.0; 21],
+            params: vec![0.0; 34],
             desired_retention: 0.86,
             historical_retention: 0.9,
             ignore_revlogs_before_date: "2024-01-01".into(),
@@ -1201,23 +1172,12 @@ mod tests {
 
         assert_eq!(response.id, "addon:test");
         assert_eq!(response.name, "Test");
+        // Pins spec/scheduling.md#sched.fsrs7-only: every preset runs FSRS-7.
         assert_eq!(response.fsrs_version, FsrsVersion::Seven as i32);
-        assert_eq!(response.params, vec![0.0; 21]);
+        assert_eq!(response.params, vec![0.0; 34]);
         assert_eq!(response.desired_retention, 0.86);
         assert_eq!(response.historical_retention, 0.9);
         assert_eq!(response.ignore_revlogs_before_date, "2024-01-01");
-    }
-
-    #[test]
-    fn health_check_maps_fsrs4_and_fsrs5_to_fsrs6_family() {
-        assert_eq!(
-            health_check_model_version(FsrsVersion::Five as i32),
-            ComputeParametersVersion::Fsrs6
-        );
-        assert_eq!(
-            health_check_model_version(FsrsVersion::Four as i32),
-            ComputeParametersVersion::Fsrs6
-        );
     }
 }
 

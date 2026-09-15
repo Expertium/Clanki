@@ -77,9 +77,9 @@ For RWKV-Curve the answer curves are searched inside the first day as well
 when a curve reaches its target before day 1, with linear interpolation
 between points as for later days; rounded up to whole days these unrounded
 intervals equal the whole-day intervals RWKV computed before. FSRS-7 uses
-the intraday queue whatever its parameters, and RWKV-Curve whatever the
-preset's FSRS parameters; FSRS-6 and older still need non-zero short-term
-parameters (w17, w18). Once a card has had its preset's maximum of
+the intraday queue whatever its parameters, and so does RWKV-Curve
+(`sched.fsrs7-only`: there is no other FSRS model). Once a card has had its
+preset's maximum of
 same-day reviews for the day (`sched.max-same-day-reviews`) there is no
 intraday queue for it, and a sub-day interval rounds up to one day.
 
@@ -147,18 +147,56 @@ RWKV-Curve as well as FSRS.
 `max_same_day_reviews_survives_storage_and_schema11`
 (`rslib/src/deckconfig/mod.rs`); `ts/routes/deck-options/same-day-reviews.test.ts`.
 
+## sched.fsrs7-only
+
+Given any preset, FSRS-7 is the FSRS model that schedules it; Clanki has no
+other. The preset runs with its stored FSRS-7 parameters when they are 34
+finite values, and otherwise with the FSRS-7 default parameters (the same
+values as srs-benchmark's FSRS-7 `init_w`) — so a preset that was never
+optimized runs FSRS-7 with the defaults, even when it holds trained FSRS-6,
+FSRS-5 or FSRS-4.5 parameters. The stored FSRS version and the FSRS-6/5/4.5
+parameter sets are kept in the collection unchanged (other clients read
+them) and are ignored everywhere: answering, memory states, rescheduling,
+the simulator, and the retrievability shown in the browser and card info.
+There is
+no FSRS version selector. Add-on preset overlays are FSRS-7 too: an overlay
+whose parameters are not 34 finite values runs with the FSRS-7 defaults (its
+`fsrs_version` is still accepted and ignored). Training ("Optimize All
+Presets", Evaluate, Check Health) always fits FSRS-7 and always includes
+same-day reviews with the exact elapsed time; the `fsrs_version` and
+`include_same_day_reviews*` request fields are ignored. Optimizing writes
+the FSRS-7 parameter set only. Rescheduling on a desired-retention change
+computes each card's interval from its whole FSRS-7 memory state (internal
+and fast stability, difficulty).
+
+When a collection is opened for the first time with this rule, every card of
+a preset whose parameters changed with it (never optimized, or running an
+older version's parameters) gets its memory state and decay computed again
+with the FSRS-7 parameters it now runs with; due dates are not changed. This
+happens once (`fsrs7OnlyMigrated`).
+
+**Why:** Andrew, 2026-09-15: "unoptimized FSRS-7 should use default
+parameters of FSRS-7"; he chose this for presets with trained FSRS-6
+parameters too, and asked to cut out FSRS-6 code. Before this entry, a
+preset that showed as FSRS-7 without FSRS-7 parameters ran the FSRS-6 model
+(its FSRS-6 parameters, or the FSRS-6 defaults) on whole days, and the
+reschedule treated a card's S90 as its only stability.
+
+**Pinned by:** the `fsrs7_only_*` tests in `rslib/src/deckconfig/mod.rs`
+and `rslib/src/deckconfig/update.rs` (including the migration);
+`ts/routes/deck-options/fsrs-params.test.ts`,
+`ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
+
 ## sched.fsrs7-fractional-elapsed-time
 
-Given a card answered with the FSRS-7 model (a preset whose FSRS parameters
-are the 34 FSRS-7 values), the elapsed time FSRS uses for the answer's
+Given a card answered with FSRS (always FSRS-7, `sched.fsrs7-only`), the
+elapsed time FSRS uses for the answer's
 retrievability and next states is the exact time since the card's last
 review, in fractional days, for every card: new, learning, relearning and
 review, in any queue. This is the same elapsed time training and the
 memory-state rebuild take from the review log (millisecond timestamps), so
 the model sees the same kind of input when it is trained and when it is
-used. Older models (FSRS-6 and before, trained on whole days) keep whole
-days counted from the next day rollover for cards outside the intraday
-learning queue.
+used. The day rollover plays no part in it.
 
 **Why:** Andrew, 2026-09-15: FSRS-7 must use fractional, not integer,
 interval lengths as inputs, both in training and in deployment. Before this

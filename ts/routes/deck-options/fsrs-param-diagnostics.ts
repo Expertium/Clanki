@@ -1,7 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-const VALID_FSRS_PARAM_COUNTS = new Set([0, 17, 19, 21, 34]);
+// FSRS-7 only (spec sched.fsrs7-only): 0 = the FSRS-7 defaults
+const VALID_FSRS_PARAM_COUNTS = new Set([0, 34]);
 const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT = 35;
 export const OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING =
     "These FSRS-7 parameters were produced by an older preview version and have 35 values. Final FSRS-7 uses 34 values. Clear the field and optimize this preset, or run Optimize All Presets.";
@@ -29,8 +30,4 @@ export function fsrsParamDiagnostics(params: readonly number[]): FsrsParamDiagno
             .map((index) => String(params[index])),
         valid: VALID_FSRS_PARAM_COUNTS.has(params.length) && nonFiniteIndexes.length === 0,
     };
-}
-
-export function fsrsParamsSupportSameDayEvaluation(params: readonly number[]): boolean {
-    return params.length === 34;
 }

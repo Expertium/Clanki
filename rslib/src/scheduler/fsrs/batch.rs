@@ -227,7 +227,6 @@ fn compute_params_batch_job_lanes_with_count(
 
 #[cfg(test)]
 mod test {
-    use fsrs::ComputeParametersVersion;
     use fsrs::DEFAULT_PARAMETERS;
 
     use super::*;
@@ -241,8 +240,6 @@ mod test {
                 prepared: PreparedComputeParams {
                     current_params: DEFAULT_PARAMETERS.to_vec(),
                     num_of_relearning_steps: 0,
-                    model_version: ComputeParametersVersion::Fsrs7,
-                    include_same_day_reviews: true,
                     enable_scheduling_penalties: true,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
@@ -292,8 +289,6 @@ mod test {
                 prepared: PreparedComputeParams {
                     current_params: vec![2.0; 34],
                     num_of_relearning_steps: 0,
-                    model_version: ComputeParametersVersion::Fsrs7,
-                    include_same_day_reviews: true,
                     enable_scheduling_penalties: true,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),
@@ -308,8 +303,6 @@ mod test {
                 prepared: PreparedComputeParams {
                     current_params: vec![1.0; 34],
                     num_of_relearning_steps: 0,
-                    model_version: ComputeParametersVersion::Fsrs7,
-                    include_same_day_reviews: true,
                     enable_scheduling_penalties: true,
                     items: Vec::new(),
                     item_card_ids: Vec::new(),

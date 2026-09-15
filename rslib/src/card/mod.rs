@@ -628,11 +628,16 @@ mod test {
         let before = col.storage.get_card(answer.card_id)?.unwrap();
         assert!(before.memory_state.is_some());
 
-        let target_params = DEFAULT_PARAMETERS[0..21].to_vec();
+        // FSRS-7 parameters that differ from the source preset's defaults,
+        // including the decay (spec sched.fsrs7-only: FSRS-6 parameters would
+        // run the same defaults)
+        let mut target_params = DEFAULT_PARAMETERS.to_vec();
+        target_params[23] += 0.1;
+        target_params[24] += 0.2;
         let target_deck = DeckAdder::new("target")
             .with_config(|config| {
-                config.inner.fsrs_version = FsrsVersion::Six as i32;
-                config.inner.fsrs_params_6 = target_params.clone();
+                config.inner.fsrs_version = FsrsVersion::Seven as i32;
+                config.inner.fsrs_params_7 = target_params.clone();
             })
             .add(&mut col);
 

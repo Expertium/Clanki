@@ -5,15 +5,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
-use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::card::Card;
+use crate::deckconfig::effective_fsrs7_params;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
-use crate::deckconfig::FsrsVersion;
 use crate::decks::Deck;
 use crate::prelude::*;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
@@ -26,7 +25,6 @@ use crate::search::SortMode;
 use crate::search::TryIntoSearch;
 
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
-const OUTDATED_FSRS7_PREVIEW_PARAM_COUNT: usize = 35;
 const FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -39,7 +37,7 @@ pub(crate) enum FsrsPresetId {
 pub(crate) struct FsrsPreset {
     pub id: FsrsPresetId,
     pub name: String,
-    pub fsrs_version: FsrsVersion,
+    /// Always FSRS-7 parameters (spec sched.fsrs7-only).
     pub params: Vec<f32>,
     pub desired_retention: f32,
     pub historical_retention: f32,
@@ -92,6 +90,8 @@ pub(crate) struct AddonFsrsPreset {
     pub ignore_revlogs_before_date: String,
 }
 
+/// Part of the add-on API: still parsed, so older overlays load, but ignored.
+/// Every preset runs FSRS-7 (spec sched.fsrs7-only).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AddonFsrsVersion {
@@ -125,12 +125,9 @@ pub(crate) struct FsrsPresetSimulatorRule {
 
 impl FsrsPreset {
     pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Result<Self> {
-        let fsrs_version =
-            FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven);
         Ok(Self {
             id: FsrsPresetId::DeckConfig(config.id),
             name: config.name.clone(),
-            fsrs_version,
             params: config.fsrs_params().to_vec(),
             desired_retention: deck.effective_desired_retention(config),
             historical_retention: HISTORICAL_RETENTION,
@@ -147,40 +144,25 @@ impl FsrsPreset {
     }
 }
 
-impl AddonFsrsVersion {
-    fn into_fsrs_version(self) -> FsrsVersion {
-        match self {
-            AddonFsrsVersion::Seven => FsrsVersion::Seven,
-            AddonFsrsVersion::Six => FsrsVersion::Six,
-            AddonFsrsVersion::Five => FsrsVersion::Five,
-            AddonFsrsVersion::Four => FsrsVersion::Four,
-        }
-    }
-}
-
 impl AddonFsrsPreset {
     fn into_fsrs_preset(self) -> Result<FsrsPreset> {
         require!(
             self.id.starts_with("addon:"),
             "add-on FSRS preset id must start with addon:"
         );
-        let fsrs_version = self.fsrs_version.into_fsrs_version();
-        let params = if fsrs_version == FsrsVersion::Seven
-            && self.params.len() == OUTDATED_FSRS7_PREVIEW_PARAM_COUNT
-        {
+        // anything but 34 FSRS-7 parameters (an older model, an outdated
+        // 35-value preview) runs with the FSRS-7 defaults
+        let params = effective_fsrs7_params(&self.params).to_vec();
+        if params != self.params {
             tracing::warn!(
                 preset_id = %self.id,
-                "ignored outdated 35-parameter FSRS-7 add-on preset overlay params"
+                params = self.params.len(),
+                "add-on FSRS preset overlay without FSRS-7 parameters uses the FSRS-7 defaults"
             );
-            DEFAULT_PARAMETERS.to_vec()
-        } else {
-            self.params
-        };
-        FSRS::new(&params)?;
+        }
         Ok(FsrsPreset {
             id: FsrsPresetId::Addon(self.id),
             name: self.name,
-            fsrs_version,
             params,
             desired_retention: self.desired_retention,
             historical_retention: HISTORICAL_RETENTION,
@@ -645,23 +627,28 @@ impl Collection {
 
 #[cfg(test)]
 mod test {
-    use fsrs::FSRS6_DEFAULT_PARAMETERS;
+    use fsrs::DEFAULT_PARAMETERS;
 
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::DeckConfigId;
-    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_params;
+    use crate::deckconfig::FsrsVersion;
+    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
     use crate::tests::NoteAdder;
 
     #[test]
     fn fsrs_preset_is_derived_from_deck_config() -> Result<()> {
         let mut col = Collection::new();
-        let params = vec![2.0; 21];
+        // Pins spec/scheduling.md#sched.fsrs7-only: a preset whose stored
+        // version is FSRS-6 runs its FSRS-7 parameters; the FSRS-6 slot is
+        // not read.
+        let params = vec![2.0; 34];
         col.update_default_deck_config(|config| {
             config.fsrs_version = FsrsVersion::Six as i32;
-            config.fsrs_params_6 = params.clone();
+            config.fsrs_params_6 = vec![1.0; 21];
+            config.fsrs_params_7 = params.clone();
             config.desired_retention = 0.82;
             config.historical_retention = 0.73;
             config.ignore_revlogs_before_date = "2024-01-02".into();
@@ -672,7 +659,6 @@ mod test {
         let preset = col.fsrs_preset_for_card(&card)?;
 
         assert_eq!(preset.id, FsrsPresetId::DeckConfig(DeckConfigId(1)));
-        assert_eq!(preset.fsrs_version, FsrsVersion::Six);
         assert_eq!(preset.params, params);
         assert_eq!(preset.desired_retention, 0.82);
         // Pins spec/deck-options.md#deck-options.historical-retention-fixed
@@ -810,8 +796,8 @@ mod test {
                     AddonFsrsPreset {
                         id: "addon:test:first".into(),
                         name: "First".into(),
-                        fsrs_version: AddonFsrsVersion::Six,
-                        params: vec![1.0; 21],
+                        fsrs_version: AddonFsrsVersion::Seven,
+                        params: vec![1.0; 34],
                         desired_retention: 0.81,
                         historical_retention: 0.71,
                         ignore_revlogs_before_date: String::new(),
@@ -844,48 +830,90 @@ mod test {
 
         assert_eq!(preset.id, FsrsPresetId::Addon("addon:test:first".into()));
         assert_eq!(preset.name, "First");
-        assert_eq!(preset.fsrs_version, FsrsVersion::Six);
-        assert_eq!(preset.params, vec![1.0; 21]);
+        assert_eq!(preset.params, vec![1.0; 34]);
         assert_eq!(preset.desired_retention, 0.81);
         assert_eq!(preset.historical_retention, HISTORICAL_RETENTION);
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-only: an add-on overlay preset
+    // without 34 FSRS-7 parameters (an older model, an outdated 35-value
+    // FSRS-7 preview) runs the FSRS-7 defaults. (The overlay is JSON, so it
+    // cannot hold NaN; `unusable_fsrs7_params_give_the_fsrs7_defaults` covers
+    // non-finite values.)
     #[test]
-    fn fsrs_preset_overlay_replaces_outdated_fsrs7_preview_params() -> Result<()> {
+    fn fsrs_preset_overlay_without_fsrs7_params_uses_fsrs7_defaults() -> Result<()> {
+        for (fsrs_version, params) in [
+            (AddonFsrsVersion::Seven, vec![1.0; 35]),
+            (AddonFsrsVersion::Six, vec![1.0; 21]),
+            (AddonFsrsVersion::Seven, vec![1.0; 21]),
+            (AddonFsrsVersion::Five, vec![1.0; 19]),
+            (AddonFsrsVersion::Four, vec![1.0; 17]),
+            (AddonFsrsVersion::Seven, vec![]),
+        ] {
+            let mut col = Collection::new();
+            NoteAdder::basic(&mut col)
+                .fields(&["front", "back"])
+                .add(&mut col);
+            let card = col.get_first_card();
+
+            col.set_config(
+                FSRS_PRESET_OVERLAY_CONFIG_KEY,
+                &FsrsPresetOverlay {
+                    presets: vec![AddonFsrsPreset {
+                        id: "addon:test:old".into(),
+                        name: "Old".into(),
+                        fsrs_version,
+                        params,
+                        desired_retention: 0.82,
+                        historical_retention: 0.72,
+                        ignore_revlogs_before_date: String::new(),
+                    }],
+                    rules: vec![FsrsPresetRule {
+                        search: "front".into(),
+                        preset_id: "addon:test:old".into(),
+                    }],
+                    simulator_rules: Vec::new(),
+                },
+            )?;
+
+            let preset = col.fsrs_preset_for_card(&card)?;
+            assert_eq!(preset.id, FsrsPresetId::Addon("addon:test:old".into()));
+            assert_eq!(preset.params, DEFAULT_PARAMETERS.to_vec());
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: the stored add-on version is
+    // ignored; 34 FSRS-7 parameters run as given.
+    #[test]
+    fn fsrs_preset_overlay_runs_fsrs7_params_whatever_its_version() -> Result<()> {
         let mut col = Collection::new();
         NoteAdder::basic(&mut col)
             .fields(&["front", "back"])
             .add(&mut col);
         let card = col.get_first_card();
-
         col.set_config(
             FSRS_PRESET_OVERLAY_CONFIG_KEY,
             &FsrsPresetOverlay {
                 presets: vec![AddonFsrsPreset {
-                    id: "addon:test:old-preview".into(),
-                    name: "Old Preview".into(),
-                    fsrs_version: AddonFsrsVersion::Seven,
-                    params: vec![1.0; OUTDATED_FSRS7_PREVIEW_PARAM_COUNT],
+                    id: "addon:test:six".into(),
+                    name: "Six".into(),
+                    fsrs_version: AddonFsrsVersion::Six,
+                    params: vec![2.0; 34],
                     desired_retention: 0.82,
                     historical_retention: 0.72,
                     ignore_revlogs_before_date: String::new(),
                 }],
                 rules: vec![FsrsPresetRule {
                     search: "front".into(),
-                    preset_id: "addon:test:old-preview".into(),
+                    preset_id: "addon:test:six".into(),
                 }],
                 simulator_rules: Vec::new(),
             },
         )?;
 
-        let preset = col.fsrs_preset_for_card(&card)?;
-        assert_eq!(
-            preset.id,
-            FsrsPresetId::Addon("addon:test:old-preview".into())
-        );
-        assert_eq!(preset.fsrs_version, FsrsVersion::Seven);
-        assert_eq!(preset.params, DEFAULT_PARAMETERS.to_vec());
+        assert_eq!(col.fsrs_preset_for_card(&card)?.params, vec![2.0; 34]);
         Ok(())
     }
 
@@ -957,13 +985,11 @@ mod test {
     #[test]
     fn exact_retrievability_search_uses_overlay_params() -> Result<()> {
         let mut col = Collection::new();
-        let deck_params = FSRS6_DEFAULT_PARAMETERS.to_vec();
+        // the default preset was never optimized: it runs the FSRS-7 defaults
+        let deck_params = DEFAULT_PARAMETERS.to_vec();
         let mut overlay_params = deck_params.clone();
-        overlay_params[20] += 0.2;
-        col.update_default_deck_config(|config| {
-            config.fsrs_version = FsrsVersion::Six as i32;
-            config.fsrs_params_6 = deck_params.clone();
-        });
+        // the decay of the slow curve component
+        overlay_params[24] += 0.2;
         let note = NoteAdder::basic(&mut col).add(&mut col);
         col.add_tags_to_notes(&[note.id], "medical")?;
 
@@ -983,9 +1009,10 @@ mod test {
         card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
         col.storage.update_card(&card)?;
 
-        let deck_r = fsrs_current_retrievability_for_params(&deck_params, stability, elapsed_days)?;
+        let state = card.memory_state.unwrap();
+        let deck_r = fsrs_current_retrievability_for_state(&deck_params, state, elapsed_days)?;
         let overlay_r =
-            fsrs_current_retrievability_for_params(&overlay_params, stability, elapsed_days)?;
+            fsrs_current_retrievability_for_state(&overlay_params, state, elapsed_days)?;
         assert_ne!(deck_r, overlay_r);
         let threshold = (deck_r + overlay_r) / 2.0;
         let query = if overlay_r > deck_r {
@@ -1002,7 +1029,7 @@ mod test {
                 presets: vec![AddonFsrsPreset {
                     id: "addon:test:medical".into(),
                     name: "Medical".into(),
-                    fsrs_version: AddonFsrsVersion::Six,
+                    fsrs_version: AddonFsrsVersion::Seven,
                     params: overlay_params,
                     desired_retention: 0.81,
                     historical_retention: 0.71,

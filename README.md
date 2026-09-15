@@ -54,15 +54,14 @@ Some add-ons may expect official Anki version strings or official scheduling
 behavior. If an add-on behaves unexpectedly, check whether there is a compatible
 version listed below.
 
-## FSRS Preset Versions
+## FSRS-7 Only
 
-The deck options "Optimize All Presets" action optimizes each preset using that
-preset's current FSRS version. It does not convert all presets to FSRS7. For
-example, an FSRS6 preset stays FSRS6 and receives optimized FSRS6 parameters,
-while an FSRS7 preset stays FSRS7 and receives optimized FSRS7 parameters.
-
-If you want to mass-change existing presets to FSRS7 before optimizing them, use
-[Change FSRS Version for Presets](https://ankiweb.net/shared/info/1542952656?cb=1778427918643).
+Clanki schedules with FSRS-7 only. A preset runs with its FSRS-7 parameters,
+or with the FSRS-7 defaults until "Optimize All Presets" fits them; FSRS-6,
+FSRS-5 and FSRS-4.5 parameters stored in a collection are kept for other
+clients but not used. The first time Clanki opens a collection, it computes
+the memory states of cards in presets that used other parameters again, with
+FSRS-7 (due dates stay as they are).
 
 ## Compatible Add-ons
 
