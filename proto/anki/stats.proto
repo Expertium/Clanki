@@ -21,7 +21,12 @@ service StatsService {
 
 // Implicitly includes any of the above methods that are not listed in the
 // backend service.
-service BackendStatsService {}
+service BackendStatsService {
+  // The Stats page's Total Knowledge graph (spec ui.stats-total-knowledge).
+  // It reads the collection, then replays FSRS-7 with the collection free,
+  // so other collection work does not wait for the replay.
+  rpc TotalKnowledge(TotalKnowledgeRequest) returns (TotalKnowledgeResponse);
+}
 
 message ReviewLogs {
   repeated CardStatsResponse.StatsRevlogEntry entries = 1;
@@ -96,6 +101,52 @@ message CardStatsResponse {
 message GraphsRequest {
   string search = 1;
   uint32 days = 2;
+}
+
+// Total Knowledge (spec ui.stats-total-knowledge): the search's cards over
+// their whole review history, whatever the page's period.
+message TotalKnowledgeRequest {
+  string search = 1;
+}
+
+// One value per scheduler day, from first_day through today (day 0; days
+// before today are negative).
+message TotalKnowledgeResponse {
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm = 1;
+  int32 first_day = 2;
+  // The upper bound: cards rated at least once by that day.
+  repeated uint32 reviewed_cards = 3;
+  // FSRS-7 only: the sum of the cards' R. Empty under RWKV, whose sum comes
+  // from TotalKnowledgeRwkvProgress.
+  repeated double sum_r = 4;
+}
+
+// Starts (or joins) the RWKV computation of Total Knowledge's sum of R.
+message TotalKnowledgeRwkvRequest {
+  string search = 1;
+  // RWKV-Curve's head; RWKV-Instant's otherwise.
+  bool curve = 2;
+}
+
+message TotalKnowledgeRwkvJob {
+  uint32 job_id = 1;
+}
+
+message TotalKnowledgeRwkvProgress {
+  enum State {
+    COMPUTING = 0;
+    DONE = 1;
+    NO_MODEL = 2;
+    FAILED = 3;
+    CANCELLED = 4;
+  }
+  State state = 1;
+  uint32 job_id = 2;
+  // The days computed so far, from first_day (as in TotalKnowledgeResponse):
+  // the last of them is first_day + len(sum_r) - 1.
+  int32 first_day = 3;
+  repeated double sum_r = 4;
+  string error = 5;
 }
 
 message GraphsResponse {

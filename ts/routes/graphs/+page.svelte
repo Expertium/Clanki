@@ -18,6 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import ReviewsGraph from "./ReviewsGraph.svelte";
     import StabilityGraph from "./StabilityGraph.svelte";
     import TodayStats from "./TodayStats.svelte";
+    import TotalKnowledgeGraph from "./TotalKnowledgeGraph.svelte";
     import TrueRetention from "./TrueRetention.svelte";
 
     const graphs = [
@@ -31,6 +32,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         EaseGraph,
         DifficultyGraph,
         RetrievabilityGraph,
+        TotalKnowledgeGraph,
         TrueRetention,
         HourGraph,
         ButtonsGraph,

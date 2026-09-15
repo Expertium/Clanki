@@ -171,6 +171,20 @@ statistics-retrievability-tooltip =
         [one] { $cards } card with { $percent } retrievability
        *[other] { $cards } cards with { $percent } retrievability
     }
+statistics-total-knowledge-title = Total Knowledge
+statistics-total-knowledge-subtitle = The number of cards you would recall on each day (the sum of their retrievability), over your whole review history.
+# Legend: the sum of the cards' retrievability.
+statistics-total-knowledge-known = Known
+# Legend: the cards reviewed at least once by a day, the most that can be known.
+statistics-total-knowledge-reviewed = Reviewed
+# Shown on hover; $cards is a decimal number.
+statistics-total-knowledge-known-cards = Known: { $cards } cards
+statistics-total-knowledge-reviewed-cards =
+    { $cards ->
+        [one] Reviewed: { $cards } card
+       *[other] Reviewed: { $cards } cards
+    }
+statistics-total-knowledge-rwkv-model-not-found = RWKV model not found
 statistics-future-due-title = Future Due
 statistics-future-due-subtitle = The number of reviews due in the future.
 statistics-added-title = Added
