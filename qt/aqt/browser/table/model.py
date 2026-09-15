@@ -380,9 +380,14 @@ class DataModel(QAbstractTableModel):
         return self.len_columns()
 
     def data(self, index: QModelIndex = QModelIndex(), role: int = 0) -> Any:
+        # Qt calls this about nine times per cell for every repaint: compare
+        # with plain ints and return precomputed flags (a Python enum `|`
+        # costs microseconds)
         if not index.isValid():
             return QVariant()
-        if role == Qt.ItemDataRole.FontRole:
+        if role == _DISPLAY_ROLE:
+            return self.get_cell(index).text
+        if role == _FONT_ROLE:
             if not self.column_at(index).uses_cell_font:
                 return QVariant()
             qfont = QFont()
@@ -390,14 +395,11 @@ class DataModel(QAbstractTableModel):
             qfont.setFamily(row.font_name)
             qfont.setPixelSize(row.font_size)
             return qfont
-        elif role == Qt.ItemDataRole.TextAlignmentRole:
-            align: Qt.AlignmentFlag | int = Qt.AlignmentFlag.AlignVCenter
+        if role == _ALIGNMENT_ROLE:
             if self.column_at(index).alignment == Columns.ALIGNMENT_CENTER:
-                align |= Qt.AlignmentFlag.AlignHCenter
-            return getattr(align, "value", align)
-        elif role == Qt.ItemDataRole.DisplayRole:
-            return self.get_cell(index).text
-        elif role == Qt.ItemDataRole.ToolTipRole and self._want_tooltips:
+                return _ALIGN_CENTER
+            return _ALIGN_START
+        if role == _TOOLTIP_ROLE and self._want_tooltips:
             return self.get_cell(index).text
         return QVariant()
 
@@ -415,8 +417,18 @@ class DataModel(QAbstractTableModel):
         # shortcut for large selections (Ctrl+A) to avoid fetching large numbers of rows at once
         if row := self.get_cached_row(index):
             if row.is_disabled:
-                return Qt.ItemFlag(Qt.ItemFlag.NoItemFlags)
-        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                return _NO_FLAGS
+        return _ENABLED_FLAGS
+
+
+_DISPLAY_ROLE = Qt.ItemDataRole.DisplayRole.value
+_FONT_ROLE = Qt.ItemDataRole.FontRole.value
+_ALIGNMENT_ROLE = Qt.ItemDataRole.TextAlignmentRole.value
+_TOOLTIP_ROLE = Qt.ItemDataRole.ToolTipRole.value
+_ALIGN_START = Qt.AlignmentFlag.AlignVCenter.value
+_ALIGN_CENTER = (Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter).value
+_NO_FLAGS = Qt.ItemFlag(Qt.ItemFlag.NoItemFlags)
+_ENABLED_FLAGS = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
 
 
 def addon_column_fillin(key: str) -> Column:
