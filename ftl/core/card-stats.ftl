@@ -46,3 +46,5 @@ card-stats-previous-card = Previous Card ({ $context })
 ## NO NEED TO TRANSLATE. This text is no longer used by Anki, and will be removed in the future.
 
 card-stats-fsrs-forgetting-curve-probability-of-recalling = Probability of Recall
+# Shown instead of a value while RWKV is still computing it.
+card-stats-calculating = Calculating…

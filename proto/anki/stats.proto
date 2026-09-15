@@ -9,6 +9,7 @@ package anki.stats;
 
 import "anki/generic.proto";
 import "anki/cards.proto";
+import "anki/deck_config.proto";
 
 service StatsService {
   rpc CardStats(cards.CardId) returns (CardStatsResponse);
@@ -80,8 +81,16 @@ message CardStatsResponse {
     repeated float elapsed_days = 1;
     repeated float recall = 2;
     optional float s90 = 3;
+    // the curve's recall now, since the card's last review
+    optional float current_recall = 4;
   }
   optional RwkvCurve rwkv_curve = 26;
+  // The collection's algorithm: card info shows only its values (spec
+  // ui.card-info-one-algorithm).
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm scheduling_algorithm =
+      27;
+  // Simple mode shows no difficulty, stability or retrievability.
+  bool advanced_ui = 28;
 }
 
 message GraphsRequest {

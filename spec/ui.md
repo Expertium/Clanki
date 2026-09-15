@@ -142,12 +142,11 @@ reaches the page as recall at 0 and at 300 elapsed times evenly spaced in
 log time from one minute to 100 years, joined by straight lines.
 
 Card info for such a card shows no other FSRS-7 value either: no
-"Difficulty" row, no FSRS-7 "Retrievability" row (the "RWKV computed R" row
-takes its place), and no "FSRS Next S90" row beside "RWKV Curve Next S90".
-The page data of the reviews before the latest answered one carries no
+"Difficulty" row, and its one "Retrievability" row is the curve's recall
+now (`ui.card-info-one-algorithm`). The page data of the reviews before the latest answered one carries no
 memory state, so no FSRS-7 stability of those reviews reaches the page.
-Cards of FSRS-7 and RWKV-Instant presets draw FSRS-7's curve with its S90
-for every review and show the FSRS-7 rows, as before.
+Cards of FSRS-7 presets draw FSRS-7's curve with its S90 for every review;
+RWKV-Instant cards draw none (`ui.card-info-one-algorithm`).
 
 **Why:** Andrew, 2026-09-15: forgetting curve graphs always use the S90, for
 RWKV-Curve as for FSRS-7; the Stability row and the tooltip show the drawn
@@ -160,15 +159,69 @@ no FSRS-7 S90.
 (`rslib/src/rwkv/mod.rs`);
 `test_rwkv_card_info_curve_samples_the_stored_curve`,
 `test_rwkv_card_info_curve_is_none_without_a_curve`,
-`test_card_info_reports_only_rwkv_next_s90_for_filtered_states`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_card_info_gets_rwkv_curves_own_curve_and_s90`,
 `test_card_info_has_no_rwkv_curve_for_other_algorithms`
 (`qt/tests/test_mediasrv.py`); "an RWKV-Curve card shows its curve's S90
-and no FSRS-7 difficulty or retrievability", "an RWKV-Curve card without a
-curve shows no stability" (`ts/routes/card-info/lib.test.ts`);
+and R, and no difficulty", "an RWKV-Curve card without a curve shows no
+stability and a calculating R" (`ts/routes/card-info/lib.test.ts`);
 "rwkvRecallAt interpolates between the
 curve's points", "an RWKV-Curve card's chart starts at its last review: no
 FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
 curve and S90", "without an RWKV curve yet the chart stops at the last
 review" (`ts/routes/card-info/forgetting-curve.test.ts`).
+
+## ui.fsrs7-no-rwkv-values
+
+Given a collection whose algorithm is FSRS-7 (`sched.one-global-algorithm`),
+nothing on screen comes from RWKV, even with an RWKV model loaded: the
+reviewer runs no RWKV prediction for its cards, their card info has no RWKV
+rows ("RWKV computed R", "Retrievability source", the answer-button
+probabilities, "RWKV : R After Review"), and the Stats page prepares no RWKV
+scores, so its Retrievability graph has no RWKV series (any scores left
+from an earlier algorithm are dropped). Opening the Stats page does not
+load the model.
+
+**Why:** Andrew, 2026-09-15: never mix two scheduling algorithms in one
+display; every place shows only the active algorithm's values.
+
+**Pinned by:** `test_fsrs7_card_gets_no_rwkv_prediction_and_no_card_info_rows`,
+`test_fsrs7_collection_prepares_no_rwkv_stats_scores`
+(`qt/tests/test_rwkv_scheduler.py`).
+
+## ui.card-info-one-algorithm
+
+Given card info (the browser's sidebar, the Card Info window, the reviewer's
+card info) for a card with an FSRS memory state, in Advanced mode it shows
+only the values of the collection's algorithm (`sched.one-global-algorithm`)
+and one retrievability, labelled "Retrievability":
+
+| Algorithm    | Stability               | Difficulty | Retrievability             | Forgetting curve |
+| ------------ | ----------------------- | ---------- | -------------------------- | ---------------- |
+| FSRS-7       | FSRS-7's S90            | FSRS-7's   | FSRS-7's                   | FSRS-7's         |
+| RWKV-Curve   | the curve's S90         | none       | the curve's recall now     | RWKV-Curve's     |
+| RWKV-Instant | none                    | none       | RWKV's prediction          | none             |
+
+RWKV-Curve's recall now is its stored curve (`ui.card-info-rwkv-curve`) at
+the time since the card's latest answered review. While RWKV has no value
+yet, the Retrievability row reads "Calculating…". Card info shows no other
+RWKV rows: no second retrievability, no answer-button probabilities, no
+next-S90 rows per button, no "R After Review" or "R After 10min", and no
+retrievability source. In Simple mode (`ui.mode-switch`) card info shows no
+stability, difficulty or retrievability at all; the forgetting curve stays.
+
+**Why:** Andrew, 2026-09-15: "It's too much clutter, just remove all of this
+and keep one R value"; "don't show DSR values in card info in Simple mode";
+never mix two algorithms in one display.
+
+**Pinned by:** `card_stats_report_the_algorithm_and_the_mode`
+(`rslib/src/stats/card.rs`);
+`test_card_info_queries_rwkv_without_cached_reviewer_prediction` (an
+RWKV-Instant card's one row), `test_reviewer_rwkv_prediction_uses_reviews_of_other_cards`
+(an RWKV-Curve card's none), `test_rwkv_card_info_curve_gives_the_recall_now`
+(`qt/tests/test_rwkv_scheduler.py`); `test_card_info_gets_rwkv_curves_own_curve_and_s90`
+(`qt/tests/test_mediasrv.py`); "FSRS-7 shows stability, difficulty and one
+retrievability", "Simple mode shows no difficulty, stability or
+retrievability", "an RWKV-Curve card shows its curve's S90 and R, and no
+difficulty", "an RWKV-Instant card shows only RWKV's R, once, and no
+forgetting curve" (`ts/routes/card-info/lib.test.ts`).

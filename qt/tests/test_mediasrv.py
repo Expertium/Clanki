@@ -36,25 +36,6 @@ from aqt.mediasrv import (
     legacy_page_data,
 )
 
-RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
-    "RWKV : R After Review",
-    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-)
-RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW = (
-    "RWKV : R After 10min",
-    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-)
-RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS = [
-    RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
-    RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW,
-]
-NEXT_S90_UNAVAILABLE_ROWS = [
-    (
-        "RWKV Curve Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
-]
-
 
 def test_rwkv_raw_backend_mutation_scopes() -> None:
     from anki import image_occlusion_pb2, notes_pb2
@@ -421,17 +402,25 @@ def _card_stats_with_two_reviews() -> Any:
 def test_card_info_gets_rwkv_curves_own_curve_and_s90(
     monkeypatch: pytest.MonkeyPatch, has_curve: bool
 ) -> None:
-    """Pins spec/ui.md#ui.card-info-rwkv-curve"""
+    """Pins spec/ui.md#ui.card-info-rwkv-curve and
+    #ui.card-info-one-algorithm"""
     import aqt.rwkv_scheduler as rwkv
     from aqt.mediasrv import _add_rwkv_curve
 
-    curve = rwkv.RwkvCardCurve(elapsed_days=(0.0, 1.0), recall=(1.0, 0.8), s90=0.4)
-    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
-    monkeypatch.setattr(
-        rwkv,
-        "rwkv_card_info_curve",
-        lambda reviewer, card: curve if has_curve else None,
+    curve = rwkv.RwkvCardCurve(
+        elapsed_days=(0.0, 1.0), recall=(1.0, 0.8), s90=0.4, current_recall=0.93
     )
+    elapsed: list[float | None] = []
+
+    def card_info_curve(
+        reviewer: object, card: object, *, elapsed_days: float | None = None
+    ) -> object:
+        elapsed.append(elapsed_days)
+        return curve if has_curve else None
+
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(rwkv, "rwkv_card_info_curve", card_info_curve)
+    monkeypatch.setattr("aqt.mediasrv.time.time", lambda: 200 + 2 * 86_400)
     response = _card_stats_with_two_reviews()
 
     _add_rwkv_curve(response, object(), object())
@@ -441,11 +430,16 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         assert list(response.rwkv_curve.elapsed_days) == [0.0, 1.0]
         assert list(response.rwkv_curve.recall) == pytest.approx([1.0, 0.8])
         assert response.rwkv_curve.s90 == pytest.approx(0.4)
+        # the card's R: the curve two days after the latest answered review
+        # (spec ui.card-info-one-algorithm)
+        assert response.rwkv_curve.current_recall == pytest.approx(0.93)
+        assert elapsed == [pytest.approx(2.0)]
         # the latest review shows the drawn curve's S90
         assert response.revlog[1].memory_state.stability == pytest.approx(0.4)
     else:
         assert not response.rwkv_curve.elapsed_days
         assert not response.rwkv_curve.HasField("s90")
+        assert not response.rwkv_curve.HasField("current_recall")
         # no FSRS-7 value stands in for the missing curve
         assert not response.revlog[1].HasField("memory_state")
     # older reviews keep no FSRS-7 memory state; the newer manual entry and
@@ -612,12 +606,12 @@ class TestCardStats:
     @pytest.mark.parametrize(
         "deck_config",
         [
-            {"id": 1, "rwkvReviewEnabled": True},
+            {"id": 1, "rwkvReviewInstantOrderEnabled": True},
             {
                 "id": 1,
                 "other": {
                     "jschoreels.fsrs": {
-                        "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
                     },
                 },
             },
@@ -699,9 +693,6 @@ class TestCardStats:
 
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV computed R", "61%"),
-            ("Retrievability source", "RWKV"),
-            *NEXT_S90_UNAVAILABLE_ROWS,
-            *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
 
     def test_card_info_reports_rwkv_unavailable_when_backend_missing(
@@ -723,7 +714,7 @@ class TestCardStats:
         class Decks:
             def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
                 assert deck_id == 10
-                return {"id": 1, "rwkvReviewEnabled": True}
+                return {"id": 1, "rwkvReviewInstantOrderEnabled": True}
 
         class Collection:
             _backend = RawBackend()
@@ -748,10 +739,7 @@ class TestCardStats:
         output.ParseFromString(raw_output)
 
         assert [(row.label, row.value) for row in output.extra_rows] == [
-            ("RWKV computed R", "Unavailable"),
-            ("Retrievability source", "FSRS (RWKV backend unavailable)"),
-            *NEXT_S90_UNAVAILABLE_ROWS,
-            *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
+            ("RWKV computed R", "Calculating…"),
         ]
 
     def test_card_info_hook_can_append_rows(
