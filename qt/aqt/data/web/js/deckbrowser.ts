@@ -30,3 +30,15 @@ function handleDropEvent(event, ui) {
 
     pycmd("drag:" + draggedDeckId + "," + ontoDeckId);
 }
+
+/** Replace the rows of the deck table (after a collapse or expand) without
+ * reloading the page; deckbrowser.py falls back to a reload when this could
+ * give a different page. */
+function replaceDeckTree(html: string) {
+    const table = document.getElementById("decktree");
+    if (!table) {
+        return;
+    }
+    table.innerHTML = html;
+    init();
+}

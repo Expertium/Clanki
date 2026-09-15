@@ -164,7 +164,7 @@ class DeckBrowser:
 
     _body = """
 <center>
-<table cellspacing=0 cellpadding=3>
+<table id=decktree cellspacing=0 cellpadding=3>
 %(tree)s
 </table>
 
@@ -229,6 +229,7 @@ class DeckBrowser:
             stats=self._renderStats(),
         )
         gui_hooks.deck_browser_will_render_content(self, content)
+        self._rendered_stats = content.stats
         self.web.stdHtml(
             self._v1_upgrade_message(data.sched_upgrade_required)
             + self._body % content.__dict__,
@@ -579,7 +580,35 @@ class DeckBrowser:
                 collapsed=node.collapsed,
                 scope=DeckCollapseScope.REVIEWER,
             ).run_in_background(initiator=self)
-            self._renderPage(reuse=True)
+            if not self._redraw_tree_in_place():
+                self._renderPage(reuse=True)
+
+    def _redraw_tree_in_place(self) -> bool:
+        """Swap the deck table in the open page instead of reloading the page
+        and the bottom bar. The content hook still runs, add-ons included;
+        the swap happens only when the result can be the same page: the
+        stats section is unchanged, the new table has no script (scripts do
+        not run when inserted this way), and no add-on listens to the hooks
+        that decorate a freshly loaded page. Otherwise the caller reloads."""
+        if getattr(self, "_rendered_stats", None) is None:
+            return False
+        if not all(
+            _only_builtin_handlers(hook)
+            for hook in (
+                gui_hooks.deck_browser_did_render,
+                gui_hooks.webview_will_set_content,
+            )
+        ):
+            return False
+        content = DeckBrowserContent(
+            tree=self._renderDeckTree(self._render_data.tree),
+            stats=self._renderStats(),
+        )
+        gui_hooks.deck_browser_will_render_content(self, content)
+        if content.stats != self._rendered_stats or "<script" in content.tree.lower():
+            return False
+        self.web.eval(f"replaceDeckTree({json.dumps(content.tree)});")
+        return True
 
     def _handle_drag_and_drop(self, source: DeckId, target: DeckId) -> None:
         reparent_decks(
@@ -668,3 +697,12 @@ class DeckBrowser:
 
         showInfo(tr.scheduling_update_done())
         self.refresh()
+
+
+def _only_builtin_handlers(hook: Any) -> bool:
+    """True when every handler of a gui hook comes from Clanki itself (the
+    aqt and anki packages), not from an add-on."""
+    return all(
+        getattr(handler, "__module__", "").startswith(("aqt.", "anki."))
+        for handler in getattr(hook, "_hooks", [])
+    )
