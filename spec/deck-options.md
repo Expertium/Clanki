@@ -2,11 +2,17 @@
 
 ## deck-options.scheduler-choice
 
-Given the deck-options screen, the algorithm for a preset is chosen from one
-dropdown labelled **Algorithm** with the values FSRS-7, RWKV-Curve and
-RWKV-Instant. SM-2 is not selectable: the collection `fsrs` switch is on for
-every value. The value maps onto the stored flags as follows, and nothing
-else:
+Given the deck-options screen in Advanced mode, the collection's algorithm
+(`sched.one-global-algorithm`) is chosen from one dropdown titled
+**Algorithm (global)** and the blue globe (`ui.global-marker`), with the
+values FSRS-7, RWKV-Curve and RWKV-Instant. It shows the
+same value on every preset: choosing a value gives every preset on the page
+that algorithm, and the save makes it the collection's algorithm
+(`sched.algorithm-change-prompt`). Simple mode has no Algorithm dropdown. A
+save that only changes a preset's flags cannot change its algorithm: the
+saved presets take the collection's, and the collection `fsrs` switch stays
+on. SM-2 is not selectable. Each algorithm corresponds to these stored
+flags, and nothing else:
 
 | Value        | collection `fsrs` | preset `rwkv_review_enabled` | preset `rwkv_review_instant_order_enabled` |
 | ------------ | ----------------- | ---------------------------- | ------------------------------------------ |
@@ -24,7 +30,8 @@ cleared the next time the preset is saved. A collection whose `fsrs` switch
 is off has it turned on when the deck-options screen shows a preset, and
 nothing is written until the user saves. The underlying flags, their
 storage in the `jschoreels.rwkv` bag, and the scheduler behavior behind
-each single algorithm are unchanged.
+each single algorithm are unchanged. A preset whose flags do not match the
+collection's algorithm shows that algorithm and takes it on the next save.
 
 In the open dropdown each algorithm shows a short description under its
 name (FSRS-7: each card's grades and the time between reviews only, the least
@@ -32,16 +39,22 @@ accurate; RWKV-Curve: the default, a neural network that uses more
 information but not card content, with intervals like FSRS-7;
 RWKV-Instant: the same network, best at keeping retention at the desired
 level, no intervals, dueness decided again after each review, possibly
-unintuitive). The revert button restores
-the new-preset algorithm, RWKV-Curve (`deck-options.new-preset-defaults`).
+unintuitive). The revert button restores RWKV-Curve, the algorithm of a new
+collection (`deck-options.new-preset-defaults`).
 
 **Why:** the three switches were independent and could be combined in ways
 the user did not mean; desired retention was also only editable inside the
-FSRS block even though RWKV reads it, which the dropdown resolves by keeping
-FSRS on for every RWKV mode. Andrew, 2026-09-15: there must only be one
-algorithm at any given time, and each choice needs a description.
+FSRS block even though RWKV reads it, which is resolved by keeping FSRS on
+for every RWKV mode. Andrew, 2026-09-15: there must only be one algorithm at
+any given time, and each choice needs a description. Later the same day:
+the choice stays global but lives in deck options, not Preferences, because
+people open deck options far more often; the "(global)" mark and the globe
+say that it is not a per-preset setting.
 
 **Pinned by:** `ts/routes/deck-options/scheduler-choice.test.ts`;
+`deck_options_save_cannot_change_the_algorithm`,
+`deck_options_show_and_change_the_algorithm`
+(`rslib/src/deckconfig/algorithm.rs`);
 `ts/tests/e2e/deck-options.test.ts` checks that no FSRS switch remains;
 `a_preset_stored_with_both_rwkv_modes_reads_as_rwkv_curve`
 (`rslib/src/deckconfig/fork_fields.rs`);
@@ -210,11 +223,11 @@ minimum other reviews and minimum seconds before a same-day repeat; predict R
 for new cards from creation time; dynamic preset add-on support; the Rebuild
 RWKV State and Recompute Calibration actions.
 
-The Algorithm dropdown itself exists only in Advanced mode
-(`deck-options.simple-view`); in Simple mode a preset keeps its stored
-algorithm (new presets: RWKV-Curve, `deck-options.new-preset-defaults`). The
-RWKV section exists only in Advanced mode, under either RWKV mode; the
-same-day repeat switch in it shows while RWKV-Instant is selected.
+The Algorithm dropdown exists only in Advanced mode
+(`deck-options.simple-view`); in Simple mode the collection's algorithm
+stays as it is (`sched.one-global-algorithm`). The RWKV section exists only in Advanced
+mode, under either RWKV mode; the same-day repeat switch in it shows while
+RWKV-Instant is the algorithm.
 
 **Why:** plan item 2 — a Simplified view is the default; the remaining RWKV
 knobs have defaults that suit nearly everyone.
@@ -310,19 +323,18 @@ audio automatically".
 ## deck-options.collection-wide-in-preferences
 
 Given the deck-options screen, every setting on it belongs to one preset
-(or, for the limit tabs, to the current deck). The three settings that
-apply to the whole collection live in Preferences > Review, in the Scheduler
-group and a "Custom scheduling" group, and nowhere else: Limits start from
+(or, for the limit tabs, to the current deck), except the Algorithm, which
+applies to the whole collection and is marked "(global)"
+(`deck-options.scheduler-choice`). The three other settings that apply to
+the whole collection live in Preferences > Review, in the Scheduler group
+and a "Custom scheduling" group, and nowhere else: Limits start from
 top (`applyAllParentLimits`), Reschedule cards when desired retention
 changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
 and Custom scheduling (`cardStateCustomizer`). They are read and written
 through the `Preferences.Scheduling` message; the matching fields of the
 deck-options save request are ignored, so a deck-options save never
 overwrites a Preferences change. The deck-options page still reads one of
-them: the reschedule choice, for the Easy Days warning. With no
-collection-wide
-setting left on the page, the globe marker and the "affects the entire
-collection" help icon are gone.
+them: the reschedule choice, for the Easy Days warning.
 
 **Why:** Andrew, 2026-09-14: a setting that affects all decks and presets
 should not be in deck options to begin with; moving them beats marking them.
@@ -345,7 +357,8 @@ stored choice); "collection-wide settings are not on the deck-options page"
 Given a new preset — added on the deck-options screen, created by
 `col.decks.add_config()` without a source, or reset with "Restore
 defaults" — its learning steps and relearning steps are empty and its
-algorithm is RWKV-Curve (`rwkv_review_enabled` on,
+algorithm is the collection's (`sched.one-global-algorithm`), or, in a
+collection that has none yet, RWKV-Curve (`rwkv_review_enabled` on,
 `rwkv_review_instant_order_enabled` off), its leech action is Tag Only, its
 maximum reviews/day is 9999 and its review sort order is descending
 retrievability (most likely to be recalled first); the revert buttons
@@ -365,7 +378,9 @@ built on.
 
 **Pinned by:** `new_preset_has_no_steps_and_runs_rwkv_curve`,
 `fresh_collection_starts_with_new_preset_defaults`,
-`stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`).
+`stored_preset_without_rwkv_flag_stays_off` (`rslib/src/deckconfig/mod.rs`);
+`every_preset_write_takes_the_collection_algorithm`
+(`rslib/src/deckconfig/algorithm.rs`).
 
 ## deck-options.no-difficulty-order-under-rwkv
 

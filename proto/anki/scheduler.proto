@@ -74,6 +74,10 @@ service SchedulerService {
   rpc EvaluateParamsLegacy(EvaluateParamsLegacyRequest)
       returns (EvaluateParamsResponse);
   rpc ComputeMemoryState(cards.CardId) returns (ComputeMemoryStateResponse);
+  // FSRS-7 memory states and due dates of every card, for a switch of the
+  // collection's algorithm to FSRS-7 (spec sched.algorithm-change-prompt).
+  // Writes no review-log rows.
+  rpc RescheduleAllCardsWithFsrs7(generic.Empty) returns (collection.OpChanges);
   rpc GetFsrsPresetForCard(cards.CardId) returns (FsrsPresetForCardResponse);
   // The number of days the calculated interval was fuzzed by on the previous
   // review (if any). Utilized by the FSRS add-on.

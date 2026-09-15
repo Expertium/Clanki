@@ -32,8 +32,10 @@ async function visibleCount(page: Page, text: string): Promise<number> {
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice,
 // #deck-options.simple-view and #deck-options.fsrs-only-controls: there is
-// no FSRS switch any more, the Algorithm dropdown exists only in Advanced
-// mode, and so do the FSRS parameters (inside the FSRS advanced section);
+// no FSRS switch any more, the Algorithm (global) dropdown (the algorithm is
+// one for the collection, spec/scheduling.md#sched.one-global-algorithm)
+// exists only in Advanced mode, and so do the FSRS parameters (inside the FSRS
+// advanced section);
 // "Optimize All Presets" is the one optimize action and shows in Simple
 // mode too.
 test("Simple mode shows desired retention but no Algorithm dropdown", async ({ page }) => {
@@ -42,6 +44,7 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
 
     await expect(page.getByRole("checkbox", { name: /^FSRS\b/ })).toHaveCount(0);
     await expect(page.getByText("Algorithm", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Algorithm (global)", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Desired retention", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Bury siblings", { exact: true }).first()).toBeVisible();
     await expect(
@@ -70,6 +73,8 @@ test("collection-wide settings are not on the deck-options page", async ({ page 
     try {
         await page.goto("/deck-options/1");
         await expect(page.getByText("Algorithm", { exact: true }).first()).toBeVisible();
+        // Pins spec/ui.md#ui.global-marker
+        await expect(page.getByText("Algorithm (global)", { exact: true })).toBeVisible();
         await expect(page.getByRole("button", { name: "This deck" }).first()).toBeVisible();
         expect(await visibleCount(page, "Maximum reviews/day")).toBeGreaterThan(0);
         await expect(page.getByRole("button", { name: "Today only" }).first()).toBeVisible();

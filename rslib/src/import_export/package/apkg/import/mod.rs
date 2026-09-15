@@ -126,6 +126,11 @@ impl<'a> Context<'a> {
         {
             tracing::warn!(?err, "repairing the fsrs-7 state of foreign cards failed");
         }
+        // imported presets take the collection's algorithm, and a collection
+        // without one gets it now (spec sched.one-global-algorithm)
+        if let Err(err) = self.target_col.enforce_scheduling_algorithm_inner() {
+            tracing::warn!(?err, "enforcing the scheduling algorithm failed");
+        }
         self.copy_media(&mut media_map)?;
         Ok(note_imports.log)
     }

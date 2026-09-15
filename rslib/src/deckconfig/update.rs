@@ -10,6 +10,7 @@ use std::iter;
 use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
 use anki_proto::deck_config::deck_configs_for_update::ConfigWithExtra;
 use anki_proto::deck_config::deck_configs_for_update::CurrentDeck;
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use anki_proto::deck_config::UpdateDeckConfigsMode;
 use anki_proto::decks::deck::normal::DayLimit;
 use fsrs::DEFAULT_PARAMETERS;
@@ -17,6 +18,7 @@ use fsrs::FSRS;
 use tracing::debug;
 use tracing::warn;
 
+use super::algorithm::SchedulingAlgorithm;
 use super::FsrsVersion;
 use crate::config::I32ConfigKey;
 use crate::config::StringKey;
@@ -79,6 +81,23 @@ impl Collection {
             .filter(|config| legacy_fsrs_params(config) != config.fsrs_params())
             .map(|config| (config.id, config))
             .collect();
+        let entries = self.memory_state_entries_for_presets(&changed, false)?;
+        if !entries.is_empty() {
+            self.transact_no_undo(|col| col.update_memory_state(entries))?;
+        }
+        self.transact_no_undo(|col| {
+            col.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
+            Ok(())
+        })
+    }
+
+    /// One memory-state update per given preset that has decks, over the
+    /// cards whose home deck uses it, with the preset's FSRS-7 parameters.
+    pub(crate) fn memory_state_entries_for_presets(
+        &self,
+        configs: &HashMap<DeckConfigId, DeckConfig>,
+        reschedule: bool,
+    ) -> Result<Vec<UpdateMemoryStateEntry>> {
         let mut decks_by_config: HashMap<DeckConfigId, Vec<DeckId>> = HashMap::new();
         let mut deck_desired_retention = HashMap::new();
         for deck in self.storage.get_all_decks()? {
@@ -86,7 +105,7 @@ impl Collection {
                 continue;
             };
             let config_id = DeckConfigId(normal.config_id);
-            if changed.contains_key(&config_id) {
+            if configs.contains_key(&config_id) {
                 decks_by_config.entry(config_id).or_default().push(deck.id);
             }
             if let Some(desired_retention) = normal.desired_retention {
@@ -95,18 +114,18 @@ impl Collection {
         }
         let review_fuzz_config = self.review_fuzz_config();
         let total_presets = decks_by_config.len() as u32;
-        let entries = decks_by_config
+        decks_by_config
             .into_iter()
             .enumerate()
             .map(|(idx, (config_id, deck_ids))| {
-                let config = &changed[&config_id];
+                let config = &configs[&config_id];
                 Ok(UpdateMemoryStateEntry {
                     req: Some(UpdateMemoryStateRequest {
                         params: config.fsrs_params().to_vec(),
                         preset_desired_retention: config.inner.desired_retention,
                         max_interval: config.inner.maximum_review_interval,
                         review_fuzz_config,
-                        reschedule: false,
+                        reschedule,
                         historical_retention: HISTORICAL_RETENTION,
                         deck_desired_retention: deck_desired_retention.clone(),
                     }),
@@ -119,14 +138,7 @@ impl Collection {
                     total_presets,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
-        if !entries.is_empty() {
-            self.transact_no_undo(|col| col.update_memory_state(entries))?;
-        }
-        self.transact_no_undo(|col| {
-            col.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
-            Ok(())
-        })
+            .collect()
     }
 }
 
@@ -167,6 +179,9 @@ impl Collection {
         let mut defaults = DeckConfig::default();
         defaults.inner.fsrs_params_7 = DEFAULT_PARAMETERS.into();
         defaults.inner.fsrs_version = FsrsVersion::Seven as i32;
+        // Add preset and Restore defaults take the collection's algorithm
+        // (spec sched.one-global-algorithm)
+        self.apply_scheduling_algorithm(&mut defaults.inner);
         let last_optimize = self.get_config_i32(I32ConfigKey::LastFsrsOptimize) as u32;
         let days_since_last_fsrs_optimize = if last_optimize > 0 {
             self.timing_today()?
@@ -201,12 +216,31 @@ impl Collection {
             days_since_last_fsrs_optimize,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
             fsrs_reschedule: self.get_config_bool(BoolKey::FsrsReschedule),
+            scheduling_algorithm: SchedulingAlgorithmProto::from(
+                self.effective_scheduling_algorithm()?,
+            ) as i32,
         })
     }
 
     /// Information required for the deck options screen.
     pub fn update_deck_configs(&mut self, input: UpdateDeckConfigsRequest) -> Result<OpOutput<()>> {
+        self.update_deck_configs_and_algorithm(input, None)
+    }
+
+    /// A deck-options save that can also change the collection's algorithm
+    /// (spec sched.one-global-algorithm). The new algorithm is set first, so
+    /// the saved presets take it.
+    pub fn update_deck_configs_and_algorithm(
+        &mut self,
+        input: UpdateDeckConfigsRequest,
+        algorithm: Option<SchedulingAlgorithm>,
+    ) -> Result<OpOutput<()>> {
         self.transact(Op::UpdateDeckConfig, |col| {
+            if let Some(algorithm) = algorithm {
+                if algorithm != col.effective_scheduling_algorithm()? {
+                    col.change_scheduling_algorithm(algorithm)?;
+                }
+            }
             col.update_deck_configs_inner(input)
         })
     }
@@ -288,6 +322,12 @@ impl Collection {
 
     fn update_deck_configs_inner(&mut self, mut req: UpdateDeckConfigsRequest) -> Result<()> {
         require!(!req.configs.is_empty(), "config not provided");
+        // the saved presets take the collection's algorithm (in
+        // add_or_update_deck_config), and FSRS, which every algorithm needs,
+        // stays on (spec sched.one-global-algorithm)
+        if self.scheduling_algorithm().is_some() {
+            req.fsrs = true;
+        }
         let configs_before_update = self.storage.get_deck_config_map()?;
         let mut configs_after_update = configs_before_update.clone();
         let previous_review_fuzz = self.stored_review_fuzz_config();

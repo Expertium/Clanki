@@ -97,8 +97,20 @@ impl NormalSyncer<'_> {
                 self.col.unbury_if_day_rolled_over(timing)?;
                 self.col.storage.begin_trx()?;
                 match self.normal_sync_inner(state).await {
-                    Ok(success) => {
+                    Ok(mut success) => {
                         self.col.storage.commit_trx()?;
+                        // presets another client gave another algorithm, or a
+                        // collection that arrived without one (spec
+                        // sync.global-algorithm-mirror). This runs after the
+                        // sync, in its own transaction: deck configs travel
+                        // before this point, so the changed presets upload with
+                        // the next sync.
+                        match self.col.enforce_scheduling_algorithm() {
+                            Ok(changed) => success.remote_non_review_collection_changed |= changed,
+                            Err(err) => {
+                                tracing::warn!(?err, "enforcing the scheduling algorithm failed")
+                            }
+                        }
                         Ok(success)
                     }
                     Err(e) => {

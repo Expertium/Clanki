@@ -7,7 +7,7 @@ import aqt
 import aqt.deckconf
 import aqt.main
 from anki.cards import Card
-from anki.decks import DeckDict, DeckId
+from anki.decks import DeckConfigsForUpdate, DeckDict, DeckId
 from anki.lang import without_unicode_isolation
 from aqt import gui_hooks
 from aqt.branding import APP_NAME
@@ -133,3 +133,61 @@ def display_options_for_deck(deck: DeckDict) -> None:
             DeckOptionsDialog(aqt.mw, deck)
     else:
         aqt.dialogs.open("FilteredDeckConfigDialog", aqt.mw, deck_id=deck["id"])
+
+
+# The collection's one scheduling algorithm
+######################################################################
+
+SchedulingAlgorithm = DeckConfigsForUpdate.SchedulingAlgorithm
+
+
+def algorithm_name(algorithm: SchedulingAlgorithm.V) -> str:
+    if algorithm == SchedulingAlgorithm.RWKV_CURVE:
+        return tr.deck_config_scheduler_choice_rwkv_curve()
+    if algorithm == SchedulingAlgorithm.RWKV_INSTANT:
+        return tr.deck_config_scheduler_choice_rwkv_instant()
+    return tr.deck_config_scheduler_choice_fsrs()
+
+
+def ask_reschedule_after_algorithm_change(
+    parent: QWidget, algorithm: SchedulingAlgorithm.V
+) -> bool:
+    """Asked when a deck-options save changes the algorithm, except to
+    RWKV-Instant, which has no intervals to reschedule (spec
+    sched.algorithm-change-prompt). Closing the question keeps the due dates."""
+    if algorithm == SchedulingAlgorithm.RWKV_INSTANT:
+        return False
+    name = algorithm_name(algorithm)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle(tr.deck_config_scheduler())
+    box.setText(tr.deck_config_algorithm_changed_question(algorithm=name))
+    reschedule = box.addButton(
+        tr.deck_config_reschedule_all_now(), QMessageBox.ButtonRole.AcceptRole
+    )
+    keep = box.addButton(
+        tr.deck_config_keep_due_dates(), QMessageBox.ButtonRole.RejectRole
+    )
+    box.setDefaultButton(keep)
+    box.setEscapeButton(keep)
+    box.exec()
+    return box.clickedButton() is reschedule
+
+
+def after_algorithm_change(
+    mw: aqt.main.AnkiQt, algorithm: SchedulingAlgorithm.V, reschedule: bool
+) -> None:
+    """Drop RWKV's cached targets and queue scores and refresh the study
+    screens; then, if the user chose it, reschedule every card."""
+    from aqt import rwkv_scheduler
+    from aqt.operations import CollectionOp
+
+    rwkv_scheduler.rwkv_instant_retention_did_change(mw)
+    if not reschedule:
+        return
+    if algorithm == SchedulingAlgorithm.FSRS7:
+        CollectionOp(
+            mw, lambda col: col._backend.reschedule_all_cards_with_fsrs7()
+        ).run_in_background()
+    elif algorithm == SchedulingAlgorithm.RWKV_CURVE:
+        rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(mw)

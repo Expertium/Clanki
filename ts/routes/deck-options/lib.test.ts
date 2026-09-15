@@ -10,6 +10,7 @@ import {
     DeckConfig_Config_FsrsVersion,
     DeckConfig_Config_LeechAction,
     DeckConfigsForUpdate,
+    DeckConfigsForUpdate_SchedulingAlgorithm,
     UpdateDeckConfigsMode,
 } from "@generated/anki/deck_config_pb";
 import { get } from "svelte/store";
@@ -275,6 +276,31 @@ test("saving", () => {
     out = state.dataForSaving(UpdateDeckConfigsMode.APPLY_TO_CHILDREN);
     expect(out.removedConfigIds).toStrictEqual([1618570764780n]);
     expect(out.configs!.map((c) => c.name)).toStrictEqual(["Default"]);
+});
+
+// Pins spec/deck-options.md#deck-options.scheduler-choice
+test("the algorithm is one value for every preset, sent only when changed", () => {
+    const state = startingState();
+    // a collection without an algorithm field reads as FSRS-7
+    expect(get(state.schedulingAlgorithm)).toBe(DeckConfigsForUpdate_SchedulingAlgorithm.FSRS7);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).schedulingAlgorithm).toBeUndefined();
+
+    state.setSchedulingAlgorithm(DeckConfigsForUpdate_SchedulingAlgorithm.RWKV_INSTANT);
+    for (const id of [1n, 1618570764780n]) {
+        const inner = state.getConfigById(id)!.config!;
+        expect([inner.rwkvReviewEnabled, inner.rwkvReviewInstantOrderEnabled]).toEqual([false, true]);
+    }
+    expect(get(state.currentConfig).rwkvReviewInstantOrderEnabled).toBe(true);
+    // Add preset takes it too
+    state.addConfig("new");
+    expect(get(state.currentConfig).rwkvReviewInstantOrderEnabled).toBe(true);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).schedulingAlgorithm).toBe(
+        DeckConfigsForUpdate_SchedulingAlgorithm.RWKV_INSTANT,
+    );
+
+    // back to the stored value: nothing to send
+    state.setSchedulingAlgorithm(DeckConfigsForUpdate_SchedulingAlgorithm.FSRS7);
+    expect(state.dataForSaving(UpdateDeckConfigsMode.NORMAL).schedulingAlgorithm).toBeUndefined();
 });
 
 test("clears incompatible FSRS params across presets for optimize all", () => {

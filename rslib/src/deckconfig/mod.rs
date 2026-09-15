@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+pub(crate) mod algorithm;
 mod fork_fields;
 mod schema11;
 mod service;
@@ -241,6 +242,7 @@ impl Collection {
         if config.id.0 == 0 {
             self.add_deck_config_inner(config, Some(usn))
         } else {
+            self.apply_scheduling_algorithm(&mut config.inner);
             config.set_modified(usn);
             self.storage
                 .add_or_update_deck_config_with_existing_id(config)
@@ -254,6 +256,7 @@ impl Collection {
         config: &mut DeckConfig,
         usn: Option<Usn>,
     ) -> Result<()> {
+        self.apply_scheduling_algorithm(&mut config.inner);
         if let Some(usn) = usn {
             config.set_modified(usn);
         }
@@ -269,6 +272,7 @@ impl Collection {
         original: DeckConfig,
         usn: Option<Usn>,
     ) -> Result<()> {
+        self.apply_scheduling_algorithm(&mut config.inner);
         if config == &original {
             return Ok(());
         }

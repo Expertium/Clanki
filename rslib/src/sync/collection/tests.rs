@@ -31,6 +31,7 @@ use crate::card::FsrsMemoryState;
 use crate::collection::Collection;
 use crate::collection::CollectionBuilder;
 use crate::config::BoolKey;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::FsrsVersion;
 use crate::decks::DeckKind;
@@ -747,6 +748,60 @@ async fn fsrs7_state_of_a_foreign_card_is_rebuilt_on_open() -> Result<()> {
             col1.storage.get_card(card_id)?.unwrap().memory_state,
             fsrs7_state,
         );
+
+        Ok(())
+    })
+    .await
+}
+
+// Pins spec/sync.md#sync.global-algorithm-mirror: a preset that another
+// client (one that knows only the preset flags) switched to another
+// algorithm comes back to the collection's algorithm after the sync that
+// brings it, and the next sync uploads it.
+#[tokio::test]
+async fn sync_reverts_a_preset_another_client_gave_another_algorithm() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+
+        let mut col1 = ctx.col1();
+        add_reviewed_card(&mut col1, "algorithm", DeckId(1))?;
+        col1.transact_no_undo(|col| {
+            col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)
+        })?;
+        sync_fsrs_collections(&ctx, col1).await?;
+
+        let mut col1 = ctx.col1();
+        let mut col2 = ctx.col2();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let mut config = col2.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        SchedulingAlgorithm::Fsrs7.apply_to(&mut config.inner);
+        config.set_modified(Usn(-1));
+        col2.storage.update_deck_conf(&config)?;
+        let out = ctx.normal_sync(&mut col2).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+
+        let preset_algorithm = |col: &Collection| {
+            SchedulingAlgorithm::of_preset(
+                &col.get_deck_config(DeckConfigId(1), false)
+                    .unwrap()
+                    .unwrap()
+                    .inner,
+            )
+        };
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert_eq!(preset_algorithm(&col1), SchedulingAlgorithm::RwkvCurve);
+        assert_eq!(
+            col1.scheduling_algorithm(),
+            Some(SchedulingAlgorithm::RwkvCurve)
+        );
+
+        // the next syncs upload it and bring it to the other device
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        let out = ctx.normal_sync(&mut col2).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert_eq!(preset_algorithm(&col2), SchedulingAlgorithm::RwkvCurve);
 
         Ok(())
     })

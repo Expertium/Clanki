@@ -85,6 +85,11 @@ impl CollectionBuilder {
         };
         if !server {
             col.migrate_learning_queues_switch()?;
+            // one algorithm for every preset (spec sched.one-global-algorithm);
+            // a failure must not stop the collection from opening
+            if let Err(err) = col.enforce_scheduling_algorithm() {
+                tracing::warn!(?err, "enforcing the scheduling algorithm failed");
+            }
             col.migrate_to_fsrs7_only()?;
             // cards another client wrote since the last open, including a
             // full download or a restored backup (spec

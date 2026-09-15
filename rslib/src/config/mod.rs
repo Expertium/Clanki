@@ -73,6 +73,7 @@ pub(crate) enum ConfigKey {
     #[strum(to_string = "schedVer")]
     SchedulerVersion,
     CustomColorPickerPalette,
+    SchedulingAlgorithm,
 }
 
 #[derive(PartialEq, Eq, Serialize_repr, Deserialize_repr, Clone, Copy, Debug)]

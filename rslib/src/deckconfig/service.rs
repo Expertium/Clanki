@@ -82,7 +82,12 @@ impl crate::services::DeckConfigService for Collection {
         &mut self,
         input: anki_proto::deck_config::UpdateDeckConfigsRequest,
     ) -> Result<anki_proto::collection::OpChanges> {
-        self.update_deck_configs(input.into()).map(Into::into)
+        let algorithm = input
+            .scheduling_algorithm
+            .is_some()
+            .then(|| input.scheduling_algorithm().into());
+        self.update_deck_configs_and_algorithm(input.into(), algorithm)
+            .map(Into::into)
     }
 
     fn get_ignored_before_count(

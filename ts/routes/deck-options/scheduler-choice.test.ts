@@ -7,66 +7,34 @@ vi.mock("@generated/ftl", () => ({
     deckConfigSchedulerChoiceFsrs: () => "FSRS-7",
     deckConfigSchedulerChoiceRwkvCurve: () => "RWKV-Curve",
     deckConfigSchedulerChoiceRwkvInstant: () => "RWKV-Instant",
-    deckConfigSchedulerChoiceFsrsDescription: () => "fsrs text",
-    deckConfigSchedulerChoiceRwkvCurveDescription: () => "curve text",
-    deckConfigSchedulerChoiceRwkvInstantDescription: () => "instant text",
+    deckConfigSchedulerChoiceFsrsDescription: () => "fsrs",
+    deckConfigSchedulerChoiceRwkvCurveDescription: () => "curve",
+    deckConfigSchedulerChoiceRwkvInstantDescription: () => "instant",
 }));
 
-import {
-    flagsFromSchedulerChoice,
-    SchedulerChoice,
-    schedulerChoiceFromFlags,
-    schedulerChoices,
-} from "./scheduler-choice";
+import { flagsFromSchedulerChoice, SchedulingAlgorithm, schedulerChoices } from "./scheduler-choice";
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice
 
-const ALL = [SchedulerChoice.FSRS, SchedulerChoice.RWKV_CURVE, SchedulerChoice.RWKV_INSTANT];
-
-test("each dropdown value writes exactly one active scheduler, with FSRS on", () => {
-    expect(flagsFromSchedulerChoice(SchedulerChoice.FSRS)).toEqual({
-        fsrs: true,
+test("each algorithm writes one set of preset switches", () => {
+    expect(flagsFromSchedulerChoice(SchedulingAlgorithm.FSRS7)).toEqual({
         rwkvCurve: false,
         rwkvInstant: false,
     });
-    expect(flagsFromSchedulerChoice(SchedulerChoice.RWKV_CURVE)).toEqual({
-        fsrs: true,
+    expect(flagsFromSchedulerChoice(SchedulingAlgorithm.RWKV_CURVE)).toEqual({
         rwkvCurve: true,
         rwkvInstant: false,
     });
-    expect(flagsFromSchedulerChoice(SchedulerChoice.RWKV_INSTANT)).toEqual({
-        fsrs: true,
+    expect(flagsFromSchedulerChoice(SchedulingAlgorithm.RWKV_INSTANT)).toEqual({
         rwkvCurve: false,
         rwkvInstant: true,
     });
 });
 
-test("flags round-trip through the dropdown value", () => {
-    for (const choice of ALL) {
-        expect(schedulerChoiceFromFlags(flagsFromSchedulerChoice(choice))).toBe(choice);
-    }
-});
-
-test("a preset with both RWKV modes on reads as RWKV-Curve", () => {
-    expect(
-        schedulerChoiceFromFlags({ fsrs: true, rwkvCurve: true, rwkvInstant: true }),
-    ).toBe(SchedulerChoice.RWKV_CURVE);
-});
-
-test("the FSRS switch never changes the value: SM-2 is not selectable", () => {
-    expect(
-        schedulerChoiceFromFlags({ fsrs: false, rwkvCurve: false, rwkvInstant: false }),
-    ).toBe(SchedulerChoice.FSRS);
-    expect(
-        schedulerChoiceFromFlags({ fsrs: false, rwkvCurve: false, rwkvInstant: true }),
-    ).toBe(SchedulerChoice.RWKV_INSTANT);
-    expect(schedulerChoices().map((choice) => choice.value)).toEqual(ALL);
-});
-
-test("each algorithm has its own description in the dropdown", () => {
-    expect(schedulerChoices().map((choice) => choice.description)).toEqual([
-        "fsrs text",
-        "curve text",
-        "instant text",
+test("the list offers the three algorithms in order", () => {
+    expect(schedulerChoices().map((choice) => [choice.value, choice.label])).toEqual([
+        [SchedulingAlgorithm.FSRS7, "FSRS-7"],
+        [SchedulingAlgorithm.RWKV_CURVE, "RWKV-Curve"],
+        [SchedulingAlgorithm.RWKV_INSTANT, "RWKV-Instant"],
     ]);
 });

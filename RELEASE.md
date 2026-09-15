@@ -22,6 +22,13 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The scheduling algorithm (FSRS-7, RWKV-Curve or RWKV-Instant) is one
+  setting for the whole collection. It stays in deck options (Advanced mode),
+  now titled "Algorithm (global)" with a blue globe: a change applies to
+  every preset. When you save a change, Clanki asks whether to reschedule
+  all cards now or keep their due dates. Add-ons or other clients that give
+  one preset another algorithm cannot: Clanki switches the preset back. A collection whose presets used different algorithms
+  keeps the one that schedules the most review cards.
 - The next states that add-ons and custom-scheduling scripts get now carry the
   S90 (the time until recall falls to 90%) as `stability`; FSRS-7's internal
   stability stays in `stability_internal`. The simulator's R*f(S) graph weights
