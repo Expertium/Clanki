@@ -298,6 +298,8 @@ class RwkvReviewPrediction:
     retrievability: float | None = None
     curve_retrievability: float | None = None
     current_interval: int | None = None
+    # current_interval unrounded, in days (spec sched.rwkv-curve-reschedule)
+    current_interval_unrounded: float | None = None
     # unrounded days, possibly under one (spec sched.rwkv-curve-s90)
     current_s90: float | None = None
     interval_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
@@ -535,7 +537,9 @@ class RwkvReviewQueueOrderAsyncResult:
 @dataclass(frozen=True)
 class RwkvReviewRescheduleItem:
     card_id: int
-    interval_days: int
+    # unrounded: the backend turns it into days like FSRS-7's reschedule
+    # (spec sched.rwkv-curve-reschedule)
+    interval_days: float
     elapsed_days: int
     s90: float
     target_retention: float | None = None
@@ -1889,9 +1893,10 @@ class RwkvStatefulReviewerBackend:
             RwkvReviewPrediction(
                 retrievability=float(retrievability),
                 current_interval=int(current_interval) if current_interval else None,
+                current_interval_unrounded=float(unrounded) if unrounded else None,
                 current_s90=float(current_s90) if current_s90 else None,
             )
-            for retrievability, current_interval, current_s90 in outputs
+            for retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     def predict_review_requests_uncached(
@@ -3845,6 +3850,9 @@ def update_reviewer_scheduling_states(
                     )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
+        # an error keeps no prediction, even one stored before the states
+        # failed to build: the buttons wait (spec sched.rwkv-curve-buttons-wait)
+        _clear_reviewer_prediction(reviewer)
 
     return states
 
@@ -8111,6 +8119,11 @@ def rwkv_curve_scheduling_states(
         interval = getattr(overrides, rating)
         if interval is not None:
             setattr(request, rating, _validated_unrounded_interval(interval))
+            # the backend's young-leech check uses RWKV-Curve's S90, not
+            # FSRS-7's (spec sched.rwkv-curve-fuzz)
+            s90 = getattr(s90_overrides, rating)
+            if s90 is not None:
+                setattr(request, f"{rating}_s90", _validated_unrounded_interval(s90))
     rebuilt = SchedulingStates()
     rebuilt.CopyFrom(build(request))
     return apply_review_s90_overrides(rebuilt, overrides, s90_overrides)
@@ -19284,13 +19297,14 @@ def _rwkv_review_reschedule_items_from_input_predictions(
         elapsed_days = review_input.current_elapsed_days
         if not isinstance(elapsed_days, int) or isinstance(elapsed_days, bool):
             continue
-        if prediction.current_interval is None or prediction.current_s90 is None:
+        interval = _rwkv_reschedule_interval(prediction)
+        if interval is None or prediction.current_s90 is None:
             continue
 
         items.append(
             RwkvReviewRescheduleItem(
                 card_id=card_id,
-                interval_days=prediction.current_interval,
+                interval_days=interval,
                 elapsed_days=elapsed_days,
                 s90=prediction.current_s90,
                 target_retention=_rwkv_review_input_target_retention(review_input),
@@ -19397,15 +19411,27 @@ def _rwkv_review_reschedule_item(
     elapsed_days = elapsed_days_by_card_id.get(card_id)
     if elapsed_days is None:
         return None
-    if prediction.current_interval is None or prediction.current_s90 is None:
+    interval = _rwkv_reschedule_interval(prediction)
+    if interval is None or prediction.current_s90 is None:
         return None
 
     return RwkvReviewRescheduleItem(
         card_id=card_id,
-        interval_days=prediction.current_interval,
+        interval_days=interval,
         elapsed_days=elapsed_days,
         s90=prediction.current_s90,
     )
+
+
+def _rwkv_reschedule_interval(prediction: RwkvReviewPrediction) -> float | None:
+    """The unrounded current interval the RWKV-Curve reschedule sends (spec
+    sched.rwkv-curve-reschedule); a backend with whole days only gives those."""
+
+    if prediction.current_interval_unrounded is not None:
+        return prediction.current_interval_unrounded
+    if prediction.current_interval is not None:
+        return float(prediction.current_interval)
+    return None
 
 
 def _apply_rwkv_review_reschedule(
@@ -19431,7 +19457,7 @@ def _apply_rwkv_review_reschedule(
     for item in items:
         request_item = request.items.add(
             card_id=item.card_id,
-            interval_days=item.interval_days,
+            interval=float(item.interval_days),
             elapsed_days=item.elapsed_days,
             s90=float(item.s90),
         )

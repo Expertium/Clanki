@@ -703,6 +703,12 @@ impl crate::services::SchedulerService for Collection {
         self.scheduling_states_with_intervals(
             CardId(input.card_id),
             [input.again, input.hard, input.good, input.easy],
+            [
+                input.again_s90,
+                input.hard_s90,
+                input.good_s90,
+                input.easy_s90,
+            ],
         )
         .map(Into::into)
     }
@@ -997,7 +1003,7 @@ impl crate::services::SchedulerService for Collection {
             .into_iter()
             .map(|item| RwkvReviewRescheduleItem {
                 card_id: item.card_id.into(),
-                interval_days: item.interval_days,
+                interval: item.interval,
                 elapsed_days: item.elapsed_days,
                 s90: item.s90,
                 target_retention: item.target_retention,
