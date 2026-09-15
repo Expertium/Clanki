@@ -46,6 +46,9 @@ function fsrs7Params(): number[] {
 
 test("stabilityS90 returns the stored stability without FSRS-7 params", () => {
     expect(stabilityS90(10, undefined)).toBe(10);
+    // FSRS-6 (21 values) and the FSRS-7 preview (35 values) are not FSRS-7
+    expect(stabilityS90(10, Array(21).fill(1))).toBe(10);
+    expect(stabilityS90(10, Array(35).fill(1))).toBe(10);
 });
 
 test("stabilityS90 derives S90 from FSRS-7 curve params", () => {

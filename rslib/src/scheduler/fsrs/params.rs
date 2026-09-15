@@ -883,7 +883,9 @@ fn fsrs_review_retrievability_predictions_for_targets(
         return Ok(Vec::new());
     }
 
-    let fsrs = FSRS::new(params)?;
+    // FSRS-7 only (spec sched.fsrs7-only): the fsrs crate runs FSRS-6 for 0,
+    // 17, 19 or 21 values
+    let fsrs = FSRS::new(effective_fsrs7_params(params))?;
     let mut predictions = Vec::new();
     for source in sources {
         if let Some(target_revlog_ids) = target_revlog_ids {
@@ -1423,6 +1425,46 @@ pub(crate) mod tests {
         assert!(validation_rows
             .iter()
             .any(|row| row.sample_role == FsrsReviewRetrievabilitySampleRole::ValidationFold));
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-only: calibration predictions from
+    // parameters that are not 34 finite values are the FSRS-7 defaults' ones,
+    // never FSRS-6's.
+    #[test]
+    fn fsrs7_only_calibration_predictions_without_fsrs7_params_use_the_defaults() -> Result<()> {
+        let sources = (0..6)
+            .map(|index| FsrsReviewPredictionSource {
+                reviews: vec![
+                    FSRSReview {
+                        rating: 3,
+                        delta_t: 0.0,
+                    },
+                    FSRSReview {
+                        rating: if index % 2 == 0 { 3 } else { 1 },
+                        delta_t: 2.0 + index as f32,
+                    },
+                ],
+                targets: vec![(RevlogId(index + 1), 1)],
+            })
+            .collect_vec();
+        let defaults = fsrs_review_retrievability_predictions_for_targets(
+            &fsrs::DEFAULT_PARAMETERS,
+            &sources,
+            None,
+        )?;
+        assert_eq!(defaults.len(), sources.len());
+        let fsrs6 = fsrs_review_retrievability_predictions_for_targets(
+            &fsrs::FSRS6_DEFAULT_PARAMETERS,
+            &sources,
+            None,
+        )?;
+        assert_eq!(fsrs6, defaults);
+        let empty = fsrs_review_retrievability_predictions_for_targets(&[], &sources, None)?;
+        assert_eq!(empty, defaults);
+        let preview =
+            fsrs_review_retrievability_predictions_for_targets(&[0.5; 35], &sources, None)?;
+        assert_eq!(preview, defaults);
         Ok(())
     }
 
