@@ -294,6 +294,26 @@ def test_shift_clicks_cycle_the_mode_and_the_colours() -> None:
     assert screen.refresh.call_count == 2
 
 
+def test_shift_click_on_the_gear_swaps_the_colour_class_in_place() -> None:
+    from aqt.deckbrowser import DeckBrowser
+
+    heatmap = _heatmap(enabled=True, stored={"colors": "flame"})
+    screen = MagicMock(spec=DeckBrowser)
+    screen.web = MagicMock()
+    screen._rendered_stats = '<div class="rh-container rh-theme-flame rh-mode-year">'
+    heatmap.on_webview_did_receive_js_message(
+        (False, None), "revhm_themeswitch", screen
+    )
+    assert heatmap.mw.col.set_config.call_args.args[1]["colors"] == "lime"
+    # the colours are CSS only: the class changes in the open page
+    js = screen.web.eval.call_args.args[0]
+    assert "rh-theme-flame" in js and 'classList.add("rh-theme-lime")' in js
+    screen._renderPage.assert_not_called()
+    assert screen._rendered_stats == (
+        '<div class="rh-container rh-theme-lime rh-mode-year">'
+    )
+
+
 def test_the_settings_link_opens_the_heatmap_tab_of_preferences() -> None:
     heatmap = _heatmap(enabled=True)
     with patch("aqt.dialogs.open") as open_dialog:
