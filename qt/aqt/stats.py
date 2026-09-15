@@ -147,6 +147,10 @@ class NewDeckStats(QDialog):
 
     def refresh(self) -> None:
         self.form.web.load_sveltekit_page(self._graphs_page_path(), cache_bust=True)
+        # the page's first graphs are computed while the page loads
+        from aqt.mediasrv import prefetch_first_stats_graphs
+
+        prefetch_first_stats_graphs()
 
 
 class DeckStats(QDialog):

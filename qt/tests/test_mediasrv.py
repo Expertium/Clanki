@@ -194,14 +194,19 @@ class TestGraphs:
             calls.append(search)
             return getattr(RwkvStatsPreparationStatus, status)
 
-        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            SimpleNamespace(
+                col=SimpleNamespace(
+                    _backend=SimpleNamespace(graphs_raw=lambda data: b"graph-data")
+                )
+            ),
+            raising=False,
+        )
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
             prepare,
-        )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
         )
 
         data = GraphsRequest(search="rated:7", days=365).SerializeToString()
@@ -241,14 +246,19 @@ class TestGraphs:
             calls.append(search)
             return RwkvStatsPreparationStatus.PENDING
 
-        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            SimpleNamespace(
+                col=SimpleNamespace(
+                    _backend=SimpleNamespace(graphs_raw=lambda data: b"graph-data")
+                )
+            ),
+            raising=False,
+        )
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
             prepare,
-        )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
         )
 
         data = GraphsRequest(
@@ -294,7 +304,7 @@ class TestGraphs:
             backend_request = GraphsRequest()
             backend_request.ParseFromString(data)
             backend_requests.append(backend_request)
-            return b"other-graphs"
+            return b"graph-data"
 
         backend = SimpleNamespace(graphs_raw=graphs_raw)
         monkeypatch.setattr(
@@ -309,10 +319,6 @@ class TestGraphs:
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.rwkv_collection_active", lambda reviewer: rwkv
         )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
-        )
 
         data = GraphsRequest(
             search="deck:current", days=365, rwkv_retrievability_later=True
@@ -323,7 +329,7 @@ class TestGraphs:
         if rwkv:
             # every graph but Retrievability, and no RWKV scoring yet
             assert prepared == []
-            assert response.get_data() == b"other-graphs"
+            assert response.get_data() == b"graph-data"
             assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) == "1"
             assert response.headers.get(RWKV_STATS_PENDING_HEADER) is None
             (backend_request,) = backend_requests
@@ -335,7 +341,119 @@ class TestGraphs:
             assert prepared == ["deck:current"]
             assert response.get_data() == b"graph-data"
             assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) is None
-            assert backend_requests == []
+            (backend_request,) = backend_requests
+            assert list(backend_request.graphs) == []
+
+
+class TestStatsPrefetch:
+    """aqt.stats_prefetch: the Stats window's first graphs, computed while
+    its page loads, are handed to the page's identical request only."""
+
+    @staticmethod
+    def _start(request, state=(100, 5), output=(b"out", {"h": "1"})):
+        from aqt import stats_prefetch
+
+        computed = []
+
+        def compute(req):
+            computed.append(req)
+            return output
+
+        stats_prefetch.start(request, state, compute, lambda task: task())
+        return computed
+
+    def test_the_identical_request_takes_the_result_once(self) -> None:
+        from aqt import stats_prefetch
+
+        request = stats_prefetch.first_page_request(advanced_ui=False)
+        computed = self._start(request)
+        assert computed == [request]
+        assert stats_prefetch.take(request, lambda: (100, 5)) == (b"out", {"h": "1"})
+        assert stats_prefetch.take(request, lambda: (100, 5)) is None
+
+    @pytest.mark.parametrize(
+        ("other", "state"),
+        [
+            ("advanced", (100, 5)),  # another graph list
+            ("simple", (101, 5)),  # the collection changed
+            ("simple", (100, 6)),  # a new day
+        ],
+    )
+    def test_anything_else_computes_again(
+        self, other: str, state: tuple[int, int]
+    ) -> None:
+        from aqt import stats_prefetch
+
+        self._start(stats_prefetch.first_page_request(advanced_ui=False))
+        request = stats_prefetch.first_page_request(advanced_ui=other == "advanced")
+        assert stats_prefetch.take(request, lambda: state) is None
+
+    def test_a_failed_prefetch_computes_again(self) -> None:
+        from aqt import stats_prefetch
+
+        def fail(request):
+            raise RuntimeError("backend")
+
+        request = stats_prefetch.first_page_request(advanced_ui=True)
+        stats_prefetch.start(request, (1, 1), fail, lambda task: task())
+        assert stats_prefetch.take(request, lambda: (1, 1)) is None
+
+    def test_first_page_request_is_the_pages(self) -> None:
+        # the page's own first request (ts/routes/graphs: +page.svelte and
+        # WithGraphData.svelte)
+        import re
+
+        from anki.stats_pb2 import GraphsRequest
+        from aqt import stats_prefetch
+
+        page = (Path(__file__).parents[2] / "ts/routes/graphs/+page.svelte").read_text(
+            encoding="utf-8"
+        )
+        simple = re.search(r"const simpleData = \[([^\]]*)\]", page)
+        assert simple is not None
+        names = [
+            name.strip().removeprefix("Graph.") for name in simple.group(1).split(",")
+        ]
+        assert f'initialSearch="{stats_prefetch.PAGE_SEARCH}"' in page
+        assert f"initialDays={{{stats_prefetch.PAGE_DAYS}}}" in page
+        simple_request = stats_prefetch.first_page_request(advanced_ui=False)
+        assert list(simple_request.graphs) == [getattr(GraphsRequest, n) for n in names]
+        assert not simple_request.rwkv_retrievability_later
+        advanced_request = stats_prefetch.first_page_request(advanced_ui=True)
+        assert list(advanced_request.graphs) == []
+        assert advanced_request.rwkv_retrievability_later
+
+    def test_graphs_handler_serves_the_prefetched_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aqt
+        from aqt import stats_prefetch
+        from aqt.mediasrv import app, graphs
+
+        backend_calls: list[bytes] = []
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            SimpleNamespace(
+                col=SimpleNamespace(
+                    mod=100,
+                    sched=SimpleNamespace(today=5),
+                    _backend=SimpleNamespace(
+                        graphs_raw=lambda data: backend_calls.append(data) or b"fresh"
+                    ),
+                )
+            ),
+            raising=False,
+        )
+        request = stats_prefetch.first_page_request(advanced_ui=False)
+        self._start(request, output=(b"prefetched", {}))
+        with app.test_request_context(data=request.SerializeToString()):
+            response = graphs()
+        assert response.get_data() == b"prefetched"
+        assert backend_calls == []
+        # the next identical request computes
+        with app.test_request_context(data=request.SerializeToString()):
+            assert graphs().get_data() == b"fresh"
 
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:

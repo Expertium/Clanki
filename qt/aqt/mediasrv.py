@@ -32,6 +32,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
+import aqt.stats_prefetch
 from anki import (
     decks_pb2,
     frontend_pb2,
@@ -48,6 +49,7 @@ from anki.collection import (
     Progress,
     SearchNode,
 )
+from anki.config import Config
 from anki.decks import UpdateDeckConfigs, UpdateDeckConfigsMode
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
 from anki.stats_pb2 import CardStatsResponse, GraphsRequest
@@ -1485,12 +1487,11 @@ def _graphs_without_retrievability(request_proto: GraphsRequest) -> bytes:
     return request_proto.SerializeToString()
 
 
-def graphs() -> Response:
+def _graph_data(request_proto: GraphsRequest) -> tuple[bytes, dict[str, str]]:
+    """The graphs response for a request, and its extra headers."""
     start = time.monotonic()
-    request_proto = GraphsRequest()
-    request_proto.ParseFromString(request.data)
     reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
-    prepare_start = time.monotonic()
+    headers: dict[str, str] = {}
     retrievability_later = False
     if (
         request_proto.rwkv_retrievability_later
@@ -1515,29 +1516,70 @@ def graphs() -> Response:
         )
     else:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
-    prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
+    prepare_elapsed_ms = (time.monotonic() - start) * 1000
     backend_start = time.monotonic()
-    if retrievability_later:
-        output = aqt.mw.col._backend.graphs_raw(
-            _graphs_without_retrievability(request_proto)
-        )
-    else:
-        output = raw_backend_request("graphs")()
+    backend_request = (
+        _graphs_without_retrievability(request_proto)
+        if retrievability_later
+        else request_proto.SerializeToString()
+    )
+    output = aqt.mw.col._backend.graphs_raw(backend_request)
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
-    response = flask.make_response(output)
-    response.headers["Content-Type"] = "application/binary"
     if prepare_status == aqt.rwkv_scheduler.RwkvStatsPreparationStatus.PENDING:
-        response.headers[RWKV_STATS_PENDING_HEADER] = "1"
+        headers[RWKV_STATS_PENDING_HEADER] = "1"
     if retrievability_later:
-        response.headers[RWKV_RETRIEVABILITY_LATER_HEADER] = "1"
+        headers[RWKV_RETRIEVABILITY_LATER_HEADER] = "1"
     logger.debug(
-        "graphs served: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
-        "backend_elapsed_ms=%.1f response_bytes=%s elapsed_ms=%.1f",
+        "graphs computed: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
+        "backend_elapsed_ms=%.1f response_bytes=%s",
         request_proto.search,
         request_proto.days,
         prepare_status.value,
         prepare_elapsed_ms,
         backend_elapsed_ms,
+        len(output),
+    )
+    return output, headers
+
+
+def prefetch_first_stats_graphs() -> None:
+    """Compute the Stats page's first graphs request while the page loads
+    (aqt.stats_prefetch)."""
+    mw = aqt.mw
+    col = getattr(mw, "col", None)
+    if mw is None or col is None:
+        return
+    request_proto = aqt.stats_prefetch.first_page_request(
+        col.get_config_bool(Config.Bool.ADVANCED_UI)
+    )
+    aqt.stats_prefetch.start(
+        request_proto,
+        _collection_state(),
+        _graph_data,
+        mw.taskman.run_in_background,
+    )
+
+
+def _collection_state() -> tuple[int, int]:
+    col = aqt.mw.col
+    return col.mod, col.sched.today
+
+
+def graphs() -> Response:
+    start = time.monotonic()
+    request_proto = GraphsRequest()
+    request_proto.ParseFromString(request.data)
+    prefetched = aqt.stats_prefetch.take(request_proto, _collection_state)
+    output, headers = prefetched or _graph_data(request_proto)
+    response = flask.make_response(output)
+    response.headers["Content-Type"] = "application/binary"
+    for name, value in headers.items():
+        response.headers[name] = value
+    logger.debug(
+        "graphs served: search=%r days=%s prefetched=%s response_bytes=%s elapsed_ms=%.1f",
+        request_proto.search,
+        request_proto.days,
+        prefetched is not None,
         len(output),
         (time.monotonic() - start) * 1000,
     )
