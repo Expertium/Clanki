@@ -301,8 +301,9 @@ titled "Deck Options", with exactly these controls in this order:
    timer");
 6. the Easy Days sliders, collapsed behind an "Easy Days" expander (plain,
    not bold) that the user opens by clicking its name; a small "?" next to
-   the name opens the Easy Days help without toggling the expander
-   (collapsed in Advanced mode too, with the same "?").
+   the name opens the Easy Days help without toggling the expander. In
+   Advanced mode the Easy Days section shows the sliders at once, with no
+   expander (its title and help are the section's own).
 
 Add-on components render after the section, in both modes.
 
