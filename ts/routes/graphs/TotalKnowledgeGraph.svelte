@@ -45,6 +45,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let loadError: string | undefined = undefined;
     let requestId = 0;
     let pollTimer: number | undefined;
+    let restarted = false;
 
     $: load($search);
     $: data = response ? totalKnowledgeData(response, rwkv) : null;
@@ -101,34 +102,59 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (!isRwkv(loaded.algorithm) || !loaded.reviewedCards.length) {
             return;
         }
+        restarted = false;
+        await startRwkv(
+            search,
+            loaded.algorithm === SchedulingAlgorithm.RWKV_CURVE,
+            id,
+        );
+    }
+
+    async function startRwkv(
+        search: string,
+        curve: boolean,
+        id: number,
+    ): Promise<void> {
         let progress: TotalKnowledgeRwkvProgress;
         try {
             progress = await postProto(
                 "totalKnowledgeRwkvStart",
-                new TotalKnowledgeRwkvRequest({
-                    search,
-                    curve: loaded.algorithm === SchedulingAlgorithm.RWKV_CURVE,
-                }),
+                new TotalKnowledgeRwkvRequest({ search, curve }),
                 TotalKnowledgeRwkvProgress,
                 { alertOnError: false },
             );
         } catch (error) {
             progress = failed(error);
         }
-        showProgress(progress, id);
+        showProgress(progress, id, () => startRwkv(search, curve, id));
     }
 
-    function showProgress(progress: TotalKnowledgeRwkvProgress, id: number): void {
+    function showProgress(
+        progress: TotalKnowledgeRwkvProgress,
+        id: number,
+        restart: () => void,
+    ): void {
         if (id !== requestId) {
+            return;
+        }
+        // stopped from outside while this page still shows it (the page was
+        // redrawn, say by a mode switch, and the old graph's cancel came
+        // late): ask once more
+        if (progress.state === RwkvState.CANCELLED && !restarted) {
+            restarted = true;
+            restart();
             return;
         }
         rwkv = progress;
         if (rwkvStillComputing(progress)) {
-            pollTimer = window.setTimeout(() => poll(progress.jobId, id), pollDelayMs);
+            pollTimer = window.setTimeout(
+                () => poll(progress.jobId, id, restart),
+                pollDelayMs,
+            );
         }
     }
 
-    async function poll(jobId: number, id: number): Promise<void> {
+    async function poll(jobId: number, id: number, restart: () => void): Promise<void> {
         pollTimer = undefined;
         let progress: TotalKnowledgeRwkvProgress;
         try {
@@ -141,7 +167,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         } catch (error) {
             progress = failed(error);
         }
-        showProgress(progress, id);
+        showProgress(progress, id, restart);
     }
 
     // leaving the page stops RWKV's job

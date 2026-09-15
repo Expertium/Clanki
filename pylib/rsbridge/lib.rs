@@ -384,7 +384,10 @@ impl RwkvInference {
                 },
             )
             .collect();
-        py.detach(|| self.inner.curve_retrievability_day_sums_from_warm_up(&spans))
+        py.detach(|| {
+            self.inner
+                .curve_retrievability_day_sums_from_warm_up(&spans)
+        })
     }
 
     fn predict_retrievability_many_packed(

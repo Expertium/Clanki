@@ -19,6 +19,7 @@ use rayon::prelude::*;
 use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
+use crate::scheduler::fsrs::curve::Fsrs7Curve;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
@@ -30,10 +31,6 @@ const FSRS_BATCH_SIZE: usize = 256;
 /// A search with more than 1/N of the collection's cards reads the whole
 /// review log in one pass; a smaller one reads its cards' entries by index.
 const SCAN_REVLOG_ABOVE_SHARE_OF_CARDS: usize = 5;
-const S_MIN: f32 = 0.0001;
-const S_MAX: f32 = 36500.0;
-const D_MIN: f32 = 1.0;
-const D_MAX: f32 = 10.0;
 
 /// What the computation needs, read while the collection is locked; the
 /// computation itself runs without the lock.
@@ -221,18 +218,23 @@ impl TotalKnowledgeInput {
             }
         }
 
+        let curves = self
+            .presets
+            .iter()
+            .map(|preset| Fsrs7Curve::new(&preset.params).or_invalid("no FSRS-7 parameters"))
+            .collect::<Result<Vec<_>>>()?;
         Ok(cards
             .par_iter()
             .zip(states)
             .map(|(entries, mut states)| {
                 states.sort_unstable_by_key(|(id, _)| *id);
-                let params = &self.presets[self.preset_of_card[&entries[0].cid]].params;
-                card_timeline(entries, &states, params, self.next_day_at)
+                let curve = &curves[self.preset_of_card[&entries[0].cid]];
+                (curve, card_timeline(entries, &states, self.next_day_at))
             })
             .fold(
                 || vec![0.0; days],
-                |mut sums, timeline| {
-                    add_card_retrievability(&timeline, first_day, &mut sums);
+                |mut sums, (curve, timeline)| {
+                    add_card_retrievability(curve, &timeline, first_day, &mut sums);
                     sums
                 },
             )
@@ -358,11 +360,11 @@ fn replay_states(fsrs: &FSRS, batch: &[Replay]) -> Result<Vec<Vec<MemoryState>>>
     Ok(out)
 }
 
-/// A rating (with FSRS-7's curve after it, if a replay covers it) or a
-/// reset, on its day.
+/// A rating (with FSRS-7's memory state after it, if a replay covers it)
+/// or a reset, on its day.
 struct Event {
     day: i32,
-    curve: Option<Fsrs7Curve>,
+    state: Option<MemoryState>,
     reset: bool,
 }
 
@@ -371,7 +373,6 @@ struct Event {
 fn card_timeline(
     entries: &[RevlogEntry],
     states: &[(RevlogId, MemoryState)],
-    params: &[f32],
     next_day_at: TimestampSecs,
 ) -> Vec<Event> {
     entries
@@ -379,19 +380,19 @@ fn card_timeline(
         .filter_map(|entry| {
             let day = day_of(entry, next_day_at);
             if is_rating(entry) {
-                let curve = states
+                let state = states
                     .binary_search_by_key(&entry.id, |(id, _)| *id)
                     .ok()
-                    .map(|index| Fsrs7Curve::new(params, states[index].1));
+                    .map(|index| states[index].1);
                 Some(Event {
                     day,
-                    curve,
+                    state,
                     reset: false,
                 })
             } else {
                 entry.is_reset().then_some(Event {
                     day,
-                    curve: None,
+                    state: None,
                     reset: true,
                 })
             }
@@ -401,67 +402,27 @@ fn card_timeline(
 
 /// Adds one card's R to each day from its first event through today. A day
 /// takes its value from the card's last event on or before it: a rating on
-/// that day gives 1, an earlier rating its curve at the whole days since,
+/// that day gives 1, an earlier rating the curve at the whole days since,
 /// a reset (or a rating no replay covers) 0.
-fn add_card_retrievability(timeline: &[Event], first_day: i32, sums: &mut [f64]) {
+fn add_card_retrievability(
+    curve: &Fsrs7Curve,
+    timeline: &[Event],
+    first_day: i32,
+    sums: &mut [f64],
+) {
     for (index, event) in timeline.iter().enumerate() {
         let until = timeline.get(index + 1).map_or(1, |next| next.day);
         if event.reset || until <= event.day {
             continue;
         }
         sums[(event.day - first_day) as usize] += 1.0;
-        if let Some(curve) = &event.curve {
+        if let Some(state) = event.state {
             for day in event.day + 1..until {
-                sums[(day - first_day) as usize] += curve.retrievability((day - event.day) as f32);
+                let elapsed = (day - event.day) as f32;
+                sums[(day - first_day) as usize] +=
+                    curve.retrievability(state, elapsed).unwrap_or(0.0) as f64;
             }
         }
-    }
-}
-
-/// FSRS-7's forgetting curve for one memory state, with the terms that do
-/// not depend on the elapsed time worked out once; it matches the fsrs
-/// crate's `current_retrievability` (model_v7 `power_forgetting_curve`).
-#[derive(Debug, Clone, Copy)]
-struct Fsrs7Curve {
-    fast_scale: f32,
-    fast_decay: f32,
-    fast_weight: f32,
-    slow_scale: f32,
-    slow_decay: f32,
-    slow_weight: f32,
-}
-
-impl Fsrs7Curve {
-    fn new(w: &[f32], state: MemoryState) -> Self {
-        let s = state.stability.clamp(S_MIN, S_MAX);
-        let s_fast = state.stability_fast.clamp(S_MIN, S_MAX);
-        let d = state.difficulty.clamp(D_MIN, D_MAX);
-
-        let fast_decay = -(w[23] * s_fast.powf(w[33] - 0.3)).clamp(0.01, 0.95);
-        let fast_factor = (w[25].ln() * fast_decay.powi(-1)).min(60.0).exp() - 1.0;
-        let slow_decay = -w[24].clamp(0.01, 0.95);
-        let slow_factor = w[26].powf(slow_decay.powi(-1)) - 1.0;
-        let d_timescale = ((d - 5.0) * (w[32] - 0.3)).exp();
-
-        let fast_weight = w[27] * s_fast.powf(-w[29]);
-        let slow_weight = w[28] * s.powf(w[30]) * ((d - 5.0) * (w[31] - 0.5)).exp();
-        let total_weight = fast_weight + slow_weight;
-        Self {
-            fast_scale: fast_factor / s_fast,
-            fast_decay,
-            fast_weight: fast_weight / total_weight,
-            slow_scale: slow_factor * d_timescale / s,
-            slow_decay,
-            slow_weight: slow_weight / total_weight,
-        }
-    }
-
-    fn retrievability(&self, elapsed_days: f32) -> f64 {
-        let t = elapsed_days.max(0.0);
-        let fast = (t * self.fast_scale + 1.0).powf(self.fast_decay);
-        let slow = (t * self.slow_scale + 1.0).powf(self.slow_decay);
-        let retention = self.fast_weight * fast + self.slow_weight * slow;
-        retention.mul_add(1.0 - 2e-5, 1e-5) as f64
     }
 }
 
@@ -571,13 +532,15 @@ mod tests {
             .zip(states)
             .collect();
         (first_day..=0)
-            .map(|day| match ratings.iter().rev().find(|(rated, _)| *rated <= day) {
-                None => 0.0,
-                Some((rated, _)) if *rated == day => 1.0,
-                Some((rated, state)) => {
-                    fsrs.current_retrievability(*state, (day - rated) as f32) as f64
-                }
-            })
+            .map(
+                |day| match ratings.iter().rev().find(|(rated, _)| *rated <= day) {
+                    None => 0.0,
+                    Some((rated, _)) if *rated == day => 1.0,
+                    Some((rated, state)) => {
+                        fsrs.current_retrievability(*state, (day - rated) as f32) as f64
+                    }
+                },
+            )
             .collect()
     }
 
@@ -612,7 +575,13 @@ mod tests {
         rate(&mut col, second, -30, RevlogReviewKind::Learning, 2);
         rate(&mut col, second, -29, RevlogReviewKind::Review, 3);
         // a manual reschedule (set due date) is not a rating
-        entry(&mut col, second, -20, (RevlogReviewKind::Manual, 0, 2500), 0);
+        entry(
+            &mut col,
+            second,
+            -20,
+            (RevlogReviewKind::Manual, 0, 2500),
+            0,
+        );
         // nor a cram answer
         entry(&mut col, second, -15, (RevlogReviewKind::Filtered, 3, 0), 0);
         // cards never reviewed count nowhere
@@ -622,10 +591,7 @@ mod tests {
 
         // the whole collection: the review log is read in one pass
         let response = col.total_knowledge("")?;
-        assert_eq!(
-            response.algorithm,
-            SchedulingAlgorithmProto::Fsrs7 as i32
-        );
+        assert_eq!(response.algorithm, SchedulingAlgorithmProto::Fsrs7 as i32);
         assert_eq!(response.first_day, -60);
         let expected: Vec<f64> = expected_card_r(&mut col, first, -60)
             .into_iter()
@@ -704,7 +670,10 @@ mod tests {
         let mut col = fsrs7_collection(fsrs7_params());
         let card = add_card(&mut col);
         rate(&mut col, card, -3, RevlogReviewKind::Learning, 3);
-        for algorithm in [SchedulingAlgorithm::RwkvCurve, SchedulingAlgorithm::RwkvInstant] {
+        for algorithm in [
+            SchedulingAlgorithm::RwkvCurve,
+            SchedulingAlgorithm::RwkvInstant,
+        ] {
             col.set_config(crate::config::ConfigKey::SchedulingAlgorithm, &algorithm)?;
             let response = col.total_knowledge("")?;
             assert_eq!(
@@ -719,34 +688,6 @@ mod tests {
         // nothing reviewed: no days
         let response = col.total_knowledge(&format!("-cid:{}", card.0))?;
         assert!(response.reviewed_cards.is_empty() && response.sum_r.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn scalar_curve_matches_the_fsrs_crate() -> Result<()> {
-        for params in [DEFAULT_PARAMETERS.to_vec(), fsrs7_params()] {
-            let fsrs = FSRS::new(&params)?;
-            for stability in [0.0001, 0.05, 0.7, 3.0, 25.0, 400.0, 36500.0] {
-                for stability_fast in [0.0001, 0.2, 2.5, 60.0, 36500.0] {
-                    for difficulty in [1.0, 3.3, 5.0, 8.7, 10.0] {
-                        let state = MemoryState {
-                            stability,
-                            difficulty,
-                            stability_fast,
-                        };
-                        let curve = Fsrs7Curve::new(&params, state);
-                        for elapsed in [0.0, 1.0, 2.0, 7.0, 30.0, 365.0, 5000.0] {
-                            let expected = fsrs.current_retrievability(state, elapsed) as f64;
-                            let actual = curve.retrievability(elapsed);
-                            assert!(
-                                (actual - expected).abs() < 1e-5,
-                                "{state:?} at {elapsed}: {actual} != {expected}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
         Ok(())
     }
 }

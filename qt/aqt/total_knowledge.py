@@ -90,7 +90,11 @@ def start_rwkv(mw: Any, search: str, *, curve: bool) -> Progress:
         if (cached := _results.get(key)) is not None:
             return Progress(state=Progress.DONE, first_day=cached[0], sum_r=cached[1])
         current = _job
-        if current is not None and current.key == key:
+        if (
+            current is not None
+            and current.key == key
+            and not current.cancel_event.is_set()
+        ):
             with current.lock:
                 running = current.state == Progress.COMPUTING
             if running:

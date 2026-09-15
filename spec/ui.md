@@ -341,9 +341,10 @@ Simple mode too.
 **Pinned by:** `fsrs7_sums_match_the_cards_historical_memory_states`,
 `total_knowledge_covers_the_whole_history`,
 `a_reset_zeroes_r_until_the_next_rating`,
-`rwkv_collections_get_the_upper_bound_only`,
-`scalar_curve_matches_the_fsrs_crate`
-(`rslib/src/stats/total_knowledge.rs`);
+`rwkv_collections_get_the_upper_bound_only`
+(`rslib/src/stats/total_knowledge.rs`); FSRS-7's curve is the scalar copy
+pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
+(`rslib/src/scheduler/fsrs/curve.rs`);
 `curve_day_sums_from_warm_up_are_the_stored_curves` (`rslib/src/rwkv/mod.rs`);
 `qt/tests/test_total_knowledge.py`;
 `ts/routes/graphs/total-knowledge.test.ts`.

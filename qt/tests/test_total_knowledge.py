@@ -239,6 +239,17 @@ def test_leaving_the_page_or_another_search_cancels_the_job(
     assert total_knowledge._results == {}
 
 
+def test_a_stopped_job_is_not_joined(started: dict[str, Any]) -> None:
+    mw = started["mw"]
+    first = total_knowledge.start_rwkv(mw, "deck:a", curve=True)
+    total_knowledge.cancel_rwkv(first.job_id)
+    # the same cards again, before the job noticed: a new job
+    second = total_knowledge.start_rwkv(mw, "deck:a", curve=True)
+    assert second.job_id != first.job_id
+    started["release"].set()
+    assert wait_until_done(second.job_id).state == Progress.DONE
+
+
 # Pins spec/scheduling.md#sched.rwkv-no-model-error
 def test_without_an_rwkv_model_the_graph_says_so(
     monkeypatch: pytest.MonkeyPatch,

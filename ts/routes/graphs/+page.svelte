@@ -39,7 +39,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         AddedGraph,
     ];
     // Simple mode shows only these (spec ui.mode-switch)
-    const simpleGraphs = [ReviewsGraph, CardCounts, TrueRetention];
+    const simpleGraphs = [ReviewsGraph, CardCounts, TrueRetention, TotalKnowledgeGraph];
 </script>
 
 <GraphsPage
