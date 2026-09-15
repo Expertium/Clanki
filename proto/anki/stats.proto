@@ -73,6 +73,15 @@ message CardStatsResponse {
   optional float desired_retention = 23;
   repeated float fsrs_params = 24;
   repeated CardInfoRow extra_rows = 25;
+  // RWKV-Curve's forgetting curve after the card's last review, for a card
+  // whose preset runs RWKV-Curve: recall at each elapsed time, and the
+  // curve's S90. Present without points while RWKV has no curve for the card.
+  message RwkvCurve {
+    repeated float elapsed_days = 1;
+    repeated float recall = 2;
+    optional float s90 = 3;
+  }
+  optional RwkvCurve rwkv_curve = 26;
 }
 
 message GraphsRequest {

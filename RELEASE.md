@@ -26,6 +26,11 @@ repeated here unless they materially affect a fork feature.
   browser search or the deck list after other screens, are faster (a sorted
   search of a 159k-card collection: 430 to 286 ms). The pages share the
   system's file cache, so this adds no private memory.
+- Card info for an RWKV-Curve card draws RWKV-Curve's own forgetting curve since
+  the last review, and its Stability shows where that curve meets 90%. It no
+  longer draws FSRS-7's curve under an RWKV S90. While RWKV has no curve for the
+  card yet, the chart shows no data. Its card info shows no FSRS-7 values:
+  no Difficulty, no FSRS-7 Retrievability and no "FSRS Next S90" row.
 - The periodic backup (checked every 5 minutes) waits while you review, and
   while an FSRS optimization, a reschedule, a sync or another task uses the
   collection. Before, it could make an answer wait, with a "Processing..."
