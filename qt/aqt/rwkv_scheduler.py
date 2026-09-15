@@ -3722,6 +3722,14 @@ def configure_reviewer_backend_from_environment() -> bool:
         return False
 
 
+def rwkv_model_available() -> bool:
+    """Whether RWKV can run: its backend is configured, or can be configured
+    now (the model file is there and loads). When it cannot, RWKV screens say
+    so instead of waiting or falling back to FSRS-7 (spec
+    sched.rwkv-no-model-error)."""
+    return configure_reviewer_backend_from_environment()
+
+
 def embedded_rwkv_model_path() -> Path | None:
     path = Path(__file__).parent / "rwkv_inference" / _EMBEDDED_RWKV_MODEL_FILENAME
     return path if path.exists() else None
@@ -7359,14 +7367,17 @@ def rwkv_card_info_rows(
     retrievability = diagnostics.retrievability if diagnostics else None
     if diagnostics is None and card_id is not None:
         _set_rwkv_card_info_score(reviewer, card_id, None)
-    return [
-        (
-            RWKV_CARD_INFO_R_LABEL,
-            "Calculating…"
-            if retrievability is None
-            else _format_retrievability(retrievability),
-        )
-    ]
+    if retrievability is not None:
+        value = _format_retrievability(retrievability)
+    elif _reviewer_backend is None:
+        # no model: RWKV will never have the value (spec
+        # sched.rwkv-no-model-error)
+        from aqt.utils import tr
+
+        value = tr.qt_misc_rwkv_model_not_found()
+    else:
+        value = "Calculating…"
+    return [(RWKV_CARD_INFO_R_LABEL, value)]
 
 
 def rwkv_card_info_after_review_row(
@@ -10737,11 +10748,23 @@ def finish_rwkv_state_cache_startup(mw: object) -> None:
     if not config_state.review_enabled:
         _set_rwkv_state_cache_loading(mw, False)
         return
+    if not rwkv_model_available():
+        # no state to build or restore without a model: say what is wrong
+        # rather than offering to build it (spec sched.rwkv-no-model-error)
+        _set_rwkv_state_cache_loading(mw, False)
+        _show_rwkv_model_missing(mw)
+        return
 
     load_rwkv_state_cache_with_progress(
         mw,
         prompt_if_unavailable=True,
     )
+
+
+def _show_rwkv_model_missing(mw: object) -> None:
+    from aqt.utils import showWarning, tr
+
+    showWarning(tr.qt_misc_rwkv_model_missing(), parent=cast(Any, mw))
 
 
 def maybe_prompt_for_rwkv_state_cache(mw: object) -> None:

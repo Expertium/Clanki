@@ -101,6 +101,30 @@ other's.
 **Pinned by:** `rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes`
 (`rslib/src/scheduler/fsrs/memory_state.rs`).
 
+## sched.rwkv-no-model-error
+
+Given a collection that runs RWKV-Curve or RWKV-Instant and no usable RWKV
+model (the model file is missing, or the RWKV backend does not load):
+
+- when the profile opens, a warning says that the RWKV model file is missing
+  or does not load, so RWKV cannot schedule the cards, and suggests
+  reinstalling Clanki or choosing FSRS-7 in deck options; no offer to build
+  or restore the RWKV state follows;
+- the reviewer's answer area for an RWKV-Curve card shows "RWKV model not
+  found" instead of "Waiting for RWKV-Curve…", and does not ask again;
+- card info's retrievability of an RWKV-Instant card reads "RWKV model not
+  found" instead of "Calculating…".
+
+**Why:** Andrew, 2026-09-15: while RWKV is not ready, show "…" or
+"Calculating…"; with no model, show an error rather than waiting forever or
+using FSRS-7's values.
+
+**Pinned by:** `test_answer_buttons_say_the_rwkv_model_is_missing`
+(`qt/tests/test_reviewer.py`);
+`test_startup_without_a_model_warns_instead_of_offering_a_state`,
+`test_rwkv_instant_card_info_says_the_model_is_missing`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
@@ -129,7 +153,8 @@ intervals for this showing of the card. Until then the button area shows
 doubling up to once a second), and answer keys and clicks do nothing. This
 covers every reason RWKV-Curve has no intervals yet: its state still loading,
 another RWKV task holding it, its state changing during the prediction, no
-prediction, a button without an interval, an error, or no RWKV runtime. Each
+prediction, a button without an interval, or an error; without a usable
+RWKV model it does not wait (`sched.rwkv-no-model-error`). Each
 prediction belongs to one showing: it is cleared before the next prediction
 and once an answer has used it, so a later showing of the same card never
 reuses its intervals or its S90. A preview in a filtered deck without
