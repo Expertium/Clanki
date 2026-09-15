@@ -79,6 +79,23 @@ impl Collection {
             .filter(|config| legacy_fsrs_params(config) != config.fsrs_params())
             .map(|config| (config.id, config))
             .collect();
+        let entries = self.memory_state_entries_for_presets(&changed, false)?;
+        if !entries.is_empty() {
+            self.transact_no_undo(|col| col.update_memory_state(entries))?;
+        }
+        self.transact_no_undo(|col| {
+            col.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
+            Ok(())
+        })
+    }
+
+    /// One memory-state update per given preset that has decks, over the
+    /// cards whose home deck uses it, with the preset's FSRS-7 parameters.
+    pub(crate) fn memory_state_entries_for_presets(
+        &self,
+        configs: &HashMap<DeckConfigId, DeckConfig>,
+        reschedule: bool,
+    ) -> Result<Vec<UpdateMemoryStateEntry>> {
         let mut decks_by_config: HashMap<DeckConfigId, Vec<DeckId>> = HashMap::new();
         let mut deck_desired_retention = HashMap::new();
         for deck in self.storage.get_all_decks()? {
@@ -86,7 +103,7 @@ impl Collection {
                 continue;
             };
             let config_id = DeckConfigId(normal.config_id);
-            if changed.contains_key(&config_id) {
+            if configs.contains_key(&config_id) {
                 decks_by_config.entry(config_id).or_default().push(deck.id);
             }
             if let Some(desired_retention) = normal.desired_retention {
@@ -95,18 +112,18 @@ impl Collection {
         }
         let review_fuzz_config = self.review_fuzz_config();
         let total_presets = decks_by_config.len() as u32;
-        let entries = decks_by_config
+        decks_by_config
             .into_iter()
             .enumerate()
             .map(|(idx, (config_id, deck_ids))| {
-                let config = &changed[&config_id];
+                let config = &configs[&config_id];
                 Ok(UpdateMemoryStateEntry {
                     req: Some(UpdateMemoryStateRequest {
                         params: config.fsrs_params().to_vec(),
                         preset_desired_retention: config.inner.desired_retention,
                         max_interval: config.inner.maximum_review_interval,
                         review_fuzz_config,
-                        reschedule: false,
+                        reschedule,
                         historical_retention: HISTORICAL_RETENTION,
                         deck_desired_retention: deck_desired_retention.clone(),
                     }),
@@ -119,14 +136,7 @@ impl Collection {
                     total_presets,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
-        if !entries.is_empty() {
-            self.transact_no_undo(|col| col.update_memory_state(entries))?;
-        }
-        self.transact_no_undo(|col| {
-            col.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
-            Ok(())
-        })
+            .collect()
     }
 }
 
