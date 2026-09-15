@@ -83,10 +83,6 @@ NEXT_S90_UNAVAILABLE_ROWS = [
         "RWKV Curve Next S90",
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
-    (
-        "FSRS Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
 ]
 RWKV_BUTTON_PROBABILITY_ROW = (
     "RWKV : Answer Button Probability",
@@ -3491,7 +3487,6 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
             "RWKV Curve Next S90",
             "Again:4d Hard:5d Good:7d Easy:10d",
         ),
-        NEXT_S90_UNAVAILABLE_ROWS[1],
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
     assert runtime.reviewed == [(1, 3)]
@@ -14847,7 +14842,6 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
             "RWKV Curve Next S90",
             "Again:3d Hard:4d Good:6d Easy:9d",
         ),
-        NEXT_S90_UNAVAILABLE_ROWS[1],
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
     assert runtime.query_inputs[0].current_normal_state_kind == "review"
@@ -15059,9 +15053,12 @@ def test_card_info_uses_resident_after_review_prediction_without_snapshot(
     ] == [(0, 0), (0, 600)]
 
 
-def test_card_info_reports_rwkv_and_fsrs_next_s90_for_filtered_states(
+def test_card_info_reports_only_rwkv_next_s90_for_filtered_states(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: no FSRS-7 S90 row, although
+    the scheduling states carry FSRS-7 stabilities."""
+
     class Backend:
         def __init__(self) -> None:
             self.review_inputs: list[RwkvReviewInput] = []
@@ -15125,10 +15122,6 @@ def test_card_info_reports_rwkv_and_fsrs_next_s90_for_filtered_states(
         (
             "RWKV Curve Next S90",
             "Again:2d Hard:5d Good:10d Easy:20d",
-        ),
-        (
-            "FSRS Next S90",
-            "Again:1.25d Hard:2.5d Good:3.75d Easy:Unavailable",
         ),
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]

@@ -1377,25 +1377,32 @@ def card_stats() -> bytes:
 
 def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) -> None:
     """For a card whose preset runs RWKV-Curve: RWKV's own forgetting curve
-    after the last review, with the Stability row and the latest review's
-    stability showing that curve's S90; the field without points while RWKV
-    has no curve for the card (spec ui.card-info-rwkv-curve)."""
+    after the last review (the field without points while RWKV has no curve
+    for the card), with the latest review's stability showing that curve's
+    S90. The reviews before it keep no FSRS-7 memory state, and neither does
+    the latest one without a curve: card info never mixes two algorithms
+    (spec ui.card-info-rwkv-curve)."""
     if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
         return
     response.rwkv_curve.SetInParent()
     curve = aqt.rwkv_scheduler.rwkv_card_info_curve(reviewer, card)
-    if curve is None:
-        return
-    response.rwkv_curve.elapsed_days.extend(curve.elapsed_days)
-    response.rwkv_curve.recall.extend(curve.recall)
-    response.rwkv_curve.s90 = curve.s90
-    if response.HasField("memory_state"):
-        response.memory_state.stability = curve.s90
+    if curve is not None:
+        response.rwkv_curve.elapsed_days.extend(curve.elapsed_days)
+        response.rwkv_curve.recall.extend(curve.recall)
+        response.rwkv_curve.s90 = curve.s90
     # the revlog is newest first
-    latest_review = next(
-        (entry for entry in response.revlog if entry.button_chosen > 0), None
+    latest = next(
+        (i for i, entry in enumerate(response.revlog) if entry.button_chosen > 0),
+        None,
     )
-    if latest_review is not None and latest_review.HasField("memory_state"):
+    if latest is None:
+        return
+    for entry in response.revlog[latest + 1 :]:
+        entry.ClearField("memory_state")
+    latest_review = response.revlog[latest]
+    if curve is None:
+        latest_review.ClearField("memory_state")
+    elif latest_review.HasField("memory_state"):
         latest_review.memory_state.stability = curve.s90
 
 

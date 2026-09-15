@@ -7370,12 +7370,12 @@ def rwkv_card_info_rows(
 
     rows = _card_info_diagnostic_rows(diagnostics)
     if rwkv_review_enabled(reviewer, card):
-        rows.extend(
-            _rwkv_card_info_next_s90_rows(
-                states=_scheduling_states(candidate.reviewer),
-                rwkv_s90_overrides=diagnostics.s90_overrides,
-            )
-        )
+        # RWKV-Curve's values only: no FSRS-7 S90 beside them
+        # (spec ui.card-info-rwkv-curve)
+        s90s = [
+            getattr(diagnostics.s90_overrides, rating) for rating in _RWKV_RATING_FIELDS
+        ]
+        rows.append(("RWKV Curve Next S90", _format_next_s90_values(s90s)))
     if include_after_review and rwkv_review_active(reviewer, card):
         rows.extend(
             rwkv_card_info_after_review_rows(
@@ -7420,64 +7420,6 @@ def _with_card_info_prediction_details(
         button_probabilities=button_probabilities,
         s90_overrides=diagnostics.s90_overrides,
     )
-
-
-def _rwkv_card_info_next_s90_rows(
-    *,
-    states: SchedulingStates | None,
-    rwkv_s90_overrides: RwkvIntervalOverride,
-) -> list[tuple[str, str]]:
-    rwkv_values = tuple(
-        getattr(rwkv_s90_overrides, rating) for rating in _RWKV_RATING_FIELDS
-    )
-    fsrs_values = (
-        tuple(
-            _s90_for_scheduling_state(getattr(states, rating))
-            for rating in _RWKV_RATING_FIELDS
-        )
-        if states is not None
-        else (None, None, None, None)
-    )
-    return [
-        ("RWKV Curve Next S90", _format_next_s90_values(rwkv_values)),
-        ("FSRS Next S90", _format_next_s90_values(fsrs_values)),
-    ]
-
-
-def _s90_for_scheduling_state(state: SchedulingState) -> float | None:
-    state_kind = state.WhichOneof("kind")
-    if state_kind == "normal":
-        return _s90_for_normal_scheduling_state(state.normal)
-    if state_kind == "filtered" and state.filtered.WhichOneof("kind") == "rescheduling":
-        return _s90_for_normal_scheduling_state(
-            state.filtered.rescheduling.original_state
-        )
-    return None
-
-
-def _s90_for_normal_scheduling_state(normal: Any) -> float | None:
-    normal_kind = normal.WhichOneof("kind")
-    if normal_kind == "learning":
-        return _s90_from_memory_state(normal.learning.memory_state)
-    if normal_kind == "review":
-        return _s90_from_memory_state(normal.review.memory_state)
-    if normal_kind == "relearning":
-        return _s90_from_memory_state(
-            normal.relearning.learning.memory_state
-        ) or _s90_from_memory_state(normal.relearning.review.memory_state)
-    return None
-
-
-def _s90_from_memory_state(memory_state: object) -> float | None:
-    value = getattr(memory_state, "stability", None)
-    if (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value > 0
-    ):
-        return float(value)
-    return None
 
 
 def _format_next_s90_values(values: Sequence[float | int | None]) -> str:

@@ -53,10 +53,6 @@ NEXT_S90_UNAVAILABLE_ROWS = [
         "RWKV Curve Next S90",
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
-    (
-        "FSRS Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
 ]
 
 
@@ -445,15 +441,18 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         assert list(response.rwkv_curve.elapsed_days) == [0.0, 1.0]
         assert list(response.rwkv_curve.recall) == pytest.approx([1.0, 0.8])
         assert response.rwkv_curve.s90 == pytest.approx(0.4)
-        # the Stability row and the latest review show the drawn curve's S90
-        assert response.memory_state.stability == pytest.approx(0.4)
+        # the latest review shows the drawn curve's S90
         assert response.revlog[1].memory_state.stability == pytest.approx(0.4)
     else:
         assert not response.rwkv_curve.elapsed_days
         assert not response.rwkv_curve.HasField("s90")
-        assert response.memory_state.stability == 30.0
+        # no FSRS-7 value stands in for the missing curve
+        assert not response.revlog[1].HasField("memory_state")
+    # older reviews keep no FSRS-7 memory state; the newer manual entry and
+    # the card's own state stay (card info decides which rows to show)
+    assert not response.revlog[2].HasField("memory_state")
     assert response.revlog[0].memory_state.stability == 30.0
-    assert response.revlog[2].memory_state.stability == 12.0
+    assert response.memory_state.stability == 30.0
 
 
 def test_card_info_has_no_rwkv_curve_for_other_algorithms(
@@ -469,6 +468,7 @@ def test_card_info_has_no_rwkv_curve_for_other_algorithms(
 
     assert not response.HasField("rwkv_curve")
     assert response.memory_state.stability == 30.0
+    assert response.revlog[2].memory_state.stability == 12.0
 
 
 class TestCheckDynamicRequestPermissions:
