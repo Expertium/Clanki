@@ -28,12 +28,12 @@ test("difficulty orders are offered only when FSRS schedules", () => {
 });
 
 test("a difficulty order under RWKV becomes the default order", () => {
-    expect(DEFAULT_REVIEW_ORDER).toBe(ReviewCardOrder.RETRIEVABILITY_ASCENDING);
+    expect(DEFAULT_REVIEW_ORDER).toBe(ReviewCardOrder.RETRIEVABILITY_DESCENDING);
     expect(reviewOrderForAlgorithm(ReviewCardOrder.EASE_ASCENDING, true)).toBe(
-        ReviewCardOrder.RETRIEVABILITY_ASCENDING,
+        ReviewCardOrder.RETRIEVABILITY_DESCENDING,
     );
     expect(reviewOrderForAlgorithm(ReviewCardOrder.EASE_DESCENDING, true)).toBe(
-        ReviewCardOrder.RETRIEVABILITY_ASCENDING,
+        ReviewCardOrder.RETRIEVABILITY_DESCENDING,
     );
     // other orders, and any order under FSRS, are kept
     expect(reviewOrderForAlgorithm(ReviewCardOrder.DAY, true)).toBe(ReviewCardOrder.DAY);

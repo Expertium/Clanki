@@ -80,8 +80,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     new_card_insert_order: NewCardInsertOrder::Due as i32,
     new_card_gather_priority: NewCardGatherPriority::Deck as i32,
     new_card_sort_order: NewCardSortOrder::Template as i32,
-    // least likely to be recalled first (spec deck-options.new-preset-defaults)
-    review_order: ReviewCardOrder::RetrievabilityAscending as i32,
+    // most likely to be recalled first (spec deck-options.new-preset-defaults)
+    review_order: ReviewCardOrder::RetrievabilityDescending as i32,
     new_mix: ReviewMix::MixWithReviews as i32,
     interday_learning_mix: ReviewMix::MixWithReviews as i32,
     leech_action: LeechAction::TagOnly as i32,
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(config.inner.reviews_per_day, 9999);
         assert_eq!(
             config.inner.review_order,
-            ReviewCardOrder::RetrievabilityAscending as i32
+            ReviewCardOrder::RetrievabilityDescending as i32
         );
         // the legacy JSON default (Python add_config / restore_to_default)
         // agrees
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(legacy.inner.reviews_per_day, 9999);
         assert_eq!(
             legacy.inner.review_order,
-            ReviewCardOrder::RetrievabilityAscending as i32
+            ReviewCardOrder::RetrievabilityDescending as i32
         );
     }
 
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(config.inner.reviews_per_day, 9999);
         assert_eq!(
             config.inner.review_order,
-            ReviewCardOrder::RetrievabilityAscending as i32
+            ReviewCardOrder::RetrievabilityDescending as i32
         );
         Ok(())
     }

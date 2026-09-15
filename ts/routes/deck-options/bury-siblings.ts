@@ -18,6 +18,16 @@ export function burySiblingsFromConfig(config: BurySettings): boolean {
 }
 
 /**
+ * Some but not all of the three settings are on (set in Advanced mode): the
+ * switch reads as off and shows a "Partly on" caption
+ * (spec deck-options.simple-view).
+ */
+export function burySiblingsPartlyOn(config: BurySettings): boolean {
+    const on = [config.buryNew, config.buryReviews, config.buryInterdayLearning];
+    return on.some(Boolean) && !on.every(Boolean);
+}
+
+/**
  * Sets all three settings to `on`, in place, and returns the config. A no-op
  * when the switch already reads as `on`, so showing a preset writes nothing:
  * a preset with only some of the settings on keeps them until the switch is

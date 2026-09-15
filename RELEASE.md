@@ -22,6 +22,9 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Simple mode: when only some of the settings behind "Bury siblings" or
+  "On-screen timer" are on (set in Advanced mode), the switch shows "Partly
+  on (set in Advanced mode)" under it.
 - RWKV-Curve's stability (S90) is no longer rounded up to whole days: card
   info and the stored stability show the exact point where RWKV-Curve's
   curve meets 90%, which can be under a day.
@@ -56,12 +59,12 @@ repeated here unless they materially affect a fork feature.
   with another.
 - Deck options: "Don't play audio automatically" is now "Play audio
   automatically", on by default. Audio plays exactly as before.
-- New presets get 9999 maximum reviews/day and sort reviews by ascending
-  retrievability (least likely to be recalled first). Maximum reviews/day is
+- New presets get 9999 maximum reviews/day and sort reviews by descending
+  retrievability (most likely to be recalled first). Maximum reviews/day is
   Advanced-only; Simple mode keeps the stored value.
 - Under RWKV-Curve and RWKV-Instant the review sort order no longer offers
   "Easy cards first" or "Difficult cards first" (difficulty is an FSRS
-  variable); a preset that had one of them uses ascending retrievability.
+  variable); a preset that had one of them uses descending retrievability.
 - The Review Heatmap add-on is part of Clanki now, with all its settings,
   in Preferences > Review Heatmap: a review calendar with streak figures
   under the deck list, on the deck overview and in the legacy stats. An
