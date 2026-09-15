@@ -36,12 +36,19 @@ deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
 RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown in both modes,
 and the
 deck-options screen shows its simplified view
-(`spec/deck-options.md`, `deck-options.advanced-view`) with no switch of its
-own. Hidden settings keep their stored values and keep taking effect.
+(`spec/deck-options.md`, `deck-options.advanced-view`). The deck-options
+screen has the same "Simple | Advanced" control at the right end of its top
+bar: a click switches the page between its two views at once, keeping any
+unsaved changes, and writes the same flag through the main window, which
+redraws as above; it does not wait for Save, and closing without saving
+keeps the new mode. Hidden settings keep their stored values and keep
+taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
-active side filled. The RWKV reschedule actions are power-user tools. A user
+active side filled. 2026-09-15: deck options get the switch too, always in
+step with the main window's, so switching needs no closing and reopening of
+deck options. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
 installed).
@@ -49,7 +56,10 @@ installed).
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
 reset),
-`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`).
+`advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
+`test_deck_options_mode_switch_sets_the_main_window_mode`
+(`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
+once" (`ts/tests/e2e/deck-options.test.ts`).
 
 ## ui.review-heatmap
 

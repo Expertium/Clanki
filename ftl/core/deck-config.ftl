@@ -770,6 +770,12 @@ deck-config-optimize-all-tip = You can optimize all presets at once by using the
 
 ## Scheduler choice (Clanki)
 
+# The Simple | Advanced switch at the top right of deck options; the same
+# setting as the main window's switch.
+deck-config-ui-mode = Interface mode
+deck-config-ui-mode-simple = Simple
+deck-config-ui-mode-advanced = Advanced
+deck-config-ui-mode-tooltip = Simple hides settings most people never change. The same switch is in the main window.
 deck-config-scheduler = Algorithm
 deck-config-scheduler-tooltip =
     Which algorithm schedules your cards. It is one setting for all presets:

@@ -87,7 +87,8 @@ export class DeckOptionsState {
     readonly fsrsShortTermWithStepsEnabled: Writable<boolean>;
     /** Read-only here: a Preferences setting the Easy Days warning needs. */
     readonly fsrsReschedule: Writable<boolean>;
-    /** The collection-wide Advanced UI mode (spec ui.mode-switch); read-only here. */
+    /** The collection-wide Advanced UI mode (spec ui.mode-switch); the page's switch
+     * (UiModeSwitch) writes it at once, without Save. */
     readonly advancedUi: Writable<boolean>;
     /**
      * The collection's one algorithm (spec sched.one-global-algorithm); every
