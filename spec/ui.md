@@ -88,17 +88,24 @@ where neither the calendar nor the figures show, nothing is computed.
 Given the Review Heatmap add-on installed and enabled at start-up, Clanki
 disables it before add-ons load (both would draw a heatmap) and, the first
 time only, tells the user so once the profile is open; the notice is never
-shown again (a flag in the profile manager's global meta).
+shown again (a flag in the profile manager's global meta). Given the user
+enables that add-on in Tools > Add-ons, or installs it, a message says that
+Clanki already has the Review Heatmap built in (settings in Preferences >
+Review Heatmap), and the add-on stays disabled; other add-ons enable as
+before.
 
 **Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
 settings, in a Preferences tab of their own, magenta by default, and retire
-the add-on with a one-time notice.
+the add-on with a one-time notice. Later the same day: a user who tries to
+enable the add-on must be told that Clanki has this built in.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
 colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
-link, disabling the add-on, the one-time notice);
+link, disabling the add-on, the one-time notice,
+`test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
+`test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`
 (`qt/tests/test_preferences.py`);
 `review_heatmap_is_on_by_default_and_a_reviewing_preference`
