@@ -784,9 +784,9 @@ deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
 deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
 deck-config-scheduler-choice-fsrs-description =
     A relatively simple algorithm. It uses only each card's grades
-    (Again/Hard/Good/Easy) and the number of days between its reviews. Least
-    accurate at predicting whether you forgot your card, and hence at keeping
-    your retention at the desired level.
+    (Again/Hard/Good/Easy) and the number of days between the card's
+    reviews. Least accurate at predicting whether you forgot your card, and
+    hence at keeping your retention at the desired level.
 deck-config-scheduler-choice-rwkv-curve-description =
     The default. A neural network that uses a lot more information (but NOT
     card content, such as text/images/audio) to determine whether you forgot
