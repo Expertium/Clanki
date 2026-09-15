@@ -321,6 +321,25 @@ class _OlderReviews:
     days: dict[int, int]
 
 
+@dataclass
+class _OlderReviewsByDeck:
+    """Reviews per day of the reviews before `cutoff`, per deck of the
+    reviewed card when they were counted, so that the reviews of any set of
+    decks are a sum; `cards` holds each deck's number and sum of ids of the
+    cards made before the cut-off, then."""
+
+    key: tuple[Any, ...]
+    cutoff: int
+    cards: dict[int, tuple[int, float]]
+    days: dict[int, dict[int, int]]
+
+
+# where ReviewHeatmap's older-reviews cache keeps the per-deck counts
+_BY_DECK = "by deck"
+# the reviews of existing cards, with their card
+_REVIEWED_CARDS = "revlog JOIN cards ON cards.id = revlog.cid"
+
+
 class ActivityReporter:
     """Reads review history and the due forecast from the collection."""
 
@@ -328,7 +347,7 @@ class ActivityReporter:
         self,
         col: Collection,
         settings: HeatmapSettings,
-        older_reviews: dict[Any, _OlderReviews] | None = None,
+        older_reviews: dict[Any, Any] | None = None,
         contents: _Contents | None = None,
     ) -> None:
         self._col = col
@@ -502,26 +521,51 @@ class ActivityReporter:
             where.append(f"EXISTS ({card} AND did IN {ids2str(dids)})")
         elif self._settings.exclude_deleted_cards:
             where.append(f"EXISTS ({card})")
-        days = self._review_days_by_day_ranges(condition, " AND ".join(where))
-        if days is None:
-            days = self._review_days_one_by_one(" AND ".join(where))
-        return days
+        counts = self._grouped_review_days(condition, " AND ".join(where))
+        return {day: count for (day, _), count in counts.items()}
 
-    def _review_days_one_by_one(self, where: str) -> dict[int, int]:
-        """Reviews per day, each review's local day computed on its own."""
+    def _review_days_by_deck(self, cutoff: int) -> dict[int, dict[int, int]]:
+        """Reviews per deck (the reviewed card's) and day, of the reviews
+        before `cutoff`. Reviews of deleted cards are left out."""
+        condition = f"revlog.id < {cutoff}"
+        where = [condition]
+        if self._settings.exclude_manual_reschedules:
+            where.append("revlog.ease >= 1")
+        by_deck: dict[int, dict[int, int]] = {}
+        counts = self._grouped_review_days(condition, " AND ".join(where), True)
+        for (day, did), count in counts.items():
+            by_deck.setdefault(did, {})[day] = count
+        return by_deck
+
+    def _grouped_review_days(
+        self, condition: str, where: str, by_deck: bool = False
+    ) -> dict[tuple[int, int], int]:
+        """Reviews per (day, deck of the reviewed card) of the reviews that
+        meet `where`, or per (day, 0) when not by deck."""
+        counts = self._review_days_by_day_ranges(condition, where, by_deck)
+        if counts is None:
+            counts = self._review_days_one_by_one(where, by_deck)
+        return counts
+
+    def _review_days_one_by_one(
+        self, where: str, by_deck: bool = False
+    ) -> dict[tuple[int, int], int]:
+        """Reviews per day (and deck), each review's local day computed on
+        its own."""
         offset_secs = self._offset() * 3600
         rows = self._col.db.all(
             f"""
-SELECT CAST(STRFTIME('%s', id / 1000 - {offset_secs}, 'unixepoch',
-                     'localtime', 'start of day') AS int) AS day, COUNT()
-FROM revlog WHERE {where}
-GROUP BY day"""
+SELECT CAST(STRFTIME('%s', revlog.id / 1000 - {offset_secs}, 'unixepoch',
+                     'localtime', 'start of day') AS int) AS day,
+       {"cards.did" if by_deck else 0} AS deck, COUNT()
+FROM {_REVIEWED_CARDS if by_deck else "revlog"} WHERE {where}
+GROUP BY day, deck"""
         )
-        return {day: count for day, count in rows}
+        return {(day, deck): count for day, deck, count in rows}
 
     def _review_days_by_day_ranges(
-        self, condition: str, where: str
-    ) -> dict[int, int] | None:
+        self, condition: str, where: str, by_deck: bool = False
+    ) -> dict[tuple[int, int], int] | None:
         """The counts of _review_days_one_by_one, from one review-log id
         range per day: converting every review's time to local time is what
         makes that slow (about 0.5 s per million reviews); here only the
@@ -554,7 +598,17 @@ GROUP BY day"""
             "CAST(STRFTIME('%s', {}, 'unixepoch', 'localtime', 'start of day') AS int)"
         )
         utc_offset = "(STRFTIME('%s', {0}, 'unixepoch', 'localtime') - ({0}))"
-        ids = f"id >= (lo + {offset_secs}) * 1000 AND id < (hi + {offset_secs}) * 1000"
+        ids = (
+            f"revlog.id >= (lo + {offset_secs}) * 1000"
+            f" AND revlog.id < (hi + {offset_secs}) * 1000"
+        )
+        if by_deck:
+            # per deck, as a JSON object {deck: count}
+            count_sql = f"""(SELECT json_group_object(did, n) FROM (
+    SELECT cards.did AS did, COUNT() AS n FROM {_REVIEWED_CARDS}
+    WHERE {ids} AND {where} GROUP BY cards.did))"""
+        else:
+            count_sql = f"(SELECT COUNT() FROM revlog WHERE {ids} AND {where})"
         rows = db.all(
             f"""
 WITH RECURSIVE
@@ -570,8 +624,7 @@ WITH RECURSIVE
       {day.format("lo")} = d AND {day.format("hi - 1")} = d
         AND {utc_offset.format("lo")} = {utc_offset.format("hi - 1")}
     FROM ranges WHERE hi IS NOT NULL)
-SELECT d, lo, hi, ok,
-  CASE WHEN ok THEN (SELECT COUNT() FROM revlog WHERE {ids} AND {where}) END
+SELECT d, lo, hi, ok, CASE WHEN ok THEN {count_sql} END
 FROM checked""",
             first,
             last,
@@ -585,24 +638,38 @@ FROM checked""",
             and rows[-1][2] > last
         ):
             return None
-        days = {d: count for d, _, _, ok, count in rows if ok and count}
+        counts: dict[tuple[int, int], int] = {}
+        for d, _, _, ok, value in rows:
+            if not ok or not value:
+                continue
+            if by_deck:
+                for did, n in json.loads(value).items():
+                    counts[(d, int(did))] = n
+            else:
+                counts[(d, 0)] = value
         failed = [
-            f"(id >= {(lo + offset_secs) * 1000} AND id < {(hi + offset_secs) * 1000})"
+            f"(revlog.id >= {(lo + offset_secs) * 1000}"
+            f" AND revlog.id < {(hi + offset_secs) * 1000})"
             for _, lo, hi, ok, _ in rows
             if not ok
         ]
         if len(failed) > 100:
             return None
         if failed:
-            rest = self._review_days_one_by_one(f"({' OR '.join(failed)}) AND {where}")
-            for d, count in rest.items():
-                days[d] = days.get(d, 0) + count
-        return days
+            rest = self._review_days_one_by_one(
+                f"({' OR '.join(failed)}) AND {where}", by_deck
+            )
+            for key, count in rest.items():
+                counts[key] = counts.get(key, 0) + count
+        return counts
 
     def _older_review_days(self, dids: list[int] | None) -> _OlderReviews:
         scope = None if dids is None else tuple(dids)
         older = self._older_reviews.get(scope)
         if older is not None and older.key == self._older_key(dids, older.cutoff):
+            return older
+        if dids is not None and (older := self._older_review_days_of_decks(dids)):
+            self._older_reviews[scope] = older
             return older
         cutoff = int(time.time() * 1000)
         # the key is read before the reviews: a review added in between
@@ -611,6 +678,69 @@ FROM checked""",
         days = self._review_days(dids, f"id < {cutoff}")
         older = self._older_reviews[scope] = _OlderReviews(key, cutoff, days)
         return older
+
+    def _older_review_days_of_decks(self, dids: list[int]) -> _OlderReviews | None:
+        """The older reviews of a set of decks, as the sum of the per-deck
+        counts, which are made once for all decks: the first heatmap of each
+        further deck then needs no pass over the review log. When a deck's
+        cards made before the cut-off changed since (their number or the sum
+        of their ids: a card moved or deleted), the per-deck counts are made
+        again, once; None if they still do not fit."""
+        by_deck, fresh = self._older_reviews_by_deck()
+        older = self._older_review_days_from(by_deck, dids)
+        if older is None and not fresh:
+            by_deck, _ = self._older_reviews_by_deck(again=True)
+            older = self._older_review_days_from(by_deck, dids)
+        return older
+
+    def _older_review_days_from(
+        self, by_deck: _OlderReviewsByDeck, dids: list[int]
+    ) -> _OlderReviews | None:
+        # read before the check: a change in between fails the next check
+        key = self._older_key(dids, by_deck.cutoff)
+        cards_now = {
+            did: (count, total)
+            for did, count, total in self._col.db.all(
+                "SELECT did, count(), total(id) FROM cards WHERE id < ? AND did IN "
+                f"{ids2str(dids)} GROUP BY did",
+                by_deck.cutoff,
+            )
+        }
+        cards_then = {did: by_deck.cards[did] for did in dids if did in by_deck.cards}
+        if key[:-1] != by_deck.key or cards_now != cards_then:
+            return None
+        days: dict[int, int] = {}
+        for did in set(dids):
+            for day, count in by_deck.days.get(did, {}).items():
+                days[day] = days.get(day, 0) + count
+        return _OlderReviews(key, by_deck.cutoff, days)
+
+    def _older_reviews_by_deck(
+        self, again: bool = False
+    ) -> tuple[_OlderReviewsByDeck, bool]:
+        """The per-deck counts, and whether they were made just now."""
+        by_deck = self._older_reviews.get(_BY_DECK)
+        if (
+            not again
+            and isinstance(by_deck, _OlderReviewsByDeck)
+            and by_deck.key == self._older_review_log_key(by_deck.cutoff)
+        ):
+            return by_deck, False
+        cutoff = int(time.time() * 1000)
+        # the key and the cards are read before the reviews: a change in
+        # between makes the next call count again, never the reverse
+        key = self._older_review_log_key(cutoff)
+        cards = {
+            did: (count, total)
+            for did, count, total in self._col.db.all(
+                "SELECT did, count(), total(id) FROM cards WHERE id < ? GROUP BY did",
+                cutoff,
+            )
+        }
+        days = self._review_days_by_deck(cutoff)
+        by_deck = _OlderReviewsByDeck(key, cutoff, cards, days)
+        self._older_reviews[_BY_DECK] = by_deck
+        return by_deck, True
 
     def _older_key(self, dids: list[int] | None, cutoff: int) -> tuple[Any, ...]:
         """What the counts of the reviews before `cutoff` read. Reviews are
@@ -622,11 +752,7 @@ FROM checked""",
         sum of their ids. The local time zone and the rollover hour decide
         the days."""
         db = self._col.db
-        reviews = (
-            db.scalar("SELECT count() FROM revlog")
-            - db.scalar("SELECT count() FROM revlog WHERE id >= ?", cutoff),
-            db.scalar("SELECT max(id) FROM revlog WHERE id < ?", cutoff),
-        )
+        log_key = self._older_review_log_key(cutoff)
         cards: Any = None
         if dids is not None:
             cards = db.first(
@@ -637,6 +763,16 @@ FROM checked""",
             cards = db.first(
                 "SELECT count(), total(id) FROM cards WHERE id < ?", cutoff
             )
+        return (*log_key, None if cards is None else tuple(cards))
+
+    def _older_review_log_key(self, cutoff: int) -> tuple[Any, ...]:
+        """_older_key without the cards."""
+        db = self._col.db
+        reviews = (
+            db.scalar("SELECT count() FROM revlog")
+            - db.scalar("SELECT count() FROM revlog WHERE id >= ?", cutoff),
+            db.scalar("SELECT max(id) FROM revlog WHERE id < ?", cutoff),
+        )
         return (
             self._col.path,
             self._offset(),
@@ -646,7 +782,6 @@ FROM checked""",
             self._settings.exclude_manual_reschedules,
             self._settings.exclude_deleted_cards,
             reviews,
-            None if cards is None else tuple(cards),
         )
 
     def _cards_due(
@@ -881,7 +1016,7 @@ class ReviewHeatmap:
         # one entry per place drawn (deck list, overview, stats period), so
         # going between the deck list and a deck draws neither again
         self._cache: dict[tuple[Any, ...], _RenderCache] = {}
-        self._older_reviews: dict[Any, _OlderReviews] = {}
+        self._older_reviews: dict[Any, Any] = {}
         self._contents = _Contents()
 
     def enabled(self) -> bool:
