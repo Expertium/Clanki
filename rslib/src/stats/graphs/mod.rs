@@ -90,16 +90,21 @@ impl Collection {
         days: u32,
         graphs: &[i32],
     ) -> Result<anki_proto::stats::GraphsResponse> {
+        let wanted = WantedGraphs::new(graphs);
+        if search.trim().is_empty() {
+            // the whole collection: the cards and the review log are read
+            // as they are, so they need not be searched into a table first
+            return self.graph_data(search, true, 0, days, wanted);
+        }
         let guard = self.search_cards_into_table_with_stats_search(
             search,
             SortMode::NoOrder,
             Some(search),
         )?;
-        let all = search.trim().is_empty();
         let searched_cards = guard.cards;
         guard
             .col
-            .graph_data(search, all, searched_cards, days, WantedGraphs::new(graphs))
+            .graph_data(search, false, searched_cards, days, wanted)
     }
 
     fn graph_data(
@@ -151,14 +156,16 @@ impl Collection {
             Graph::Difficulty,
             Graph::Retrievability,
         ]);
-        let cards = if load_cards {
-            self.storage.all_searched_cards()?
-        } else {
+        let cards = if !load_cards {
             vec![]
+        } else if all {
+            self.storage.all_cards()?
+        } else {
+            self.storage.all_searched_cards()?
         };
         // without the cards (the Simple view), Card Counts counts in SQL
         let card_count_groups = if wanted.has(Graph::CardCounts) && !load_cards {
-            Some(self.storage.searched_card_count_groups()?)
+            Some(self.storage.card_count_groups(!all)?)
         } else {
             None
         };
@@ -472,6 +479,49 @@ mod test {
                 // the full response has every graph the algorithm shows
                 assert!(full.added.is_some() && full.reviews.is_some());
                 assert!(full.retrievability.is_some() && full.difficulty.is_none());
+            }
+        }
+        Ok(())
+    }
+
+    // The whole collection, read as it is, gives what the searched cards give.
+    #[test]
+    fn the_empty_search_gives_what_a_search_of_every_card_gives() -> Result<()> {
+        let mut col = collection_with_reviews()?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let every_card = "deck:Default or deck:Other";
+        assert_eq!(
+            col.search_cards(every_card, SortMode::NoOrder)?.len(),
+            col.search_cards("", SortMode::NoOrder)?.len()
+        );
+        // the same cards in the same order (the graphs add their values up
+        // in that order)
+        let guard = col.search_cards_into_table(every_card, SortMode::NoOrder)?;
+        let searched: Vec<CardId> = guard
+            .col
+            .storage
+            .all_searched_cards()?
+            .iter()
+            .map(|card| card.id)
+            .collect();
+        drop(guard);
+        let every: Vec<CardId> = col
+            .storage
+            .all_cards()?
+            .iter()
+            .map(|card| card.id)
+            .collect();
+        assert_eq!(searched, every);
+        for days in [365, 0] {
+            for graphs in [
+                ALL_GRAPHS.to_vec(),
+                vec![Graph::Reviews, Graph::CardCounts, Graph::TrueRetention],
+                vec![Graph::Added],
+            ] {
+                assert_eq!(
+                    ask(&mut col, "", days, &graphs),
+                    ask(&mut col, every_card, days, &graphs)
+                );
             }
         }
         Ok(())
