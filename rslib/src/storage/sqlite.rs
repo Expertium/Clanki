@@ -70,6 +70,12 @@ fn open_or_create_collection_db(
     db.pragma_update(None, "locking_mode", "exclusive")?;
     db.pragma_update(None, "page_size", 4096)?;
     db.pragma_update(None, "cache_size", -40 * 1024)?;
+    // Read pages through a memory map instead of one read call per page: the
+    // pages then live in the OS file cache, shared, not in private memory, and
+    // a scan of a large table (a deck list after other screens pushed its
+    // pages out of the 40 MiB cache above, a sorted browser search) needs no
+    // system call per page.
+    db.pragma_update(None, "mmap_size", 1_i64 << 30)?;
     db.pragma_update(None, "legacy_file_format", false)?;
     db.pragma_update(None, "journal_mode", "wal")?;
     // Android has no /tmp folder, and fails in the default config.
