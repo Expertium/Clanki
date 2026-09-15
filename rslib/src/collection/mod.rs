@@ -677,7 +677,16 @@ impl Collection {
         scores: HashMap<CardId, RwkvReviewQueueScoreEntry>,
     ) -> Result<()> {
         let days_elapsed = self.timing_today()?.days_elapsed;
-        self.state.card_queues = None;
+        // Emptying a score map that is already empty leaves the queue's
+        // inputs as they are: the queue is kept, as after an answer
+        // (spec sched.study-queue-kept-after-answer).
+        if !scores.is_empty()
+            || self
+                .rwkv_review_queue_scores_for_day(days_elapsed)
+                .is_some()
+        {
+            self.state.card_queues = None;
+        }
         self.clear_rwkv_deck_count_scores();
         self.rwkv_retrievability_scores_mut(days_elapsed)
             .set_review_queue_scores(deck_id, scores);
