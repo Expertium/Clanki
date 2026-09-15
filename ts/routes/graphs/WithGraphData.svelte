@@ -3,8 +3,12 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
-    import type { GraphsRequest_Graph } from "@generated/anki/stats_pb";
-    import { GraphsRequest, GraphsResponse } from "@generated/anki/stats_pb";
+    import {
+        GraphsRequest,
+        GraphsRequest_Graph,
+        GraphsResponse,
+        GraphsResponse_Retrievability,
+    } from "@generated/anki/stats_pb";
     import { getGraphPreferences, setGraphPreferences } from "@generated/backend";
     import { postProtoWithResponse } from "@generated/post";
     import { onDestroy, tick } from "svelte";
@@ -25,6 +29,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         setGraphPreferences,
     );
     const rwkvStatsPendingHeader = "X-Anki-Rwkv-Stats-Pending";
+    const rwkvRetrievabilityLaterHeader = "X-Anki-Rwkv-Retrievability-Later";
     const rwkvStatsRetryDelayMs = 2_000;
     // while RWKV calculates, the page keeps asking until the scores arrive:
     // it shows "Calculating…", never another algorithm's values (spec
@@ -58,6 +63,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     interface GraphDataResponse {
         data: GraphsResponse;
         rwkvStatsPending: boolean;
+        /** Under RWKV the response left Retrievability out: the page asks
+         * for it on its own, so the other graphs do not wait for RWKV. */
+        retrievabilityLater: boolean;
+    }
+
+    function wantsRetrievability(graphs: GraphsRequest_Graph[]): boolean {
+        return (
+            graphs.length === 0 || graphs.includes(GraphsRequest_Graph.RETRIEVABILITY)
+        );
     }
 
     function graphDataKey(
@@ -103,12 +117,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         logGraphTiming("graphs request started", { search, days, graphs });
         inFlightGraphs = postProtoWithResponse(
             "graphs",
-            new GraphsRequest({ search, days, graphs }),
+            new GraphsRequest({
+                search,
+                days,
+                graphs,
+                // the page's own Retrievability request waits for RWKV
+                rwkvRetrievabilityLater:
+                    wantsRetrievability(graphs) &&
+                    !(
+                        graphs.length === 1 &&
+                        graphs[0] === GraphsRequest_Graph.RETRIEVABILITY
+                    ),
+            }),
             GraphsResponse,
         )
             .then(({ output, headers }) => ({
                 data: output,
                 rwkvStatsPending: headers.get(rwkvStatsPendingHeader) === "1",
+                retrievabilityLater: headers.get(rwkvRetrievabilityLaterHeader) === "1",
             }))
             .finally(() => {
                 logGraphTiming("graphs request finished", {
@@ -144,6 +170,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         graphs: GraphsRequest_Graph[],
         requestId: number,
         rwkvStatsPending: boolean,
+        retryRequest: () => void,
     ): boolean {
         const key = graphDataKey(search, days, graphs);
         resetRwkvStatsRetryForKey(key);
@@ -196,7 +223,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 requestId,
                 retry,
             });
-            scheduleSourceDataUpdate(search, days, graphs);
+            retryRequest();
         }, rwkvStatsRetryDelayMs);
         return true;
     }
@@ -272,13 +299,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 const applyStart = performance.now();
                 sourceData = data.data;
                 sourceComplete = graphs.length === 0;
-                const retryPending = handleRwkvStatsRetry(
-                    search,
-                    days,
-                    graphs,
-                    requestId,
-                    data.rwkvStatsPending,
-                );
+                let retryPending: boolean;
+                if (data.retrievabilityLater) {
+                    // RWKV has not scored the search yet: "Calculating…"
+                    // (spec ui.stats-one-algorithm)
+                    sourceData = withRetrievability(
+                        data.data,
+                        new GraphsResponse_Retrievability({ rwkvPending: true }),
+                    );
+                    retryPending = true;
+                    loadLaterRetrievability(search, days, graphs, requestId);
+                } else {
+                    retryPending = handleRwkvStatsRetry(
+                        search,
+                        days,
+                        graphs,
+                        requestId,
+                        data.rwkvStatsPending,
+                        () => scheduleSourceDataUpdate(search, days, graphs),
+                    );
+                }
                 loading = retryPending;
                 await tick();
                 applied = true;
@@ -309,6 +349,48 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 loading = false;
             }
         }
+    }
+
+    function withRetrievability(
+        data: GraphsResponse,
+        retrievability: GraphsResponse_Retrievability | undefined,
+    ): GraphsResponse {
+        const merged = data.clone();
+        merged.retrievability = retrievability;
+        return merged;
+    }
+
+    /** The Retrievability graph of a response that left it out; it waits for
+     * RWKV to score the search, asking again while RWKV is not ready. */
+    async function loadLaterRetrievability(
+        search: string,
+        days: number,
+        graphs: GraphsRequest_Graph[],
+        requestId: number,
+    ): Promise<void> {
+        const only = [GraphsRequest_Graph.RETRIEVABILITY];
+        let later: GraphDataResponse;
+        try {
+            later = await graphData(search, days, only);
+        } catch {
+            // postProto has shown the error
+            if (requestId === activeRequestId) {
+                loading = false;
+            }
+            return;
+        }
+        if (requestId !== activeRequestId || !sourceData) {
+            return;
+        }
+        sourceData = withRetrievability(sourceData, later.data.retrievability);
+        loading = handleRwkvStatsRetry(
+            search,
+            days,
+            graphs,
+            requestId,
+            later.rwkvStatsPending,
+            () => loadLaterRetrievability(search, days, graphs, requestId),
+        );
     }
 
     $: revlogRange = daysToRevlogRange($days);

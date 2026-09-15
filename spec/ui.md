@@ -271,22 +271,28 @@ Given the Stats page, its graphs draw only the collection's algorithm
 
 Under RWKV there is no FSRS-7 series beside RWKV's and no FSRS-7 value for
 a card RWKV has not scored. While RWKV has not scored the page's search yet
-(its state loading or warming up), the Retrievability graph shows
-"Calculating…" instead of values, and the page asks again every 2 seconds
-until the scores arrive; under FSRS-7 no RWKV score is prepared at all
-(`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
+(its state loading or warming up, or RWKV scoring the searched cards), the
+Retrievability graph shows "Calculating…" instead of values, and the page
+asks again every 2 seconds until the scores arrive. The page's other graphs
+do not wait for RWKV's scores: they are drawn first, and the Retrievability
+graph fills in when the scores arrive. Under FSRS-7 no RWKV score is
+prepared at all (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
 each card now, while card info evaluates the curve stored at the card's
 last review (`ui.card-info-one-algorithm`); the two can differ slightly.
 
 **Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
 RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
-RWKV has no difficulty and RWKV-Instant no stability.
+RWKV has no difficulty and RWKV-Instant no stability. 2026-09-16: RWKV
+scoring every card of a big deck takes minutes (about 4 on two cores for
+Andrew's 159k cards), during which the Stats page showed only its spinner.
 
 **Pinned by:** `retrievability_graph_uses_rwkv_scores_for_matching_search`,
 `fsrs7_stats_show_no_rwkv_values_and_rwkv_curve_uses_the_curve`
 (`rslib/src/stats/graphs/retrievability.rs`);
 `test_rwkv_curve_collection_active_reads_the_algorithm`
-(`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_graphs_leave_rwkv_retrievability_for_later_when_asked`
+(`qt/tests/test_mediasrv.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
 
 ## ui.browser-interval-average
