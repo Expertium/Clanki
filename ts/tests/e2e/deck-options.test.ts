@@ -136,3 +136,22 @@ test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }
         await setAdvancedUi(page, false);
     }
 });
+
+// Pins spec/ui.md#ui.mode-switch: deck options have their own Simple |
+// Advanced switch; it changes the page at once and stores the mode.
+test("the deck-options switch changes the view at once", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    try {
+        await page.goto("/deck-options/1");
+        expect(await visibleCount(page, "Maximum reviews/day")).toBe(0);
+
+        await page.getByRole("button", { name: "Advanced", exact: true }).click();
+        await expect(page.getByText("Maximum reviews/day", { exact: true }).first()).toBeVisible();
+
+        // the flag is stored: a fresh page opens in Advanced mode
+        await page.reload();
+        await expect(page.getByText("Maximum reviews/day", { exact: true }).first()).toBeVisible();
+    } finally {
+        await setAdvancedUi(page, false);
+    }
+});
