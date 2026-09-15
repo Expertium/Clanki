@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use chrono::Datelike;
 
 use crate::prelude::*;
+use crate::scheduler::answering::get_fuzz_factor;
 use crate::scheduler::states::fuzz::constrained_fuzz_bounds;
+use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
+use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::build_easy_days_percentages;
 use crate::scheduler::states::load_balancer::calculate_easy_days_modifiers;
@@ -188,4 +191,51 @@ impl Rescheduler {
 
         select_weighted_interval(intervals, fuzz_seed)
     }
+}
+
+/// Whole days for a review card that a reschedule gives the unrounded
+/// `interval`: at least the previous interval when the new one still reaches
+/// it within the fuzz range (`minimum_review_fuzz_interval`), at least 1, at
+/// most `max_interval`; the load balancer and Easy Days pick the day when
+/// `rescheduler` is given (and the card is not overdue past the fuzz range),
+/// else review fuzz does. `fuzz_seed` is the card's seed for its previous
+/// review.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rescheduled_interval_days(
+    rescheduler: Option<&Rescheduler>,
+    interval: f32,
+    previous_interval: u32,
+    max_interval: u32,
+    days_elapsed: u32,
+    deckconfig_id: DeckConfigId,
+    fuzz_seed: Option<u64>,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> u32 {
+    let min_interval = minimum_review_fuzz_interval(
+        interval,
+        previous_interval,
+        max_interval,
+        review_fuzz_config,
+    )
+    .max(1);
+    rescheduler
+        .and_then(|rescheduler| {
+            rescheduler.find_interval(
+                interval,
+                min_interval,
+                max_interval,
+                days_elapsed,
+                deckconfig_id,
+                fuzz_seed,
+            )
+        })
+        .unwrap_or_else(|| {
+            with_review_fuzz(
+                get_fuzz_factor(fuzz_seed),
+                interval,
+                min_interval,
+                max_interval,
+                review_fuzz_config,
+            )
+        })
 }
