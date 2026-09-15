@@ -143,20 +143,17 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     Ok(retrievability)
 }
 
-pub(crate) fn fsrs_next_interval_for_params(
+/// The interval at `desired_retention` of the FSRS-7 state whose S90 is
+/// `s90` (spec sched.fsrs7-sm2-conversion): the `FsrsNextInterval` add-on API
+/// is given the S90 a card shows, not FSRS-7's internal stability.
+pub(crate) fn fsrs_next_interval_for_s90(
     params: &[f32],
-    stability: f32,
+    s90: f32,
     desired_retention: f32,
 ) -> Result<f32> {
     let fsrs = FSRS::new(params)?;
-    Ok(fsrs.next_interval_for_state(
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-            stability_fast: stability,
-        },
-        desired_retention.clamp(0.0001, 0.9999),
-    ))
+    let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, s90, 0.9)?;
+    Ok(fsrs.next_interval_for_state(state, desired_retention.clamp(0.0001, 0.9999)))
 }
 
 pub(crate) fn fsrs_interval_at_retrievability_for_params(
@@ -196,11 +193,15 @@ pub(crate) fn fsrs_memory_state_for_fsrs(
     }
 }
 
-/// Compute memory state from SM-2 fields.
+/// Compute memory state from SM-2 fields: the state whose forgetting curve
+/// reaches `sm2_retention` at `interval` days (spec
+/// sched.fsrs7-sm2-conversion).
 ///
-/// FSRS-7 no longer has a legacy scalar decay slot, so conversion is delegated
-/// to the selected FSRS implementation to initialize dual-trace state
-/// consistently.
+/// The fsrs crate's conversion gives the shape of the state (difficulty 5,
+/// fast stability 0.8 of the internal one). Its FSRS-7 version puts the
+/// interval into the internal stability, which is not the interval at 90%
+/// recall of FSRS-7's two-component curve (a 100-day interval gave an S90 of
+/// about 226 days), so the state is then scaled to the interval.
 pub(crate) fn memory_state_from_sm2_with_params(
     fsrs: &FSRS,
     _params: &[f32],
@@ -208,7 +209,103 @@ pub(crate) fn memory_state_from_sm2_with_params(
     interval: f32,
     sm2_retention: f32,
 ) -> Result<MemoryState> {
-    Ok(fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?)
+    let shape = fsrs.memory_state_from_sm2(ease_factor, interval, sm2_retention)?;
+    Ok(scale_state_to_interval(
+        fsrs,
+        shape,
+        interval,
+        sm2_retention,
+    ))
+}
+
+/// The FSRS-7 memory state whose S90 is `s90`, for a card that has only an
+/// S90 (RWKV-Curve's, spec sched.fsrs7-sm2-conversion): the conversion of
+/// an interval scheduled at 90% retention.
+pub(crate) fn fsrs_memory_state_for_s90(params: &[f32], s90: f32) -> Result<FsrsMemoryState> {
+    let fsrs = FSRS::new(params)?;
+    let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, s90, 0.9)?;
+    Ok(FsrsMemoryState {
+        stability: s90,
+        stability_internal: state.stability,
+        stability_fast: Some(state.stability_fast),
+        difficulty: state.difficulty,
+    })
+}
+
+/// The fsrs crate's stability bounds.
+const STABILITY_MIN: f32 = 0.0001;
+const STABILITY_MAX: f32 = 36500.0;
+
+/// The state with the difficulty and the fast/internal stability ratio of
+/// `shape` whose forgetting curve reaches `retention` at `interval` days.
+///
+/// The interval at a given retention grows with the internal stability, so a
+/// secant search on the log of the stability, kept inside a bracket that
+/// shrinks at every step (a step that leaves it is a bisection), finds the
+/// scale. A target the curve cannot reach gives the nearest bound.
+pub(crate) fn scale_state_to_interval(
+    fsrs: &FSRS,
+    shape: MemoryState,
+    interval: f32,
+    retention: f32,
+) -> MemoryState {
+    const TOLERANCE: f64 = 1e-5;
+    const MAX_STEPS: usize = 64;
+    let ratio = shape.stability_fast / shape.stability;
+    if !(ratio.is_finite()
+        && ratio > 0.0
+        && interval.is_finite()
+        && interval > 0.0
+        && retention > 0.0
+        && retention < 1.0)
+    {
+        return shape;
+    }
+    let target = (interval.clamp(STABILITY_MIN, STABILITY_MAX) as f64).ln();
+    let state_at = |log_stability: f64| {
+        let stability = (log_stability.exp() as f32).clamp(STABILITY_MIN, STABILITY_MAX);
+        MemoryState {
+            stability,
+            stability_fast: (stability * ratio).clamp(STABILITY_MIN, STABILITY_MAX),
+            difficulty: shape.difficulty,
+        }
+    };
+    let error_at = |log_stability: f64| {
+        let reached = fsrs.interval_at_retrievability(state_at(log_stability), retention);
+        (reached.max(f32::MIN_POSITIVE) as f64).ln() - target
+    };
+    let mut low = (STABILITY_MIN as f64).ln();
+    let mut high = (STABILITY_MAX as f64).ln();
+    let mut x = (shape.stability.clamp(STABILITY_MIN, STABILITY_MAX) as f64).ln();
+    let mut error = error_at(x);
+    let mut previous: Option<(f64, f64)> = None;
+    for _ in 0..MAX_STEPS {
+        if !error.is_finite() || error.abs() <= TOLERANCE {
+            break;
+        }
+        if error < 0.0 {
+            low = x;
+        } else {
+            high = x;
+        }
+        let mut next = match previous {
+            Some((previous_x, previous_error)) if error != previous_error => {
+                x - error * (x - previous_x) / (error - previous_error)
+            }
+            _ => x - error,
+        };
+        if !(next > low && next < high) {
+            next = 0.5 * (low + high);
+        }
+        previous = Some((x, error));
+        x = next;
+        error = error_at(x);
+    }
+    if error.is_finite() {
+        state_at(x)
+    } else {
+        shape
+    }
 }
 
 #[derive(Debug)]
@@ -900,7 +997,7 @@ impl Collection {
         desired_retention: f32,
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_next_interval_for_params(&params, stability, desired_retention)
+        fsrs_next_interval_for_s90(&params, stability, desired_retention)
     }
 
     pub fn fsrs_interval_at_retrievability_for_card(
@@ -1290,6 +1387,13 @@ pub(crate) fn fsrs_item_for_memory_state(
             // if the ease factor is less than 1.1, the revlog entry is generated by FSRS
             if first_review.ease_factor <= 1.1 {
                 starting_state.difficulty = (first_review.ease_factor - 0.1) * 9.0 + 1.0;
+                // the difficulty changes where the curve crosses the retention
+                starting_state = scale_state_to_interval(
+                    fsrs,
+                    starting_state,
+                    first_review.interval,
+                    historical_retention,
+                );
             }
             // remove the first review because it has been converted to the starting state
             item.reviews.remove(0);
@@ -1342,9 +1446,8 @@ mod tests {
 
     // Pins spec/deck-options.md#deck-options.historical-retention-fixed: a
     // preset that stores 0.7 computes the same memory states as one that
-    // stores 0.9. Clanki runs FSRS-7 only (spec sched.fsrs7-only), and the
-    // FSRS-7 SM-2 conversion reads no retention at all, so the card gets the
-    // FSRS-7 defaults' conversion of its interval.
+    // stores 0.9. The SM-2 conversion (spec sched.fsrs7-sm2-conversion) uses
+    // 0.9, so the card gets the FSRS-7 state whose S90 is its interval.
     #[test]
     fn stored_historical_retention_is_ignored() -> Result<()> {
         fn inferred_memory_state(stored_historical_retention: f32) -> Result<FsrsMemoryState> {
@@ -1377,6 +1480,7 @@ mod tests {
             Some(with_stored_0_7),
             Some(fsrs_memory_state_for_fsrs(&fsrs, at_0_9)),
         );
+        assert!((with_stored_0_7.stability - 100.0).abs() < 0.01);
         Ok(())
     }
 
@@ -1386,6 +1490,113 @@ mod tests {
         let mut params = DEFAULT_PARAMETERS.to_vec();
         params[24] += 0.2;
         params
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 1e-3 * expected,
+            "{actual} vs {expected}"
+        );
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: the state inferred
+    // from an SM-2 interval has that interval as its S90, with difficulty 5
+    // and fast stability 0.8 of the internal one. The fsrs crate alone put the
+    // interval into the internal stability (100 days gave an S90 of ~226).
+    #[test]
+    fn sm2_conversion_gives_the_interval_as_s90() -> Result<()> {
+        for params in [DEFAULT_PARAMETERS.to_vec(), other_fsrs7_params()] {
+            let fsrs = FSRS::new(&params)?;
+            for interval in [1.0, 7.0, 100.0, 3650.0] {
+                let state = memory_state_from_sm2_with_params(&fsrs, &params, 2.5, interval, 0.9)?;
+                assert_close(fsrs.interval_at_retrievability(state, 0.9), interval);
+                assert_eq!(state.difficulty, 5.0);
+                assert_close(state.stability_fast, 0.8 * state.stability);
+                assert_close(fsrs_memory_state_for_fsrs(&fsrs, state).stability, interval);
+            }
+        }
+        // a retention other than 0.9 is met at the interval too
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let state = memory_state_from_sm2_with_params(&fsrs, &DEFAULT_PARAMETERS, 2.5, 30.0, 0.8)?;
+        assert_close(fsrs.interval_at_retrievability(state, 0.8), 30.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: a truncated review
+    // log whose first entry FSRS wrote (ease field under 1.1) starts from its
+    // stored difficulty, and the starting state keeps the entry's interval as
+    // its S90 with that difficulty.
+    #[test]
+    fn truncated_revlog_starting_state_keeps_the_interval_as_s90() -> Result<()> {
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let item = fsrs_item_for_memory_state(
+            &fsrs,
+            &DEFAULT_PARAMETERS,
+            vec![
+                RevlogEntry {
+                    ease_factor: 1050,
+                    interval: 30,
+                    ..revlog(RevlogReviewKind::Review, 40)
+                },
+                revlog(RevlogReviewKind::Review, 0),
+            ],
+            0.9,
+            0.into(),
+        )?
+        .unwrap();
+        let state = item.starting_state.unwrap();
+        assert_close(state.difficulty, 9.55);
+        assert_close(fsrs.interval_at_retrievability(state, 0.9), 30.0);
+        Ok(())
+    }
+
+    #[test]
+    fn scaling_to_an_unreachable_interval_gives_the_stability_bound() -> Result<()> {
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let shape = MemoryState {
+            stability: 10.0,
+            stability_fast: 8.0,
+            difficulty: 10.0,
+        };
+        // at difficulty 10 the default curve cannot reach 90% after 36,500 days
+        let state = scale_state_to_interval(&fsrs, shape, 36_500.0, 0.9);
+        assert!((state.stability - 36_500.0).abs() < 0.1, "{state:?}");
+        assert!(state.stability_fast.is_finite() && state.difficulty == 10.0);
+        // inputs it cannot scale are returned unchanged
+        assert_eq!(scale_state_to_interval(&fsrs, shape, f32::NAN, 0.9), shape);
+        assert_eq!(scale_state_to_interval(&fsrs, shape, 10.0, 1.0), shape);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: a card RWKV-Curve
+    // answers without an FSRS memory state gets the FSRS-7 state whose S90 is
+    // RWKV's S90.
+    #[test]
+    fn fsrs_state_for_an_rwkv_s90_has_that_s90() -> Result<()> {
+        let state = fsrs_memory_state_for_s90(&DEFAULT_PARAMETERS, 20.0)?;
+        assert_eq!(state.stability, 20.0);
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        assert_close(fsrs.interval_at_retrievability(state.into(), 0.9), 20.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: the FsrsNextInterval
+    // API takes the stability it is given as the card's S90.
+    #[test]
+    fn next_interval_api_takes_the_s90() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card_id = col.get_first_card().id;
+        // at 90% the interval is the S90 itself
+        assert_close(col.fsrs_next_interval_for_card(card_id, 20.0, 0.9)?, 20.0);
+        // at another retention it is the interval of the state with that S90
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let state = memory_state_from_sm2_with_params(&fsrs, &DEFAULT_PARAMETERS, 2.5, 20.0, 0.9)?;
+        assert_close(
+            col.fsrs_next_interval_for_card(card_id, 20.0, 0.8)?,
+            fsrs.next_interval_for_state(state, 0.8),
+        );
+        Ok(())
     }
 
     fn make_review_card(col: &mut Collection, note_id: NoteId, stability: f32) -> Result<CardId> {
@@ -2014,7 +2225,6 @@ mod tests {
         let params = DEFAULT_PARAMETERS.to_vec();
         let stability = 14.2;
         let elapsed_days = 21.0;
-        let desired_retention = 0.88;
         let target_retrievability = 0.9;
 
         let expected = FSRS::new(&params)?.current_retrievability(
@@ -2027,11 +2237,6 @@ mod tests {
         );
         let actual = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
         assert!((actual - expected).abs() < 1e-6);
-
-        let expected_interval =
-            FSRS::new(&params)?.next_interval(Some(stability), desired_retention, 0);
-        let actual_interval = fsrs_next_interval_for_params(&params, stability, desired_retention)?;
-        assert!((actual_interval - expected_interval).abs() < 1e-6);
 
         let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
             MemoryState {
