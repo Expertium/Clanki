@@ -2,8 +2,13 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import { FsrsMemoryState } from "@generated/anki/cards_pb";
-import { CardStatsResponse, CardStatsResponse_CardInfoRow } from "@generated/anki/stats_pb";
+import {
+    CardStatsResponse,
+    CardStatsResponse_CardInfoRow,
+    CardStatsResponse_RwkvCurve,
+} from "@generated/anki/stats_pb";
 import * as tr2 from "@generated/ftl";
+import { timeSpan } from "@tslib/time";
 import { expect, test } from "vitest";
 
 import { rowsFromStats } from "./lib";
@@ -108,4 +113,42 @@ test("keeps RWKV comparison rows together after FSRS retrievability", () => {
         "Retrievability source",
     ]);
     expect(labels.indexOf("Other")).toBeGreaterThan(labels.indexOf("Retrievability source"));
+});
+
+function rwkvCurveStats(s90?: number): CardStatsResponse {
+    return baseStats({
+        desiredRetention: 0.9,
+        fsrsRetrievability: 0.8,
+        memoryState: new FsrsMemoryState({ stability: 20, difficulty: 7.3 }),
+        rwkvCurve: new CardStatsResponse_RwkvCurve(
+            s90 === undefined ? {} : { elapsedDays: [0, 1], recall: [1, 0.9], s90 },
+        ),
+        extraRows: [
+            new CardStatsResponse_CardInfoRow({ label: "RWKV computed R", value: "79%" }),
+            new CardStatsResponse_CardInfoRow({ label: "Retrievability source", value: "RWKV" }),
+        ],
+    });
+}
+
+test("an RWKV-Curve card shows its curve's S90 and no FSRS-7 difficulty or retrievability", () => {
+    // spec ui.card-info-rwkv-curve
+    const rows = rowsFromStats(rwkvCurveStats(1.5));
+
+    const labels = rows.map((row) => row.label);
+    const stabilityIndex = labels.indexOf(tr2.cardStatsFsrsStability());
+    expect(rows[stabilityIndex].value).toBe(timeSpan(1.5 * 86400, false, false));
+    expect(labels.slice(stabilityIndex + 1, stabilityIndex + 3)).toEqual([
+        "RWKV computed R",
+        "Retrievability source",
+    ]);
+    expect(labels).not.toContain(tr2.cardStatsFsrsDifficulty());
+    expect(labels).not.toContain(tr2.cardStatsFsrsComputedR());
+});
+
+test("an RWKV-Curve card without a curve shows no stability", () => {
+    const labels = rowsFromStats(rwkvCurveStats()).map((row) => row.label);
+
+    expect(labels).not.toContain(tr2.cardStatsFsrsStability());
+    expect(labels).not.toContain(tr2.cardStatsFsrsDifficulty());
+    expect(labels).toContain("RWKV computed R");
 });

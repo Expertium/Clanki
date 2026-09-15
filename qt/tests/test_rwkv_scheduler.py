@@ -83,10 +83,6 @@ NEXT_S90_UNAVAILABLE_ROWS = [
         "RWKV Curve Next S90",
         "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
     ),
-    (
-        "FSRS Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
 ]
 RWKV_BUTTON_PROBABILITY_ROW = (
     "RWKV : Answer Button Probability",
@@ -3491,7 +3487,6 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
             "RWKV Curve Next S90",
             "Again:4d Hard:5d Good:7d Easy:10d",
         ),
-        NEXT_S90_UNAVAILABLE_ROWS[1],
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
     assert runtime.reviewed == [(1, 3)]
@@ -14847,7 +14842,6 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
             "RWKV Curve Next S90",
             "Again:3d Hard:4d Good:6d Easy:9d",
         ),
-        NEXT_S90_UNAVAILABLE_ROWS[1],
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
     assert runtime.query_inputs[0].current_normal_state_kind == "review"
@@ -15059,9 +15053,12 @@ def test_card_info_uses_resident_after_review_prediction_without_snapshot(
     ] == [(0, 0), (0, 600)]
 
 
-def test_card_info_reports_rwkv_and_fsrs_next_s90_for_filtered_states(
+def test_card_info_reports_only_rwkv_next_s90_for_filtered_states(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: no FSRS-7 S90 row, although
+    the scheduling states carry FSRS-7 stabilities."""
+
     class Backend:
         def __init__(self) -> None:
             self.review_inputs: list[RwkvReviewInput] = []
@@ -15125,10 +15122,6 @@ def test_card_info_reports_rwkv_and_fsrs_next_s90_for_filtered_states(
         (
             "RWKV Curve Next S90",
             "Again:2d Hard:5d Good:10d Easy:20d",
-        ),
-        (
-            "FSRS Next S90",
-            "Again:1.25d Hard:2.5d Good:3.75d Easy:Unavailable",
         ),
         *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
     ]
@@ -18404,3 +18397,73 @@ def test_refresh_rwkv_instant_after_save_invalidates_and_resets(
         mw, snapshot, _reschedule_request(configs=[(10, 0.8, False, True)])
     )
     assert invalidated == [mw] and resets == [1]
+
+
+class _CardCurveBackend:
+    def __init__(self, result: tuple[list[float], float] | None) -> None:
+        self.result = result
+        self.calls: list[tuple[int, tuple[float, ...]]] = []
+
+    def card_curve(
+        self, card_id: int, elapsed_days: Sequence[float]
+    ) -> tuple[list[float], float] | None:
+        self.calls.append((card_id, tuple(elapsed_days)))
+        return self.result
+
+
+def _card_curve_ready(
+    monkeypatch: pytest.MonkeyPatch, backend: object, *, curve_preset: bool = True
+) -> None:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def access(**_kwargs: Any) -> Iterator[object]:
+        yield backend
+
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
+    monkeypatch.setattr(
+        rwkv_scheduler, "rwkv_review_enabled", lambda reviewer, card: curve_preset
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_card_info", lambda reviewer: True
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_capture_reviewer_backend_prediction_state_token",
+        lambda reviewer, expected_backend: object(),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+    )
+
+
+def test_rwkv_card_info_curve_samples_the_stored_curve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve"""
+    grid = rwkv_scheduler.RWKV_CARD_INFO_CURVE_DAYS
+    backend = _CardCurveBackend(([1.0 - day / 1e5 for day in grid], 3.25))
+    _card_curve_ready(monkeypatch, backend)
+
+    curve = rwkv_scheduler.rwkv_card_info_curve(object(), SimpleNamespace(id=42))
+
+    assert curve is not None
+    assert backend.calls == [(42, grid)]
+    assert curve.elapsed_days == grid
+    assert curve.recall[0] == 1.0 and curve.s90 == 3.25
+    # 0, then one minute to 100 years, evenly in log time
+    assert grid[0] == 0.0 and len(grid) == 301
+    assert grid[1] == pytest.approx(60 / 86_400) and grid[-1] == pytest.approx(36_500)
+    assert grid[2] / grid[1] == pytest.approx(grid[-1] / grid[-2])
+
+
+@pytest.mark.parametrize("curve_preset", [True, False])
+def test_rwkv_card_info_curve_is_none_without_a_curve(
+    monkeypatch: pytest.MonkeyPatch, curve_preset: bool
+) -> None:
+    backend = _CardCurveBackend(None)
+    _card_curve_ready(monkeypatch, backend, curve_preset=curve_preset)
+
+    assert rwkv_scheduler.rwkv_card_info_curve(object(), SimpleNamespace(id=42)) is None
+    # a card of another algorithm never asks RWKV
+    assert bool(backend.calls) == curve_preset

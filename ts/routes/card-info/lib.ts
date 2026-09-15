@@ -18,7 +18,6 @@ const rwkvRowLabels = [
     "RWKV computed R",
     "RWKV : Answer Button Probability",
     "RWKV Curve Next S90",
-    "FSRS Next S90",
     "RWKV : R After Review",
     "RWKV : R After 10min",
     "Retrievability source",
@@ -73,35 +72,42 @@ export function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
             value: timeSpan(stats.interval * DAY),
         });
     }
+    // An RWKV-Curve card shows RWKV's values only: its curve's S90 as the
+    // stability (no row without a curve), and no FSRS-7 difficulty or
+    // retrievability (spec ui.card-info-rwkv-curve).
+    const rwkvCurve = stats.rwkvCurve;
     if (stats.memoryState) {
-        let stability = timeSpan(stats.memoryState.stability * 86400, false, false);
-        if (stats.memoryState.stability > 31) {
-            const nativeStability = timeSpan(
-                stats.memoryState.stability * 86400,
-                false,
-                false,
-                TimespanUnit.Days,
-            );
-            stability += ` (${nativeStability})`;
-        }
-        statsRows.push({
-            label: tr2.cardStatsFsrsStability(),
-            value: stability,
-        });
-        const difficulty = (((stats.memoryState.difficulty - 1.0) / 9.0) * 100.0).toFixed(0);
-        statsRows.push({
-            label: tr2.cardStatsFsrsDifficulty(),
-            value: `${difficulty}%`,
-        });
-        if (stats.fsrsRetrievability != null) {
-            const retrievability = (stats.fsrsRetrievability * 100).toFixed(0);
-            statsRows.push({
-                label: tr2.cardStatsFsrsComputedR(),
-                value: `${retrievability}%`,
-            });
-            if (stats.extraRows.some((row) => row.label === rwkvRowLabels[0])) {
-                pushRwkvRows();
+        const stabilityDays = rwkvCurve ? rwkvCurve.s90 : stats.memoryState.stability;
+        if (stabilityDays !== undefined) {
+            let stability = timeSpan(stabilityDays * 86400, false, false);
+            if (stabilityDays > 31) {
+                const nativeStability = timeSpan(stabilityDays * 86400, false, false, TimespanUnit.Days);
+                stability += ` (${nativeStability})`;
             }
+            statsRows.push({
+                label: tr2.cardStatsFsrsStability(),
+                value: stability,
+            });
+        }
+        if (!rwkvCurve) {
+            const difficulty = (((stats.memoryState.difficulty - 1.0) / 9.0) * 100.0).toFixed(0);
+            statsRows.push({
+                label: tr2.cardStatsFsrsDifficulty(),
+                value: `${difficulty}%`,
+            });
+            if (stats.fsrsRetrievability != null) {
+                const retrievability = (stats.fsrsRetrievability * 100).toFixed(0);
+                statsRows.push({
+                    label: tr2.cardStatsFsrsComputedR(),
+                    value: `${retrievability}%`,
+                });
+            }
+        }
+        if (
+            (rwkvCurve || stats.fsrsRetrievability != null)
+            && stats.extraRows.some((row) => row.label === rwkvRowLabels[0])
+        ) {
+            pushRwkvRows();
         }
     } else if (stats.ease && stats.desiredRetention === undefined) {
         // Prevent showing ease when FSRS is enabled but no memory state exists.

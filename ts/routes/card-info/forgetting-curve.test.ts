@@ -3,7 +3,7 @@
 
 import { expect, test, vi } from "vitest";
 
-import { prepareData, stabilityS90 } from "./forgetting-curve";
+import { chartRevlog, prepareData, rwkvRecallAt, stabilityS90 } from "./forgetting-curve";
 
 function fsrs7Params(): number[] {
     return [
@@ -108,6 +108,67 @@ test("prepareData computes FSRS-7 retrievability from the full memory state", ()
         );
 
         expect(data.at(-1)?.retrievability).toBeCloseTo(82.88255, 4);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+// Pins spec/ui.md#ui.card-info-rwkv-curve
+
+test("rwkvRecallAt interpolates between the curve's points", () => {
+    const curve = { elapsedDays: [0, 10, 20], recall: [1, 0.5, 0.25] };
+    expect(rwkvRecallAt(curve, 5)).toBeCloseTo(0.75, 6);
+    expect(rwkvRecallAt(curve, 15)).toBeCloseTo(0.375, 6);
+    expect(rwkvRecallAt(curve, 0)).toBe(1);
+    expect(rwkvRecallAt(curve, 30)).toBe(0.25);
+});
+
+function twoReviews(): any {
+    // newest first, as card info sends them
+    return [
+        {
+            time: Date.parse("2024-01-11T00:00:00Z") / 1000,
+            memoryState: { stability: 30, stabilityInternal: 20, difficulty: 5 },
+        },
+        {
+            time: Date.parse("2024-01-01T00:00:00Z") / 1000,
+            memoryState: { stability: 12, stabilityInternal: 10, difficulty: 5 },
+        },
+    ];
+}
+
+test("an RWKV-Curve card's chart starts at its last review: no FSRS-7 segments", () => {
+    const rwkvCurve = { elapsedDays: [0, 10], recall: [1, 0.5], s90: 2 };
+    expect(chartRevlog(twoReviews(), rwkvCurve).map((entry) => entry.time)).toEqual([
+        twoReviews()[0].time,
+    ]);
+    expect(chartRevlog(twoReviews())).toHaveLength(2);
+});
+
+test("after the last review an RWKV-Curve card follows RWKV's curve and S90", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2 };
+        const revlog = chartRevlog(twoReviews(), rwkvCurve);
+        const data = prepareData(revlog, 30, fsrs7Params(), rwkvCurve);
+
+        // five days after the last review: halfway to 10 days on RWKV's curve
+        const now = data.find((point) => point.date.getTime() === Date.parse("2024-01-16T00:00:00Z"));
+        expect(now?.retrievability).toBeCloseTo(75, 3);
+        expect(data.every((point) => point.stabilityS90 === 2)).toBe(true);
+        expect(data[0].date.getTime()).toBe(Date.parse("2024-01-11T00:00:00Z"));
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+test("without an RWKV curve yet the chart stops at the last review", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const data = prepareData(twoReviews(), 30, fsrs7Params(), { elapsedDays: [], recall: [] });
+        expect(data.at(-1)?.date.getTime()).toBe(Date.parse("2024-01-11T00:00:00Z"));
     } finally {
         vi.useRealTimers();
     }
