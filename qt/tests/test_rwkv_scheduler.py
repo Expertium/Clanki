@@ -4243,6 +4243,47 @@ def test_failed_rwkv_prediction_leaves_the_buttons_waiting(
     assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
 
 
+def test_error_building_rwkv_curve_states_leaves_the_buttons_waiting() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: when building the
+    answer states from RWKV-Curve's intervals fails, no prediction is kept, so
+    the buttons wait and no answer stores RWKV's S90 with FSRS-7's states."""
+
+    class Backend:
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(
+                retrievability=0.62,
+                interval_overrides=RwkvIntervalOverride(again=1, hard=4, good=9, easy=18),
+                s90_overrides=RwkvIntervalOverride(again=2, hard=5, good=10, easy=19),
+            )
+
+    def failing_build(
+        request: scheduler_pb2.SchedulingStatesWithIntervalsRequest,
+    ) -> SchedulingStates:
+        raise RuntimeError("backend error while building the states")
+
+    set_reviewer_backend(Backend())
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col._backend = SimpleNamespace(
+        scheduling_states_with_intervals=failing_build
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.CopyFrom(reviewer._v3.states)
+
+    returned = rwkv_scheduler.update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert returned is states
+    assert rwkv_scheduler.answer_intervals_pending(reviewer, card)
+    answer = SimpleNamespace(answered_at_millis=0)
+    rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
+    assert not hasattr(answer, "rwkv_s90")
+
+
 def test_set_answer_rwkv_metadata_persists_same_day_relearning_kind() -> None:
     reviewer = _rwkv_reviewer()
     previous_id = (42 * 86_400 + 50) * 1000

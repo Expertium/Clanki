@@ -3845,6 +3845,9 @@ def update_reviewer_scheduling_states(
                     )
     except Exception:
         logger.exception("RWKV scheduling prediction failed")
+        # an error keeps no prediction, even one stored before the states
+        # failed to build: the buttons wait (spec sched.rwkv-curve-buttons-wait)
+        _clear_reviewer_prediction(reviewer)
 
     return states
 

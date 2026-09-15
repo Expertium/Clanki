@@ -230,7 +230,10 @@ intervals for this showing of the card. Until then the button area shows
 doubling up to once a second), and answer keys and clicks do nothing. This
 covers every reason RWKV-Curve has no intervals yet: its state still loading,
 another RWKV task holding it, its state changing during the prediction, no
-prediction, a button without an interval, or an error; without a usable
+prediction, a button without an interval, or an error — also an error while
+the answer states are built from RWKV-Curve's intervals, after the
+prediction itself succeeded: no prediction is kept then, so an answer stores
+no RWKV-Curve S90 with states that are not RWKV-Curve's. Without a usable
 RWKV model it does not wait (`sched.rwkv-no-model-error`). Each
 prediction belongs to one showing: it is cleared before the next prediction
 and once an answer has used it, so a later showing of the same card never
@@ -250,6 +253,7 @@ could supply the S90 of a later answer.
 (`qt/tests/test_reviewer.py`);
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
 `test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
+`test_error_building_rwkv_curve_states_leaves_the_buttons_waiting`,
 `test_set_answer_rwkv_metadata_clears_the_prediction`
 (`qt/tests/test_rwkv_scheduler.py`).
 
