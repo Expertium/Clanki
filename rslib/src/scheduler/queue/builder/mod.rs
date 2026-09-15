@@ -722,6 +722,39 @@ mod test {
         }
     }
 
+    // Pins spec/scheduling.md#sched.study-queue-kept-after-answer: after an
+    // answer the reviewer empties an RWKV score map that is already empty;
+    // the queue is kept (a card that reached the deck without an operation
+    // stays out of it), while installing scores still builds it again.
+    #[test]
+    fn emptying_empty_rwkv_scores_keeps_the_study_queue() -> Result<()> {
+        let mut col = Collection::new();
+        let deck_id = DeckId(1);
+        let elsewhere = col.get_or_create_normal_deck("Elsewhere")?.id;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut card_ids = Vec::new();
+        for (index, deck) in [deck_id, deck_id, elsewhere].into_iter().enumerate() {
+            let mut note = nt.new_note();
+            note.set_field(0, format!("front {index}"))?;
+            col.add_note(&mut note, deck)?;
+            card_ids.push(col.storage.get_card_by_ordinal(note.id, 0)?.unwrap().id);
+        }
+        col.set_current_deck(deck_id)?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 2);
+
+        col.answer_good();
+        // the card moves into the deck behind the queue's back
+        let mut late_card = col.storage.get_card(card_ids[2])?.unwrap();
+        late_card.deck_id = deck_id;
+        col.storage.update_card(&late_card)?;
+        col.set_rwkv_review_queue_score_entries(deck_id, HashMap::new())?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 1);
+
+        col.set_rwkv_review_queue_scores(deck_id, HashMap::from([(card_ids[1], 0.5)]))?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 2);
+        Ok(())
+    }
+
     #[test]
     fn queued_cards_can_skip_scheduling_states() {
         let mut col = Collection::new();
