@@ -10,9 +10,11 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from anki.collection import Config
+from anki.decks import DeckId
 from aqt import review_heatmap
 from aqt.review_heatmap import (
     ADDON_NOTICE_SHOWN_KEY,
+    ActivityReporter,
     HeatmapSettings,
     HeatmapView,
     ReviewHeatmap,
@@ -124,8 +126,8 @@ def test_input_fingerprint_follows_reviews_and_cards_only(tmp_path: Any) -> None
 
     col = Collection(str(tmp_path / "heatmap.anki2"))
     try:
-        note = col.new_note(col.models.by_name("Basic"))
-        note["Front"] = "front"
+        note = col.new_note(col.models.current())
+        note.fields[0] = "front"
         col.add_note(note, DeckId(1))
         reporter = ActivityReporter(col, HeatmapSettings())
         base = reporter.input_fingerprint(current_deck_only=False)

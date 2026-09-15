@@ -341,10 +341,14 @@ class ActivityReporter:
         """Everything a report reads, cheaply: equal fingerprints give equal
         reports. The collection's modified time is not used, because
         collapsing a deck or a config write changes it without changing the
-        report. Any added, removed or edited card changes the card count or
-        the sum of the cards' modified times; any added or removed review
-        changes the review count or the sum of the review ids."""
-        cards = self._col.db.first("SELECT count(), total(mod) FROM cards")
+        report. The report reads each card's deck, due day and queue: a
+        change of any of them changes one of the sums below, unless changes
+        cancel out exactly within one second (the resolution of a card's
+        modified time). Any added or removed review changes the review
+        count, the sum of the review ids or the newest id."""
+        cards = self._col.db.first(
+            "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
+        )
         reviews = self._col.db.first("SELECT count(), total(id), max(id) FROM revlog")
         dids = self._deck_ids(current_deck_only)
         return (
