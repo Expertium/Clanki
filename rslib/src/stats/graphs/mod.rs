@@ -97,13 +97,9 @@ impl Collection {
         )?;
         let all = search.trim().is_empty();
         let searched_cards = guard.cards;
-        guard.col.graph_data(
-            search,
-            all,
-            searched_cards,
-            days,
-            WantedGraphs::new(graphs),
-        )
+        guard
+            .col
+            .graph_data(search, all, searched_cards, days, WantedGraphs::new(graphs))
     }
 
     fn graph_data(
@@ -140,10 +136,11 @@ impl Collection {
                 self.storage
                     .db
                     .query_row("select count() from cards", [], |row| row.get(0))?;
-            self.storage.get_revlog_entries_for_searched_cards_after_stamp(
-                revlog_start,
-                searched_cards * 2 >= collection_cards as usize,
-            )?
+            self.storage
+                .get_revlog_entries_for_searched_cards_after_stamp(
+                    revlog_start,
+                    searched_cards * 2 >= collection_cards as usize,
+                )?
         };
         let load_cards = wanted.any(&[
             Graph::Added,
@@ -445,7 +442,10 @@ mod test {
                 let full = only(&ask(&mut col, search, days, &[]), &not_r);
                 assert_eq!(ask(&mut col, search, days, &not_r), full);
                 for graph in &not_r {
-                    assert_eq!(ask(&mut col, search, days, &[*graph]), only(&full, &[*graph]));
+                    assert_eq!(
+                        ask(&mut col, search, days, &[*graph]),
+                        only(&full, &[*graph])
+                    );
                 }
                 assert!(full.difficulty.is_some() && full.stability.is_some());
             }
@@ -482,7 +482,13 @@ mod test {
     fn searched_reviews_are_the_same_read_by_card_or_in_order() -> Result<()> {
         let mut col = collection_with_reviews()?;
         let start = TimestampSecs::now().adding_secs(-86_400 * 200);
-        for search in ["", "deck:Default", "deck:Other", "is:suspended", "deck:none"] {
+        for search in [
+            "",
+            "deck:Default",
+            "deck:Other",
+            "is:suspended",
+            "deck:none",
+        ] {
             for after in [TimestampSecs(0), start] {
                 let guard = col.search_cards_into_table(search, SortMode::NoOrder)?;
                 let mut by_card = guard
