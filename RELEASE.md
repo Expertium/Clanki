@@ -22,6 +22,9 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Moving an RWKV-Curve card to another deck, or changing an RWKV-Curve
+  preset's FSRS parameters or desired retention, no longer replaces the
+  card's RWKV-Curve stability (S90) with FSRS-7's until its next review.
 - The scheduling algorithm (FSRS-7, RWKV-Curve or RWKV-Instant) is one
   setting for the whole collection. It stays in deck options (Advanced mode),
   now titled "Algorithm (global)" with a blue globe: a change applies to
@@ -29,6 +32,14 @@ repeated here unless they materially affect a fork feature.
   all cards now or keep their due dates. Add-ons or other clients that give
   one preset another algorithm cannot: Clanki switches the preset back. A collection whose presets used different algorithms
   keeps the one that schedules the most review cards.
+- The next states that add-ons and custom-scheduling scripts get now carry the
+  S90 (the time until recall falls to 90%) as `stability`; FSRS-7's internal
+  stability stays in `stability_internal`. The simulator's R*f(S) graph weights
+  each card by its S90.
+- A card RWKV-Curve reschedules without an FSRS memory state gets the FSRS-7
+  state whose S90 is RWKV's, as an RWKV-Curve answer already did. Before, it
+  took RWKV's S90 as FSRS-7's internal stability, which made its FSRS-7 curve
+  reach 90% much later.
 - Card info for an RWKV-Curve card draws RWKV-Curve's own forgetting curve since
   the last review, and its Stability shows where that curve meets 90%. It no
   longer draws FSRS-7's curve under an RWKV S90. While RWKV has no curve for the

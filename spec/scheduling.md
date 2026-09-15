@@ -77,6 +77,30 @@ to whole days, at least 1.
 `intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`);
 `preview` (`rslib/src/scheduler/answering/preview.rs`).
 
+## sched.rwkv-curve-s90-kept
+
+Given a card of an RWKV-Curve preset that has a memory state, when FSRS-7
+computes its memory state again — a move to another deck whose preset runs
+RWKV-Curve, or a change of the preset's FSRS parameters, desired retention,
+Easy Days or fuzz in deck options — the card keeps the S90 stored in
+its memory state (the one RWKV-Curve wrote, `sched.rwkv-curve-s90`); only
+the FSRS-7 fields (internal and fast stability, difficulty) and the stored
+decay and desired retention change. A card moved to a deck whose preset runs
+FSRS-7, and every card when the collection switches to FSRS-7
+(`sched.one-global-algorithm`), gets FSRS-7's own S90. Three passes still
+rebuild the whole state, S90 included: the one-time FSRS-7 migration of a
+preset's parameters (`sched.fsrs7-only`), whose stored S90 may predate
+RWKV-Curve, the post-sync rebuild of conflicting
+cards (`sync.fsrs-reconcile-after-sync`) and the repair of cards last
+reviewed in another client (`sync.fsrs7-state-of-foreign-cards`).
+
+**Why:** Andrew, 2026-09-15: a deck move or a preset change must not replace
+RWKV-Curve's S90 with FSRS-7's; one algorithm's values must not mix into the
+other's.
+
+**Pinned by:** `rwkv_curve_cards_keep_their_s90_when_fsrs7_recomputes`
+(`rslib/src/scheduler/fsrs/memory_state.rs`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
@@ -332,8 +356,8 @@ and `rslib/src/deckconfig/update.rs` (including the migration);
 Given a card whose FSRS memory state must be inferred from an interval — a
 review card with no usable review log (its current interval and ease), a
 truncated review log (its first entry's interval and ease), a card the
-simulator finds without a memory state, or a card RWKV-Curve answers that
-has no FSRS memory state (RWKV's S90) — the card gets the FSRS-7 state
+simulator finds without a memory state, or a card RWKV-Curve answers or
+reschedules that has no usable FSRS memory state (RWKV's S90) — the card gets the FSRS-7 state
 whose forgetting curve reaches the historical retention (0.9,
 `deck-options.historical-retention-fixed`) at that interval: its S90 is the
 interval. The state has difficulty 5 (or, for a truncated log whose first
@@ -361,7 +385,32 @@ the S90.
 `stored_historical_retention_is_ignored`
 (`rslib/src/scheduler/fsrs/memory_state.rs`);
 `rwkv_s90_answer_without_memory_state_gets_an_fsrs7_state_with_that_s90`
-(`rslib/src/scheduler/answering/mod.rs`).
+(`rslib/src/scheduler/answering/mod.rs`);
+`apply_review_reschedule_without_memory_state_gets_an_fsrs7_state_with_that_s90`
+(`rslib/src/scheduler/rwkv.rs`).
+
+## sched.next-state-s90
+
+Given a card answered with FSRS-7, the memory state of each answer's next
+state (the scheduling states the reviewer gets, `get_scheduling_states`, the
+custom-scheduling JavaScript's `states.*.memoryState`, and add-ons) carries
+the S90 of that state as its `stability`: the time until FSRS-7's forgetting
+curve for that state reaches 90% recall, as a stored card's stability does.
+FSRS-7's internal and fast stabilities are in their own fields
+(`stability_internal`, `stability_fast`). Answering stores the S90 computed
+from the internal and fast stabilities and the difficulty, so a script that
+changes only `stability` does not change the stored state. The "young leech"
+check (`leech_only_if_young`) compares Again's S90 with 21 days.
+
+**Why:** Andrew, 2026-09-15: every stability a user or an add-on sees is the
+S90, never FSRS-7's internal stability. Before this entry the next states
+carried the internal stability in `stability`, so the card info "FSRS Next
+S90" row and add-ons showed the internal stability under the S90 name.
+
+**Pinned by:** `next_states_carry_the_s90_as_stability`
+(`rslib/src/scheduler/answering/mod.rs`),
+`leech_only_if_young_uses_fsrs_stability`
+(`rslib/src/scheduler/states/review.rs`).
 
 ## sched.fsrs7-fractional-elapsed-time
 
