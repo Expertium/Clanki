@@ -11,6 +11,7 @@ import pytest
 
 from anki import hooks
 from anki.consts import *
+from anki.decks import DeckId
 from anki.lang import without_unicode_isolation
 from anki.scheduler import UnburyDeck
 from anki.utils import int_time
@@ -463,8 +464,8 @@ def test_deck_due_counts_are_the_deck_tree_counts():
         )
         assert counts.review_count == reviews
     # the empty default deck has no node in the tree
-    assert col.sched.deck_due_tree(1) is None
-    assert col.sched.deck_due_counts(1) is None
+    assert col.sched.deck_due_tree(DeckId(1)) is None
+    assert col.sched.deck_due_counts(DeckId(1)) is None
 
 
 def test_button_spacing():

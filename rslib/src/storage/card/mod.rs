@@ -1484,16 +1484,18 @@ mod test {
                     info.next_learn_due,
                 );
                 // congrats_info() filled active_decks for this deck
-                assert_eq!(got, reference_congrats(&col.storage, TODAY), "{}", deck.name);
+                assert_eq!(
+                    got,
+                    reference_congrats(&col.storage, TODAY),
+                    "{}",
+                    deck.name
+                );
                 seen.insert(got);
             }
         }
         // both answers of every yes/no question were checked
         for flag in 0..4 {
-            let flags: HashSet<bool> = seen
-                .iter()
-                .map(|c| [c.0, c.1, c.2, c.3][flag])
-                .collect();
+            let flags: HashSet<bool> = seen.iter().map(|c| [c.0, c.1, c.2, c.3][flag]).collect();
             assert_eq!(flags.len(), 2, "flag {flag}");
         }
     }

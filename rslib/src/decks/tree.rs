@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use std::iter::Peekable;
 use std::ops::AddAssign;
 
-use anki_proto::decks::DeckDueCountsResponse as DeckDueCounts;
 pub use anki_proto::decks::set_deck_collapsed_request::Scope as DeckCollapseScope;
+use anki_proto::decks::DeckDueCountsResponse as DeckDueCounts;
 use anki_proto::decks::DeckTreeNode;
 use serde_tuple::Serialize_tuple;
 use unicase::UniCase;

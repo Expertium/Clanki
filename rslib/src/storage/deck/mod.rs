@@ -41,6 +41,9 @@ fn row_to_deck(row: &Row) -> Result<Deck> {
     })
 }
 
+/// One of the counts in [DueCounts].
+type CountField = fn(&mut DueCounts) -> &mut u32;
+
 /// The number of cards of `deck` and `queue` whose due value passes
 /// `stmt`'s comparison with `cutoff`. A range seek in the (did, queue, due)
 /// index, so it steps only over the due cards.
@@ -293,12 +296,12 @@ impl SqliteStorage {
         const REVIEW: i64 = CardQueue::Review as i64;
         const DAY_LEARN: i64 = CardQueue::DayLearn as i64;
         const PREVIEW: i64 = CardQueue::PreviewRepeat as i64;
-        let mut due_on_or_before = self
-            .db
-            .prepare_cached("select count() from cards where did = ?1 and queue = ?2 and due <= ?3")?;
-        let mut due_before = self
-            .db
-            .prepare_cached("select count() from cards where did = ?1 and queue = ?2 and due < ?3")?;
+        let mut due_on_or_before = self.db.prepare_cached(
+            "select count() from cards where did = ?1 and queue = ?2 and due <= ?3",
+        )?;
+        let mut due_before = self.db.prepare_cached(
+            "select count() from cards where did = ?1 and queue = ?2 and due < ?3",
+        )?;
         let mut groups = self
             .db
             .prepare_cached("select did, queue, count() from cards group by did, queue")?;
@@ -358,11 +361,17 @@ impl SqliteStorage {
             .collect();
         let mut deck_ids = String::new();
         ids_to_string(&mut deck_ids, decks_and_new_caps.iter().map(|(did, _)| did));
-        let due_queues: [(CardQueue, &str, u32, fn(&mut DueCounts) -> &mut u32); 4] = [
+        let due_queues: [(CardQueue, &str, u32, CountField); 4] = [
             (CardQueue::Review, "<=", day_cutoff, |c| &mut c.review),
-            (CardQueue::DayLearn, "<=", day_cutoff, |c| &mut c.interday_learning),
-            (CardQueue::Learn, "<", learn_cutoff, |c| &mut c.intraday_learning),
-            (CardQueue::PreviewRepeat, "<=", learn_cutoff, |c| &mut c.intraday_learning),
+            (CardQueue::DayLearn, "<=", day_cutoff, |c| {
+                &mut c.interday_learning
+            }),
+            (CardQueue::Learn, "<", learn_cutoff, |c| {
+                &mut c.intraday_learning
+            }),
+            (CardQueue::PreviewRepeat, "<=", learn_cutoff, |c| {
+                &mut c.intraday_learning
+            }),
         ];
         for (queue, comparison, cutoff, field) in due_queues {
             let sql = format!(
@@ -382,9 +391,8 @@ impl SqliteStorage {
         )?;
         for &(did, cap) in decks_and_new_caps {
             let deck = counts.get_mut(&did).unwrap();
-            deck.new = new_cards.query_row(params![did, CardQueue::New as i8, cap], |row| {
-                row.get(0)
-            })?;
+            deck.new =
+                new_cards.query_row(params![did, CardQueue::New as i8, cap], |row| row.get(0))?;
         }
         for deck in counts.values_mut() {
             deck.learning = deck.intraday_learning + deck.interday_learning;
@@ -713,7 +721,10 @@ pub(crate) mod test {
             assert_eq!(counts, reference_due_counts(&col.storage));
         }
         assert_eq!(
-            col.storage.due_counts(DAY_CUTOFF, LEARN_CUTOFF).unwrap().len(),
+            col.storage
+                .due_counts(DAY_CUTOFF, LEARN_CUTOFF)
+                .unwrap()
+                .len(),
             decks.len()
         );
     }
