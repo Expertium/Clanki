@@ -44,17 +44,17 @@ function fsrs7Params(): number[] {
     ];
 }
 
-test("stabilityS90 returns raw stability for scalar FSRS curves", () => {
-    expect(stabilityS90(10, 0.1542, undefined)).toBe(10);
+test("stabilityS90 returns the stored stability without FSRS-7 params", () => {
+    expect(stabilityS90(10, undefined)).toBe(10);
 });
 
 test("stabilityS90 derives S90 from FSRS-7 curve params", () => {
-    expect(stabilityS90(10, 0.1542, fsrs7Params())).toBeCloseTo(12.8789, 3);
+    expect(stabilityS90(10, fsrs7Params())).toBeCloseTo(12.8789, 3);
 });
 
 test("stabilityS90 uses both FSRS-7 stabilities and difficulty", () => {
-    const scalar = stabilityS90(10, 0.1542, fsrs7Params());
-    const fullState = stabilityS90(10, 0.1542, fsrs7Params(), 5, 8);
+    const scalar = stabilityS90(10, fsrs7Params());
+    const fullState = stabilityS90(10, fsrs7Params(), 5, 8);
 
     expect(fullState).not.toBeCloseTo(scalar, 3);
 });
@@ -76,7 +76,6 @@ test("prepareData carries S90 for the forgetting curve tooltip", () => {
                 },
             ] as any,
             2,
-            0.1542,
             fsrs7Params(),
         );
 
@@ -105,7 +104,6 @@ test("prepareData computes FSRS-7 retrievability from the full memory state", ()
                 },
             ] as any,
             20,
-            0.1542,
             fsrs7Params(),
         );
 

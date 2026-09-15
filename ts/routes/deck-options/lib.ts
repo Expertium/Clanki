@@ -11,7 +11,6 @@ import type {
 import {
     DeckConfig,
     DeckConfig_Config,
-    DeckConfig_Config_FsrsVersion,
     DeckConfigsForUpdate_CurrentDeck_Limits,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
@@ -244,7 +243,7 @@ export class DeckOptionsState {
     incompatibleFsrsParamPresetNames(): string[] {
         return this.configs.flatMap(({ config }) => {
             const inner = config.config;
-            if (!inner || fsrsParamDiagnostics(selectedFsrsParams(inner)).valid) {
+            if (!inner || fsrsParamDiagnostics(inner.fsrsParams7).valid) {
                 return [];
             }
 
@@ -256,11 +255,11 @@ export class DeckOptionsState {
         let cleared = 0;
         for (const config of this.configs.map((c) => c.config)) {
             const inner = config.config;
-            if (!inner || fsrsParamDiagnostics(selectedFsrsParams(inner)).valid) {
+            if (!inner || fsrsParamDiagnostics(inner.fsrsParams7).valid) {
                 continue;
             }
 
-            config.config = withSelectedFsrsParams(inner, []);
+            config.config = withFsrs7Params(inner, []);
             if (config.id) {
                 this.modifiedConfigs.add(config.id);
             }
@@ -575,64 +574,24 @@ export async function commitEditing(): Promise<void> {
     await tick();
 }
 
+/** FSRS-7 is the only model (spec sched.fsrs7-only): 34 finite values. */
 function fsrsParamsUsable(params: number[] | undefined): params is number[] {
-    if (!params || params.length === 0) {
-        return false;
-    }
-    if (![17, 19, 21, 34].includes(params.length)) {
-        return false;
-    }
-    return params.every((w) => Number.isFinite(w));
+    return !!params && params.length === 34 && params.every((w) => Number.isFinite(w));
 }
 
-function selectedFsrsParams(config: DeckConfig_Config): number[] {
-    switch (config.fsrsVersion) {
-        case DeckConfig_Config_FsrsVersion.SIX:
-            return config.fsrsParams6;
-        case DeckConfig_Config_FsrsVersion.FIVE:
-            return config.fsrsParams5;
-        case DeckConfig_Config_FsrsVersion.FOUR:
-            return config.fsrsParams4;
-        default:
-            return config.fsrsParams7;
-    }
-}
-
-export function withSelectedFsrsParams(
+/** A copy of the config with its FSRS-7 parameters replaced. */
+export function withFsrs7Params(
     config: DeckConfig_Config,
     params: number[],
 ): DeckConfig_Config {
     const updated = new DeckConfig_Config(config);
-    switch (updated.fsrsVersion) {
-        case DeckConfig_Config_FsrsVersion.SIX:
-            updated.fsrsParams6 = [...params];
-            break;
-        case DeckConfig_Config_FsrsVersion.FIVE:
-            updated.fsrsParams5 = [...params];
-            break;
-        case DeckConfig_Config_FsrsVersion.FOUR:
-            updated.fsrsParams4 = [...params];
-            break;
-        default:
-            updated.fsrsParams7 = [...params];
-            break;
-    }
+    updated.fsrsParams7 = [...params];
     return updated;
 }
 
+/** The preset's own FSRS-7 parameters, or [] when it has none, which the
+ * backend runs with the FSRS-7 defaults. Stored FSRS-6/5/4 parameters are
+ * never used. */
 export function fsrsParams(config: DeckConfig_Config): number[] {
-    const selected = selectedFsrsParams(config);
-    if (fsrsParamsUsable(selected)) {
-        return selected;
-    } else if (fsrsParamsUsable(config.fsrsParams7)) {
-        return config.fsrsParams7;
-    } else if (fsrsParamsUsable(config.fsrsParams6)) {
-        return config.fsrsParams6;
-    } else if (fsrsParamsUsable(config.fsrsParams5)) {
-        return config.fsrsParams5;
-    } else if (fsrsParamsUsable(config.fsrsParams4)) {
-        return config.fsrsParams4;
-    } else {
-        return [];
-    }
+    return fsrsParamsUsable(config.fsrsParams7) ? config.fsrsParams7 : [];
 }

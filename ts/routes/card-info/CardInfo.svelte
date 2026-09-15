@@ -19,20 +19,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: fsrsEnabled = stats?.memoryState != null;
     $: desiredRetention = stats?.desiredRetention ?? 0.9;
-    $: decay = (() => {
-        const params = stats?.fsrsParams ?? [];
-        const paramsLength = params.length;
-        if (paramsLength === 0) {
-            return 0.1542; // default decay for FSRS-6
-        }
-        if (paramsLength < 21) {
-            return 0.5; // default decay for FSRS-4.5 and FSRS-5
-        }
-        if (paramsLength >= 34) {
-            return params[23] ?? 0.0723;
-        }
-        return params[20] ?? 0.1542;
-    })();
 </script>
 
 <Container breakpoint="md" --gutter-inline="1rem" --gutter-block="0.5rem">
@@ -51,7 +37,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <ForgettingCurve
                     revlog={stats.revlog}
                     {desiredRetention}
-                    {decay}
                     fsrsParams={stats.fsrsParams}
                 />
             </Row>

@@ -678,18 +678,16 @@ impl HelpMeDecideReviewTimeModel {
 pub(crate) fn build_help_me_decide_review_time_model_from_revlogs(
     revlogs: &[RevlogEntry],
     params: &[f32],
-    next_day_at: TimestampSecs,
     enforce_monotonic_success_grade_probs: bool,
     default_review_costs: [f32; 4],
 ) -> Result<HelpMeDecideReviewTimeModel> {
-    let fsrs = FSRS::new(params)?;
+    let fsrs = FSRS::new(crate::deckconfig::effective_fsrs7_params(params))?;
     let mut samples = Vec::new();
     let mut transition_counts = [[0u32; 4]; 4];
 
     for (_cid, group) in &revlogs.iter().cloned().chunk_by(|r| r.cid) {
         let entries = group.collect_vec();
-        let Some(output) = reviews_for_fsrs(entries, next_day_at, false, TimestampMillis(0), false)
-        else {
+        let Some(output) = reviews_for_fsrs(entries, false, TimestampMillis(0)) else {
             continue;
         };
         if !output.revlogs_complete {

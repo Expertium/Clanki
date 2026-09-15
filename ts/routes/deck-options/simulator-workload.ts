@@ -1,23 +1,10 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { type DeckConfig, type DeckConfig_Config, DeckConfig_Config_FsrsVersion } from "@generated/anki/deck_config_pb";
+import { type DeckConfig } from "@generated/anki/deck_config_pb";
 import { SimulateFsrsReviewRequest } from "@generated/anki/scheduler_pb";
 
 import { escapeSearchText } from "./lib";
-
-function selectedFsrsParams(config: DeckConfig_Config): number[] {
-    switch (config.fsrsVersion) {
-        case DeckConfig_Config_FsrsVersion.SIX:
-            return config.fsrsParams6;
-        case DeckConfig_Config_FsrsVersion.FIVE:
-            return config.fsrsParams5;
-        case DeckConfig_Config_FsrsVersion.FOUR:
-            return config.fsrsParams4;
-        default:
-            return config.fsrsParams7;
-    }
-}
 
 function workloadSearchForPreset(
     deckNameForSearch: string,
@@ -33,7 +20,8 @@ export function workloadRequestForPreset(
 ): SimulateFsrsReviewRequest {
     const inner = config.config!;
     const request = new SimulateFsrsReviewRequest(baseRequest);
-    request.params = selectedFsrsParams(inner);
+    // FSRS-7 only; empty means the FSRS-7 defaults (spec sched.fsrs7-only)
+    request.params = inner.fsrsParams7;
     request.desiredRetention = inner.desiredRetention;
     request.search = workloadSearchForPreset(deckNameForSearch, config.name);
     request.workloadPresetLabel = config.name;

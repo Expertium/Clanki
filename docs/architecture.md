@@ -203,14 +203,19 @@ Scope:
 
 ## FSRS Parameter Source
 
-Deck options include an explicit FSRS version selector (`4.5/5/6/7`) stored in
-`deck_config.config.fsrs_version`. Parameter editing and optimization target the
-selected version's parameter array (`fsrs_params_4/5/6/7`).
+Clanki runs FSRS-7 only (spec `sched.fsrs7-only`). `DeckConfig::fsrs_params()`
+returns `fsrs_params_7` when it holds 34 finite values and the FSRS-7 defaults
+(`fsrs::DEFAULT_PARAMETERS`) otherwise, through `effective_fsrs7_params`, which
+every parameter input (deck configs, add-on overlays, RPC requests, the
+simulator) goes through. `deck_config.config.fsrs_version` and
+`fsrs_params_4/5/6` are stored and synced unchanged but never read; there is no
+version selector. `Collection::migrate_to_fsrs7_only` recomputes, once, the
+memory states of presets whose effective parameters changed with this rule.
 
 Runtime FSRS parameter lookup goes through an FSRS preset read model. Built-in
 FSRS presets are derived 1:1 from existing deck config rows, so the current
 database and sync representation remains unchanged. The FSRS preset contains
-only FSRS-specific data: selected version, selected params, desired retention,
+only FSRS-specific data: the FSRS-7 params, desired retention,
 historical retention, and ignore-before date. Existing per-deck desired
 retention overrides are preserved during card resolution. Non-FSRS deck behavior
 continues to come from the card's home deck config.
@@ -277,15 +282,14 @@ The Deck Options "New Card Intervals" preview passes the current unsaved values
 of these toggles to backend `GetFsrsNewCardIntervals`, so preview rows update
 immediately when toggled (without requiring a save first).
 
-Deck Options "Check Health" now also passes the currently selected unsaved
-`fsrs_version` to backend `EvaluateParams`, so split-based logloss/RMSE is
-computed with the selected model family (FSRS-7 vs FSRS-6/5/4).
+Deck Options "Check Health" evaluates FSRS-7; the `fsrs_version` and
+`include_same_day_reviews*` fields of `EvaluateParams` are ignored.
 
-FSRS training-item extraction is model-family-aware:
+FSRS training-item extraction is FSRS-7 only:
 
-- FSRS-6 family keeps the legacy training target rule (`delta_t > 0` only).
-- FSRS-7 includes same-day (`delta_t == 0`) follow-up targets during
-  optimization/evaluation item generation.
+- Same-day (`delta_t` under a day) follow-up targets are always included
+  during optimization/evaluation item generation, with fractional deltas from
+  revlog millisecond ids (`fsrs_review_delta_ts`).
 - Revlog-derived training items keep an aligned card-id vector after sorting by
   review id. Final FSRS-7 uses the standard tensor optimizer path in `fsrs-rs`;
   the previous windowed analytic optimizer is not used because it was tied to
@@ -344,10 +348,6 @@ optimized parameters are selected by the regularized training objective, which
 can include L2 and, when enabled, schedule penalty terms depending on the model
 family. FSRS-7 scheduling penalties are disabled by default.
 FSRS-7 optimization reads/writes `fsrs_params_7`.
-When optimizer output length does not match the selected preset's current
-parameter-family length (for example selected FSRS-6 vs optimizer returning
-FSRS-7-length params), deck options keeps the current selected params instead of
-cross-writing a different family into that slot.
 
 When `fsrs_params_7` has 34 values (FSRS-7), card-info forgetting-curve
 visualization uses the FSRS-7 mixture curve parameters in `w[23..33]` together
@@ -468,7 +468,7 @@ Current exact-vs-scalar status:
   applies the original predicates against the populated score map.
 - `card.data.s` stores `S90` (the interval at 90% retrievability), so
   `prop:s`, the browser stability column, and Card Info all use the same
-  stability value across FSRS-6 and FSRS-7. When a positive FSRS stability value
+  stability value. When a positive FSRS stability value
   would round to zero in card data, it is persisted as `0.0001` so legacy
   clients that only read `s` do not see an invalid zero stability. Check
   Database rewrites existing FSRS memory states with zero `s` through the same
@@ -487,8 +487,8 @@ Current exact-vs-scalar status:
   will start from incomplete model state.
 - The Card Info forgetting curve plots retrievability from reconstructed
   review-log memory states. FSRS-7 reconstruction uses fractional same-day
-  review deltas from revlog timestamps, matching the scheduler path; FSRS-6
-  keeps calendar-day deltas. When the newest user-graded revlog entry matches
+  review deltas from revlog timestamps, matching the scheduler path. When the
+  newest user-graded revlog entry matches
   the card's last review time, Card Info uses the current stored card memory
   state for that newest point, so the curve tooltip and the Card Info stability
   row agree after same-day learning/relearning answers.

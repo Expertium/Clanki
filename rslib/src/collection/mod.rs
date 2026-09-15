@@ -85,6 +85,7 @@ impl CollectionBuilder {
         };
         if !server {
             col.migrate_learning_queues_switch()?;
+            col.migrate_to_fsrs7_only()?;
         }
 
         Ok(col)

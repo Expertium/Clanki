@@ -7,8 +7,9 @@ separate database table or sync payload is required for the built-in behavior.
 For each normal deck config, Anki exposes a matching FSRS preset with id
 `deck-config:<id>`. The derived FSRS preset contains only FSRS model data:
 
-- selected FSRS version
-- selected FSRS parameter array
+- the FSRS-7 parameter array (`fsrs_params_7` when it holds 34 finite values,
+  otherwise the FSRS-7 defaults; Clanki runs FSRS-7 only, spec
+  `sched.fsrs7-only`)
 - desired retention
 - historical retention
 - ignore-before review-log date
@@ -69,6 +70,10 @@ rules through the synced config key `fsrsPresetOverlay`. The value is JSON:
     ]
 }
 ```
+
+`fsrs_version` is accepted for compatibility and ignored: every overlay runs
+FSRS-7. `params` must be 34 FSRS-7 values; anything else (empty, or an older
+version's 17/19/21 values) runs with the FSRS-7 defaults and logs a warning.
 
 Add-on preset ids must start with `addon:`. Each rule's `preset_id` must refer
 to a preset in the same overlay. Rules are evaluated in order, and the first

@@ -15,7 +15,9 @@ pub struct ComputeRetentionProgress {
 }
 
 impl Collection {
-    pub fn compute_optimal_retention(&mut self, req: SimulateFsrsReviewRequest) -> Result<f32> {
+    pub fn compute_optimal_retention(&mut self, mut req: SimulateFsrsReviewRequest) -> Result<f32> {
+        // FSRS-7 only (spec sched.fsrs7-only)
+        req.params = crate::deckconfig::effective_fsrs7_params(&req.params).to_vec();
         let mut anki_progress = self.new_progress_handler::<ComputeRetentionProgress>();
         if req.days_to_simulate == 0 {
             invalid_input!("no days to simulate")

@@ -477,6 +477,39 @@ fn review_card_again(col: &mut Collection, card_id: CardId, deck: DeckId) -> Res
     Ok(())
 }
 
+/// Make the card due now and answer Again, as a lapse on this device.
+fn lapse_card(col: &mut Collection, card_id: CardId, deck: DeckId) -> Result<()> {
+    col.storage
+        .db
+        .execute("update cards set due = 0 where id = ?", [card_id])?;
+    col.set_current_deck(deck)?;
+    col.clear_study_queues();
+    col.answer_again();
+    Ok(())
+}
+
+/// The reconcile rebuilds a memory state from the merged review log, whose
+/// times are the moments of answering (milliseconds), while the reviewing
+/// device computed its state when the card was shown. FSRS-7 takes the exact
+/// elapsed time (spec sched.fsrs7-fractional-elapsed-time), so the two can
+/// differ by the seconds spent on the answer: equal within 1%.
+fn assert_memory_state_close(a: Option<FsrsMemoryState>, b: Option<FsrsMemoryState>) {
+    let close = |x: f32, y: f32| (x - y).abs() <= 0.01 * x.abs().max(y.abs()).max(1.0);
+    match (a, b) {
+        (Some(a), Some(b)) => assert!(
+            close(a.stability, b.stability)
+                && close(a.stability_internal, b.stability_internal)
+                && close(a.difficulty, b.difficulty)
+                && close(
+                    a.stability_fast.unwrap_or(a.stability_internal),
+                    b.stability_fast.unwrap_or(b.stability_internal)
+                ),
+            "{a:?} vs {b:?}"
+        ),
+        (a, b) => assert_eq!(a, b),
+    }
+}
+
 /// Recompute the FSRS data of `cards` from `config` without rescheduling, the
 /// way a deck-options save with "Reschedule cards on change" off does.
 fn recompute_memory_state(
@@ -568,13 +601,17 @@ async fn fsrs_stale_card_state_is_reconciled_during_sync() -> Result<()> {
 
         let out = ctx.normal_sync(&mut col1).await;
         assert_eq!(out.required, SyncActionRequired::NoChanges);
+        // the repaired row must be newer than col1's review (mtime has
+        // one-second resolution) to win on the server and reach col1
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         let out = ctx.normal_sync(&mut col2).await;
         assert_eq!(out.required, SyncActionRequired::NoChanges);
 
-        // col2 now holds the schedule the reviewing device produced, exactly.
+        // col2 now holds the schedule the reviewing device produced, and the
+        // memory state rebuilt from the merged review log.
         let reconciled_card = col2.storage.get_card(card_id)?.unwrap();
         let reviewed_card = col1.storage.get_card(card_id)?.unwrap();
-        assert_eq!(reconciled_card.memory_state, reviewed_card.memory_state);
+        assert_memory_state_close(reconciled_card.memory_state, reviewed_card.memory_state);
         assert_eq!(
             reconciled_card.last_review_time,
             reviewed_card.last_review_time
@@ -619,8 +656,10 @@ async fn post_sync_reconcile_keeps_stale_schedule_when_reschedule_on_change_is_o
         let mut col1 = ctx.col1();
         let mut col2 = ctx.col2();
 
+        // a lapse on col1 always changes the schedule (a Good answer seconds
+        // after the first review can keep it, with FSRS-7's exact elapsed time)
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        review_card_again(&mut col1, card_id, DeckId(1))?;
+        lapse_card(&mut col1, card_id, DeckId(1))?;
         std::thread::sleep(std::time::Duration::from_millis(1));
         let config = col2.get_deck_config(DeckConfigId(1), false)?.unwrap();
         recompute_memory_state(&mut col2, &config, HashMap::new(), &[card_id])?;
@@ -638,7 +677,7 @@ async fn post_sync_reconcile_keeps_stale_schedule_when_reschedule_on_change_is_o
         // Memory state converges on the merged history, but the schedule is
         // not touched because the user never opted into rescheduling.
         let reconciled_card = col2.storage.get_card(card_id)?.unwrap();
-        assert_eq!(reconciled_card.memory_state, reviewed_card.memory_state);
+        assert_memory_state_close(reconciled_card.memory_state, reviewed_card.memory_state);
         assert_eq!(reconciled_card.interval, stale_card.interval);
         assert_eq!(reconciled_card.due, stale_card.due);
         assert_eq!(revlog_kinds(&col2, card_id)?.len(), 2);
@@ -1217,7 +1256,7 @@ async fn fsrs_mixed_schedule_and_metadata_conflicts_reconcile_selectively() -> R
         let reconciled_card2 = col2.storage.get_card(card2)?.unwrap();
         let synced_card1 = col1.storage.get_card(card1)?.unwrap();
         let synced_card2 = col1.storage.get_card(card2)?.unwrap();
-        assert_eq!(reconciled_card1.memory_state, synced_card1.memory_state);
+        assert_memory_state_close(reconciled_card1.memory_state, synced_card1.memory_state);
         assert_eq!(
             reconciled_card1.last_review_time,
             synced_card1.last_review_time
@@ -1225,7 +1264,7 @@ async fn fsrs_mixed_schedule_and_metadata_conflicts_reconcile_selectively() -> R
         assert_eq!(reconciled_card1.interval, synced_card1.interval);
         assert_eq!(reconciled_card1.due, synced_card1.due);
 
-        assert_eq!(reconciled_card2.memory_state, synced_card2.memory_state);
+        assert_memory_state_close(reconciled_card2.memory_state, synced_card2.memory_state);
         assert_eq!(
             reconciled_card2.desired_retention,
             synced_card2.desired_retention
@@ -1307,7 +1346,7 @@ async fn fsrs_filtered_card_schedule_conflict_uses_original_deck() -> Result<()>
         let synced_card = col1.storage.get_card(card_id)?.unwrap();
         assert_eq!(reconciled_card.deck_id, filtered_deck.id);
         assert_eq!(reconciled_card.original_deck_id, home_deck.id);
-        assert_eq!(reconciled_card.memory_state, synced_card.memory_state);
+        assert_memory_state_close(reconciled_card.memory_state, synced_card.memory_state);
         assert_eq!(reconciled_card.desired_retention, Some(0.84));
         assert_eq!(reconciled_card.interval, synced_card.interval);
         assert_eq!(reconciled_card.original_due, synced_card.due);

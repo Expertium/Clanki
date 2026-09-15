@@ -21,7 +21,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let revlog: RevlogEntry[];
     export let desiredRetention: number;
-    export let decay: number;
     export let fsrsParams: number[] = [];
     let svg: HTMLElement | SVGElement | null = null;
     const bounds = defaultGraphBounds();
@@ -49,7 +48,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         svg as SVGElement,
         bounds,
         desiredRetention,
-        decay,
         fsrsParams,
     );
 </script>

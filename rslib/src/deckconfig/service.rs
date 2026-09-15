@@ -119,6 +119,7 @@ impl crate::services::DeckConfigService for Collection {
 
         let mut config = guard.col.get_optimal_retention_parameters(revlogs)?;
         let fsrs_card_params = std::sync::Arc::new(normalized_fsrs_parameters(&input.w)?);
+        let params = fsrs_card_params.clone();
         let cards = guard
             .col
             .storage
@@ -145,7 +146,7 @@ impl crate::services::DeckConfigService for Collection {
                 Ok((
                     dr,
                     fsrs::expected_workload_with_existing_cards(
-                        &input.w,
+                        &params,
                         dr as f32 / 100.,
                         &config,
                         &cards,

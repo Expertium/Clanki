@@ -157,7 +157,6 @@ impl Collection {
         let historical_retention = fsrs_preset.historical_retention;
         let params = &fsrs_preset.params;
         let fsrs = fsrs_preset.fsrs()?;
-        let next_day_at = self.timing_today()?.next_day_at;
         let ignore_before = fsrs_preset.ignore_revlogs_before_ms()?;
 
         let mut result = Vec::new();
@@ -165,7 +164,6 @@ impl Collection {
             &fsrs,
             params,
             revlog.clone(),
-            next_day_at,
             historical_retention,
             ignore_before,
         )? {

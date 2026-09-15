@@ -23,7 +23,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         commitEditing,
         type DeckOptionsState,
         ValueTab,
-        withSelectedFsrsParams,
+        withFsrs7Params,
     } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import Warning from "./Warning.svelte";
@@ -32,7 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SimulatorModal from "./SimulatorModal.svelte";
     import {
         fsrsParamDiagnostics,
-        fsrsParamsSupportSameDayEvaluation,
         OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING,
         type FsrsParamDiagnostics,
     } from "./fsrs-param-diagnostics";
@@ -94,7 +93,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $daysSinceLastOptimization > 30 ? tr.deckConfigTimeToOptimize() : "";
     let desiredRetentionFocused = false;
     let desiredRetentionEverFocused = false;
-    const initialParams = [...selectedFsrsParams($config)];
+    const initialParams = [...$config.fsrsParams7];
     $: if (desiredRetentionFocused) {
         desiredRetentionEverFocused = true;
     }
@@ -106,38 +105,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     type FsrsParamRole = "current" | "optimized";
 
     class FsrsOptimizationFeedbackError extends Error {}
-    const fsrsVersionChoices = [
-        {
-            value: DeckConfig_Config_FsrsVersion.SEVEN,
-            label: "FSRS-7",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.SIX,
-            label: "FSRS-6",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.FIVE,
-            label: "FSRS-5",
-        },
-        {
-            value: DeckConfig_Config_FsrsVersion.FOUR,
-            label: "FSRS-4.5",
-        },
-    ];
-
-    function selectedFsrsParams(config: DeckConfig_Config): number[] {
-        switch (config.fsrsVersion) {
-            case DeckConfig_Config_FsrsVersion.SIX:
-                return config.fsrsParams6;
-            case DeckConfig_Config_FsrsVersion.FIVE:
-                return config.fsrsParams5;
-            case DeckConfig_Config_FsrsVersion.FOUR:
-                return config.fsrsParams4;
-            default:
-                return config.fsrsParams7;
-        }
-    }
-
     function errorMessage(err: unknown): string {
         return err instanceof Error ? err.message : String(err);
     }
@@ -155,7 +122,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING;
         }
         if (!diagnostics.validCount) {
-            return `Expected 0, 17, 19, 21, or 34 values, but found ${diagnostics.count}.`;
+            return `Expected 0 or 34 values (FSRS-7), but found ${diagnostics.count}.`;
         }
         if (diagnostics.nonFiniteIndexes.length) {
             const positions = diagnostics.nonFiniteIndexes
@@ -207,8 +174,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const details = {
             params,
             diagnostics: fsrsParamDiagnostics(params),
-            fsrsVersion: $config.fsrsVersion,
-            includeSameDayReviews: includeSameDayOverride(),
             enableSchedulingPenalties: enableSchedulingPenaltiesOverride(),
             search: optimizeSearchFilter(),
             evaluationSearch: evaluateSearchFilter(),
@@ -253,8 +218,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {
                 params,
                 diagnostics,
-                fsrsVersion: $config.fsrsVersion,
-                includeSameDayReviews: includeSameDayOverride(),
                 search: optimizeSearchFilter(),
                 evaluationSearch: evaluateSearchFilter(),
                 ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs().toString(),
@@ -274,7 +237,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let desiredRetentionChangeInfo = "";
     let desiredRetentionChangeClass = "alert-info two-line";
     $: if (showDesiredRetentionTooltip) {
-        getRetentionChangeInfo(roundedRetention, selectedFsrsParams($config));
+        getRetentionChangeInfo(roundedRetention, $config.fsrsParams7);
     }
 
     $: retentionWarningClass = getRetentionWarningClass(roundedRetention);
@@ -333,7 +296,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: simulateFsrsRequest = buildSimulateFsrsRequest({
         config: $config,
-        params: selectedFsrsParams($config),
+        params: $config.fsrsParams7,
         search: `preset:"${state.getCurrentNameForSearch()}" -is:suspended`,
         newCardsIgnoreReviewLimit: $newCardsIgnoreReviewLimit,
         reviewFuzzEnabled: $reviewFuzzEnabled,
@@ -348,7 +311,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         effectiveDesiredRetention,
         $fsrsShortTermWithStepsEnabled,
         $config.maxSameDayReviews,
-        selectedFsrsParams($config),
+        $config.fsrsParams7,
         $config.learnSteps,
         $config.relearnSteps,
         $config.maximumReviewInterval,
@@ -379,7 +342,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let retentionWorkloadInfo: undefined | Promise<GetRetentionWorkloadResponse> =
         undefined;
-    let lastParams = [...selectedFsrsParams($config)];
+    let lastParams = [...$config.fsrsParams7];
 
     function configWithDesiredRetention(
         currentConfig: DeckConfig_Config,
@@ -418,7 +381,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             newCardIntervalsError = fsrsParamDiagnosticDetails(diagnostics);
             return;
         }
-        const currentConfig = withSelectedFsrsParams($config, params);
+        const currentConfig = withFsrs7Params($config, params);
         try {
             const [current, selected] = await Promise.all([
                 getFsrsNewCardIntervals({
@@ -542,24 +505,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return optimizeSearchFilter();
     }
 
-    // FSRS-7 always trains on same-day reviews and always uses scheduling
-    // penalties; neither is a user setting (spec
-    // deck-options.fsrs-only-controls).
-    function includeSameDayOverride(): boolean | undefined {
-        if ($config.fsrsVersion !== DeckConfig_Config_FsrsVersion.SEVEN) {
-            return undefined;
-        }
-        return true;
-    }
-
+    // FSRS-7 always trains on same-day reviews (the backend ignores the
+    // request field) and always uses scheduling penalties; neither is a user
+    // setting (spec deck-options.fsrs-only-controls, sched.fsrs7-only).
     function enableSchedulingPenaltiesOverride(): boolean {
         return true;
-    }
-
-    function includeSameDayOverrideForParams(params: number[]): boolean | undefined {
-        return fsrsParamsSupportSameDayEvaluation(params)
-            ? includeSameDayOverride()
-            : undefined;
     }
 
     async function checkParams(): Promise<void> {
@@ -571,7 +521,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
-        const params = selectedFsrsParams($config);
+        const params = $config.fsrsParams7;
         checkingParams = true;
         computeParamsProgress = undefined;
         try {
@@ -584,8 +534,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             search,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             params,
-                            includeSameDayReviews:
-                                includeSameDayOverrideForParams(params),
                         },
                         { alertOnError: false },
                     );
@@ -626,7 +574,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             alert(tr.deckConfigPleaseSaveYourChangesFirst());
             return;
         }
-        const params = selectedFsrsParams($config);
+        const params = $config.fsrsParams7;
         checkingHealth = true;
         computeParamsProgress = undefined;
         try {
@@ -641,9 +589,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             searchForTraining,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             numOfRelearningSteps: getNumOfRelearningStepsInDay(),
-                            fsrsVersion: $config.fsrsVersion,
-                            includeSameDayReviews: includeSameDayOverride(),
-                            includeSameDayReviewsForTraining: includeSameDayOverride(),
+                            // required on the wire; the backend runs FSRS-7
+                            // whatever it says (spec sched.fsrs7-only)
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
                             enableSchedulingPenalties:
                                 enableSchedulingPenaltiesOverride(),
                         },
@@ -733,7 +681,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function showSimulatorModal(modal: Modal) {
-        const params = selectedFsrsParams($config);
+        const params = $config.fsrsParams7;
         const diagnostics = fsrsParamDiagnostics(params);
         if (!diagnostics.valid) {
             logFsrsParamProblem(
@@ -753,11 +701,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let simulatorModal: Modal;
     let workloadModal: Modal;
-    $: outdatedFsrs7ParamsWarning =
-        $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SEVEN &&
-        fsrsParamDiagnostics($config.fsrsParams7).outdatedFsrs7PreviewParams
-            ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
-            : "";
+    $: outdatedFsrs7ParamsWarning = fsrsParamDiagnostics($config.fsrsParams7)
+        .outdatedFsrs7PreviewParams
+        ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
+        : "";
 </script>
 
 <DynamicallySlottable slotHost={Item} api={{}}>
@@ -863,40 +810,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         <Warning warning={lastOptimizationWarning} className="alert-warning" />
 
-        <div class="mb-3">
-            <SettingTitle>{tr.deckConfigFsrsVersion()}</SettingTitle>
-            <select bind:value={$config.fsrsVersion} class="form-select">
-                {#each fsrsVersionChoices as choice}
-                    <option value={choice.value}>{choice.label}</option>
-                {/each}
-            </select>
-        </div>
-
-        {#if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.SIX}
-            <ParamsInputRow bind:value={$config.fsrsParams6} defaultValue={[]}>
-                <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                    {tr.deckConfigWeights()}
-                </SettingTitle>
-            </ParamsInputRow>
-        {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FIVE}
-            <ParamsInputRow bind:value={$config.fsrsParams5} defaultValue={[]}>
-                <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                    {tr.deckConfigWeights()}
-                </SettingTitle>
-            </ParamsInputRow>
-        {:else if $config.fsrsVersion === DeckConfig_Config_FsrsVersion.FOUR}
-            <ParamsInputRow bind:value={$config.fsrsParams4} defaultValue={[]}>
-                <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                    {tr.deckConfigWeights()}
-                </SettingTitle>
-            </ParamsInputRow>
-        {:else}
-            <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
-                <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                    {tr.deckConfigWeights()}
-                </SettingTitle>
-            </ParamsInputRow>
-        {/if}
+        <!-- FSRS-7 is the only model (spec sched.fsrs7-only): no version
+             selector; empty parameters run the FSRS-7 defaults. -->
+        <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
+            <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                {tr.deckConfigWeights()}
+            </SettingTitle>
+        </ParamsInputRow>
 
         <ParamsSearchRow
             bind:value={$config.paramSearch}
