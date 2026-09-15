@@ -232,6 +232,7 @@ class MPVBase:
         self._response_queues = {}
         self._event_queue = Queue()
         self._stop_event = threading.Event()
+        self._request_sent = threading.Event()
 
     def _start_thread(self):
         """Start up the communication threads."""
@@ -258,7 +259,15 @@ class MPVBase:
                     buf += b
                 except pywintypes.error as err:
                     if err.args[0] == winerror.ERROR_NO_DATA:
-                        time.sleep(0.1)
+                        # The pipe is polled. While a request waits for its
+                        # response, poll again at once; otherwise every 0.1 s,
+                        # or as soon as a request is sent (a request used to
+                        # wait for the next poll: 50 ms on average).
+                        if self._request_queue.empty():
+                            self._request_sent.wait(0.1)
+                            self._request_sent.clear()
+                        else:
+                            time.sleep(0.001)
                         continue
                     elif err.args[0] == winerror.ERROR_BROKEN_PIPE:
                         return
@@ -353,6 +362,7 @@ class MPVBase:
         # Write the message data to the socket.
         if is_win:
             win32file.WriteFile(self._sock, data)
+            self._request_sent.set()
         else:
             while data:
                 size = self._sock.send(data)
