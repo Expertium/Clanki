@@ -22,6 +22,8 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- With "Show only Again and Good answer buttons" on, the Hard and Easy keys
+  (2 and 4) do nothing. Before, key 2 answered Good.
 - RWKV-Curve cards never show or store FSRS-7 intervals: until RWKV-Curve
   has calculated a card's intervals, the reviewer shows "Waiting for
   RWKV-Curve…" instead of the answer buttons and ignores answer keys. Before,
