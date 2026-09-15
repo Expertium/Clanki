@@ -3726,8 +3726,13 @@ def update_reviewer_scheduling_states(
     reviewer: object,
     card: object,
 ) -> SchedulingStates:
-    """Apply desktop RWKV predictions before answer buttons are rendered."""
+    """Apply desktop RWKV predictions before answer buttons are rendered.
 
+    The stored prediction always belongs to this call: an earlier one is
+    cleared first, so a failed prediction leaves none (spec
+    sched.rwkv-curve-buttons-wait)."""
+
+    _clear_reviewer_prediction(reviewer)
     backend = _reviewer_backend
     if backend is None:
         return states
@@ -5633,6 +5638,26 @@ def answer_intervals_hidden(reviewer: object, card: object) -> bool:
     return isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
         deck_config
     )
+
+
+def answer_intervals_pending(reviewer: object, card: object) -> bool:
+    """True while the card's preset runs RWKV-Curve and RWKV-Curve has not
+    given the intervals for this showing of the card: the answer buttons
+    wait, and answers are ignored, because FSRS intervals must never stand
+    in for RWKV-Curve's (spec sched.rwkv-curve-buttons-wait). A preview in a
+    filtered deck without rescheduling has no review intervals and never
+    waits."""
+    if not rwkv_review_enabled(reviewer, card):
+        return False
+    current = _current_scheduling_state(reviewer)
+    if (
+        current is not None
+        and current.WhichOneof("kind") == "filtered"
+        and current.filtered.WhichOneof("kind") == "preview"
+    ):
+        return False
+    prediction = _current_reviewer_prediction(reviewer, card)
+    return prediction is None or not prediction.interval_override_used
 
 
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
@@ -7777,15 +7802,18 @@ def rwkv_review_input(
             base_review_state=base_review_state,
         )
 
+    # The scheduling state's elapsed time for a learning card counts from the
+    # step's due time, not the last review (spec sched.rwkv-exact-elapsed);
+    # it is kept only when the card's last review is unknown.
     if review_state in (
+        int(RwkvReviewState.LEARNING),
         int(RwkvReviewState.REVIEW),
         int(RwkvReviewState.RELEARNING),
         int(RwkvReviewState.FILTERED),
     ):
-        elapsed_days, elapsed_seconds = _elapsed_since_card_last_review(
-            reviewer,
-            card,
-        )
+        exact_days, exact_seconds = _elapsed_since_card_last_review(reviewer, card)
+        if exact_seconds is not None or review_state != int(RwkvReviewState.LEARNING):
+            elapsed_days, elapsed_seconds = exact_days, exact_seconds
 
     if review_state != base_review_state:
         state_kind, normal_state_kind = _rwkv_review_state_kinds(review_state)
@@ -8281,6 +8309,11 @@ def _store_reviewer_prediction(
     )
 
 
+def _clear_reviewer_prediction(reviewer: object) -> None:
+    if getattr(reviewer, _REVIEWER_PREDICTION_ATTR, None) is not None:
+        setattr(reviewer, _REVIEWER_PREDICTION_ATTR, None)
+
+
 def _current_reviewer_prediction(
     reviewer: object,
     card: object,
@@ -8478,6 +8511,9 @@ def set_answer_rwkv_metadata(
                 )
 
     prediction = _current_reviewer_prediction(reviewer, card)
+    # a prediction serves one answer: a later showing of the card must not
+    # reuse its S90 (spec sched.rwkv-curve-buttons-wait)
+    _clear_reviewer_prediction(reviewer)
     if prediction is None or not prediction.review_enabled:
         return
 

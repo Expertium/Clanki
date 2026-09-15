@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import random
@@ -66,6 +67,9 @@ from aqt.utils import (
 
 logger = logging.getLogger(__name__)
 UNDO_RESTORED_CARD_ANSWER_UNBLOCK_DELAY_MS = 100
+# first wait before asking RWKV-Curve again for a card's intervals; doubles
+# up to a second
+RWKV_INTERVALS_FIRST_RETRY_MS = 50
 
 
 class RefreshNeeded(Enum):
@@ -506,6 +510,7 @@ class Reviewer:
         self._question_rendered = False
         self._answer_update_id = None
         self._answer_rendered = False
+        self._rwkv_intervals_retry_ms = 0
         self._rwkv_undo_restored_card_active = False
         restored_undo_card = self._get_rwkv_undo_restored_card()
         if not restored_undo_card:
@@ -1052,6 +1057,9 @@ class Reviewer:
         if self._answer_actions_are_blocked():
             return
         if self.state != "answer" or not self._answer_rendered:
+            return
+        # no answer before RWKV-Curve's intervals (spec sched.rwkv-curve-buttons-wait)
+        if aqt.rwkv_scheduler.answer_intervals_pending(self, self.card):
             return
         proceed, ease = gui_hooks.reviewer_will_answer_card(
             (True, ease), self, self.card
@@ -2029,9 +2037,40 @@ timeboxReps = 0;
             return
         middle = self._answerButtons()
         conf = self.mw.col.decks.config_dict_for_deck_id(self.card.current_deck_id())
-        self.bottom.web.eval(
-            f"showAnswer({json.dumps(middle)}, {json.dumps(conf['stopTimerOnAnswer'])});"
-        )
+        stop_timer = json.dumps(conf["stopTimerOnAnswer"])
+        if aqt.rwkv_scheduler.answer_intervals_pending(self, self.card):
+            self._wait_for_rwkv_curve_intervals(stop_timer)
+            return
+        self._rwkv_intervals_retry_ms = 0
+        self.bottom.web.eval(f"showAnswer({json.dumps(middle)}, {stop_timer});")
+
+    def _wait_for_rwkv_curve_intervals(self, stop_timer: str) -> None:
+        """RWKV-Curve has not given this card's intervals yet: show a notice
+        instead of the buttons and ask again, backing off to once a second.
+        FSRS intervals never stand in (spec sched.rwkv-curve-buttons-wait)."""
+        assert self.card is not None
+        delay = getattr(self, "_rwkv_intervals_retry_ms", 0)
+        if delay == 0:
+            notice = (
+                "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
+                % html.escape(tr.qt_misc_rwkv_curve_intervals_pending())
+            )
+            self.bottom.web.eval(f"showAnswer({json.dumps(notice)}, {stop_timer});")
+        delay = min(max(delay * 2, RWKV_INTERVALS_FIRST_RETRY_MS), 1000)
+        self._rwkv_intervals_retry_ms = delay
+        card_id = self.card.id
+        update_id = self._answer_update_id
+
+        def retry() -> None:
+            if (
+                self.state == "answer"
+                and self.card is not None
+                and self.card.id == card_id
+                and self._answer_update_id == update_id
+            ):
+                self._showEaseButtons()
+
+        self.mw.progress.single_shot(delay, retry)
 
     def _remaining(self) -> str:
         if not self.mw.col.conf["dueCounts"]:
