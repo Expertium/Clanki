@@ -20,6 +20,7 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
+use crate::deckconfig::ReviewCardOrder;
 use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
@@ -625,6 +626,75 @@ fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
             .any(|node| node_explicitly_includes_new_cards(node, negated)),
         Node::And | Node::Or | Node::Search(_) => false,
     }
+}
+
+/// The sort key of due cards in RWKV presets whose review order is by
+/// retrievability or relative overdueness (spec sched.rwkv-review-order);
+/// lower keys come first. The retrievability is RWKV-Curve's score for today;
+/// a card the RWKV process has not scored gets the value of the exponential
+/// curve through the interval RWKV scheduled, `target ^ (elapsed /
+/// interval)`. Relative overdueness divides it by the card's target
+/// retention, the key RWKV-Instant ranks its scores by
+/// (`relative_overdueness`): 1 when the card is due exactly, less the more it
+/// is overdue. Descending retrievability negates the key.
+pub(crate) fn rwkv_review_order_keys(
+    col: &mut Collection,
+    card_ids: &[CardId],
+    timing: SchedTimingToday,
+    order: ReviewCardOrder,
+) -> Result<HashMap<CardId, f32>> {
+    let curve_scores = col.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, None);
+    let mut cards = col.all_cards_for_ids(card_ids, false)?;
+    col.populate_rwkv_last_review_times(&mut cards)?;
+    let without_card_target: Vec<_> = cards
+        .iter()
+        .filter(|card| card_desired_retention(card).is_none())
+        .cloned()
+        .collect();
+    let presets = col.fsrs_presets_for_cards(&without_card_target)?;
+    let mut keys = HashMap::with_capacity(cards.len());
+    for card in &cards {
+        let Some(target) = card_desired_retention(card)
+            .or_else(|| presets.get(&card.id).map(|preset| preset.desired_retention))
+            .filter(|target| valid_card_desired_retention(*target))
+        else {
+            continue;
+        };
+        let retrievability = match curve_scores
+            .as_ref()
+            .and_then(|scores| scores.get(&card.id))
+            .filter(|r| r.is_finite())
+        {
+            Some(&retrievability) => retrievability,
+            None => {
+                let elapsed_days = rwkv_elapsed_days_since_last_review(card, timing);
+                let interval_days = card.interval.max(1) as f32;
+                target.powf(elapsed_days / interval_days)
+            }
+        };
+        let key = match order {
+            ReviewCardOrder::RelativeOverdueness => relative_overdueness(retrievability, target),
+            ReviewCardOrder::RetrievabilityDescending => -retrievability,
+            _ => retrievability,
+        };
+        if key.is_finite() {
+            keys.insert(card.id, key);
+        }
+    }
+    Ok(keys)
+}
+
+fn rwkv_elapsed_days_since_last_review(card: &Card, timing: SchedTimingToday) -> f32 {
+    let elapsed_secs = match card.last_review_time {
+        Some(last_review_time) => timing.now.elapsed_secs_since_clamped(last_review_time),
+        None => {
+            let review_day = (card.original_or_current_due() as i64)
+                .saturating_sub(card.interval as i64)
+                .max(0) as u32;
+            timing.days_elapsed.saturating_sub(review_day) * 86_400
+        }
+    };
+    elapsed_secs as f32 / 86_400.0
 }
 
 #[derive(Debug, Clone, Copy)]

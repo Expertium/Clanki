@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Under RWKV-Curve and RWKV-Instant, the review sort orders
+  "Retrievability ascending/descending" and "Relative overdueness" now rank
+  cards by RWKV: RWKV-Curve's predicted recall (over the desired retention,
+  for relative overdueness), or, for a card RWKV has not scored yet, how far
+  into its RWKV interval it is. Before, relative overdueness used a broken
+  FSRS formula and the retrievability orders showed cards in due-day order.
 - Simple mode: when only some of the settings behind "Bury siblings" or
   "On-screen timer" are on (set in Advanced mode), the switch shows "Partly
   on (set in Advanced mode)" under it.
