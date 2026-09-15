@@ -6,6 +6,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export interface Choice<T> {
         label: string;
         value: T;
+        /** A second, smaller line under the label in the open dropdown. */
+        description?: string;
     }
 </script>
 
@@ -24,6 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         content: item.label,
         value: item.value,
         disabled: disabledChoices.includes(item.value),
+        description: item.description,
     });
 </script>
 

@@ -2123,6 +2123,8 @@ timeboxReps = 0;
             )
         labels = self.mw.col.sched.describe_next_states(self._v3.states)
         colored = self.mw.col.get_config_bool(Config.Bool.SHOW_COLORED_BUTTONS)
+        # RWKV-Instant has no intervals (spec sched.rwkv-instant-no-intervals)
+        intervals_hidden = aqt.rwkv_scheduler.answer_intervals_hidden(self, self.card)
 
         def but(i: int, label: str) -> str:
             if i == default:
@@ -2133,7 +2135,7 @@ timeboxReps = 0;
                 # upstream PR 4371: red border for Again, green for the rest
                 button_class = "answerIncorrect" if i == 1 else "answerCorrect"
                 extra += f'class="answerButton {button_class}" '
-            due = self._buttonTime(i, v3_labels=labels)
+            due = "" if intervals_hidden else self._buttonTime(i, v3_labels=labels)
             key = (
                 tr.actions_shortcut_key(val=aqt.mw.pm.get_answer_key(i))
                 if aqt.mw.pm.get_answer_key(i)

@@ -68,7 +68,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         &:hover:not([disabled]) {
-            background: var(--highlight-bg);
+            background: var(--dropdown-highlight-bg, var(--highlight-bg));
             color: var(--highlight-fg);
         }
 

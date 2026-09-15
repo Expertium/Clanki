@@ -51,19 +51,27 @@ export function flagsFromSchedulerChoice(choice: SchedulerChoice): SchedulerFlag
 export interface SchedulerChoiceOption {
     label: string;
     value: SchedulerChoice;
+    /** Shown under the label in the open dropdown. */
+    description: string;
 }
 
 /** The dropdown entries, in display order. */
 export function schedulerChoices(): SchedulerChoiceOption[] {
     return [
-        { label: tr.deckConfigSchedulerChoiceFsrs(), value: SchedulerChoice.FSRS },
+        {
+            label: tr.deckConfigSchedulerChoiceFsrs(),
+            value: SchedulerChoice.FSRS,
+            description: tr.deckConfigSchedulerChoiceFsrsDescription(),
+        },
         {
             label: tr.deckConfigSchedulerChoiceRwkvCurve(),
             value: SchedulerChoice.RWKV_CURVE,
+            description: tr.deckConfigSchedulerChoiceRwkvCurveDescription(),
         },
         {
             label: tr.deckConfigSchedulerChoiceRwkvInstant(),
             value: SchedulerChoice.RWKV_INSTANT,
+            description: tr.deckConfigSchedulerChoiceRwkvInstantDescription(),
         },
     ];
 }
