@@ -22,6 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- A card without a usable review history (no review log, or a truncated
+  one) now gets an FSRS-7 memory state whose stability (S90) is its current
+  interval. Before, FSRS-7 took the interval as its internal stability, and
+  a 100-day interval became a stability of about 226 days. The same holds
+  for a card RWKV-Curve answers without an FSRS memory state: its FSRS-7
+  state now matches RWKV's S90.
 - FSRS-7 is the only FSRS model. A preset without FSRS-7 parameters runs
   with the FSRS-7 defaults, even if it has trained FSRS-6/5/4.5 parameters
   (those stay stored, unused); the FSRS version selector is gone. On first

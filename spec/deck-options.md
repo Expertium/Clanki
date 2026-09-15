@@ -356,9 +356,8 @@ Given any preset, historical retention is 0.9. A memory state inferred from
 SM-2 data (a card with no review log, or a truncated one) uses 0.9 whatever
 `historical_retention` the preset stores; the FSRS simulator and add-on
 preset overlays use 0.9 as well, and the value reported for a preset
-(`fsrs_preset_for_card`) is 0.9. FSRS-7, the only model
-(`sched.fsrs7-only`), infers a state from the interval alone, so nothing
-reads the value. The control is gone
+(`fsrs_preset_for_card`) is 0.9: the inferred FSRS-7 state reaches 90%
+recall at the card's interval (`sched.fsrs7-sm2-conversion`). The control is gone
 from the screen; the proto field and the stored value stay, and are ignored.
 
 **Why:** Andrew, 2026-09-14: one setting less. The stored value only shaped
