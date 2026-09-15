@@ -122,6 +122,8 @@ fn fsrs_current_retrievability_for_memory_state(
 ///
 /// The FSRS-7 mixture curve has no scalar decay that can be inverted in SQL,
 /// so the target interval must be derived from the complete memory state.
+/// The code uses [`FsrsCurveModel::relative_overdueness`]; tests use this.
+#[cfg(test)]
 pub(crate) fn fsrs_relative_overdueness_for_state(
     params: &[f32],
     state: FsrsMemoryState,
@@ -1279,6 +1281,9 @@ impl Collection {
         fsrs_current_retrievability_for_state(&params, state, elapsed_days)
     }
 
+    /// The per-card form of [`FsrsCardCurves::relative_overdueness`], which
+    /// the code uses; tests compare the two.
+    #[cfg(test)]
     pub(crate) fn fsrs_relative_overdueness_for_card_state(
         &mut self,
         card: &Card,
