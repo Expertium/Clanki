@@ -9,13 +9,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { Writable } from "svelte/store";
 
     /**
-     * The Simple | Advanced switch at the top right of deck options: the
-     * collection's one UI mode, the same flag as the main window's switch
-     * (spec ui.mode-switch). A click switches this page at once and tells
-     * the main window, which stores the flag and redraws; it does not wait
-     * for Save.
+     * The Simple | Advanced switch at the top right of deck options and of
+     * the Stats page: the collection's one UI mode, the same flag as the main
+     * window's switch (spec ui.mode-switch). A click switches the page at
+     * once and tells the main window, which stores the flag and redraws; it
+     * does not wait for Save.
      */
     export let advancedUi: Writable<boolean>;
+    /** What Simple hides on this page. */
+    export let tooltip: string;
 
     async function choose(advanced: boolean): Promise<void> {
         if (advanced === $advancedUi) {
@@ -26,12 +28,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<div
-    class="ui-mode"
-    role="group"
-    aria-label={tr.deckConfigUiMode()}
-    title={tr.deckConfigUiModeTooltip()}
->
+<div class="ui-mode" role="group" aria-label={tr.deckConfigUiMode()} title={tooltip}>
     <button
         class="ui-mode-option"
         class:active={!$advancedUi}

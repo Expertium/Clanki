@@ -169,6 +169,7 @@ impl Collection {
             retrievability: Some(ctx.retrievability()),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
+            advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
         };
         Ok(resp)
     }
@@ -198,6 +199,22 @@ impl Collection {
             prefs.card_counts_separate_inactive,
         )?;
         self.set_config_bool_inner(BoolKey::FutureDueShowBacklog, prefs.future_due_show_backlog)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Pins spec/ui.md#ui.mode-switch: the Stats page learns the UI mode
+    // with its data.
+    #[test]
+    fn graphs_report_the_ui_mode() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(!col.graph_data_for_search("", 365)?.advanced_ui);
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        assert!(col.graph_data_for_search("", 365)?.advanced_ui);
         Ok(())
     }
 }

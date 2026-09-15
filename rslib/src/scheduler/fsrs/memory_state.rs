@@ -118,6 +118,18 @@ fn fsrs_current_retrievability_for_memory_state(
     Ok(retrievability)
 }
 
+/// `fsrs_current_retrievability_for_state` with the model of the parameters
+/// already built.
+pub(crate) fn fsrs_current_retrievability_with_model(
+    fsrs: &FSRS,
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+) -> Result<f32> {
+    let retrievability = fsrs.current_retrievability(state.into(), elapsed_days.max(0.0));
+    require!(retrievability.is_finite(), "invalid FSRS parameter values");
+    Ok(retrievability)
+}
+
 /// Return the negative fraction of the target interval that has elapsed.
 ///
 /// The FSRS-7 mixture curve has no scalar decay that can be inverted in SQL,
@@ -128,7 +140,22 @@ pub(crate) fn fsrs_relative_overdueness_for_state(
     elapsed_days: f32,
     target_retrievability: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
+    fsrs_relative_overdueness_with_model(
+        &FSRS::new(params)?,
+        state,
+        elapsed_days,
+        target_retrievability,
+    )
+}
+
+/// `fsrs_relative_overdueness_for_state` with the model of the parameters
+/// already built.
+pub(crate) fn fsrs_relative_overdueness_with_model(
+    fsrs: &FSRS,
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+    target_retrievability: f32,
+) -> Result<f32> {
     let target_interval =
         fsrs.interval_at_retrievability(state.into(), target_retrievability.clamp(0.0001, 0.9999));
     let relative_overdueness = -elapsed_days.max(0.0) / target_interval.max(0.0001);

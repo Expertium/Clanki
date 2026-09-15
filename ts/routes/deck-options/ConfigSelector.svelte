@@ -11,11 +11,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { modalsKey } from "$lib/components/context-keys";
     import Select from "$lib/components/Select.svelte";
     import StickyContainer from "$lib/components/StickyContainer.svelte";
+    import UiModeSwitch from "$lib/components/UiModeSwitch.svelte";
 
     import type { ConfigListEntry, DeckOptionsState } from "./lib";
     import SaveButton from "./SaveButton.svelte";
     import TextInputModal from "./TextInputModal.svelte";
-    import UiModeSwitch from "./UiModeSwitch.svelte";
 
     export let state: DeckOptionsState;
     const configList = state.configList;
@@ -115,7 +115,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             on:close={() => dispatch("close")}
         />
 
-        <UiModeSwitch advancedUi={state.advancedUi} />
+        <UiModeSwitch
+            advancedUi={state.advancedUi}
+            tooltip={tr.deckConfigUiModeTooltip()}
+        />
     </div>
 </StickyContainer>
 
