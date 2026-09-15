@@ -121,6 +121,27 @@ fn row_to_new_card(row: &Row) -> result::Result<NewCard, rusqlite::Error> {
 }
 
 impl super::SqliteStorage {
+    /// Cards holding a memory state without FSRS-7's internal stability:
+    /// Clanki always writes it, so the row was last written by another client
+    /// (spec sync.fsrs7-state-of-foreign-cards). The `like` filters only
+    /// narrow the scan; the parsed data decides.
+    pub(crate) fn card_ids_with_foreign_fsrs_state(&self) -> Result<Vec<CardId>> {
+        self.db
+            .prepare_cached(
+                r#"select id, data from cards
+where data like '%"s":%' and data not like '%"s_int":%'"#,
+            )?
+            .query_and_then([], |row| -> Result<Option<CardId>> {
+                let data: CardData = row.get(1)?;
+                let foreign = data.fsrs_stability.is_some()
+                    && data.fsrs_difficulty.is_some()
+                    && data.fsrs_stability_internal.is_none();
+                Ok(foreign.then(|| row.get(0)).transpose()?)
+            })?
+            .filter_map(Result::transpose)
+            .collect()
+    }
+
     pub fn get_card(&self, cid: CardId) -> Result<Option<Card>> {
         self.db
             .prepare_cached(concat!(include_str!("get_card.sql"), " where id = ?"))?

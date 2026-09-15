@@ -29,6 +29,11 @@ pub(super) struct ExchangeData {
     pub(super) media_filenames: HashSet<String>,
     pub(super) days_elapsed: u32,
     pub(super) creation_utc_offset: Option<i32>,
+    /// Imported cards whose row another client wrote (spec
+    /// sync.fsrs7-state-of-foreign-cards). Found in the package's own
+    /// rows: once a card is written back through `Card`, it carries an
+    /// internal stability and no longer looks foreign.
+    pub(super) foreign_fsrs_card_ids: HashSet<CardId>,
 }
 
 impl ExchangeData {

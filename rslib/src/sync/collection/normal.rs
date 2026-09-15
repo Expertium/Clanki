@@ -148,6 +148,13 @@ impl NormalSyncer<'_> {
             "reconciling fsrs state"
         );
         self.col.reconcile_fsrs_state_after_sync(fsrs_conflicts)?;
+        // cards the server sent as another client wrote them (spec
+        // sync.fsrs7-state-of-foreign-cards), uploaded by this same sync; a
+        // failure leaves them as they came and must not stop the sync
+        match self.col.repair_fsrs7_state_of_foreign_cards_inner() {
+            Ok(cards) => debug!(cards, "repaired fsrs-7 state of foreign cards"),
+            Err(err) => tracing::warn!(?err, "repairing the fsrs-7 state of foreign cards failed"),
+        }
         debug!("begin stream to server");
         self.send_chunks_to_server(&state).await?;
 
