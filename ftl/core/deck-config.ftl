@@ -783,17 +783,19 @@ deck-config-scheduler-choice-fsrs = FSRS-7
 deck-config-scheduler-choice-rwkv-curve = RWKV-Curve
 deck-config-scheduler-choice-rwkv-instant = RWKV-Instant
 deck-config-scheduler-choice-fsrs-description =
-    A relatively simple algorithm that uses only interval lengths and grades
-    (Again/Hard/Good/Easy) as input. Least accurate at predicting whether you
-    have forgotten your material, and hence at keeping your retention at the
-    desired level.
+    A relatively simple algorithm. It uses only each card's grades
+    (Again/Hard/Good/Easy) and the number of days between its reviews. Least
+    accurate at predicting whether you forgot your card, and hence at keeping
+    your retention at the desired level.
 deck-config-scheduler-choice-rwkv-curve-description =
-    A neural network that uses a lot more information (but NOT card content,
-    such as text, images or audio) to determine whether you have forgotten
-    your material. The default.
+    The default. A neural network that uses a lot more information (but NOT
+    card content, such as text/images/audio) to determine whether you forgot
+    your card. It gives intervals, just like FSRS-7.
 deck-config-scheduler-choice-rwkv-instant-description =
     The same neural network in a different mode. Best at keeping your
-    retention at the desired level, but it has no intervals.
+    retention at the desired level. However, it has no intervals: after each
+    review, it decides again which cards are due. Some users may find it
+    unintuitive.
 deck-config-first-intervals = First intervals
 deck-config-rwkv-instant-retention-info =
     RWKV-Instant does not use intervals. Desired retention still controls

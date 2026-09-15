@@ -27,10 +27,12 @@ storage in the `jschoreels.rwkv` bag, and the scheduler behavior behind
 each single algorithm are unchanged.
 
 In the open dropdown each algorithm shows a short description under its
-name (FSRS-7: interval lengths and grades only, the least accurate;
-RWKV-Curve: a neural network that uses more information but not card
-content, the default; RWKV-Instant: the same network, best at keeping
-retention at the desired level, no intervals). The revert button restores
+name (FSRS-7: each card's grades and days between reviews only, the least
+accurate; RWKV-Curve: the default, a neural network that uses more
+information but not card content, with intervals like FSRS-7;
+RWKV-Instant: the same network, best at keeping retention at the desired
+level, no intervals, dueness decided again after each review, possibly
+unintuitive). The revert button restores
 the new-preset algorithm, RWKV-Curve (`deck-options.new-preset-defaults`).
 
 **Why:** the three switches were independent and could be combined in ways
