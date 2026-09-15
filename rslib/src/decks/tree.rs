@@ -7,6 +7,7 @@ use std::iter::Peekable;
 use std::ops::AddAssign;
 
 pub use anki_proto::decks::set_deck_collapsed_request::Scope as DeckCollapseScope;
+use anki_proto::decks::DeckDueCountsResponse as DeckDueCounts;
 use anki_proto::decks::DeckTreeNode;
 use serde_tuple::Serialize_tuple;
 use unicase::UniCase;
@@ -194,6 +195,30 @@ fn hide_default_deck(node: &mut DeckTreeNode) {
     }
 }
 
+/// Push the ids of the nodes from `node` down to the deck's node (the one
+/// [get_deck_in_tree] returns) onto `path`. False, with `path` unchanged, if
+/// the deck has no node below `node`.
+fn path_to_deck(node: &DeckTreeNode, deck_id: DeckId, path: &mut Vec<DeckId>) -> bool {
+    path.push(DeckId(node.deck_id));
+    if node.deck_id == deck_id.0
+        || node
+            .children
+            .iter()
+            .any(|child| path_to_deck(child, deck_id, path))
+    {
+        return true;
+    }
+    path.pop();
+    false
+}
+
+fn subtree_deck_ids(node: &DeckTreeNode, ids: &mut Vec<DeckId>) {
+    ids.push(DeckId(node.deck_id));
+    for child in &node.children {
+        subtree_deck_ids(child, ids);
+    }
+}
+
 /// Locate provided deck in tree, and return it.
 pub fn get_deck_in_tree(tree: DeckTreeNode, deck_id: DeckId) -> Option<DeckTreeNode> {
     if tree.deck_id == deck_id.0 {
@@ -296,6 +321,78 @@ impl Collection {
         Ok(get_deck_in_tree(tree, target))
     }
 
+    /// The new, learning and review counts of the deck's node in
+    /// `deck_tree(Some(timestamp))`, or None if the tree has no node for the
+    /// deck. Unless RWKV scores change today's counts, it counts only the
+    /// cards of the deck's subtree, and stops each deck's new count at the
+    /// deck's own new limit: a node's capped new count never exceeds the
+    /// limit, so the result is the same.
+    pub fn deck_due_counts(
+        &mut self,
+        deck_id: DeckId,
+        timestamp: TimestampSecs,
+    ) -> Result<Option<DeckDueCounts>> {
+        let names = self.storage.get_all_deck_names()?;
+        let mut tree = deck_names_to_tree(names.into_iter());
+        if self.default_deck_is_empty()? {
+            hide_default_deck(&mut tree);
+        }
+        // as in deck_tree(), even when the deck has no node
+        let timing_today = self.timing_today()?;
+        self.unbury_if_day_rolled_over(timing_today)?;
+
+        let mut path = vec![];
+        if !path_to_deck(&tree, deck_id, &mut path) {
+            return Ok(None);
+        }
+        let timing_at_stamp = self.timing_for_timestamp(timestamp)?;
+        let days_elapsed = timing_at_stamp.days_elapsed;
+        let node = if self.rwkv_scores_change_due_counts(days_elapsed) {
+            get_deck_in_tree(self.deck_tree(Some(timestamp))?, deck_id)
+        } else {
+            let learn_cutoff = (timestamp.0 as u32) + self.learn_ahead_secs();
+            let new_cards_ignore_review_limit =
+                self.get_config_bool(BoolKey::NewCardsIgnoreReviewLimit);
+            let mut parent_limits = self
+                .get_config_bool(BoolKey::ApplyAllParentLimits)
+                .then(Default::default);
+            let decks_map = self.storage.get_decks_map()?;
+            let dconf = self.storage.get_deck_config_map()?;
+            let limits = remaining_limits_map(
+                decks_map.values(),
+                &dconf,
+                days_elapsed,
+                new_cards_ignore_review_limit,
+            );
+            let limits_of = |id| limits.get(&id).copied().unwrap_or_default();
+            // the limits sum_counts_and_apply_limits_v3() passes down to the deck
+            for &ancestor in &path[..path.len() - 1] {
+                if let Some(parent_remaining) = parent_limits {
+                    let mut remaining: RemainingLimits = limits_of(ancestor);
+                    remaining.cap_to(parent_remaining);
+                    parent_limits = Some(remaining);
+                }
+            }
+            let mut node = get_deck_in_tree(tree, deck_id).or_not_found(deck_id)?;
+            let mut ids = vec![];
+            subtree_deck_ids(&node, &mut ids);
+            let decks_and_new_caps: Vec<_> =
+                ids.into_iter().map(|id| (id, limits_of(id).new)).collect();
+            let counts =
+                self.storage
+                    .capped_due_counts(&decks_and_new_caps, days_elapsed, learn_cutoff)?;
+            add_counts(&mut node, &counts);
+            sum_counts_and_apply_limits_v3(&mut node, &limits, parent_limits);
+            Some(node)
+        };
+        Ok(node.map(|node| DeckDueCounts {
+            found: true,
+            new_count: node.new_count,
+            learn_count: node.learn_count,
+            review_count: node.review_count,
+        }))
+    }
+
     pub fn set_deck_collapsed(
         &mut self,
         did: DeckId,
@@ -342,7 +439,7 @@ impl Collection {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use std::collections::HashMap;
 
     use super::*;
@@ -351,6 +448,43 @@ mod test {
     use crate::deckconfig::DeckConfigId;
     use crate::deckconfig::ReviewCardOrder;
     use crate::error::Result;
+
+    /// deck_due_counts() of every node's deck (the root's 0 included) is the
+    /// node's counts in deck_tree().
+    pub(crate) fn assert_due_counts_match_tree(col: &mut Collection, now: TimestampSecs) {
+        fn walk(node: &DeckTreeNode, nodes: &mut Vec<(DeckId, DeckDueCounts)>) {
+            nodes.push((
+                DeckId(node.deck_id),
+                DeckDueCounts {
+                    found: true,
+                    new_count: node.new_count,
+                    learn_count: node.learn_count,
+                    review_count: node.review_count,
+                },
+            ));
+            for child in &node.children {
+                walk(child, nodes);
+            }
+        }
+        let mut nodes = vec![];
+        walk(&col.deck_tree(Some(now)).unwrap(), &mut nodes);
+        for (deck_id, expected) in nodes {
+            let counts = col.deck_due_counts(deck_id, now).unwrap();
+            assert_eq!(counts, Some(expected), "deck {deck_id:?}");
+        }
+    }
+
+    #[test]
+    fn deck_due_counts_of_a_deck_without_a_node() -> Result<()> {
+        let mut col = Collection::new();
+        col.get_or_create_normal_deck("Other")?;
+        let now = TimestampSecs::now();
+        // the empty default deck is hidden, and 424242 does not exist
+        assert!(get_deck_in_tree(col.deck_tree(Some(now))?, DeckId(1)).is_none());
+        assert_eq!(col.deck_due_counts(DeckId(1), now)?, None);
+        assert_eq!(col.deck_due_counts(DeckId(424_242), now)?, None);
+        Ok(())
+    }
 
     #[test]
     fn wellformed() -> Result<()> {
@@ -475,6 +609,7 @@ mod test {
         assert_eq!(parent.new_count, 6);
         assert_eq!(parent.total_including_children, 8);
         assert_eq!(parent.total_in_deck, 2);
+        assert_due_counts_match_tree(&mut col, TimestampSecs::now());
 
         Ok(())
     }
@@ -543,6 +678,7 @@ mod test {
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
         assert_eq!(tree.children[0].review_uncapped, 1);
+        assert_due_counts_match_tree(&mut col, timing.now);
         Ok(())
     }
 
@@ -673,6 +809,7 @@ mod test {
         assert_eq!(parent_node.review_count, 2);
         assert_eq!(source_node.review_count, 1);
         assert_eq!(filtered_node.review_count, 1);
+        assert_due_counts_match_tree(&mut col, timing.now);
         Ok(())
     }
 
@@ -777,6 +914,7 @@ mod test {
         let second = get_deck_in_tree(tree, second_deck.id).unwrap();
         assert_eq!(first.review_count, 1);
         assert_eq!(second.review_count, 1);
+        assert_due_counts_match_tree(&mut col, timing.now);
 
         // without scores, no FSRS-7 due counts stand in
         col.clear_rwkv_deck_count_scores();

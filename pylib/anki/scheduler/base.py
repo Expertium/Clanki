@@ -20,6 +20,7 @@ CustomStudyDefaults = scheduler_pb2.CustomStudyDefaultsResponse
 ScheduleCardsAsNew = scheduler_pb2.ScheduleCardsAsNewRequest
 ScheduleCardsAsNewDefaults = scheduler_pb2.ScheduleCardsAsNewDefaultsResponse
 FilteredDeckForUpdate = decks_pb2.FilteredDeckForUpdate
+DeckDueCounts = decks_pb2.DeckDueCountsResponse
 RepositionDefaults = scheduler_pb2.RepositionDefaultsResponse
 
 from collections.abc import Sequence
@@ -80,6 +81,13 @@ class SchedulerBase(DeprecatedNamesMixin):
         if top_deck_id:
             return self.col.decks.find_deck_in_tree(tree, top_deck_id)
         return tree
+
+    def deck_due_counts(self, deck_id: DeckId) -> DeckDueCounts | None:
+        """The new, learning and review counts of the deck's node in
+        deck_due_tree(), or None if the tree has no node for the deck.
+        Much cheaper than building the tree."""
+        counts = self.col._backend.deck_due_counts(deck_id=deck_id, now=int_time())
+        return counts if counts.found else None
 
     # Deck finished state & custom study
     ##########################################################################

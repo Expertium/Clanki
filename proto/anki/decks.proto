@@ -37,6 +37,7 @@ service DecksService {
   rpc FilteredDeckOrderLabels(generic.Empty) returns (generic.StringList);
   rpc SetCurrentDeck(DeckId) returns (collection.OpChanges);
   rpc GetCurrentDeck(generic.Empty) returns (Deck);
+  rpc DeckDueCounts(DeckDueCountsRequest) returns (DeckDueCountsResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -152,6 +153,22 @@ message AddOrUpdateDeckLegacyRequest {
 message DeckTreeRequest {
   // if non-zero, counts for the provided timestamp will be included
   int64 now = 1;
+}
+
+message DeckDueCountsRequest {
+  int64 deck_id = 1;
+  // the timestamp the counts are for, like a non-zero DeckTreeRequest.now
+  int64 now = 2;
+}
+
+// The new, learning and review counts of the deck's node in DeckTree(now),
+// computed without building the tree.
+message DeckDueCountsResponse {
+  // false if DeckTree has no node for the deck; the counts are then 0
+  bool found = 1;
+  uint32 new_count = 2;
+  uint32 learn_count = 3;
+  uint32 review_count = 4;
 }
 
 message DeckTreeNode {

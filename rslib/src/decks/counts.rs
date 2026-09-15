@@ -13,7 +13,7 @@ use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct DueCounts {
     pub new: u32,
     pub review: u32,

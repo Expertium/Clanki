@@ -6,11 +6,12 @@ use std::collections::HashSet;
 use std::iter;
 
 use prost::Message;
-use rusqlite::named_params;
 use rusqlite::params;
 use rusqlite::Row;
+use rusqlite::Statement;
 use unicase::UniCase;
 
+use super::ids_to_string;
 use super::SqliteStorage;
 use crate::card::CardQueue;
 use crate::decks::immediate_parent_name;
@@ -40,26 +41,14 @@ fn row_to_deck(row: &Row) -> Result<Deck> {
     })
 }
 
-fn row_to_due_counts(row: &Row) -> Result<(DeckId, DueCounts)> {
-    let deck_id = row.get(0)?;
-    let new = row.get(1)?;
-    let review = row.get(2)?;
-    let interday_learning: u32 = row.get(3)?;
-    let intraday_learning: u32 = row.get(4)?;
-    let total_cards: u32 = row.get(5)?;
-    // used as-is in v1/v2; recalculated in v3 after limits are applied
-    let learning = intraday_learning + interday_learning;
-    Ok((
-        deck_id,
-        DueCounts {
-            new,
-            review,
-            learning,
-            intraday_learning,
-            interday_learning,
-            total_cards,
-        },
-    ))
+/// One of the counts in [DueCounts].
+type CountField = fn(&mut DueCounts) -> &mut u32;
+
+/// The number of cards of `deck` and `queue` whose due value passes
+/// `stmt`'s comparison with `cutoff`. A range seek in the (did, queue, due)
+/// index, so it steps only over the due cards.
+fn due_cards(stmt: &mut Statement, deck: DeckId, queue: CardQueue, cutoff: u32) -> Result<u32> {
+    Ok(stmt.query_row(params![deck, queue as i8, cutoff], |row| row.get(0))?)
 }
 
 impl SqliteStorage {
@@ -292,27 +281,123 @@ impl SqliteStorage {
         Ok(decks)
     }
 
+    /// The due counts of every deck that has cards. One pass over the
+    /// (did, queue, due) index counts the cards of each deck and queue; for
+    /// the queues whose due value matters, a range seek then counts only the
+    /// due cards. Much cheaper than testing every card against every queue's
+    /// condition.
     pub(crate) fn due_counts(
         &self,
         day_cutoff: u32,
         learn_cutoff: u32,
     ) -> Result<HashMap<DeckId, DueCounts>> {
-        let params = named_params! {
-            ":new_queue": CardQueue::New as u8,
-            ":review_queue": CardQueue::Review as u8,
-            ":day_cutoff": day_cutoff,
-            ":learn_queue": CardQueue::Learn as u8,
-            ":learn_cutoff": learn_cutoff,
-            ":daylearn_queue": CardQueue::DayLearn as u8,
-            ":preview_queue": CardQueue::PreviewRepeat as u8,
+        const NEW: i64 = CardQueue::New as i64;
+        const LEARN: i64 = CardQueue::Learn as i64;
+        const REVIEW: i64 = CardQueue::Review as i64;
+        const DAY_LEARN: i64 = CardQueue::DayLearn as i64;
+        const PREVIEW: i64 = CardQueue::PreviewRepeat as i64;
+        let mut due_on_or_before = self.db.prepare_cached(
+            "select count() from cards where did = ?1 and queue = ?2 and due <= ?3",
+        )?;
+        let mut due_before = self.db.prepare_cached(
+            "select count() from cards where did = ?1 and queue = ?2 and due < ?3",
+        )?;
+        let mut groups = self
+            .db
+            .prepare_cached("select did, queue, count() from cards group by did, queue")?;
+        let mut rows = groups.query([])?;
+        let mut counts: HashMap<DeckId, DueCounts> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let did: DeckId = row.get(0)?;
+            let cards: u32 = row.get(2)?;
+            let deck = counts.entry(did).or_default();
+            deck.total_cards += cards;
+            // a queue that is not an integer counts towards the total only
+            match row.get_ref(1)?.as_i64().ok() {
+                Some(NEW) => deck.new = cards,
+                Some(REVIEW) => {
+                    deck.review =
+                        due_cards(&mut due_on_or_before, did, CardQueue::Review, day_cutoff)?
+                }
+                Some(DAY_LEARN) => {
+                    deck.interday_learning =
+                        due_cards(&mut due_on_or_before, did, CardQueue::DayLearn, day_cutoff)?
+                }
+                Some(LEARN) => {
+                    deck.intraday_learning +=
+                        due_cards(&mut due_before, did, CardQueue::Learn, learn_cutoff)?
+                }
+                Some(PREVIEW) => {
+                    deck.intraday_learning += due_cards(
+                        &mut due_on_or_before,
+                        did,
+                        CardQueue::PreviewRepeat,
+                        learn_cutoff,
+                    )?
+                }
+                _ => {}
+            }
         }
-        .to_vec();
-        let sql = concat!(include_str!("due_counts.sql"), " group by did");
+        for deck in counts.values_mut() {
+            // used as-is in v1/v2; recalculated in v3 after limits are applied
+            deck.learning = deck.intraday_learning + deck.interday_learning;
+        }
+        Ok(counts)
+    }
 
-        self.db
-            .prepare_cached(sql)?
-            .query_and_then(&*params, row_to_due_counts)?
-            .collect()
+    /// The due counts of the given decks, as `due_counts()` has them, except
+    /// that each deck's new count stops at its cap and `total_cards` is not
+    /// counted. Cheap: every count is a range seek per deck in the
+    /// (did, queue, due) index, which visits only the cards it counts.
+    pub(crate) fn capped_due_counts(
+        &self,
+        decks_and_new_caps: &[(DeckId, u32)],
+        day_cutoff: u32,
+        learn_cutoff: u32,
+    ) -> Result<HashMap<DeckId, DueCounts>> {
+        let mut counts: HashMap<DeckId, DueCounts> = decks_and_new_caps
+            .iter()
+            .map(|&(did, _)| (did, DueCounts::default()))
+            .collect();
+        let mut deck_ids = String::new();
+        ids_to_string(&mut deck_ids, decks_and_new_caps.iter().map(|(did, _)| did));
+        let due_queues: [(CardQueue, &str, u32, CountField); 4] = [
+            (CardQueue::Review, "<=", day_cutoff, |c| &mut c.review),
+            (CardQueue::DayLearn, "<=", day_cutoff, |c| {
+                &mut c.interday_learning
+            }),
+            (CardQueue::Learn, "<", learn_cutoff, |c| {
+                &mut c.intraday_learning
+            }),
+            (CardQueue::PreviewRepeat, "<=", learn_cutoff, |c| {
+                &mut c.intraday_learning
+            }),
+        ];
+        for (queue, comparison, cutoff, field) in due_queues {
+            let sql = format!(
+                "select did, count() from cards where did in {deck_ids} \
+                 and queue = ? and due {comparison} ? group by did"
+            );
+            let mut stmt = self.db.prepare(&sql)?;
+            let mut rows = stmt.query(params![queue as i8, cutoff])?;
+            while let Some(row) = rows.next()? {
+                if let Some(deck) = counts.get_mut(&row.get::<_, DeckId>(0)?) {
+                    *field(deck) += row.get::<_, u32>(1)?;
+                }
+            }
+        }
+        let mut new_cards = self.db.prepare_cached(
+            "select count() from (select 1 from cards where did = ? and queue = ? limit ?)",
+        )?;
+        for &(did, cap) in decks_and_new_caps {
+            let deck = counts.get_mut(&did).unwrap();
+            deck.new =
+                new_cards.query_row(params![did, CardQueue::New as i8, cap], |row| row.get(0))?;
+        }
+        for deck in counts.values_mut() {
+            deck.learning = deck.intraday_learning + deck.interday_learning;
+        }
+        Ok(counts)
     }
 
     /// Decks referenced by cards but missing.
@@ -425,5 +510,222 @@ impl SqliteStorage {
         let json = serde_json::to_string(&decks)?;
         self.db.execute("update col set decks = ?", [json])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use rand::rngs::StdRng;
+    use rand::Rng;
+    use rand::SeedableRng;
+    use rusqlite::named_params;
+
+    use super::*;
+    use crate::card::Card;
+    use crate::collection::Collection;
+    use crate::config::BoolKey;
+    use crate::deckconfig::DeckConfig;
+    use crate::decks::tree::test::assert_due_counts_match_tree;
+    use crate::decks::NormalDeckDayLimit;
+
+    const DAY_CUTOFF: u32 = 100;
+    const LEARN_CUTOFF: u32 = 1_700_000_000;
+
+    type Counts = (u32, u32, u32, u32, u32, u32);
+
+    /// The due counts exactly as the original one-pass query computed them.
+    fn reference_due_counts(storage: &SqliteStorage) -> HashMap<DeckId, Counts> {
+        storage
+            .db
+            .prepare(
+                "SELECT did, sum(queue = :new_queue),
+                   sum(queue = :review_queue AND due <= :day_cutoff),
+                   sum(queue = :daylearn_queue AND due <= :day_cutoff),
+                   sum((queue = :learn_queue AND due < :learn_cutoff)
+                       OR (queue = :preview_queue AND due <= :learn_cutoff)),
+                   COUNT(1)
+                 FROM cards GROUP BY did",
+            )
+            .unwrap()
+            .query_and_then(
+                named_params! {
+                    ":new_queue": CardQueue::New as u8,
+                    ":review_queue": CardQueue::Review as u8,
+                    ":day_cutoff": DAY_CUTOFF,
+                    ":learn_queue": CardQueue::Learn as u8,
+                    ":learn_cutoff": LEARN_CUTOFF,
+                    ":daylearn_queue": CardQueue::DayLearn as u8,
+                    ":preview_queue": CardQueue::PreviewRepeat as u8,
+                },
+                |row| -> Result<_> {
+                    let interday: u32 = row.get(3)?;
+                    let intraday: u32 = row.get(4)?;
+                    Ok((
+                        row.get(0)?,
+                        (
+                            row.get(1)?,
+                            row.get(2)?,
+                            interday + intraday,
+                            intraday,
+                            interday,
+                            row.get(5)?,
+                        ),
+                    ))
+                },
+            )
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap()
+    }
+
+    /// `count` random cards of every queue in the given decks, due around the
+    /// cutoffs, and a few of them moved to a queue that does not exist.
+    pub(crate) fn add_cards_around_cutoffs(
+        col: &mut Collection,
+        decks: &[DeckId],
+        day_cutoff: u32,
+        learn_cutoff: u32,
+        seed: u64,
+        count: usize,
+    ) {
+        let queues = [
+            CardQueue::New,
+            CardQueue::Learn,
+            CardQueue::Review,
+            CardQueue::DayLearn,
+            CardQueue::PreviewRepeat,
+            CardQueue::Suspended,
+            CardQueue::SchedBuried,
+            CardQueue::UserBuried,
+        ];
+        let mut rng = StdRng::seed_from_u64(seed);
+        for _ in 0..count {
+            let queue = queues[rng.random_range(0..queues.len())];
+            let near = if rng.random_bool(0.5) {
+                learn_cutoff
+            } else {
+                day_cutoff
+            };
+            let due = match queue {
+                CardQueue::Learn | CardQueue::PreviewRepeat => learn_cutoff as i32,
+                CardQueue::Review | CardQueue::DayLearn => day_cutoff as i32,
+                CardQueue::New => 0,
+                _ => near as i32,
+            } + rng.random_range(-3..=3);
+            let mut card = Card {
+                deck_id: decks[rng.random_range(0..decks.len())],
+                queue,
+                due,
+                ..Default::default()
+            };
+            col.storage.add_card(&mut card).unwrap();
+        }
+        // a few cards in a queue that does not exist
+        col.storage
+            .db
+            .execute_batch("UPDATE cards SET queue = 9 WHERE id % 97 = 0")
+            .unwrap();
+    }
+
+    #[test]
+    fn deck_due_counts_match_the_deck_tree_under_random_limits() {
+        let mut col = Collection::new();
+        let timing = col.timing_today().unwrap();
+        let today = timing.days_elapsed;
+        let learn_cutoff = timing.now.0 as u32 + col.learn_ahead_secs();
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut configs = vec![];
+        for (new, review) in [(4, 9), (25, 60), (0, 30), (9999, 9999)] {
+            let mut conf = DeckConfig::default();
+            conf.inner.new_per_day = new;
+            conf.inner.reviews_per_day = review;
+            col.add_or_update_deck_config(&mut conf).unwrap();
+            configs.push(conf.id);
+        }
+        let mut decks = vec![DeckId(1)];
+        for name in ["A", "A::B", "A::B::C", "A::D", "E", "E::F", "E::F::G"] {
+            let mut deck = col.get_or_create_normal_deck(name).unwrap();
+            let normal = deck.normal_mut().unwrap();
+            normal.config_id = configs[rng.random_range(0..configs.len())].0;
+            if rng.random_bool(0.3) {
+                normal.new_limit_today = Some(NormalDeckDayLimit {
+                    limit: rng.random_range(0..10),
+                    today,
+                });
+            }
+            if rng.random_bool(0.3) {
+                normal.review_limit_today = Some(NormalDeckDayLimit {
+                    limit: rng.random_range(0..40),
+                    today,
+                });
+            }
+            deck.common.last_day_studied = today;
+            deck.common.new_studied = rng.random_range(-3..5);
+            deck.common.review_studied = rng.random_range(-5..20);
+            col.add_or_update_deck(&mut deck).unwrap();
+            decks.push(deck.id);
+        }
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("A::Filtered");
+        col.add_or_update_deck(&mut filtered).unwrap();
+        decks.push(filtered.id);
+        // E::F::G keeps no cards
+        decks.remove(7);
+
+        for (seed, count) in [(1, 12), (2, 60), (3, 2500)] {
+            add_cards_around_cutoffs(&mut col, &decks, today, learn_cutoff, seed, count);
+            for (all_parent_limits, new_ignores_review_limit) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                col.set_config_bool(BoolKey::ApplyAllParentLimits, all_parent_limits, false)
+                    .unwrap();
+                col.set_config_bool(
+                    BoolKey::NewCardsIgnoreReviewLimit,
+                    new_ignores_review_limit,
+                    false,
+                )
+                .unwrap();
+                assert_due_counts_match_tree(&mut col, timing.now);
+            }
+        }
+    }
+
+    #[test]
+    fn due_counts_match_the_one_pass_query() {
+        let mut col = Collection::new();
+        let mut decks = vec![DeckId(1), DeckId(424_242)]; // default + missing deck
+        for name in ["A", "A::B", "A::B::C", "D"] {
+            decks.push(col.get_or_create_normal_deck(name).unwrap().id);
+        }
+        for (seed, count) in [(0, 6), (1, 40), (2, 3000)] {
+            add_cards_around_cutoffs(&mut col, &decks, DAY_CUTOFF, LEARN_CUTOFF, seed, count);
+            let counts: HashMap<DeckId, Counts> = col
+                .storage
+                .due_counts(DAY_CUTOFF, LEARN_CUTOFF)
+                .unwrap()
+                .into_iter()
+                .map(|(did, c)| {
+                    (
+                        did,
+                        (
+                            c.new,
+                            c.review,
+                            c.learning,
+                            c.intraday_learning,
+                            c.interday_learning,
+                            c.total_cards,
+                        ),
+                    )
+                })
+                .collect();
+            assert_eq!(counts, reference_due_counts(&col.storage));
+        }
+        assert_eq!(
+            col.storage
+                .due_counts(DAY_CUTOFF, LEARN_CUTOFF)
+                .unwrap()
+                .len(),
+            decks.len()
+        );
     }
 }

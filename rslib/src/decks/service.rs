@@ -70,6 +70,15 @@ impl crate::services::DecksService for Collection {
         self.deck_tree(now)
     }
 
+    fn deck_due_counts(
+        &mut self,
+        input: anki_proto::decks::DeckDueCountsRequest,
+    ) -> error::Result<anki_proto::decks::DeckDueCountsResponse> {
+        Ok(self
+            .deck_due_counts(DeckId(input.deck_id), TimestampSecs(input.now))?
+            .unwrap_or_default())
+    }
+
     fn deck_tree_legacy(&mut self) -> error::Result<generic::Json> {
         let tree = self.legacy_deck_tree()?;
         serde_json::to_vec(&tree)
