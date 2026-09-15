@@ -711,6 +711,13 @@ impl RwkvInference {
         self.inner.card_curve(card_id, &elapsed_days)
     }
 
+    /// (the ids of `card_ids` with a stored curve, the curves packed), for
+    /// Advance and Postpone (spec sched.advance-postpone-algorithm).
+    fn card_curve_weights(&self, py: Python<'_>, card_ids: Vec<i64>) -> (Vec<i64>, Py<PyBytes>) {
+        let (ids, curves) = self.inner.card_curve_weights(&card_ids);
+        (ids, PyBytes::new(py, &curves).unbind())
+    }
+
     fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.inner.restore_state(&state.inner)
     }

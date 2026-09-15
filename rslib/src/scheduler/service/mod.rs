@@ -63,6 +63,7 @@ use crate::collection::RwkvStatsGraphScoreEntry;
 use crate::deckconfig::effective_fsrs7_params;
 use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
+use crate::scheduler::advance_postpone::AdvancePostponeRequest;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
@@ -245,6 +246,31 @@ impl crate::services::SchedulerService for Collection {
         let days = input.days;
         let cids = input.card_ids.into_newtype(CardId);
         self.set_due_date(&cids, &days, config).map(Into::into)
+    }
+
+    fn advance_postpone_candidates(
+        &mut self,
+        input: scheduler::AdvancePostponeRequest,
+    ) -> Result<scheduler::AdvancePostponeCandidatesResponse> {
+        let request = AdvancePostponeRequest::try_from(input)?;
+        self.advance_postpone_candidates(request.mode, &request.scope)
+            .map(Into::into)
+    }
+
+    fn preview_advance_postpone(
+        &mut self,
+        input: scheduler::AdvancePostponeRequest,
+    ) -> Result<scheduler::AdvancePostponePreview> {
+        let request = AdvancePostponeRequest::try_from(input)?;
+        self.preview_advance_postpone(&request).map(Into::into)
+    }
+
+    fn advance_postpone(
+        &mut self,
+        input: scheduler::AdvancePostponeRequest,
+    ) -> Result<scheduler::AdvancePostponeResponse> {
+        let request = AdvancePostponeRequest::try_from(input)?;
+        self.advance_postpone(&request).map(Into::into)
     }
 
     fn grade_now(

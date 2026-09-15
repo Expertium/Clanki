@@ -22,6 +22,10 @@ ScheduleCardsAsNewDefaults = scheduler_pb2.ScheduleCardsAsNewDefaultsResponse
 FilteredDeckForUpdate = decks_pb2.FilteredDeckForUpdate
 DeckDueCounts = decks_pb2.DeckDueCountsResponse
 RepositionDefaults = scheduler_pb2.RepositionDefaultsResponse
+AdvancePostponeRequest = scheduler_pb2.AdvancePostponeRequest
+AdvancePostponeCandidates = scheduler_pb2.AdvancePostponeCandidatesResponse
+AdvancePostponePreview = scheduler_pb2.AdvancePostponePreview
+AdvancePostponeResponse = scheduler_pb2.AdvancePostponeResponse
 
 from collections.abc import Sequence
 from typing import overload
@@ -230,6 +234,44 @@ class SchedulerBase(DeprecatedNamesMixin):
             # this value is optional; the auto-generated typing is wrong
             config_key=key,  # type: ignore
         )
+
+    # Advance and Postpone
+    ##########################################################################
+
+    def advance_postpone_candidates(
+        self, request: AdvancePostponeRequest
+    ) -> AdvancePostponeCandidates:
+        """The review cards of the request's scope that could move, and
+        whether the collection's algorithm needs their RWKV-Curve curves."""
+        output = AdvancePostponeCandidates()
+        output.ParseFromString(
+            self.col._backend.advance_postpone_candidates_raw(
+                request.SerializeToString()
+            )
+        )
+        return output
+
+    def preview_advance_postpone(
+        self, request: AdvancePostponeRequest
+    ) -> AdvancePostponePreview:
+        """The cards in the order Advance or Postpone takes them, with their
+        retrievability before and after the move."""
+        output = AdvancePostponePreview()
+        output.ParseFromString(
+            self.col._backend.preview_advance_postpone_raw(request.SerializeToString())
+        )
+        return output
+
+    def advance_postpone(
+        self, request: AdvancePostponeRequest
+    ) -> AdvancePostponeResponse:
+        """Advance or postpone every card the preview lists for `request`, as
+        one undoable step. Writes no review-log rows."""
+        output = AdvancePostponeResponse()
+        output.ParseFromString(
+            self.col._backend.advance_postpone_raw(request.SerializeToString())
+        )
+        return output
 
     def reset_cards(self, ids: list[CardId]) -> None:
         "Completely reset cards for export."

@@ -1045,6 +1045,12 @@ class RwkvStatefulReviewerBackend:
         card_curve = getattr(self._runtime, "card_curve", None)
         return card_curve(card_id, elapsed_days) if callable(card_curve) else None
 
+    def card_curve_weights(
+        self, card_ids: Sequence[int]
+    ) -> tuple[list[int], bytes] | None:
+        card_curve_weights = getattr(self._runtime, "card_curve_weights", None)
+        return card_curve_weights(card_ids) if callable(card_curve_weights) else None
+
     def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
         if self._runtime_owns_warm_up_state():
             runtime_snapshot = getattr(self._runtime, "warm_up_snapshot", None)
@@ -12549,6 +12555,77 @@ def reschedule_rwkv_review_cards(
         predicted=len(items),
         updated=updated if isinstance(updated, int) else 0,
     )
+
+
+def rwkv_stored_curves_for_cards(
+    mw: object,
+    card_ids: Sequence[int],
+    *,
+    wait_seconds: float = 5.0,
+) -> tuple[list[int], bytes] | None:
+    """The curves RWKV-Curve stored for `card_ids` at their last answered
+    review, packed for the collection: (the ids that have one, the curves).
+    Advance and Postpone order and preview cards by them (spec
+    sched.advance-postpone-algorithm). None while RWKV cannot give them (no
+    model, state not ready, busy longer than `wait_seconds`): every card then
+    counts as one without a curve; FSRS-7's values never stand in."""
+
+    if not card_ids:
+        return [], b""
+    if not warm_up_rwkv_state(mw):
+        return None
+    reviewer = SimpleNamespace(mw=mw)
+    with _reviewer_backend_state_lock:
+        backend = _reviewer_backend
+    state_token = _capture_reviewer_backend_prediction_state_token(
+        reviewer,
+        expected_backend=backend,
+    )
+    if state_token is None:
+        return None
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=state_token,
+        ) as current_backend:
+            if current_backend is not None:
+                card_curve_weights = getattr(
+                    current_backend, "card_curve_weights", None
+                )
+                if not callable(card_curve_weights):
+                    return None
+                result = card_curve_weights(list(card_ids))
+                if result is None:
+                    return None
+                ids, curves = result
+                return [int(card_id) for card_id in ids], bytes(curves)
+        # another RWKV task holds the state, or it changed
+        if not _reviewer_backend_prediction_state_token_is_current(state_token):
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
+def mutate_cards_keeping_rwkv_state(
+    mw: object,
+    card_ids: Sequence[int],
+    mutate: Callable[[], _T],
+) -> _T:
+    """Run `mutate`, a change of `card_ids` that is not a review (such as
+    Advance or Postpone), so that the resident RWKV state survives the study
+    queue change, as it does after the RWKV-Curve reschedule: due dates are
+    not part of RWKV's history."""
+
+    reconciliation = prepare_collection_mutation_reconciliation(
+        SimpleNamespace(mw=mw),
+        list(card_ids),
+    )
+    result = mutate()
+    changes = getattr(result, "changes", None)
+    if isinstance(changes, collection_pb2.OpChanges) and changes.study_queues:
+        record_collection_mutation_reconciliation(reconciliation)
+    return result
 
 
 def _restore_reviewer_backend_cache(
