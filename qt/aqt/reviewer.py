@@ -2049,6 +2049,15 @@ timeboxReps = 0;
         instead of the buttons and ask again, backing off to once a second.
         FSRS intervals never stand in (spec sched.rwkv-curve-buttons-wait)."""
         assert self.card is not None
+        if not aqt.rwkv_scheduler.rwkv_model_available():
+            # it would wait forever: say why instead (spec
+            # sched.rwkv-no-model-error)
+            notice = (
+                "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
+                % html.escape(tr.qt_misc_rwkv_model_not_found())
+            )
+            self.bottom.web.eval(f"showAnswer({json.dumps(notice)});")
+            return
         delay = getattr(self, "_rwkv_intervals_retry_ms", 0)
         if delay == 0:
             notice = (

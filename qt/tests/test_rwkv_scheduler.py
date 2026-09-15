@@ -9884,6 +9884,56 @@ def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
     assert rwkv_scheduler.rwkv_collection_active(reviewer)
 
 
+# Pins spec/scheduling.md#sched.rwkv-no-model-error
+def test_startup_without_a_model_warns_instead_of_offering_a_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda reviewer: rwkv_scheduler._RwkvCollectionConfigState(True, False),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: False)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_state_cache_loading",
+        lambda mw, loading: events.append(f"loading={loading}"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_show_rwkv_model_missing", lambda mw: events.append("warn")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache_with_progress",
+        lambda *args, **kwargs: pytest.fail("no state to load without a model"),
+    )
+
+    rwkv_scheduler.finish_rwkv_state_cache_startup(SimpleNamespace())
+
+    assert events == ["loading=False", "warn"]
+
+
+# Pins spec/scheduling.md#sched.rwkv-no-model-error
+def test_rwkv_instant_card_info_says_the_model_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_reviewer_backend(None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: False
+    )
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    rows = rwkv_card_info_rows(reviewer=reviewer, card=card, fallback_source="FSRS")
+
+    from aqt.utils import tr
+
+    assert rows == [("RWKV computed R", tr.qt_misc_rwkv_model_not_found())]
+
+
 # Pins spec/ui.md#ui.stats-one-algorithm
 def test_rwkv_curve_collection_active_reads_the_algorithm() -> None:
     def reviewer(algorithm: str | None) -> SimpleNamespace:

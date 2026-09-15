@@ -77,6 +77,9 @@ qt-misc-layout-horizontal-enabled = Horizontal layout enabled
 qt-misc-rwkv-filtered-deck-preparation-failed = RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt.
 # Shown instead of the answer buttons until RWKV-Curve has calculated the card's intervals.
 qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
+# RWKV cannot run because its model file is missing or does not load.
+qt-misc-rwkv-model-not-found = RWKV model not found
+qt-misc-rwkv-model-missing = The RWKV model file is missing or does not load, so RWKV cannot schedule your cards. Reinstall Clanki, or choose FSRS-7 as the algorithm in deck options (Advanced mode).
 
 ## deprecated- these strings will be removed in the future, and do not need
 ## to be translated

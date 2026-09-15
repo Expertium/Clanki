@@ -740,8 +740,9 @@ class TestCardStats:
         output = CardStatsResponse()
         output.ParseFromString(raw_output)
 
+        # no model: an error instead of a wait (spec sched.rwkv-no-model-error)
         assert [(row.label, row.value) for row in output.extra_rows] == [
-            ("RWKV computed R", "Calculating…"),
+            ("RWKV computed R", "RWKV model not found"),
         ]
 
     def test_card_info_hook_can_append_rows(
