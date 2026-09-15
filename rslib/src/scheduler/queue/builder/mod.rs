@@ -45,6 +45,22 @@ pub(crate) struct DueCard {
     pub reps: u32,
 }
 
+impl DueCard {
+    /// The entry `for_each_due_card_in_active_decks` makes of the card's row.
+    pub(crate) fn from_card(card: &Card, kind: DueCardKind) -> Self {
+        DueCard {
+            id: card.id,
+            note_id: card.note_id,
+            mtime: card.mtime,
+            due: card.due,
+            current_deck_id: card.deck_id,
+            original_deck_id: card.original_deck_id,
+            kind,
+            reps: card.reps,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DueCardKind {
     Review,

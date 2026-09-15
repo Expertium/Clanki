@@ -641,12 +641,11 @@ fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
 /// is overdue. Descending retrievability negates the key.
 pub(crate) fn rwkv_review_order_keys(
     col: &mut Collection,
-    card_ids: &[CardId],
+    mut cards: Vec<Card>,
     timing: SchedTimingToday,
     order: ReviewCardOrder,
 ) -> Result<HashMap<CardId, f32>> {
     let curve_scores = col.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, None);
-    let mut cards = col.all_cards_for_ids(card_ids, false)?;
     col.populate_rwkv_last_review_times(&mut cards)?;
     let without_card_target: Vec<_> = cards
         .iter()

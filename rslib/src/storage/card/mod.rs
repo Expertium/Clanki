@@ -330,6 +330,32 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         Ok(())
     }
 
+    /// Call func() with the full row of each card that
+    /// `for_each_due_card_in_active_decks` visits, in no particular order.
+    pub(crate) fn for_each_due_card_row_in_active_decks<F>(
+        &self,
+        timing: SchedTimingToday,
+        kind: DueCardKind,
+        mut func: F,
+    ) -> Result<()>
+    where
+        F: FnMut(Card) -> Result<()>,
+    {
+        let mut stmt = self.db.prepare_cached(concat!(
+            include_str!("get_card.sql"),
+            " where did in (select id from active_decks) and (queue = ? and due <= ?)"
+        ))?;
+        let queue = match kind {
+            DueCardKind::Review => CardQueue::Review,
+            DueCardKind::Learning => CardQueue::DayLearn,
+        };
+        let mut rows = stmt.query(params![queue as i8, timing.days_elapsed])?;
+        while let Some(row) = rows.next()? {
+            func(row_to_card(row)?)?;
+        }
+        Ok(())
+    }
+
     /// Call func() for each requested review card in the active decks,
     /// including cards whose due day is in the future.
     pub(crate) fn for_each_review_card_in_active_decks_with_ids<F>(
