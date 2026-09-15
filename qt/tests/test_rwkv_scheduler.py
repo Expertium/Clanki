@@ -68,7 +68,6 @@ from aqt.rwkv_srs_benchmark import (
 )
 
 
-
 @pytest.fixture(autouse=True)
 def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous = set_reviewer_backend(None)
@@ -3455,11 +3454,14 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
     assert diagnostics is not None
     assert diagnostics.retrievability == pytest.approx(0.55)
     assert diagnostics.retrievability_source == "RWKV"
-    assert rwkv_card_info_rows(
-        reviewer=reviewer,
-        card=card_b,
-        fallback_source="FSRS",
-    ) == []
+    assert (
+        rwkv_card_info_rows(
+            reviewer=reviewer,
+            card=card_b,
+            fallback_source="FSRS",
+        )
+        == []
+    )
     assert runtime.reviewed == [(1, 3)]
     assert runtime.queries == [
         (2, None, None),
@@ -9697,7 +9699,9 @@ def test_reviewer_rwkv_undo_marks_queue_scores_stale_without_dropping_patch_base
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
     rpc = _RwkvQueueScoreRpc()
     rpc.active_scores.update({1: 0.77, 2: 0.66})
-    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
+    reviewer = _rwkv_reviewer(
+        rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
     reviewer._answeredIds = [1]
     reviewer._rwkv_review_prediction = RwkvReviewerPrediction(
         card_id=1,
@@ -14816,7 +14820,9 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
-    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
+    reviewer = _rwkv_reviewer(
+        rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     scheduler = reviewer.mw.col.sched
     original_get_scheduling_states = scheduler.get_scheduling_states
@@ -14848,7 +14854,9 @@ def test_card_info_does_not_reinstall_score_after_answer_race(
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
-    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
+    reviewer = _rwkv_reviewer(
+        rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     original = rwkv_scheduler._queried_card_info_diagnostics
 
@@ -15097,7 +15105,9 @@ def test_card_info_refreshes_after_global_rwkv_state_changes() -> None:
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
     rpc.active_scores[1] = 0.67
-    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
+    reviewer = _rwkv_reviewer(
+        rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
 
     first_rows = rwkv_card_info_rows(
@@ -15201,7 +15211,12 @@ def test_card_info_restores_local_state_cache_before_query(
 
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     reviewer = _rwkv_cache_reviewer(
-        profile_folder=tmp_path, rows=rows, deck_config_overrides={"rwkvReviewEnabled": False, "rwkvReviewInstantOrderEnabled": True}
+        profile_folder=tmp_path,
+        rows=rows,
+        deck_config_overrides={
+            "rwkvReviewEnabled": False,
+            "rwkvReviewInstantOrderEnabled": True,
+        },
     )
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
@@ -15221,7 +15236,11 @@ def test_card_info_skips_rwkv_query_until_background_warmup_finishes() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer(historical_review_rows=[], rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
+    reviewer = _rwkv_reviewer(
+        historical_review_rows=[],
+        rwkv_review_enabled=False,
+        rwkv_review_instant_order_enabled=True,
+    )
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
 
     assert rwkv_card_info_rows(
@@ -15280,7 +15299,9 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
     )
 
     assert rwkv_card_info_rows(
-        reviewer=_rwkv_reviewer(rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True),
+        reviewer=_rwkv_reviewer(
+            rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+        ),
         card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
         fallback_source="FSRS",
     ) == [("RWKV computed R", "66%")]
@@ -18382,7 +18403,9 @@ def test_rwkv_card_info_curve_gives_the_recall_now(
     assert curve.current_recall == pytest.approx(0.975)
     # without the elapsed time there is no recall now
     assert (
-        rwkv_scheduler.rwkv_card_info_curve(object(), SimpleNamespace(id=42)).current_recall
+        rwkv_scheduler.rwkv_card_info_curve(
+            object(), SimpleNamespace(id=42)
+        ).current_recall
         is None
     )
 

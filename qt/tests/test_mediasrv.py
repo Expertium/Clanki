@@ -37,7 +37,6 @@ from aqt.mediasrv import (
 )
 
 
-
 def test_rwkv_raw_backend_mutation_scopes() -> None:
     from anki import image_occlusion_pb2, notes_pb2
 
@@ -612,7 +611,7 @@ class TestCardStats:
                 "id": 1,
                 "other": {
                     "jschoreels.fsrs": {
-                        "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
                     },
                 },
             },

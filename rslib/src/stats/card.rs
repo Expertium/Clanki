@@ -341,7 +341,10 @@ mod test {
         let stats = col.card_stats(cid)?;
         // the test collection's Default preset runs FSRS-7; Simple mode is
         // the default
-        assert_eq!(stats.scheduling_algorithm(), SchedulingAlgorithmProto::Fsrs7);
+        assert_eq!(
+            stats.scheduling_algorithm(),
+            SchedulingAlgorithmProto::Fsrs7
+        );
         assert!(!stats.advanced_ui);
 
         col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
