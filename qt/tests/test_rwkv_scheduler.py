@@ -4276,7 +4276,9 @@ def test_error_building_rwkv_curve_states_leaves_the_buttons_waiting() -> None:
         ) -> RwkvReviewPrediction:
             return RwkvReviewPrediction(
                 retrievability=0.62,
-                interval_overrides=RwkvIntervalOverride(again=1, hard=4, good=9, easy=18),
+                interval_overrides=RwkvIntervalOverride(
+                    again=1, hard=4, good=9, easy=18
+                ),
                 s90_overrides=RwkvIntervalOverride(again=2, hard=5, good=10, easy=19),
             )
 

@@ -1217,12 +1217,11 @@ pub(crate) mod test {
 
         // a sub-day interval goes to the intraday queue, in seconds, and the
         // passing answer keeps the card's lapse count
-        let states = col
-            .scheduling_states_with_intervals(
-                cid,
-                [Some(0.25), Some(0.4), Some(2.0), Some(3.0)],
-                [None; 4],
-            )?;
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [Some(0.25), Some(0.4), Some(2.0), Some(3.0)],
+            [None; 4],
+        )?;
         let CardState::Normal(NormalState::Relearning(again)) = states.again else {
             panic!("a sub-day Again should relearn");
         };
@@ -1275,9 +1274,7 @@ pub(crate) mod test {
         );
 
         // RWKV-Instant answers with FSRS states too
-        col.update_default_deck_config(|config| {
-            SchedulingAlgorithm::RwkvInstant.apply_to(config)
-        });
+        col.update_default_deck_config(|config| SchedulingAlgorithm::RwkvInstant.apply_to(config));
         let CardState::Normal(NormalState::Review(good)) = col.get_scheduling_states(cid)?.good
         else {
             panic!("expected a review state");
@@ -1295,8 +1292,7 @@ pub(crate) mod test {
     fn rwkv_curve_s90s_decide_the_young_leech_check() -> Result<()> {
         let intervals = [Some(0.3), Some(3.0), Some(8.0), Some(20.0)];
         // (FSRS-7 stability, RWKV-Curve's Again S90, leeched)
-        for (fsrs7_stability, rwkv_again_s90, leeched) in
-            [(2000.0, 5.0, true), (2.0, 30.0, false)]
+        for (fsrs7_stability, rwkv_again_s90, leeched) in [(2000.0, 5.0, true), (2.0, 30.0, false)]
         {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;

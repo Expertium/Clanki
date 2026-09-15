@@ -50,6 +50,19 @@ type RwkvWarmUpSnapshot = (
     Option<Py<PyBytes>>,
     Py<PyBytes>,
 );
+/// One `predict_many` output: retrievability, curve retrievability, current
+/// interval, current S90, answer intervals, answer S90s, button
+/// probabilities, current interval unrounded.
+type RwkvPredictionTuple = (
+    f32,
+    Option<f32>,
+    Option<u32>,
+    Option<f32>,
+    RwkvUnroundedIntervalTuple,
+    RwkvUnroundedIntervalTuple,
+    RwkvProbabilityTuple,
+    Option<f32>,
+);
 type RwkvWorkloadPointTuple = (u32, f32, f32, f32, u32);
 type RwkvWorkloadOutput = (f32, f32, Vec<RwkvWorkloadPointTuple>);
 
@@ -239,23 +252,9 @@ impl RwkvInference {
         ))
     }
 
-    /// The last element is the current interval unrounded, in days (spec
-    /// sched.rwkv-curve-reschedule).
-    fn predict_many(
-        &mut self,
-        requests: &Bound<'_, PyAny>,
-    ) -> PyResult<
-        Vec<(
-            f32,
-            Option<f32>,
-            Option<u32>,
-            Option<f32>,
-            RwkvUnroundedIntervalTuple,
-            RwkvUnroundedIntervalTuple,
-            RwkvProbabilityTuple,
-            Option<f32>,
-        )>,
-    > {
+    /// The last element of each output is the current interval unrounded,
+    /// in days (spec sched.rwkv-curve-reschedule).
+    fn predict_many(&mut self, requests: &Bound<'_, PyAny>) -> PyResult<Vec<RwkvPredictionTuple>> {
         let mut parsed_requests = Vec::new();
         for request in requests.try_iter()? {
             parsed_requests.push(parse_rwkv_prediction_request(&request?)?);

@@ -436,7 +436,8 @@ pub struct ReviewPredictionOutput {
     pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
-    /// `current_interval` unrounded, in days (spec sched.rwkv-curve-reschedule).
+    /// `current_interval` unrounded, in days (spec
+    /// sched.rwkv-curve-reschedule).
     pub current_interval_unrounded: Option<f32>,
     /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
     /// sched.rwkv-curve-s90).
@@ -455,7 +456,8 @@ pub struct ReviewPredictionOutput {
 pub struct ReviewIntervalPrediction {
     pub retrievability: f32,
     pub current_interval: Option<u32>,
-    /// `current_interval` unrounded, in days (spec sched.rwkv-curve-reschedule).
+    /// `current_interval` unrounded, in days (spec
+    /// sched.rwkv-curve-reschedule).
     pub current_interval_unrounded: Option<f32>,
     /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
     /// sched.rwkv-curve-s90).

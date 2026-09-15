@@ -272,7 +272,10 @@ mod test {
                 })
                 .collect::<HashSet<_>>();
             assert!(days.len() > 3, "{days:?}");
-            assert!(days.iter().all(|day| (lower..=upper).contains(day)), "{days:?}");
+            assert!(
+                days.iter().all(|day| (lower..=upper).contains(day)),
+                "{days:?}"
+            );
         }
         Ok(())
     }
