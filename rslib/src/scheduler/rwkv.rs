@@ -1658,7 +1658,8 @@ mod test {
         assert_eq!(row.current_state_kind, "normal");
         assert_eq!(row.current_normal_state_kind, "new");
         assert_eq!(row.current_elapsed_days, Some(0));
-        assert_eq!(row.current_elapsed_seconds, Some(0));
+        // seconds since the card was created: a slow run can cross a second
+        assert!(matches!(row.current_elapsed_seconds, Some(0..=2)));
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
@@ -1775,7 +1776,8 @@ mod test {
         assert_eq!(new_row.current_state_kind, "normal");
         assert_eq!(new_row.current_normal_state_kind, "new");
         assert_eq!(new_row.current_elapsed_days, Some(0));
-        assert_eq!(new_row.current_elapsed_seconds, Some(0));
+        // seconds since the card was created: a slow run can cross a second
+        assert!(matches!(new_row.current_elapsed_seconds, Some(0..=2)));
 
         Ok(())
     }

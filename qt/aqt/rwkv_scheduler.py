@@ -298,7 +298,8 @@ class RwkvReviewPrediction:
     retrievability: float | None = None
     curve_retrievability: float | None = None
     current_interval: int | None = None
-    current_s90: int | None = None
+    # unrounded days, possibly under one (spec sched.rwkv-curve-s90)
+    current_s90: float | None = None
     interval_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     s90_overrides: RwkvIntervalOverride = RwkvIntervalOverride()
     button_probabilities: RwkvButtonProbabilities | None = None
@@ -1882,7 +1883,7 @@ class RwkvStatefulReviewerBackend:
             RwkvReviewPrediction(
                 retrievability=float(retrievability),
                 current_interval=int(current_interval) if current_interval else None,
-                current_s90=int(current_s90) if current_s90 else None,
+                current_s90=float(current_s90) if current_s90 else None,
             )
             for retrievability, current_interval, current_s90 in outputs
         ]
@@ -8183,7 +8184,7 @@ def apply_review_s90_overrides(
         if s90 is not None:
             _set_review_s90_if_present(
                 getattr(updated_states, rating),
-                _validated_interval(s90),
+                _validated_unrounded_interval(s90),
             )
     return updated_states
 
@@ -8222,7 +8223,7 @@ def apply_review_interval_overrides(
         if s90 is not None:
             _set_review_s90_if_present(
                 getattr(updated_states, rating),
-                _validated_interval(s90),
+                _validated_unrounded_interval(s90),
             )
 
     return updated_states
@@ -8244,14 +8245,14 @@ def _validate_prediction(prediction: RwkvReviewPrediction) -> None:
     if prediction.current_interval is not None:
         _validated_interval(prediction.current_interval)
     if prediction.current_s90 is not None:
-        _validated_interval(prediction.current_s90)
+        _validated_unrounded_interval(prediction.current_s90)
     for rating in _RWKV_RATING_FIELDS:
         interval = getattr(prediction.interval_overrides, rating)
         if interval is not None:
             _validated_unrounded_interval(interval)
         s90 = getattr(prediction.s90_overrides, rating)
         if s90 is not None:
-            _validated_interval(s90)
+            _validated_unrounded_interval(s90)
 
 
 def _store_reviewer_prediction(
@@ -8505,9 +8506,9 @@ def set_answer_rwkv_s90(
     set_answer_rwkv_metadata(answer, reviewer, card, ease)
 
 
-def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> int | None:
+def _s90_for_ease(overrides: RwkvIntervalOverride, ease: int) -> float | None:
     if 1 <= ease <= len(_RWKV_RATING_FIELDS):
-        return cast(int | None, getattr(overrides, _RWKV_RATING_FIELDS[ease - 1]))
+        return cast(float | None, getattr(overrides, _RWKV_RATING_FIELDS[ease - 1]))
     return None
 
 
@@ -22816,7 +22817,7 @@ def _set_review_interval_if_present(
 
 def _set_review_s90_if_present(
     state: SchedulingState,
-    s90: int,
+    s90: float,
 ) -> None:
     review = _review_state_for_interval_override(state)
     if review is None:
