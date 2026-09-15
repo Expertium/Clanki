@@ -22,6 +22,10 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The periodic backup (checked every 5 minutes) waits while you review, and
+  while an FSRS optimization, a reschedule, a sync or another task uses the
+  collection. Before, it could make an answer wait, with a "Processing..."
+  window.
 - With "Show only Again and Good answer buttons" on, the Hard and Easy keys
   (2 and 4) do nothing. Before, key 2 answered Good.
 - The review heatmap no longer counts the whole review history again after each

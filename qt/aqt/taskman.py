@@ -35,7 +35,22 @@ class TaskManager(QObject):
         self._collection_executor = ThreadPoolExecutor(max_workers=1)
         self._closures: list[Closure] = []
         self._closures_lock = Lock()
+        # collection tasks queued or running, plus web-page backend requests
+        self._collection_users = 0
+        self._collection_users_lock = Lock()
         qconnect(self._closures_pending, self._on_closures_pending)
+
+    def collection_busy(self) -> bool:
+        "True while a background task or a web page's backend request uses the collection."
+        return self._collection_users > 0
+
+    def collection_use_started(self) -> None:
+        with self._collection_users_lock:
+            self._collection_users += 1
+
+    def collection_use_finished(self, *_args: Any) -> None:
+        with self._collection_users_lock:
+            self._collection_users -= 1
 
     def run_on_main(self, closure: Closure) -> None:
         "Run the provided closure on the main thread."
@@ -77,12 +92,12 @@ class TaskManager(QObject):
         if args is None:
             args = {}
 
-        executor = (
-            self._collection_executor
-            if uses_collection
-            else self._no_collection_executor
-        )
-        fut = executor.submit(task, **args)
+        if uses_collection:
+            self.collection_use_started()
+            fut = self._collection_executor.submit(task, **args)
+            fut.add_done_callback(self.collection_use_finished)
+        else:
+            fut = self._no_collection_executor.submit(task, **args)
 
         if on_done is not None:
             fut.add_done_callback(

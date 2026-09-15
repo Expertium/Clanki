@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
+
+import pytest
 
 import aqt.errors
 import aqt.main
@@ -580,3 +584,59 @@ def test_outdated_fsrs7_preview_warning_text_limits_preset_list() -> None:
     assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS - 1}" in text
     assert f"- Preset {OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS}" not in text
     assert "...and 2 more" in text
+
+
+@pytest.mark.parametrize(
+    ("state", "busy", "backs_up"),
+    [
+        ("deckBrowser", False, True),
+        ("overview", False, True),
+        ("review", False, False),
+        ("deckBrowser", True, False),
+    ],
+)
+def test_periodic_backup_waits_for_reviews_and_other_collection_work(
+    state: str, busy: bool, backs_up: bool
+) -> None:
+    mw = AnkiQt.__new__(AnkiQt)
+    calls: list[bool] = []
+    mw.state = state  # type: ignore[assignment]
+    mw.taskman = SimpleNamespace(collection_busy=lambda: busy)  # type: ignore[assignment]
+
+    def create_backup_with_progress(user_initiated: bool) -> None:
+        calls.append(user_initiated)
+
+    mw._create_backup_with_progress = create_backup_with_progress  # type: ignore[method-assign]
+
+    AnkiQt.on_periodic_backup_timer(mw)
+
+    assert calls == ([False] if backs_up else [])
+
+
+def test_collection_busy_counts_queued_and_running_collection_tasks() -> None:
+    from aqt.taskman import TaskManager
+
+    mw = SimpleNamespace()
+    mw.weakref = lambda: mw
+    taskman = TaskManager(mw)  # type: ignore[arg-type]
+    release = threading.Event()
+
+    other = taskman.run_in_background(release.wait, uses_collection=False)
+    assert not taskman.collection_busy()
+    running = taskman.run_in_background(release.wait)
+    queued = taskman.run_in_background(lambda: None)
+    assert taskman.collection_busy()
+
+    release.set()
+    for future in (other, running, queued):
+        future.result(timeout=10)
+    # the count drops in the future's done callback, just after its result
+    deadline = time.monotonic() + 10
+    while taskman.collection_busy() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not taskman.collection_busy()
+
+    taskman.collection_use_started()
+    assert taskman.collection_busy()
+    taskman.collection_use_finished()
+    assert not taskman.collection_busy()
