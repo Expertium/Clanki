@@ -351,7 +351,12 @@ class ActivityReporter:
         cards = self._col.db.first(
             "SELECT count(), total(mod), total(did), total(due), total(queue) FROM cards"
         )
-        reviews = self._col.db.first("SELECT count(), max(id) FROM revlog")
+        # two queries: together SQLite reads every row (~60 ms on 1.3M
+        # reviews); apart, both are answered from the b-tree (<1 ms)
+        reviews = (
+            self._col.db.scalar("SELECT count() FROM revlog"),
+            self._col.db.scalar("SELECT max(id) FROM revlog"),
+        )
         dids = self._deck_ids(current_deck_only)
         return (
             self._today(),
@@ -359,7 +364,7 @@ class ActivityReporter:
             self._col.sched.today,
             None if dids is None else tuple(dids),
             tuple(cards),
-            tuple(reviews),
+            reviews,
         )
 
     def _offset(self) -> int:
