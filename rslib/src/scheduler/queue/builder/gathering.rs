@@ -18,8 +18,8 @@ use crate::decks::limits::LimitKind;
 use crate::prelude::*;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
-use crate::scheduler::rwkv::rwkv_relative_overdueness_keys;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
+use crate::scheduler::rwkv::rwkv_review_order_keys;
 use crate::scheduler::rwkv::rwkv_review_relative_overdueness;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
@@ -658,16 +658,12 @@ impl QueueBuilder {
         if self.limits.root_limit_reached(LimitKind::Review) {
             return Ok(());
         }
-        if self
-            .context
-            .sort_options
-            .rwkv_relative_overdueness_from_rwkv()
-        {
-            return self.gather_due_cards_by_rwkv_relative_overdueness(col, kind);
+        if self.context.sort_options.review_order_from_rwkv_keys() {
+            return self.gather_due_cards_by_rwkv_keys(col, kind);
         }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
-            self.context.sort_options.gather_review_order(),
+            self.context.sort_options.review_order,
             kind,
             self.context.fsrs,
             |card| {
@@ -687,11 +683,11 @@ impl QueueBuilder {
         )
     }
 
-    /// RWKV presets sorted by relative overdueness take RWKV's own measure
-    /// (spec sched.rwkv-relative-overdueness), not FSRS's: every due card of
-    /// `kind` is ranked by `rwkv_relative_overdueness_keys`, then the limits
-    /// apply in that order.
-    fn gather_due_cards_by_rwkv_relative_overdueness(
+    /// RWKV presets sorted by retrievability or relative overdueness take
+    /// RWKV's own measure (spec sched.rwkv-review-order), not FSRS's: every
+    /// due card of `kind` is ranked by `rwkv_review_order_keys`, then the
+    /// limits apply in that order.
+    fn gather_due_cards_by_rwkv_keys(
         &mut self,
         col: &mut Collection,
         kind: DueCardKind,
@@ -708,7 +704,12 @@ impl QueueBuilder {
             },
         )?;
         let card_ids: Vec<_> = due_cards.iter().map(|card| card.id).collect();
-        let keys = rwkv_relative_overdueness_keys(col, &card_ids, self.context.timing)?;
+        let keys = rwkv_review_order_keys(
+            col,
+            &card_ids,
+            self.context.timing,
+            self.context.sort_options.review_order,
+        )?;
         let mut with_key: Vec<_> = due_cards
             .into_iter()
             .map(|card| {

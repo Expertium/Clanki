@@ -20,6 +20,7 @@ use crate::card::CardType;
 use crate::card::FsrsMemoryState;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
+use crate::deckconfig::ReviewCardOrder;
 use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
@@ -627,17 +628,20 @@ fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
     }
 }
 
-/// The relative-overdueness sort key of due cards in RWKV presets (spec
-/// sched.rwkv-relative-overdueness): RWKV-Curve's retrievability over the
-/// card's target retention, the key RWKV-Instant ranks its scores by
-/// (`relative_overdueness`). A card the RWKV process has not scored today
-/// gets the value of the exponential curve through the interval RWKV
-/// scheduled, `target ^ (elapsed / interval - 1)`: 1 when the card is due
-/// exactly, less the more it is overdue. Lower keys come first.
-pub(crate) fn rwkv_relative_overdueness_keys(
+/// The sort key of due cards in RWKV presets whose review order is by
+/// retrievability or relative overdueness (spec sched.rwkv-review-order);
+/// lower keys come first. The retrievability is RWKV-Curve's score for today;
+/// a card the RWKV process has not scored gets the value of the exponential
+/// curve through the interval RWKV scheduled, `target ^ (elapsed /
+/// interval)`. Relative overdueness divides it by the card's target
+/// retention, the key RWKV-Instant ranks its scores by
+/// (`relative_overdueness`): 1 when the card is due exactly, less the more it
+/// is overdue. Descending retrievability negates the key.
+pub(crate) fn rwkv_review_order_keys(
     col: &mut Collection,
     card_ids: &[CardId],
     timing: SchedTimingToday,
+    order: ReviewCardOrder,
 ) -> Result<HashMap<CardId, f32>> {
     let curve_scores = col.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, None);
     let mut cards = col.all_cards_for_ids(card_ids, false)?;
@@ -656,17 +660,22 @@ pub(crate) fn rwkv_relative_overdueness_keys(
         else {
             continue;
         };
-        let key = match curve_scores
+        let retrievability = match curve_scores
             .as_ref()
             .and_then(|scores| scores.get(&card.id))
             .filter(|r| r.is_finite())
         {
-            Some(&retrievability) => relative_overdueness(retrievability, target),
+            Some(&retrievability) => retrievability,
             None => {
                 let elapsed_days = rwkv_elapsed_days_since_last_review(card, timing);
                 let interval_days = card.interval.max(1) as f32;
-                target.powf(elapsed_days / interval_days - 1.0)
+                target.powf(elapsed_days / interval_days)
             }
+        };
+        let key = match order {
+            ReviewCardOrder::RelativeOverdueness => relative_overdueness(retrievability, target),
+            ReviewCardOrder::RetrievabilityDescending => -retrievability,
+            _ => retrievability,
         };
         if key.is_finite() {
             keys.insert(card.id, key);

@@ -22,10 +22,12 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-- Under RWKV-Curve and RWKV-Instant, the review sort order "Relative
-  overdueness" now ranks cards by RWKV: RWKV-Curve's predicted recall
-  over the desired retention, or, for a card RWKV has not scored yet, how
-  far past its RWKV interval it is. Before, it used a broken FSRS formula.
+- Under RWKV-Curve and RWKV-Instant, the review sort orders
+  "Retrievability ascending/descending" and "Relative overdueness" now rank
+  cards by RWKV: RWKV-Curve's predicted recall (over the desired retention,
+  for relative overdueness), or, for a card RWKV has not scored yet, how far
+  into its RWKV interval it is. Before, relative overdueness used a broken
+  FSRS formula and the retrievability orders showed cards in due-day order.
 - Deck options: the Algorithm dropdown shows a short description under each
   algorithm, and its revert button restores RWKV-Curve (the new-preset
   default). The highlighted entry in any dropdown now opens on the current
