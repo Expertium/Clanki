@@ -1057,6 +1057,7 @@ fn add_final_preset_memorized(
     fallback_preset_name: &str,
     date: f32,
 ) {
+    let mut s90 = SimulatedS90::default();
     for card in cards {
         if !(card.stability.is_finite() && card.stability > 0.0) {
             continue;
@@ -1067,7 +1068,7 @@ fn add_final_preset_memorized(
         let point = preset_workload.entry(preset_name.to_string()).or_default();
         let retrievability = card.retention_on(date);
         point.memorized += retrievability;
-        point.weighted_memorized += retrievability * stability_weight(card.stability);
+        point.weighted_memorized += retrievability * stability_weight(s90.of(card));
     }
 }
 
@@ -1078,6 +1079,7 @@ fn preset_reviewless_workload_for_cards(
     date: f32,
 ) -> HashMap<String, PresetReviewlessWorkloadPoint> {
     let mut workload = HashMap::<String, PresetReviewlessWorkloadPoint>::new();
+    let mut s90 = SimulatedS90::default();
     for card in cards {
         if !(card.stability.is_finite() && card.stability > 0.0) {
             continue;
@@ -1088,13 +1090,76 @@ fn preset_reviewless_workload_for_cards(
         let point = workload.entry(preset_name.to_string()).or_default();
         let retrievability = card.retention_on(date);
         point.memorized += retrievability;
-        point.weighted_memorized += retrievability * stability_weight(card.stability);
+        point.weighted_memorized += retrievability * stability_weight(s90.of(card));
     }
     workload
 }
 
-fn stability_weight(stability: f32) -> f32 {
-    1.0 - ((-8.0 / 365.0) * stability).exp()
+/// The weight of a card's S90 in the R*f(S) graph.
+fn stability_weight(s90: f32) -> f32 {
+    1.0 - ((-8.0 / 365.0) * s90).exp()
+}
+
+/// The S90 of simulated cards, for the R*f(S) weights (spec
+/// deck-options.simulator-fsrs-only: every stability the graphs use is the
+/// S90). A simulated FSRS-7 card has one stability (difficulty 5, fast
+/// stability equal to it), and its S90 grows smoothly with it: the S90 is
+/// solved exactly on a log grid once per parameter set and interpolated in
+/// log space between grid points. The weight it gives is within 0.00005 of
+/// the exact S90's weight (the S90 within 0.2% from one day up); solving it
+/// for every card of every desired-retention point of a sweep would take
+/// seconds.
+#[derive(Default)]
+struct SimulatedS90 {
+    grids: HashMap<*const Vec<f32>, Option<S90Grid>>,
+}
+
+impl SimulatedS90 {
+    fn of(&mut self, card: &fsrs::Card) -> f32 {
+        self.grids
+            .entry(Arc::as_ptr(&card.parameters))
+            .or_insert_with(|| S90Grid::new(&card.parameters))
+            .as_ref()
+            .map_or(card.stability, |grid| grid.s90(card.stability))
+    }
+}
+
+struct S90Grid {
+    log_s90: Vec<f32>,
+}
+
+impl S90Grid {
+    const POINTS: usize = 400;
+    const LOW: f32 = 0.0001;
+    const HIGH: f32 = 36_500.0;
+
+    fn step() -> f32 {
+        (Self::HIGH.ln() - Self::LOW.ln()) / (Self::POINTS - 1) as f32
+    }
+
+    fn new(params: &[f32]) -> Option<Self> {
+        let fsrs = FSRS::new(params).ok()?;
+        let log_s90 = (0..Self::POINTS)
+            .map(|i| {
+                let stability = (Self::LOW.ln() + Self::step() * i as f32).exp();
+                let state = fsrs::MemoryState {
+                    stability,
+                    difficulty: 5.0,
+                    stability_fast: stability,
+                };
+                fsrs.interval_at_retrievability(state, 0.9).ln()
+            })
+            .collect();
+        Some(Self { log_s90 })
+    }
+
+    fn s90(&self, stability: f32) -> f32 {
+        let position =
+            (stability.clamp(Self::LOW, Self::HIGH).ln() - Self::LOW.ln()) / Self::step();
+        let index = (position.floor() as usize).min(Self::POINTS - 2);
+        let fraction = position - index as f32;
+        (self.log_s90[index] + (self.log_s90[index + 1] - self.log_s90[index]) * fraction).exp()
+    }
 }
 
 fn simulation_end_date(learn_span: usize) -> f32 {
@@ -1102,10 +1167,11 @@ fn simulation_end_date(learn_span: usize) -> f32 {
 }
 
 fn weighted_memorized_for_cards(cards: &[fsrs::Card], date: f32) -> f32 {
+    let mut s90 = SimulatedS90::default();
     cards
         .iter()
         .filter(|card| card.stability.is_finite() && card.stability > 0.0)
-        .map(|card| card.retention_on(date) * stability_weight(card.stability))
+        .map(|card| card.retention_on(date) * stability_weight(s90.of(card)))
         .sum()
 }
 
@@ -1286,17 +1352,59 @@ mod tests {
             cards: vec![high_stability, low_stability, never_learned],
         };
 
+        // each card is weighted by its S90, not by the simulator's internal
+        // stability (spec deck-options.simulator-fsrs-only)
+        let fsrs = fsrs::FSRS::new(&DEFAULT_PARAMETERS).unwrap();
+        let exact_s90 = |stability: f32| {
+            fsrs.interval_at_retrievability(
+                fsrs::MemoryState {
+                    stability,
+                    difficulty: 5.0,
+                    stability_fast: stability,
+                },
+                0.9,
+            )
+        };
         let end_date = 9.0;
         let expected = result.cards[0].retention_on(end_date)
-            * super::stability_weight(result.cards[0].stability)
+            * super::stability_weight(exact_s90(result.cards[0].stability))
             + result.cards[1].retention_on(end_date)
-                * super::stability_weight(result.cards[1].stability);
+                * super::stability_weight(exact_s90(result.cards[1].stability));
         let weighted_memorized =
             super::weighted_memorized_for_cards(&result.cards, super::simulation_end_date(10));
 
-        assert!((weighted_memorized - expected).abs() < 1e-6);
+        assert!((weighted_memorized - expected).abs() < 1e-4 * expected);
         assert!(super::stability_weight(365.0) > 0.99);
         assert!(super::stability_weight(1.0) < 0.03);
+    }
+
+    #[test]
+    fn simulated_s90_weights_match_the_exact_s90_weights() {
+        let fsrs = fsrs::FSRS::new(&DEFAULT_PARAMETERS).unwrap();
+        let grid = super::S90Grid::new(&DEFAULT_PARAMETERS).unwrap();
+        let mut stability = 0.0001_f32;
+        let (mut max_relative, mut max_weight) = (0.0_f32, 0.0_f32);
+        while stability < 36_500.0 {
+            let exact = fsrs.interval_at_retrievability(
+                fsrs::MemoryState {
+                    stability,
+                    difficulty: 5.0,
+                    stability_fast: stability,
+                },
+                0.9,
+            );
+            let approx = grid.s90(stability);
+            if stability >= 1.0 {
+                max_relative = max_relative.max((approx / exact - 1.0).abs());
+            }
+            max_weight = max_weight
+                .max((super::stability_weight(approx) - super::stability_weight(exact)).abs());
+            stability *= 1.07;
+        }
+        // measured: 0.10% and 0.00002; the S90 errs most below one day,
+        // where the model's clamps bend its curve and the weight is near 0
+        assert!(max_relative < 2e-3, "{max_relative}");
+        assert!(max_weight < 5e-5, "{max_weight}");
     }
 
     #[test]

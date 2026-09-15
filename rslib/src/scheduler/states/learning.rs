@@ -6,6 +6,7 @@ use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
 use super::CardState;
+use super::FsrsGrade;
 use super::ReviewState;
 use super::SchedulingStates;
 use super::StateContext;
@@ -107,7 +108,7 @@ impl LearnState {
     }
 
     fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.again.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Again);
         if ctx.fsrs_uses_learning_queues() {
             if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
                 return LearnState {
@@ -131,7 +132,7 @@ impl LearnState {
     }
 
     fn answer_hard(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Hard);
         if ctx.fsrs_uses_learning_queues() {
             if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
                 return LearnState {
@@ -150,7 +151,7 @@ impl LearnState {
     }
 
     fn answer_good(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Good);
         if ctx.fsrs_uses_learning_queues() {
             if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
                 return LearnState {
@@ -169,7 +170,7 @@ impl LearnState {
     }
 
     fn answer_easy(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Easy);
         match interval {
             Some(interval) => Self::graduate(0, interval, memory_state, ctx),
             None => Self::graduate_sm2(ctx, ctx.graduating_interval_easy, 1),

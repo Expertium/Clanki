@@ -29,6 +29,7 @@ pub use rescheduling_filter::ReschedulingFilterState;
 pub use review::ReviewState;
 
 use self::steps::LearningSteps;
+use crate::card::FsrsMemoryState;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::answering::PreviewDelays;
 
@@ -90,6 +91,15 @@ impl CardState {
     }
 }
 
+/// An FSRS answer button, in the order of FSRS's next states.
+#[derive(Clone, Copy)]
+pub(crate) enum FsrsGrade {
+    Again,
+    Hard,
+    Good,
+    Easy,
+}
+
 /// Info required during state transitions.
 pub(crate) struct StateContext<'a> {
     /// In range `0.0..1.0`. Used to pick the final interval from the fuzz
@@ -117,7 +127,8 @@ pub(crate) struct StateContext<'a> {
     pub fsrs_minimum_interval_secs: u32,
     pub leech_threshold: u32,
     pub leech_only_if_young: bool,
-    pub fsrs_again_s90: Option<f32>,
+    /// The S90 of each FSRS next state, indexed by [FsrsGrade].
+    pub fsrs_next_s90: Option<[f32; 4]>,
     pub load_balancer_ctx: Option<LoadBalancerContext<'a>>,
 
     // relearning
@@ -144,6 +155,18 @@ impl StateContext<'_> {
         self.fsrs_next_states.is_none() || !self.same_day_review_limit_reached
     }
 
+    /// The memory state an FSRS answer leads to, with its S90 as `stability`,
+    /// like a stored card's (spec sched.next-state-s90).
+    pub(crate) fn fsrs_next_memory_state(&self, grade: FsrsGrade) -> Option<FsrsMemoryState> {
+        let states = self.fsrs_next_states.as_ref()?;
+        let item = [&states.again, &states.hard, &states.good, &states.easy][grade as usize];
+        let mut state = FsrsMemoryState::from(item.memory);
+        if let Some(s90) = self.fsrs_next_s90 {
+            state.stability = s90[grade as usize];
+        }
+        Some(state)
+    }
+
     pub(crate) fn fsrs_uses_short_term_learning_queue(&self) -> bool {
         self.fsrs_allow_short_term
             && self.fsrs_short_term_with_steps_enabled
@@ -166,7 +189,7 @@ impl StateContext<'_> {
             fsrs_minimum_interval_secs: 1,
             leech_threshold: 8,
             leech_only_if_young: false,
-            fsrs_again_s90: None,
+            fsrs_next_s90: None,
             load_balancer_ctx: None,
             relearn_steps: LearningSteps::new(&[10.0]),
             lapse_multiplier: 0.0,
