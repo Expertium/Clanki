@@ -247,18 +247,19 @@ class Overview:
         new_count, learning_count, review_count = self.mw.col.sched.counts()
         counts: list[int | str] = [new_count, learning_count, review_count]
         current_did = self.mw.col.decks.get_current_id()
-        deck_node = self.mw.col.sched.deck_due_tree(current_did)
+        # the counts of the deck's node in deck_due_tree(), without the tree
+        deck_counts = self.mw.col.sched.deck_due_counts(current_did)
 
         but = self.mw.button
         if self.mw.col.v3_scheduler():
-            assert deck_node is not None
-            buried_new = deck_node.new_count - new_count
-            buried_learning = deck_node.learn_count - learning_count
+            assert deck_counts is not None
+            buried_new = deck_counts.new_count - new_count
+            buried_learning = deck_counts.learn_count - learning_count
             if self._rwkv_counts_pending:
                 counts[2] = "…"
                 buried_review = 0
             else:
-                buried_review = deck_node.review_count - review_count
+                buried_review = deck_counts.review_count - review_count
         else:
             buried_new = buried_learning = buried_review = 0
         buried_label = tr.studying_counts_differ()

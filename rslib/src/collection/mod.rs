@@ -818,6 +818,18 @@ impl Collection {
             .and_then(RwkvRetrievabilityScores::review_queue_scores_for_any_deck)
     }
 
+    /// True if RWKV review scores change the due counts of the given day:
+    /// `apply_rwkv_review_queue_counts()` then has scores to apply.
+    pub(crate) fn rwkv_scores_change_due_counts(&self, days_elapsed: u32) -> bool {
+        self.state
+            .rwkv_retrievability_scores
+            .as_ref()
+            .filter(|scores| scores.days_elapsed == days_elapsed)
+            .is_some_and(|scores| {
+                !scores.deck_count_scores.is_empty() || scores.review_queue_scores.is_some()
+            })
+    }
+
     pub(crate) fn set_rwkv_deck_count_score_entries(
         &mut self,
         deck_id: DeckId,

@@ -12714,7 +12714,7 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
     monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
     scheduler = SimpleNamespace(
         counts=lambda: (1, 2, 4_000),
-        deck_due_tree=lambda _deck_id: SimpleNamespace(
+        deck_due_counts=lambda _deck_id: SimpleNamespace(
             new_count=1,
             learn_count=2,
             review_count=4_000,

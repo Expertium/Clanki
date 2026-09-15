@@ -11,6 +11,7 @@ use rusqlite::Row;
 use rusqlite::Statement;
 use unicase::UniCase;
 
+use super::ids_to_string;
 use super::SqliteStorage;
 use crate::card::CardQueue;
 use crate::decks::immediate_parent_name;
@@ -341,6 +342,56 @@ impl SqliteStorage {
         Ok(counts)
     }
 
+    /// The due counts of the given decks, as `due_counts()` has them, except
+    /// that each deck's new count stops at its cap and `total_cards` is not
+    /// counted. Cheap: every count is a range seek per deck in the
+    /// (did, queue, due) index, which visits only the cards it counts.
+    pub(crate) fn capped_due_counts(
+        &self,
+        decks_and_new_caps: &[(DeckId, u32)],
+        day_cutoff: u32,
+        learn_cutoff: u32,
+    ) -> Result<HashMap<DeckId, DueCounts>> {
+        let mut counts: HashMap<DeckId, DueCounts> = decks_and_new_caps
+            .iter()
+            .map(|&(did, _)| (did, DueCounts::default()))
+            .collect();
+        let mut deck_ids = String::new();
+        ids_to_string(&mut deck_ids, decks_and_new_caps.iter().map(|(did, _)| did));
+        let due_queues: [(CardQueue, &str, u32, fn(&mut DueCounts) -> &mut u32); 4] = [
+            (CardQueue::Review, "<=", day_cutoff, |c| &mut c.review),
+            (CardQueue::DayLearn, "<=", day_cutoff, |c| &mut c.interday_learning),
+            (CardQueue::Learn, "<", learn_cutoff, |c| &mut c.intraday_learning),
+            (CardQueue::PreviewRepeat, "<=", learn_cutoff, |c| &mut c.intraday_learning),
+        ];
+        for (queue, comparison, cutoff, field) in due_queues {
+            let sql = format!(
+                "select did, count() from cards where did in {deck_ids} \
+                 and queue = ? and due {comparison} ? group by did"
+            );
+            let mut stmt = self.db.prepare(&sql)?;
+            let mut rows = stmt.query(params![queue as i8, cutoff])?;
+            while let Some(row) = rows.next()? {
+                if let Some(deck) = counts.get_mut(&row.get::<_, DeckId>(0)?) {
+                    *field(deck) += row.get::<_, u32>(1)?;
+                }
+            }
+        }
+        let mut new_cards = self.db.prepare_cached(
+            "select count() from (select 1 from cards where did = ? and queue = ? limit ?)",
+        )?;
+        for &(did, cap) in decks_and_new_caps {
+            let deck = counts.get_mut(&did).unwrap();
+            deck.new = new_cards.query_row(params![did, CardQueue::New as i8, cap], |row| {
+                row.get(0)
+            })?;
+        }
+        for deck in counts.values_mut() {
+            deck.learning = deck.intraday_learning + deck.interday_learning;
+        }
+        Ok(counts)
+    }
+
     /// Decks referenced by cards but missing.
     pub(crate) fn missing_decks(&self) -> Result<Vec<DeckId>> {
         self.db
@@ -464,6 +515,10 @@ pub(crate) mod test {
     use super::*;
     use crate::card::Card;
     use crate::collection::Collection;
+    use crate::config::BoolKey;
+    use crate::deckconfig::DeckConfig;
+    use crate::decks::tree::test::assert_due_counts_match_tree;
+    use crate::decks::NormalDeckDayLimit;
 
     const DAY_CUTOFF: u32 = 100;
     const LEARN_CUTOFF: u32 = 1_700_000_000;
@@ -562,6 +617,69 @@ pub(crate) mod test {
             .db
             .execute_batch("UPDATE cards SET queue = 9 WHERE id % 97 = 0")
             .unwrap();
+    }
+
+    #[test]
+    fn deck_due_counts_match_the_deck_tree_under_random_limits() {
+        let mut col = Collection::new();
+        let timing = col.timing_today().unwrap();
+        let today = timing.days_elapsed;
+        let learn_cutoff = timing.now.0 as u32 + col.learn_ahead_secs();
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut configs = vec![];
+        for (new, review) in [(4, 9), (25, 60), (0, 30), (9999, 9999)] {
+            let mut conf = DeckConfig::default();
+            conf.inner.new_per_day = new;
+            conf.inner.reviews_per_day = review;
+            col.add_or_update_deck_config(&mut conf).unwrap();
+            configs.push(conf.id);
+        }
+        let mut decks = vec![DeckId(1)];
+        for name in ["A", "A::B", "A::B::C", "A::D", "E", "E::F", "E::F::G"] {
+            let mut deck = col.get_or_create_normal_deck(name).unwrap();
+            let normal = deck.normal_mut().unwrap();
+            normal.config_id = configs[rng.random_range(0..configs.len())].0;
+            if rng.random_bool(0.3) {
+                normal.new_limit_today = Some(NormalDeckDayLimit {
+                    limit: rng.random_range(0..10),
+                    today,
+                });
+            }
+            if rng.random_bool(0.3) {
+                normal.review_limit_today = Some(NormalDeckDayLimit {
+                    limit: rng.random_range(0..40),
+                    today,
+                });
+            }
+            deck.common.last_day_studied = today;
+            deck.common.new_studied = rng.random_range(-3..5);
+            deck.common.review_studied = rng.random_range(-5..20);
+            col.add_or_update_deck(&mut deck).unwrap();
+            decks.push(deck.id);
+        }
+        let mut filtered = Deck::new_filtered();
+        filtered.name = NativeDeckName::from_native_str("A::Filtered");
+        col.add_or_update_deck(&mut filtered).unwrap();
+        decks.push(filtered.id);
+        // E::F::G keeps no cards
+        decks.remove(7);
+
+        for (seed, count) in [(1, 12), (2, 60), (3, 2500)] {
+            add_cards_around_cutoffs(&mut col, &decks, today, learn_cutoff, seed, count);
+            for (all_parent_limits, new_ignores_review_limit) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                col.set_config_bool(BoolKey::ApplyAllParentLimits, all_parent_limits, false)
+                    .unwrap();
+                col.set_config_bool(
+                    BoolKey::NewCardsIgnoreReviewLimit,
+                    new_ignores_review_limit,
+                    false,
+                )
+                .unwrap();
+                assert_due_counts_match_tree(&mut col, timing.now);
+            }
+        }
     }
 
     #[test]

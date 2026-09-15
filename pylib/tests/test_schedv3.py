@@ -448,6 +448,25 @@ def test_review_limits():
     assert tree[0].children[0].review_count == 9  # child
 
 
+def test_deck_due_counts_are_the_deck_tree_counts():
+    col, child = review_limits_setup()
+    parent_id = col.decks.id("parent")
+    assert parent_id is not None
+    for did, reviews in ((parent_id, 5), (child["id"], 10)):
+        node = col.sched.deck_due_tree(did)
+        counts = col.sched.deck_due_counts(did)
+        assert node is not None and counts is not None
+        assert (counts.new_count, counts.learn_count, counts.review_count) == (
+            node.new_count,
+            node.learn_count,
+            node.review_count,
+        )
+        assert counts.review_count == reviews
+    # the empty default deck has no node in the tree
+    assert col.sched.deck_due_tree(1) is None
+    assert col.sched.deck_due_counts(1) is None
+
+
 def test_button_spacing():
     col = getEmptyCol()
     note = col.newNote()
