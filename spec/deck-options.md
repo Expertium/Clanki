@@ -207,8 +207,9 @@ Preferences setting it is simply stored.
 
 Given the collection flag `advancedUi` (default off; `spec/ui.md`,
 `ui.mode-switch`), the deck-options screen hides the RWKV settings listed
-below and shows them only while the flag is on. The page has no switch of
-its own; the mode is changed from the main window. Hidden settings keep
+below and shows them only while the flag is on. The mode is changed from
+the main window or from the page's own switch (`ui.mode-switch`). Hidden
+settings keep
 their stored values and keep taking effect. With the flag off the whole page
 is one section (`deck-options.simple-view`); this entry lists what the RWKV
 section shows once the flag is on.
