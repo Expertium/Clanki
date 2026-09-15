@@ -13,6 +13,7 @@ use fsrs::FSRS;
 use itertools::Either;
 use itertools::Itertools;
 
+use super::curve::Fsrs7Curve;
 use super::rescheduler::rescheduled_interval_days;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
@@ -97,7 +98,33 @@ pub(crate) fn fsrs_current_retrievability_for_state(
     state: FsrsMemoryState,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
+    fsrs_current_retrievability_for_memory_state(params, state.into(), elapsed_days)
+}
+
+/// `FSRS::new(params)?.current_retrievability(..)`, through the bit-identical
+/// scalar curve when it covers the input (see [`Fsrs7Curve`]).
+fn fsrs_current_retrievability_for_memory_state(
+    params: &[f32],
+    state: MemoryState,
+    elapsed_days: f32,
+) -> Result<f32> {
+    let elapsed_days = elapsed_days.max(0.0);
+    let retrievability =
+        match Fsrs7Curve::new(params).and_then(|curve| curve.retrievability(state, elapsed_days)) {
+            Some(retrievability) => retrievability,
+            None => FSRS::new(params)?.current_retrievability(state, elapsed_days),
+        };
+    require!(retrievability.is_finite(), "invalid FSRS parameter values");
+    Ok(retrievability)
+}
+
+/// `fsrs_current_retrievability_for_state` with the model of the parameters
+/// already built.
+pub(crate) fn fsrs_current_retrievability_with_model(
+    fsrs: &FSRS,
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+) -> Result<f32> {
     let retrievability = fsrs.current_retrievability(state.into(), elapsed_days.max(0.0));
     require!(retrievability.is_finite(), "invalid FSRS parameter values");
     Ok(retrievability)
@@ -113,7 +140,22 @@ pub(crate) fn fsrs_relative_overdueness_for_state(
     elapsed_days: f32,
     target_retrievability: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
+    fsrs_relative_overdueness_with_model(
+        &FSRS::new(params)?,
+        state,
+        elapsed_days,
+        target_retrievability,
+    )
+}
+
+/// `fsrs_relative_overdueness_for_state` with the model of the parameters
+/// already built.
+pub(crate) fn fsrs_relative_overdueness_with_model(
+    fsrs: &FSRS,
+    state: FsrsMemoryState,
+    elapsed_days: f32,
+    target_retrievability: f32,
+) -> Result<f32> {
     let target_interval =
         fsrs.interval_at_retrievability(state.into(), target_retrievability.clamp(0.0001, 0.9999));
     let relative_overdueness = -elapsed_days.max(0.0) / target_interval.max(0.0001);
@@ -131,17 +173,15 @@ pub(crate) fn fsrs_current_retrievability_scalar_for_params(
     stability: f32,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let fsrs = FSRS::new(params)?;
-    let retrievability = fsrs.current_retrievability(
+    fsrs_current_retrievability_for_memory_state(
+        params,
         MemoryState {
             stability,
             difficulty: 5.0,
             stability_fast: stability,
         },
-        elapsed_days.max(0.0),
-    );
-    require!(retrievability.is_finite(), "invalid FSRS parameter values");
-    Ok(retrievability)
+        elapsed_days,
+    )
 }
 
 /// The interval at `desired_retention` of the FSRS-7 state whose S90 is

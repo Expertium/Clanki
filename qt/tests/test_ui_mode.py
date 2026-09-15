@@ -49,6 +49,22 @@ def test_toggle_marks_the_active_side() -> None:
     assert 'aria-pressed="true"' in advanced and "active" in advanced
 
 
+def test_toggle_switches_in_place() -> None:
+    """The mode switch updates the control with a script, without reloading
+    the toolbar page (spec ui.mode-switch)."""
+    for advanced in (False, True):
+        toolbar, _ = _toolbar(advanced)
+        simple, advanced_option = _options(toolbar._create_ui_mode_toggle())
+        assert 'data-mode="simple"' in simple
+        assert 'data-mode="advanced"' in advanced_option
+        toolbar.update_ui_mode_toggle()
+        web = cast(MagicMock, toolbar.web)
+        web.eval.assert_called_once_with(
+            f"setUiMode({'true' if advanced else 'false'})"
+        )
+        web.stdHtml.assert_not_called()
+
+
 def test_toggle_sits_in_the_right_tray() -> None:
     toolbar, _ = _toolbar(False)
     assert 'id="ui-mode"' in toolbar._right_tray_content()
@@ -82,6 +98,7 @@ def test_deck_browser_bottom_row_has_no_import_in_simple_mode() -> None:
             _linkHandler=lambda _url: None,
         ),
     )
+    browser._buttons_html = lambda: DeckBrowser._buttons_html(browser)
     DeckBrowser._drawButtons(browser)
     assert drawn[0].count("<button") == 2
     assert 'pycmd("shared")' in drawn[0] and 'pycmd("create")' in drawn[0]
@@ -129,7 +146,10 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
         )
         AnkiQt.set_advanced_ui(mw, True)
         mw.col.set_config_bool.assert_called_once_with(Config.Bool.ADVANCED_UI, True)
-        mw.toolbar.draw.assert_called_once()
+        # the toolbar control switches in place: a reload would clear the
+        # sync button's state
+        mw.toolbar.update_ui_mode_toggle.assert_called_once()
+        mw.toolbar.draw.assert_not_called()
         # a full reset would recompute the RWKV due counts
         mw.reset.assert_not_called()
         return mw
@@ -147,6 +167,7 @@ def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
             _render_data=object(),
             _renderPage=MagicMock(),
             _drawButtons=MagicMock(),
+            _redraw_buttons_in_place=MagicMock(return_value=False),
             refresh=MagicMock(),
         ),
     )
@@ -155,6 +176,12 @@ def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
     browser._drawButtons.assert_called_once()
     browser._renderPage.assert_not_called()
     browser.refresh.assert_not_called()
+
+    # the buttons swapped in the open bar: no drawing
+    browser._drawButtons.reset_mock()
+    browser._redraw_buttons_in_place.return_value = True
+    DeckBrowser.redraw_for_ui_mode(browser)
+    browser._drawButtons.assert_not_called()
 
     # nothing rendered yet: a normal refresh
     browser = cast(
@@ -167,6 +194,59 @@ def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
     browser._renderPage.assert_not_called()
     browser._drawButtons.assert_not_called()
     browser.refresh.assert_called_once()
+
+
+def test_mode_switch_swaps_the_deck_list_buttons_in_place() -> None:
+    from aqt import gui_hooks
+    from aqt.deckbrowser import DeckBrowserBottomBar
+    from aqt.toolbar import BottomBar
+
+    def browser_with_bar(advanced: bool) -> tuple[Any, MagicMock]:
+        mw = MagicMock()
+        mw.advanced_ui.return_value = advanced
+        web = MagicMock()
+        browser = DeckBrowser.__new__(DeckBrowser)
+        browser.mw = mw
+        browser.bottom = BottomBar(mw, web)
+        browser._render_data = cast(Any, object())
+        web._bridge_context = DeckBrowserBottomBar(browser)
+        return browser, web
+
+    browser, web = browser_with_bar(True)
+    browser.redraw_for_ui_mode()
+    web.stdHtml.assert_not_called()
+    script = web.eval.call_args.args[0]
+    assert ".deck-buttons" in script and 'pycmd(\\"import\\")' in script
+    assert script.count("<button") == 3
+    web.adjustHeightToFit.assert_called_once()
+
+    # the bar shows another screen's buttons: it is drawn
+    browser, web = browser_with_bar(False)
+    web._bridge_context = object()
+    browser.redraw_for_ui_mode()
+    web.stdHtml.assert_called_once()
+    assert web.stdHtml.call_args.args[0].count("<button") == 2
+
+    # an add-on decorates freshly drawn pages: the bar is drawn
+    def addon_handler(web_content: Any, context: Any) -> None:
+        pass
+
+    addon_handler.__module__ = "some_addon"
+    gui_hooks.webview_will_set_content.append(addon_handler)
+    try:
+        browser, web = browser_with_bar(False)
+        browser.redraw_for_ui_mode()
+        web.stdHtml.assert_called_once()
+        web.eval.assert_not_called()
+    finally:
+        gui_hooks.webview_will_set_content.remove(addon_handler)
+
+    # an add-on replaced the drawing of the buttons: it is drawn its way
+    browser, web = browser_with_bar(False)
+    browser._drawButtons = MagicMock()  # type: ignore[method-assign]
+    browser.redraw_for_ui_mode()
+    browser._drawButtons.assert_called_once()
+    web.eval.assert_not_called()
 
 
 def test_deck_options_mode_switch_sets_the_main_window_mode(

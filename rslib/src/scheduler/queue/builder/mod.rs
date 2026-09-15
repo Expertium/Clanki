@@ -45,6 +45,22 @@ pub(crate) struct DueCard {
     pub reps: u32,
 }
 
+impl DueCard {
+    /// The entry `for_each_due_card_in_active_decks` makes of the card's row.
+    pub(crate) fn from_card(card: &Card, kind: DueCardKind) -> Self {
+        DueCard {
+            id: card.id,
+            note_id: card.note_id,
+            mtime: card.mtime,
+            due: card.due,
+            current_deck_id: card.deck_id,
+            original_deck_id: card.original_deck_id,
+            kind,
+            reps: card.reps,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DueCardKind {
     Review,
@@ -159,8 +175,14 @@ impl QueueBuilder {
             timing.days_elapsed,
             new_cards_ignore_review_limit,
         );
-        for (original_deck_id, count) in col.storage.filtered_review_counts_by_original_deck()? {
-            limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+        // the reservation only lowers RWKV review minimums: without any, skip
+        // its scan of every card
+        if limits.any_rwkv_review_minimum_remaining() {
+            for (original_deck_id, count) in
+                col.storage.filtered_review_counts_by_original_deck()?
+            {
+                limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+            }
         }
         let sort_options = sort_options(&root_deck, &config_map);
         let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {
@@ -698,6 +720,39 @@ mod test {
                 .map(|queued| queued.card.id)
                 .collect())
         }
+    }
+
+    // Pins spec/scheduling.md#sched.study-queue-kept-after-answer: after an
+    // answer the reviewer empties an RWKV score map that is already empty;
+    // the queue is kept (a card that reached the deck without an operation
+    // stays out of it), while installing scores still builds it again.
+    #[test]
+    fn emptying_empty_rwkv_scores_keeps_the_study_queue() -> Result<()> {
+        let mut col = Collection::new();
+        let deck_id = DeckId(1);
+        let elsewhere = col.get_or_create_normal_deck("Elsewhere")?.id;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut card_ids = Vec::new();
+        for (index, deck) in [deck_id, deck_id, elsewhere].into_iter().enumerate() {
+            let mut note = nt.new_note();
+            note.set_field(0, format!("front {index}"))?;
+            col.add_note(&mut note, deck)?;
+            card_ids.push(col.storage.get_card_by_ordinal(note.id, 0)?.unwrap().id);
+        }
+        col.set_current_deck(deck_id)?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 2);
+
+        col.answer_good();
+        // the card moves into the deck behind the queue's back
+        let mut late_card = col.storage.get_card(card_ids[2])?.unwrap();
+        late_card.deck_id = deck_id;
+        col.storage.update_card(&late_card)?;
+        col.set_rwkv_review_queue_score_entries(deck_id, HashMap::new())?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 1);
+
+        col.set_rwkv_review_queue_scores(deck_id, HashMap::from([(card_ids[1], 0.5)]))?;
+        assert_eq!(col.get_queued_cards(1, false, true)?.new_count, 2);
+        Ok(())
     }
 
     #[test]

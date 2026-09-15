@@ -11,6 +11,7 @@ from typing import Any
 
 import aqt
 import aqt.operations
+import aqt.review_heatmap
 import aqt.rwkv_scheduler
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckCollapseScope, DeckId, DeckTreeNode
@@ -26,6 +27,7 @@ from aqt.operations.deck import (
     set_deck_collapsed,
 )
 from aqt.qt import *
+from aqt.review_heatmap import HeatmapView
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
@@ -100,9 +102,33 @@ class DeckBrowser:
         reads the mode (the Import button), so only it is drawn again; the
         page with the tree already on screen stays as it is."""
         if hasattr(self, "_render_data"):
-            self._drawButtons()
+            if not self._redraw_buttons_in_place():
+                self._drawButtons()
         else:
             self.refresh()
+
+    def _redraw_buttons_in_place(self) -> bool:
+        """Swap the buttons in the open bottom bar instead of drawing the bar
+        again, as the deck table is swapped on a collapse. Only when the bar
+        shows this deck list's buttons, no add-on listens to the hook that
+        decorates a freshly drawn page, and no add-on has replaced the
+        drawing of the buttons or of the bar; otherwise the caller draws."""
+        web = self.bottom.web
+        context = getattr(web, "_bridge_context", None)
+        if not (
+            isinstance(context, DeckBrowserBottomBar)
+            and context.deck_browser is self
+            and _only_builtin_handlers(gui_hooks.webview_will_set_content)
+            and getattr(self._drawButtons, "__func__", None) is _DRAW_BUTTONS
+            and getattr(self.bottom.draw, "__func__", None) is _DRAW_BOTTOM_BAR
+        ):
+            return False
+        web.eval(
+            "(() => { const buttons = document.querySelector('.deck-buttons');"
+            f" if (buttons) buttons.outerHTML = {json.dumps(self._buttons_html())}; }})();"
+        )
+        web.adjustHeightToFit()
+        return True
 
     def cancel_rwkv_count_refresh(self) -> None:
         self._rwkv_count_generation += 1
@@ -183,7 +209,7 @@ class DeckBrowser:
             def get_data(col: Collection) -> RenderData:
                 aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores(self.mw)
                 tree = col.sched.deck_due_tree()
-                return RenderData(
+                data = RenderData(
                     tree=tree,
                     current_deck_id=col.decks.get_current_id(),
                     studied_today=col.studied_today(),
@@ -195,6 +221,11 @@ class DeckBrowser:
                         )
                     ),
                 )
+                # the heatmap under the tree, computed here rather than on
+                # the main thread when the page is drawn
+                if heatmap := aqt.review_heatmap.instance():
+                    heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
+                return data
 
             def success(output: RenderData) -> None:
                 if generation != self._rwkv_count_generation:
@@ -635,6 +666,13 @@ class DeckBrowser:
     ]
 
     def _drawButtons(self) -> None:
+        self.bottom.draw(
+            buf=self._buttons_html(),
+            link_handler=self._linkHandler,
+            web_context=DeckBrowserBottomBar(self),
+        )
+
+    def _buttons_html(self) -> str:
         buf = ""
         # Simple mode keeps Find Decks Online and Create Deck (spec
         # ui.mode-switch); Import stays in the File menu.
@@ -649,12 +687,7 @@ class DeckBrowser:
                 b
             )
         # one grid so that every button takes the width of the widest label
-        buf = f'<span class="deck-buttons">{buf}</span>'
-        self.bottom.draw(
-            buf=buf,
-            link_handler=self._linkHandler,
-            web_context=DeckBrowserBottomBar(self),
-        )
+        return f'<span class="deck-buttons">{buf}</span>'
 
     def _onShared(self) -> None:
         openLink(f"{aqt.appShared}decks/")
@@ -699,6 +732,11 @@ class DeckBrowser:
 
         showInfo(tr.scheduling_update_done())
         self.refresh()
+
+
+# as defined here, to tell whether an add-on has replaced them
+_DRAW_BUTTONS = DeckBrowser._drawButtons
+_DRAW_BOTTOM_BAR = BottomBar.draw
 
 
 def _only_builtin_handlers(hook: Any) -> bool:

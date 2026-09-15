@@ -38,10 +38,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ButtonsGraph,
         AddedGraph,
     ];
+    // Simple mode shows only these (spec ui.mode-switch)
+    const simpleGraphs = [ReviewsGraph, CardCounts, TrueRetention];
 </script>
 
 <GraphsPage
     {graphs}
+    {simpleGraphs}
     initialSearch="deck:current"
     initialDays={365}
     controller={RangeBox}

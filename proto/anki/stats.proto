@@ -278,6 +278,10 @@ message GraphsResponse {
   // ui.stats-one-algorithm).
   deck_config.DeckConfigsForUpdate.SchedulingAlgorithm scheduling_algorithm =
       16;
+  // The collection-wide Advanced UI mode: Simple shows only some graphs
+  // (spec ui.mode-switch); the page's switch changes it through the main
+  // window, not through this message.
+  bool advanced_ui = 17;
 }
 
 message GraphPreferences {

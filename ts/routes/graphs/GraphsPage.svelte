@@ -11,6 +11,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { pageTheme } from "$lib/sveltelib/theme";
 
     import RangeBox from "./RangeBox.svelte";
+    import { graphsForMode } from "./ui-mode";
+    import UiModeFromData from "./UiModeFromData.svelte";
     import WithGraphData from "./WithGraphData.svelte";
 
     export let initialSearch: string;
@@ -22,8 +24,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     setContext("graphsSearch", search);
 
     export let graphs: Component<any>[];
+    /** The graphs Simple mode shows; null = every graph in both modes
+     * (spec ui.mode-switch). */
+    export let simpleGraphs: Component<any>[] | null = null;
     /** See RangeBox */
     export let controller: Component<any> | null = RangeBox;
+
+    /** The collection's UI mode: from the data, then from the page's switch. */
+    const advancedUi = writable(true);
+    let modeKnown = false;
 
     function browserSearch(event: CustomEvent) {
         bridgeCommand(`browserSearch: ${$search} ${event.detail.query}`);
@@ -31,13 +40,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <WithGraphData {search} {days} let:sourceData let:loading let:prefs let:revlogRange>
+    {#if sourceData}
+        <UiModeFromData data={sourceData} {advancedUi} bind:known={modeKnown} />
+    {/if}
     {#if controller}
-        <svelte:component this={controller} {search} {days} {loading} />
+        <svelte:component
+            this={controller}
+            {search}
+            {days}
+            {loading}
+            advancedUi={simpleGraphs && modeKnown ? advancedUi : null}
+        />
     {/if}
 
     <div class="graphs-container">
         {#if sourceData && revlogRange}
-            {#each graphs as graph}
+            {#each graphsForMode(graphs, simpleGraphs, $advancedUi) as graph}
                 <svelte:component
                     this={graph}
                     {sourceData}

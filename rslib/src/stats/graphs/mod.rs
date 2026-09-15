@@ -23,6 +23,7 @@ use crate::config::Weekday;
 use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
+use crate::scheduler::fsrs::curve::Fsrs7Curve;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::search::SortMode;
 
@@ -30,6 +31,8 @@ struct GraphsContext {
     revlog: Vec<RevlogEntry>,
     cards: Vec<Card>,
     fsrs_by_preset: HashMap<FsrsPresetId, FSRS>,
+    /// The same presets' curves in scalar form (bit-identical, faster).
+    fsrs_curve_by_preset: HashMap<FsrsPresetId, Fsrs7Curve>,
     fsrs_preset_by_card: HashMap<CardId, FsrsPresetId>,
     /// The active algorithm's RWKV R per card (RWKV-Curve's curve R or
     /// RWKV-Instant's R); None under FSRS-7 and while RWKV has not scored
@@ -114,15 +117,19 @@ impl Collection {
             "resolved FSRS presets for stats graphs"
         );
         let mut fsrs_by_preset = HashMap::new();
+        let mut fsrs_curve_by_preset = HashMap::new();
         let mut fsrs_preset_by_card = HashMap::new();
         let fsrs_build_start = std::time::Instant::now();
         for (card_id, fsrs_preset) in fsrs_presets_by_card {
             let preset_id = fsrs_preset.id.clone();
             fsrs_preset_by_card.insert(card_id, preset_id.clone());
             if let std::collections::hash_map::Entry::Vacant(entry) =
-                fsrs_by_preset.entry(preset_id)
+                fsrs_by_preset.entry(preset_id.clone())
             {
                 entry.insert(fsrs_preset.fsrs()?);
+                if let Some(curve) = Fsrs7Curve::new(&fsrs_preset.params) {
+                    fsrs_curve_by_preset.insert(preset_id, curve);
+                }
             }
         }
         tracing::debug!(
@@ -136,6 +143,7 @@ impl Collection {
             days_elapsed: timing.days_elapsed,
             cards,
             fsrs_by_preset,
+            fsrs_curve_by_preset,
             fsrs_preset_by_card,
             rwkv_retrievability_scores,
             algorithm,
@@ -161,6 +169,7 @@ impl Collection {
             retrievability: Some(ctx.retrievability()),
             fsrs: self.get_config_bool(BoolKey::Fsrs),
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
+            advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
         };
         Ok(resp)
     }
@@ -190,6 +199,22 @@ impl Collection {
             prefs.card_counts_separate_inactive,
         )?;
         self.set_config_bool_inner(BoolKey::FutureDueShowBacklog, prefs.future_due_show_backlog)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Pins spec/ui.md#ui.mode-switch: the Stats page learns the UI mode
+    // with its data.
+    #[test]
+    fn graphs_report_the_ui_mode() -> Result<()> {
+        let mut col = Collection::new();
+        assert!(!col.graph_data_for_search("", 365)?.advanced_ui);
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        assert!(col.graph_data_for_search("", 365)?.advanced_ui);
         Ok(())
     }
 }

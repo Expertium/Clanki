@@ -24,8 +24,10 @@ Given a collection, the interface is in Simple mode unless the collection flag
 `advancedUi` is on. The mode is switched from a two-state control that reads
 "Simple | Advanced" with the active side filled, placed in the right tray of
 the main-window toolbar (top right), and from View > Advanced UI
-(Ctrl+Shift+U); both write the flag at once and redraw the toolbar and, on
-the deck list, the bottom row from the tree already on screen. The switch
+(Ctrl+Shift+U); both write the flag at once, switch the toolbar control in
+place (the toolbar is not reloaded, so the sync button keeps its "sync
+needed" colour and its spinner) and, on the deck list, redraw the bottom row
+from the tree already on screen. The switch
 never recomputes the due counts: the mode does not affect dueness, so a
 full main-window reset (which would rebuild the RWKV counts, slowly and
 with "…" placeholders meanwhile) is not done. In
@@ -41,14 +43,22 @@ screen has the same "Simple | Advanced" control at the right end of its top
 bar: a click switches the page between its two views at once, keeping any
 unsaved changes, and writes the same flag through the main window, which
 redraws as above; it does not wait for Save, and closing without saving
-keeps the new mode. Hidden settings keep their stored values and keep
-taking effect.
+keeps the new mode. The Stats page has the same control at the top right of
+its top bar, with the same effect: in Simple mode the page shows only the
+Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
+order; Advanced mode shows every graph. The page takes the mode when it
+loads and from its own switch. Hidden settings keep their stored values and
+keep taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
 active side filled. 2026-09-15: deck options get the switch too, always in
 step with the main window's, so switching needs no closing and reopening of
-deck options. The RWKV reschedule actions are power-user tools. A user
+deck options. Later the same day: the Stats page gets it too, and Simple
+mode there shows only Reviews, Card Counts, Retention and Total Knowledge;
+and the toolbar control switches in place (Andrew: "in place it is"): the
+reload before cleared the sync button's colour and spinner until the next
+redraw. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
 installed).
@@ -59,7 +69,9 @@ reset),
 `advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
 `test_deck_options_mode_switch_sets_the_main_window_mode`
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
-once" (`ts/tests/e2e/deck-options.test.ts`).
+once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
+(`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
+graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
 
 ## ui.review-heatmap
 
@@ -84,7 +96,10 @@ by default) and the calendar mode (yearly overview or a continuous
 nine-month timeline); where the calendar shows (main screen, deck screen,
 stats screen) and whether the four figures show even where it is hidden;
 a history limit and a forecast limit in days, and a date before which
-reviews are ignored (these three apply to the main and deck screens); to
+reviews are ignored (these three apply to the main and deck screens; the
+forecast never reaches more than 5 years ahead, 1,826 days, whatever the
+limit or the stats screen's period, and its "no limit" setting reads "5
+years"); to
 exclude deleted cards and manual reschedules (ease 0) from the history (the
 latter on by default); and decks left out of the main-screen heatmap, with
 their subdecks. The settings are stored in the collection config under

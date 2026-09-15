@@ -168,10 +168,11 @@ class Scheduler(SchedulerBaseWithLegacy):
 
     def _is_finished(self) -> bool:
         "Don't use this, it is a stop-gap until this code is refactored."
-        return not self.get_queued_cards().cards
+        return not self.get_queued_cards_without_states().cards
 
     def counts(self, card: Card | None = None) -> tuple[int, int, int]:
-        info = self.get_queued_cards()
+        # the counts need no answer states (~1 ms for the top card)
+        info = self.get_queued_cards_without_states()
         return (info.new_count, info.learning_count, info.review_count)
 
     @property
