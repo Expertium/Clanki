@@ -95,6 +95,29 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    - A speedup that is not bit-exact and changes the outputs significantly is
      applied only after consulting Andrew.
 
+   Second pass (Andrew, 2026-09-15): after every accepted speedup, past and
+   future, go over the same part of the code again and look for a further
+   speedup, under the same protocol.
+8. **Anti-bloat simplification sweep, once every 4 months** (Andrew,
+   2026-09-15). Sweep the entire Clanki codebase, excluding `.md` files and
+   any other non-code files, for code that can be simplified. The first sweep
+   runs before Clanki's release; the 4-month count starts then. A
+   simplification is accepted only if it meets all four rules:
+   1. **Bit-exact**: no change to the outputs.
+   2. **Speed**: execution speed the same as before or higher,
+      speed(after) ≥ speed(before).
+   3. **Lines of code** (not counting comments): strictly fewer,
+      LOC(after) < LOC(before).
+   4. **Cognitive load** (how hard the code is to understand; this needs
+      judgement): the same or lower, difficulty(after) ≤ difficulty(before).
+
+   In short: a pure refactor that makes the code shorter and does not make
+   it slower or harder to understand. The best case lowers both the line
+   count and the cognitive load. Such commits are `refactor:` commits.
+   Clever one-liners are welcome as long as they don't look like a magic
+   spell: don't Goodhart yourself by cutting lines at the expense of
+   clarity.
+
 ## Changes already made in Clanki
 
 - Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
