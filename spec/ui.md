@@ -273,3 +273,19 @@ RWKV has no difficulty and RWKV-Instant no stability.
 `test_rwkv_curve_collection_active_reads_the_algorithm`
 (`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
+
+## ui.browser-interval-average
+
+Given a Browser row with review or relearning cards, the Interval column
+shows the average of their intervals: in cards mode the card's own
+interval, in notes mode the mean over the note's review and relearning
+cards (new and learning cards do not count; no such card = an empty cell).
+The average is exact for any intervals, also when they add up to more than
+49,710 days.
+
+**Why:** the FSRS-7 audit, 2026-09-15 (Andrew: fix it): the average was
+computed in 32-bit seconds, which overflow past 49,710 days, so a note with
+two 30,000-day cards showed about 5,144 days (a debug build crashed).
+
+**Pinned by:** `interval_cell_averages_long_intervals_without_overflow`
+(`rslib/src/browser_table.rs`).

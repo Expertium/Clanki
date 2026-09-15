@@ -774,6 +774,13 @@ message SchedulingStatesWithIntervalsRequest {
   optional float hard = 3;
   optional float good = 4;
   optional float easy = 5;
+  // The external scheduler's unrounded S90 in days, one per answer button:
+  // the next state's stability, and for Again what the "leech only if
+  // young" check compares (spec sched.rwkv-curve-fuzz).
+  optional float again_s90 = 6;
+  optional float hard_s90 = 7;
+  optional float good_s90 = 8;
+  optional float easy_s90 = 9;
 }
 
 message FsrsCurrentRetrievabilityRequest {
@@ -940,8 +947,12 @@ message RwkvReviewRetrievabilityCacheRowsRequest {
 
 message RwkvReviewRescheduleRequest {
   message Item {
+    reserved 2;  // whole-day interval_days
     int64 card_id = 1;
-    uint32 interval_days = 2;
+    // RWKV-Curve's current interval, unrounded days; the backend turns it
+    // into days as FSRS-7's reschedule does (spec
+    // sched.rwkv-curve-reschedule).
+    float interval = 6;
     uint32 elapsed_days = 3;
     float s90 = 4;
     optional float target_retention = 5;

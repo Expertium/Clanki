@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use chrono::Datelike;
 
 use crate::prelude::*;
+use crate::scheduler::answering::get_fuzz_factor;
 use crate::scheduler::states::fuzz::constrained_fuzz_bounds;
+use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
+use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::states::load_balancer::build_easy_days_percentages;
 use crate::scheduler::states::load_balancer::calculate_easy_days_modifiers;
@@ -187,5 +190,93 @@ impl Rescheduler {
                 });
 
         select_weighted_interval(intervals, fuzz_seed)
+    }
+}
+
+/// Whole days for a review card that a reschedule gives the unrounded
+/// `interval`: at least the previous interval when the new one still reaches
+/// it within the fuzz range (`minimum_review_fuzz_interval`), at least 1, at
+/// most `max_interval`; the load balancer and Easy Days pick the day when
+/// `rescheduler` is given (and the card is not overdue past the fuzz range),
+/// else review fuzz does. `fuzz_seed` is the card's seed for its previous
+/// review.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rescheduled_interval_days(
+    rescheduler: Option<&Rescheduler>,
+    interval: f32,
+    previous_interval: u32,
+    max_interval: u32,
+    days_elapsed: u32,
+    deckconfig_id: DeckConfigId,
+    fuzz_seed: Option<u64>,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> u32 {
+    let min_interval = minimum_review_fuzz_interval(
+        interval,
+        previous_interval,
+        max_interval,
+        review_fuzz_config,
+    )
+    .max(1);
+    rescheduler
+        .and_then(|rescheduler| {
+            rescheduler.find_interval(
+                interval,
+                min_interval,
+                max_interval,
+                days_elapsed,
+                deckconfig_id,
+                fuzz_seed,
+            )
+        })
+        .unwrap_or_else(|| {
+            with_review_fuzz(
+                get_fuzz_factor(fuzz_seed),
+                interval,
+                min_interval,
+                max_interval,
+                review_fuzz_config,
+            )
+        })
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-reschedule (the step the
+    // FSRS-7 and RWKV-Curve reschedules share): with the cards' fuzz seeds,
+    // cards given the same interval spread over its fuzz range, through the
+    // load balancer and through plain review fuzz.
+    #[test]
+    fn rescheduled_interval_days_are_fuzzed_and_load_balanced() -> Result<()> {
+        let mut col = Collection::new();
+        let load_balancer = Rescheduler::new(&mut col)?;
+        let config = ReviewFuzzConfig::default();
+        let (lower, upper) = constrained_fuzz_bounds(50.0, 1, 36_500, config);
+        for rescheduler in [None, Some(&load_balancer)] {
+            let days = (0..20)
+                .map(|seed| {
+                    rescheduled_interval_days(
+                        rescheduler,
+                        50.0,
+                        0,
+                        36_500,
+                        5,
+                        DeckConfigId(1),
+                        Some(1_000 + seed),
+                        config,
+                    )
+                })
+                .collect::<HashSet<_>>();
+            assert!(days.len() > 3, "{days:?}");
+            assert!(
+                days.iter().all(|day| (lower..=upper).contains(day)),
+                "{days:?}"
+            );
+        }
+        Ok(())
     }
 }

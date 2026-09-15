@@ -14,6 +14,7 @@ use itertools::Either;
 use itertools::Itertools;
 
 use super::curve::Fsrs7Curve;
+use super::rescheduler::rescheduled_interval_days;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
@@ -27,8 +28,6 @@ use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::round_to_two_decimals;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
-use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
-use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::Negated;
@@ -575,34 +574,16 @@ impl Collection {
                         card.desired_retention
                             .expect("We set it before this function is called"),
                     );
-                    let min_interval = minimum_review_fuzz_interval(
+                    card.interval = rescheduled_interval_days(
+                        rescheduler.as_ref(),
                         interval,
                         previous_interval,
                         req.max_interval,
+                        days_elapsed as u32,
+                        deckconfig_id,
+                        get_fuzz_seed(card, true),
                         req.review_fuzz_config,
-                    )
-                    .max(1);
-                    card.interval = rescheduler
-                        .as_mut()
-                        .and_then(|r| {
-                            r.find_interval(
-                                interval,
-                                min_interval,
-                                req.max_interval,
-                                days_elapsed as u32,
-                                deckconfig_id,
-                                get_fuzz_seed(card, true),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            with_review_fuzz(
-                                card.get_fuzz_factor(true),
-                                interval,
-                                min_interval,
-                                req.max_interval,
-                                req.review_fuzz_config,
-                            )
-                        });
+                    );
                     let due = if card.original_due != 0 {
                         &mut card.original_due
                     } else {
