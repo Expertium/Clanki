@@ -69,6 +69,7 @@ impl From<QueuedCards> for anki_proto::scheduler::QueuedCards {
             new_count: queued_cards.new_count as u32,
             learning_count: queued_cards.learning_count as u32,
             review_count: queued_cards.review_count as u32,
+            rwkv_scores_pending: queued_cards.rwkv_scores_pending,
         }
     }
 }

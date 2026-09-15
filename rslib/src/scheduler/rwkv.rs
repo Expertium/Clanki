@@ -706,7 +706,6 @@ pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) elapsed_secs_since_last_review: Option<u32>,
     pub(crate) current_deck_id: DeckId,
     pub(crate) source_deck_id: DeckId,
-    pub(crate) fsrs_due_today: bool,
 }
 
 pub(crate) fn rwkv_review_candidate_metadata(
@@ -732,7 +731,6 @@ pub(crate) fn rwkv_review_candidate_metadata(
                 .map(|last_review_time| timing.now.elapsed_secs_since_clamped(last_review_time)),
             current_deck_id: card.deck_id,
             source_deck_id: card.original_deck_id.or(card.deck_id),
-            fsrs_due_today: card.due <= timing.days_elapsed as i32,
         };
         if let Some(desired_retention) = card_desired_retention(&card) {
             metadata.insert(card.id, partial.with_target_retention(desired_retention));
@@ -888,7 +886,6 @@ struct RwkvReviewCandidatePartial {
     elapsed_secs_since_last_review: Option<u32>,
     current_deck_id: DeckId,
     source_deck_id: DeckId,
-    fsrs_due_today: bool,
 }
 
 impl RwkvReviewCandidatePartial {
@@ -899,7 +896,6 @@ impl RwkvReviewCandidatePartial {
             elapsed_secs_since_last_review: self.elapsed_secs_since_last_review,
             current_deck_id: self.current_deck_id,
             source_deck_id: self.source_deck_id,
-            fsrs_due_today: self.fsrs_due_today,
         }
     }
 }

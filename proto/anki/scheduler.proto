@@ -242,6 +242,10 @@ message QueuedCards {
   uint32 new_count = 2;
   uint32 learning_count = 3;
   uint32 review_count = 4;
+  // RWKV-Instant has not scored the studied deck yet, so the queue holds no
+  // review cards; the client waits for the scores (spec
+  // sched.rwkv-instant-waits).
+  bool rwkv_scores_pending = 5;
 }
 
 message GetQueuedCardsRequest {

@@ -417,27 +417,31 @@ installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later
 candidate refresh or full queue rebuild scores them again.
 
-Deck tree review counts use the same eligibility rules when a current-day RWKV
-queue score map is installed. Scored normal-deck review cards above target
-retention, or same-day reviewed cards blocked by same-day or repeat-spacing
-guards, are removed from review counts even if FSRS says they are due. Scored
-future review cards below target retention are added to review counts. Cards
-already in filtered decks remain due based on filtered-deck membership and are
-not re-filtered by RWKV eligibility. Before a RWKV queue score map has been
-prepared, deck tree counts continue to show the normal FSRS due counts. The
-selected-deck overview prepares and installs the current deck's RWKV queue score
-map before rendering its counts. If profile startup is still restoring the RWKV
-state cache, the overview keeps the review count pending as an ellipsis and
-refreshes it when restoration finishes. The deck browser renders its initial
+Deck tree review counts use the same eligibility rules. Under RWKV-Instant a
+normal deck's review count is the number of its scored review cards that the
+eligibility rules make due (plus daily-minimum pulls): a card above target
+retention, or blocked by the same-day or repeat-spacing guards, counts nothing
+even if FSRS says it is due; a scored future card below target retention
+counts; an unscored card counts nothing. Cards already in filtered decks remain
+due based on filtered-deck membership and are not re-filtered by RWKV
+eligibility. The study queue follows the same rule: without a current-day score
+map for the studied deck it gathers no review cards and reports the scores as
+pending, and it never gathers an unscored card by its FSRS due date (spec
+`sched.rwkv-instant-waits`). The selected-deck overview prepares and installs
+the current deck's RWKV queue score map before rendering its counts. While the
+scores are pending (the state cache still restoring, or scoring not possible),
+the overview shows the review count as an ellipsis, says "Waiting for
+RWKV-Instant…" instead of the congratulations screen, and asks again every
+2 seconds while RWKV can run. The deck browser renders its initial
 tree without waiting for model inference, then scores disjoint RWKV-enabled
 deck scopes one at a time. Model scoring runs without collection access, and
 each completed scope is installed in a separate transient count-only cache so
 the visible counts can be updated incrementally. The currently selected scope
 is processed first. While a scope is pending, its review due count and the
 review due counts of its descendants display an ellipsis instead of the stored
-FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
-falls back to its stored count. A scope deferred during state-cache restoration
-remains pending until the completion refresh starts a fresh count pass. Leaving
+FSRS count. A completed scope reveals its RWKV count; a skipped, failed or
+stale scope, or one deferred during state-cache restoration, remains pending
+until a later refresh starts a fresh count pass. Leaving
 or refreshing the deck browser, or unloading the profile, cancels queued
 preparation and later UI updates, and preparing a reviewer queue clears the
 count-only cache. This keeps startup responsive while allowing every displayed

@@ -371,6 +371,7 @@ impl QueueBuilder {
             shown_top_card: None,
             non_news_sorted_by_retrievability: shared_r_sort,
             deferred_rwkv_reviews: self.deferred_rwkv_reviews,
+            rwkv_scores_pending: self.context.rwkv_scores_pending(),
         }
     }
 }
@@ -398,6 +399,13 @@ impl Context {
 
     fn uses_rwkv_review_order(&self) -> bool {
         self.rwkv_review_queue_scores.is_some() && self.sort_options.uses_rwkv_review_order()
+    }
+
+    /// RWKV-Instant takes review cards only from its scores. Without scores
+    /// for the studied deck it gathers none, and the client waits (spec
+    /// sched.rwkv-instant-waits).
+    fn rwkv_scores_pending(&self) -> bool {
+        self.sort_options.uses_rwkv_review_order() && self.rwkv_review_queue_scores.is_none()
     }
 }
 
@@ -1854,12 +1862,14 @@ mod test {
                 ]),
             )?;
 
-            let mut actual = col.queue_as_ids(deck.id);
-            actual.sort();
-            let mut expected = vec![unscored_due, scored_future_below_target];
-            expected.sort();
-            assert_eq!(actual, expected, "review order {order:?}");
-            assert_eq!(col.counts(), [0, 0, 2], "review order {order:?}");
+            // the unscored due card waits for its score
+            let _ = unscored_due;
+            assert_eq!(
+                col.queue_as_ids(deck.id),
+                vec![scored_future_below_target],
+                "review order {order:?}"
+            );
+            assert_eq!(col.counts(), [0, 0, 1], "review order {order:?}");
         }
         Ok(())
     }
@@ -1927,6 +1937,15 @@ mod test {
         col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::Day);
 
         let timing = col.timing_today()?;
+        let scored_earlier = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 - 2,
+            2 * 86_400,
+            30.0,
+        )?;
         let unscored_due = add_memory_state_card(
             &mut col,
             deck.id,
@@ -1947,17 +1966,33 @@ mod test {
         )?;
         col.set_rwkv_review_queue_score_entries(
             deck.id,
-            HashMap::from([(
-                scored_future,
-                RwkvReviewQueueScoreEntry {
-                    retrievability: 0.20,
-                    intervening_reviews: None,
-                    target_retention: Some(0.75),
-                },
-            )]),
+            HashMap::from([
+                (
+                    scored_earlier,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.30,
+                        intervening_reviews: None,
+                        target_retention: Some(0.75),
+                    },
+                ),
+                (
+                    scored_future,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.20,
+                        intervening_reviews: None,
+                        target_retention: Some(0.75),
+                    },
+                ),
+            ]),
         )?;
 
-        assert_eq!(col.queue_as_ids(deck.id), vec![unscored_due, scored_future]);
+        // due-day order, not RWKV's lower R first; the unscored due card waits
+        // for its score (spec sched.rwkv-instant-waits)
+        let _ = unscored_due;
+        assert_eq!(
+            col.queue_as_ids(deck.id),
+            vec![scored_earlier, scored_future]
+        );
         Ok(())
     }
 
@@ -1980,14 +2015,24 @@ mod test {
         let answered_card = CardId(9_999_999_999);
         col.set_rwkv_review_queue_score_entries(
             deck.id,
-            HashMap::from([(
-                answered_card,
-                RwkvReviewQueueScoreEntry {
-                    retrievability: 0.20,
-                    intervening_reviews: None,
-                    target_retention: Some(0.75),
-                },
-            )]),
+            HashMap::from([
+                (
+                    answered_card,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.20,
+                        intervening_reviews: None,
+                        target_retention: Some(0.75),
+                    },
+                ),
+                (
+                    queued_card,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.20,
+                        intervening_reviews: None,
+                        target_retention: Some(0.75),
+                    },
+                ),
+            ]),
         )?;
         col.get_queued_cards(1, false, true)?;
         let build_time = col.state.card_queues.as_ref().unwrap().build_time;
@@ -2190,8 +2235,9 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-instant-waits
     #[test]
-    fn rwkv_retrievability_order_keeps_due_reviews_without_scores() -> Result<()> {
+    fn rwkv_instant_unscored_due_reviews_wait_for_their_score() -> Result<()> {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
@@ -2217,11 +2263,11 @@ mod test {
         )?;
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(future_review, 0.10)]))?;
 
-        assert_eq!(
-            col.queue_as_ids(deck.id),
-            vec![future_review, due_review_without_score]
-        );
-        assert_eq!(col.counts(), [0, 0, 2]);
+        // FSRS-7 calls the unscored card due; RWKV-Instant has no value for it
+        let _ = due_review_without_score;
+        assert_eq!(col.queue_as_ids(deck.id), vec![future_review]);
+        assert_eq!(col.counts(), [0, 0, 1]);
+        assert!(!col.get_queued_cards(1, false, true)?.rwkv_scores_pending);
         Ok(())
     }
 
@@ -2941,57 +2987,9 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-instant-waits
     #[test]
-    fn rwkv_unscored_due_reviews_do_not_use_fsrs_retrievability_order() -> Result<()> {
-        let mut col = Collection::new();
-        col.set_config_bool(BoolKey::Fsrs, true, true)?;
-        let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
-
-        let timing = col.timing_today()?;
-        let older_due_high_r = add_memory_state_card(
-            &mut col,
-            deck.id,
-            CardQueue::Review,
-            CardType::Review,
-            timing.days_elapsed as i32 - 10,
-            10 * 86_400,
-            1000.0,
-        )?;
-        let later_due_low_r = add_memory_state_card(
-            &mut col,
-            deck.id,
-            CardQueue::Review,
-            CardType::Review,
-            timing.days_elapsed as i32,
-            86_400,
-            0.1,
-        )?;
-        let future_scored = add_memory_state_card(
-            &mut col,
-            deck.id,
-            CardQueue::Review,
-            CardType::Review,
-            timing.days_elapsed as i32 + 7,
-            86_400,
-            30.0,
-        )?;
-        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(future_scored, 0.10)]))?;
-
-        let older_retrievability =
-            col.fsrs_current_retrievability_for_card(older_due_high_r, 1000.0, 10.0)?;
-        let later_retrievability =
-            col.fsrs_current_retrievability_for_card(later_due_low_r, 0.1, 1.0)?;
-        assert!(older_retrievability > later_retrievability);
-        assert_eq!(
-            col.queue_as_ids(deck.id),
-            vec![future_scored, older_due_high_r, later_due_low_r]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rwkv_review_order_with_empty_scores_does_not_use_fsrs_retrievability_order() -> Result<()> {
+    fn rwkv_instant_without_scores_gathers_no_reviews_and_reports_pending() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
@@ -3018,15 +3016,18 @@ mod test {
         )?;
         col.set_rwkv_review_queue_scores(deck.id, HashMap::new())?;
 
-        let older_retrievability =
-            col.fsrs_current_retrievability_for_card(older_due_high_r, 1000.0, 10.0)?;
-        let later_retrievability =
-            col.fsrs_current_retrievability_for_card(later_due_low_r, 0.1, 1.0)?;
-        assert!(older_retrievability > later_retrievability);
-        assert_eq!(
-            col.queue_as_ids(deck.id),
-            vec![older_due_high_r, later_due_low_r]
-        );
+        // both cards are FSRS-7 due, but RWKV-Instant has not scored the deck:
+        // no reviews, and the client learns that the scores are pending
+        assert_eq!(col.queue_as_ids(deck.id), Vec::<CardId>::new());
+        assert_eq!(col.counts(), [0, 0, 0]);
+        assert!(col.get_queued_cards(1, false, true)?.rwkv_scores_pending);
+
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(older_due_high_r, 0.95), (later_due_low_r, 0.10)]),
+        )?;
+        assert_eq!(col.queue_as_ids(deck.id), vec![later_due_low_r]);
+        assert!(!col.get_queued_cards(1, false, true)?.rwkv_scores_pending);
         Ok(())
     }
 

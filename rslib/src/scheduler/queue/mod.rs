@@ -43,6 +43,7 @@ pub(crate) struct CardQueues {
     shown_top_card: Option<CardId>,
     non_news_sorted_by_retrievability: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
+    rwkv_scores_pending: bool,
     pub(crate) load_balancer: Option<LoadBalancer>,
     pub(crate) fsrs_enabled: bool,
     pub(crate) fsrs_short_term_with_steps: bool,
@@ -112,6 +113,7 @@ pub struct QueuedCards {
     pub new_count: usize,
     pub learning_count: usize,
     pub review_count: usize,
+    pub rwkv_scores_pending: bool,
 }
 
 /// When we encounter a card with new or review burying enabled, all future
@@ -137,6 +139,7 @@ impl Collection {
     ) -> Result<QueuedCards> {
         let queues = self.get_queues()?;
         let counts = queues.counts();
+        let rwkv_scores_pending = queues.rwkv_scores_pending;
         let entries: Vec<_> = if intraday_learning_only {
             queues
                 .intraday_now_iter()
@@ -184,6 +187,7 @@ impl Collection {
             new_count: counts.new,
             learning_count: counts.learning,
             review_count: counts.review,
+            rwkv_scores_pending,
         })
     }
 }
@@ -336,12 +340,14 @@ impl Collection {
             .or_not_found(current_card_id)?;
         let mut queues = self.build_queues_with_current_card(deck.id, Some(&card))?;
         let counts = queues.counts();
+        let rwkv_scores_pending = queues.rwkv_scores_pending;
         self.state.card_queues = Some(queues);
         Ok(QueuedCards {
             cards: vec![],
             new_count: counts.new,
             learning_count: counts.learning,
             review_count: counts.review,
+            rwkv_scores_pending,
         })
     }
 

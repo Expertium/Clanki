@@ -2,7 +2,6 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::hash::Hasher;
 
 use fnv::FnvHasher;
@@ -41,10 +40,10 @@ impl QueueBuilder {
         if self.context.sort_options.uses_rwkv_review_order() {
             self.gather_intraday_learning_cards(col)?;
             self.gather_due_cards(col, DueCardKind::Learning)?;
+            // without scores, no review cards: the queue waits for RWKV
+            // instead of using FSRS-7's due dates (spec sched.rwkv-instant-waits)
             if self.context.uses_rwkv_review_order() {
                 self.gather_review_cards_with_rwkv_scores(col)?;
-            } else {
-                self.gather_due_cards(col, DueCardKind::Review)?;
             }
             self.gather_new_cards(col)?;
             return Ok(());
@@ -199,8 +198,6 @@ impl QueueBuilder {
             chunk_size = chunk_size.saturating_mul(2).min(remaining_scores.len());
         }
 
-        let scored_card_ids = ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
-        self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)?;
         if !self.limits.root_limit_reached(LimitKind::Review)
             && self.limits.any_rwkv_review_minimum_remaining()
         {
@@ -252,7 +249,6 @@ impl QueueBuilder {
             eligibility_by_card.insert(card_id, eligibility);
         }
         self.deferred_rwkv_reviews.extend(deferred_reviews);
-        let scored_card_ids: HashSet<_> = scored_card_ids.into_iter().collect();
         let mut cards = Vec::new();
 
         col.storage.for_each_review_card_in_active_decks(
@@ -269,14 +265,11 @@ impl QueueBuilder {
             if self.limits.root_limit_reached(LimitKind::Review) {
                 break;
             }
-            let eligible = if scored_card_ids.contains(&card.id) {
-                matches!(
-                    eligibility_by_card.get(&card.id),
-                    Some(RwkvReviewScoreEligibility::Eligible)
-                )
-            } else {
-                card.due <= self.context.timing.days_elapsed as i32
-            };
+            // an unscored card waits for its score (spec sched.rwkv-instant-waits)
+            let eligible = matches!(
+                eligibility_by_card.get(&card.id),
+                Some(RwkvReviewScoreEligibility::Eligible)
+            );
             if eligible
                 && !self
                     .limits
@@ -491,42 +484,6 @@ impl QueueBuilder {
                 (None, None) => std::cmp::Ordering::Equal,
             }
         });
-    }
-
-    fn gather_due_review_cards_without_rwkv_scores(
-        &mut self,
-        col: &mut Collection,
-        scored_card_ids: &HashSet<CardId>,
-    ) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::Review) {
-            return Ok(());
-        }
-
-        col.storage.for_each_due_card_in_active_decks(
-            self.context.timing,
-            // RWKV already handled the scored cards above. Keep the unscored
-            // fallback cheap instead of invoking FSRS retrievability ordering.
-            ReviewCardOrder::Day,
-            DueCardKind::Review,
-            self.context.fsrs,
-            |card| {
-                if scored_card_ids.contains(&card.id) {
-                    return Ok(true);
-                }
-                if self.limits.root_limit_reached(LimitKind::Review) {
-                    return Ok(false);
-                }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::Review)?
-                    && self.add_due_card(card)
-                {
-                    self.limits
-                        .reserve_review(card.current_deck_id, card.original_deck_id)?;
-                }
-                Ok(true)
-            },
-        )
     }
 
     fn gather_due_non_new_cards_with_exact_retrievability(

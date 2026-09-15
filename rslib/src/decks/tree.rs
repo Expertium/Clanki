@@ -519,6 +519,7 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-instant-waits
     #[test]
     fn rwkv_deck_tree_counts_exclude_ineligible_scored_reviews() -> Result<()> {
         let mut col = Collection::new();
@@ -528,9 +529,17 @@ mod test {
 
         let high_r_due =
             add_review_card(&mut col, deck.id, timing.days_elapsed as i32, 0.75, None)?;
+        let low_r_due = add_review_card(&mut col, deck.id, timing.days_elapsed as i32, 0.75, None)?;
+        // FSRS-7 due, but not scored: RWKV-Instant does not count it
         add_review_card(&mut col, deck.id, timing.days_elapsed as i32, 0.75, None)?;
-        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(high_r_due, 0.80)]))?;
 
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(tree.children[0].review_count, 0);
+
+        col.set_rwkv_review_queue_scores(
+            deck.id,
+            HashMap::from([(high_r_due, 0.80), (low_r_due, 0.20)]),
+        )?;
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
         assert_eq!(tree.children[0].review_uncapped, 1);
@@ -732,7 +741,7 @@ mod test {
             0.75,
             None,
         )?;
-        add_review_card(
+        let first_low_r = add_review_card(
             &mut col,
             first_deck.id,
             timing.days_elapsed as i32,
@@ -746,7 +755,7 @@ mod test {
             0.75,
             None,
         )?;
-        add_review_card(
+        let second_low_r = add_review_card(
             &mut col,
             second_deck.id,
             timing.days_elapsed as i32,
@@ -754,8 +763,14 @@ mod test {
             None,
         )?;
 
-        col.set_rwkv_deck_count_scores(first_deck.id, HashMap::from([(first_high_r, 0.80)]))?;
-        col.set_rwkv_deck_count_scores(second_deck.id, HashMap::from([(second_high_r, 0.80)]))?;
+        col.set_rwkv_deck_count_scores(
+            first_deck.id,
+            HashMap::from([(first_high_r, 0.80), (first_low_r, 0.20)]),
+        )?;
+        col.set_rwkv_deck_count_scores(
+            second_deck.id,
+            HashMap::from([(second_high_r, 0.80), (second_low_r, 0.20)]),
+        )?;
 
         let tree = col.deck_tree(Some(timing.now))?;
         let first = get_deck_in_tree(tree.clone(), first_deck.id).unwrap();
@@ -763,12 +778,13 @@ mod test {
         assert_eq!(first.review_count, 1);
         assert_eq!(second.review_count, 1);
 
+        // without scores, no FSRS-7 due counts stand in
         col.clear_rwkv_deck_count_scores();
         let tree = col.deck_tree(Some(timing.now))?;
         let first = get_deck_in_tree(tree.clone(), first_deck.id).unwrap();
         let second = get_deck_in_tree(tree, second_deck.id).unwrap();
-        assert_eq!(first.review_count, 2);
-        assert_eq!(second.review_count, 2);
+        assert_eq!(first.review_count, 0);
+        assert_eq!(second.review_count, 0);
         Ok(())
     }
 
@@ -796,15 +812,16 @@ mod test {
             None,
         )?;
 
+        // applied, the low score would count the future card
         col.set_rwkv_review_queue_scores(first_deck.id, HashMap::from([(second_future, 0.20)]))?;
         let tree = col.deck_tree(Some(timing.now))?;
         let second = get_deck_in_tree(tree, second_deck.id).unwrap();
-        assert_eq!(second.review_count, 1);
+        assert_eq!(second.review_count, 0);
 
         col.set_rwkv_review_queue_scores(first_deck.id, HashMap::from([(second_due, 0.80)]))?;
         let tree = col.deck_tree(Some(timing.now))?;
         let second = get_deck_in_tree(tree, second_deck.id).unwrap();
-        assert_eq!(second.review_count, 1);
+        assert_eq!(second.review_count, 0);
         Ok(())
     }
 

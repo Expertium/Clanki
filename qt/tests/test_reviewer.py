@@ -605,6 +605,25 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     assert reviewer._rwkv_intervals_retry_ms == 0
 
 
+def test_remaining_review_count_is_pending_without_rwkv_instant_scores() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-instant-waits"""
+    from anki.scheduler_pb2 import QueuedCards
+    from aqt.reviewer import V3CardInfo
+
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace(col=SimpleNamespace(conf={"dueCounts": True}))
+    queued = QueuedCards(new_count=1, learning_count=2, review_count=0)
+    queued.cards.add(queue=QueuedCards.NEW)
+    queued.rwkv_scores_pending = True
+    reviewer._v3 = V3CardInfo.from_queue_without_states(queued)
+
+    assert "<span class=review-count>…</span>" in reviewer._remaining()
+
+    queued.rwkv_scores_pending = False
+    reviewer._v3 = V3CardInfo.from_queue_without_states(queued)
+    assert "<span class=review-count>0</span>" in reviewer._remaining()
+
+
 def test_answer_buttons_say_the_rwkv_model_is_missing(monkeypatch) -> None:
     """Pins spec/scheduling.md#sched.rwkv-no-model-error"""
     shots: list[object] = []
@@ -1337,6 +1356,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         new_count=2,
         learning_count=1,
         review_count=9,
+        rwkv_scores_pending=False,
     )
 
     def prepare_reviewer_queue_order_async_work(reviewer: object) -> object:
