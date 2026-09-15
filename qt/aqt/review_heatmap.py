@@ -812,7 +812,7 @@ class ReviewHeatmap:
         # the deck list compares its next stats with the drawn ones before
         # redrawing its tree in place; they now carry the new class
         rendered_stats = getattr(context, "_rendered_stats", None)
-        if isinstance(rendered_stats, str):
+        if isinstance(context, DeckBrowser) and isinstance(rendered_stats, str):
             context._rendered_stats = rendered_stats.replace(
                 f"rh-theme-{settings.colors}", f"rh-theme-{following}"
             )
