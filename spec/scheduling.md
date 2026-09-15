@@ -518,17 +518,28 @@ review, in fractional days, for every card: new, learning, relearning and
 review, in any queue. This is the same elapsed time training and the
 memory-state rebuild take from the review log (millisecond timestamps), so
 the model sees the same kind of input when it is trained and when it is
-used. The day rollover plays no part in it.
+used. The day rollover plays no part in it. The elapsed time runs up to the
+answer (the review log's timestamp), not up to the moment the card was
+shown: the memory state stored with an answer is FSRS-7's next state for the
+chosen button at that elapsed time, and the interval stays the one the
+button showed. With a custom scheduling script set, the memory state the
+answer carries is stored as it is (the script may have set it).
 
 **Why:** Andrew, 2026-09-15: FSRS-7 must use fractional, not integer,
 interval lengths as inputs, both in training and in deployment. Before this
 entry, review and interday-learning cards got whole days from the rollover
 (a review Monday 23:00 answered Wednesday 05:00 with a 04:00 rollover was
-2 days, not 1.25), while training used the exact 1.25.
+2 days, not 1.25), while training used the exact 1.25. The FSRS-7 interval
+audit (2026-09-15; Andrew: fix it) then found the stored memory state
+computed when the card was shown, so the model saw the elapsed time minus
+the answer time: a new card answered Good 20 seconds after being shown got a
+4.9% shorter next interval than a rebuild from the review log, Again 10.7%.
 
 **Pinned by:** `fsrs7_gets_fractional_elapsed_time_like_training`,
-`fsrs7_review_answer_uses_the_exact_elapsed_time`
-(`rslib/src/scheduler/answering/mod.rs`);
+`fsrs7_review_answer_uses_the_exact_elapsed_time`,
+`fsrs7_answer_stores_the_memory_state_at_the_answer_time`,
+`rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability` (the custom
+script case) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_interday_delta_uses_fractional_elapsed_time`,
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
