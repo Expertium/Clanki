@@ -145,19 +145,25 @@ impl Collection {
                 searched_cards * 2 >= collection_cards as usize,
             )?
         };
-        let cards = if wanted.any(&[
+        let load_cards = wanted.any(&[
             Graph::Added,
             Graph::FutureDue,
             Graph::Intervals,
             Graph::Stability,
             Graph::Eases,
             Graph::Difficulty,
-            Graph::CardCounts,
             Graph::Retrievability,
-        ]) {
+        ]);
+        let cards = if load_cards {
             self.storage.all_searched_cards()?
         } else {
             vec![]
+        };
+        // without the cards (the Simple view), Card Counts counts in SQL
+        let card_count_groups = if wanted.has(Graph::CardCounts) && !load_cards {
+            Some(self.storage.searched_card_count_groups()?)
+        } else {
+            None
         };
         let algorithm = self.effective_scheduling_algorithm()?;
         let retrievability = wanted.has(Graph::Retrievability);
@@ -255,7 +261,10 @@ impl Collection {
             today: wanted.has(Graph::Today).then(|| ctx.today()),
             hours: wanted.has(Graph::Hours).then(|| ctx.hours()),
             buttons: wanted.has(Graph::Buttons).then(|| ctx.buttons()),
-            card_counts: wanted.has(Graph::CardCounts).then(|| ctx.card_counts()),
+            card_counts: match card_count_groups {
+                Some(groups) => Some(card_counts::card_counts(groups.into_iter())),
+                None => wanted.has(Graph::CardCounts).then(|| ctx.card_counts()),
+            },
             rollover_hour: self.rollover_for_current_scheduler()? as u32,
             retrievability: retrievability.then(|| ctx.retrievability()),
             fsrs: self.get_config_bool(BoolKey::Fsrs),

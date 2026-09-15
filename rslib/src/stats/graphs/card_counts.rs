@@ -4,51 +4,62 @@
 use anki_proto::stats::graphs_response::card_counts::Counts;
 use anki_proto::stats::graphs_response::CardCounts;
 
-use crate::card::Card;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::stats::graphs::GraphsContext;
 
+/// Cards alike for the Card Counts graph: type, queue, whether the interval
+/// is at least 21 days, and how many cards.
+pub(crate) type CardCountGroup = (CardType, CardQueue, bool, u32);
+
 impl GraphsContext {
     pub(super) fn card_counts(&self) -> CardCounts {
-        let mut excluding_inactive = Counts::default();
-        let mut including_inactive = Counts::default();
-        for card in &self.cards {
-            match card.queue {
-                CardQueue::Suspended => {
-                    excluding_inactive.suspended += 1;
-                }
-                CardQueue::SchedBuried | CardQueue::UserBuried => {
-                    excluding_inactive.buried += 1;
-                }
-                _ => increment_counts(&mut excluding_inactive, card),
-            };
-            increment_counts(&mut including_inactive, card);
-        }
-        CardCounts {
-            excluding_inactive: Some(excluding_inactive),
-            including_inactive: Some(including_inactive),
-        }
+        card_counts(
+            self.cards
+                .iter()
+                .map(|card| (card.ctype, card.queue, card.interval >= 21, 1)),
+        )
     }
 }
 
-fn increment_counts(counts: &mut Counts, card: &Card) {
-    match card.ctype {
+pub(super) fn card_counts(groups: impl Iterator<Item = CardCountGroup>) -> CardCounts {
+    let mut excluding_inactive = Counts::default();
+    let mut including_inactive = Counts::default();
+    for (ctype, queue, mature, cards) in groups {
+        match queue {
+            CardQueue::Suspended => {
+                excluding_inactive.suspended += cards;
+            }
+            CardQueue::SchedBuried | CardQueue::UserBuried => {
+                excluding_inactive.buried += cards;
+            }
+            _ => increment_counts(&mut excluding_inactive, ctype, mature, cards),
+        };
+        increment_counts(&mut including_inactive, ctype, mature, cards);
+    }
+    CardCounts {
+        excluding_inactive: Some(excluding_inactive),
+        including_inactive: Some(including_inactive),
+    }
+}
+
+fn increment_counts(counts: &mut Counts, ctype: CardType, mature: bool, cards: u32) {
+    match ctype {
         CardType::New => {
-            counts.new_cards += 1;
+            counts.new_cards += cards;
         }
         CardType::Learn => {
-            counts.learn += 1;
+            counts.learn += cards;
         }
         CardType::Review => {
-            if card.interval < 21 {
-                counts.young += 1;
+            if mature {
+                counts.mature += cards;
             } else {
-                counts.mature += 1;
+                counts.young += cards;
             }
         }
         CardType::Relearn => {
-            counts.relearn += 1;
+            counts.relearn += cards;
         }
     }
 }

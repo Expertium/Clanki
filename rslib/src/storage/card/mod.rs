@@ -748,6 +748,22 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             .collect()
     }
 
+    /// The searched cards counted by type, queue and whether the interval is
+    /// at least 21 days, without loading each card.
+    pub(crate) fn searched_card_count_groups(
+        &self,
+    ) -> Result<Vec<(CardType, CardQueue, bool, u32)>> {
+        self.db
+            .prepare_cached(
+                "select type, queue, cast(ivl as integer) >= 21, count() from cards \
+                 where id in (select cid from search_cids) group by 1, 2, 3",
+            )?
+            .query_and_then([], |row| -> Result<_> {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect()
+    }
+
     pub(crate) fn rwkv_review_input_candidate_cards_for_ids(
         &self,
         card_ids: &[CardId],
