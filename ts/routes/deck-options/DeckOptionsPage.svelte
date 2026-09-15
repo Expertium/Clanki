@@ -34,8 +34,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const dispatch = createEventDispatcher<{ close: void }>();
     const addons = state.addonComponents;
     // Simple mode is one section; Advanced mode is the per-topic sections
-    // (spec deck-options.simple-view). The mode is the collection flag set
-    // from the main window; this page has no switch of its own.
+    // (spec deck-options.simple-view). The mode is the collection flag, set
+    // from the main window or from this page's switch (UiModeSwitch).
     const advancedUi = state.advancedUi;
 
     export function auxData(): Writable<Record<string, unknown>> {

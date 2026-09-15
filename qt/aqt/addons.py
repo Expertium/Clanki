@@ -175,6 +175,12 @@ def package_name_valid(name: str) -> bool:
 
 
 # fixme: this class should not have any GUI code in it
+def _is_review_heatmap_addon(module: str) -> bool:
+    from aqt.review_heatmap import ADDON_DIRS
+
+    return module in ADDON_DIRS
+
+
 class AddonManager:
     exts: list[str] = [".ankiaddon", ".zip"]
     _manifest_schema: dict = {
@@ -354,6 +360,11 @@ class AddonManager:
     def toggleEnabled(self, module: str, enable: bool | None = None) -> None:
         addon = self.addon_meta(module)
         should_enable = enable if enable is not None else not addon.enabled
+        if should_enable is True and _is_review_heatmap_addon(module):
+            # Clanki draws the heatmap itself; both would show (spec
+            # ui.review-heatmap)
+            showInfo(tr.preferences_heatmap_addon_blocked(), textFormat="plain")
+            should_enable = False
         if should_enable is True:
             conflicting = self._disableConflicting(module)
             if conflicting:
@@ -486,6 +497,11 @@ class AddonManager:
 
         if force_enable:
             meta["disabled"] = False
+        if _is_review_heatmap_addon(package):
+            # installed, but never enabled: Clanki has the heatmap built in
+            # (spec ui.review-heatmap)
+            meta["disabled"] = True
+            showInfo(tr.preferences_heatmap_addon_blocked(), textFormat="plain")
 
         self.writeAddonMeta(package, meta)
 

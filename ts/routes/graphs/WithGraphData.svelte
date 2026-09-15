@@ -22,7 +22,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     );
     const rwkvStatsPendingHeader = "X-Anki-Rwkv-Stats-Pending";
     const rwkvStatsRetryDelayMs = 2_000;
-    const rwkvStatsMaxRetries = 30;
+    // while RWKV calculates, the page keeps asking until the scores arrive:
+    // it shows "Calculating…", never another algorithm's values (spec
+    // ui.stats-one-algorithm)
+    const rwkvStatsMaxRetries = Number.POSITIVE_INFINITY;
 
     let sourceData: GraphsResponse | null = null;
     let loading = true;

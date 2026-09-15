@@ -7630,6 +7630,19 @@ def rwkv_collection_active(reviewer: object) -> bool:
         return True
 
 
+def rwkv_curve_collection_active(reviewer: object) -> bool:
+    """True when the collection runs RWKV-Curve (its ``schedulingAlgorithm``
+    key, spec sched.one-global-algorithm): its R is the Curve's."""
+    get_config = getattr(_collection(reviewer), "get_config", None)
+    if not callable(get_config):
+        return False
+    try:
+        return get_config("schedulingAlgorithm", None) == "rwkvCurve"
+    except Exception:
+        logger.debug("failed to read the collection's scheduling algorithm")
+        return False
+
+
 def _rwkv_review_active_deck_config(
     reviewer: object,
     card: object,
@@ -17051,39 +17064,19 @@ def _rwkv_replay_semantics_key(
 
 
 def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_dynamic_preset_replay")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewDynamicPresetReplay",
-        "rwkv_review_dynamic_preset_replay",
-    )
-    return value if isinstance(value, bool) else False
+    """Always off: the setting is gone from deck options, and a stored value
+    is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return False
 
 
 def _rwkv_review_first_review_elapsed_from_card_creation(
     deck_config: dict[str, object],
 ) -> bool:
-    nested = _rwkv_other_config(deck_config)
-    if nested is not None:
-        value = nested.get("rwkv_review_first_review_elapsed_from_card_creation")
-        if isinstance(value, bool):
-            return value
-
-    value = _rwkv_config_direct_value(
-        deck_config,
-        "rwkvReviewFirstReviewElapsedFromCardCreation",
-        "rwkv_review_first_review_elapsed_from_card_creation",
-    )
-    return (
-        value
-        if isinstance(value, bool)
-        else _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
-    )
+    """Always the default (on): the setting is gone from deck options, and a
+    stored value is ignored (spec deck-options.rwkv-fixed-settings)."""
+    del deck_config
+    return _DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:

@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { ConfigListEntry, DeckOptionsState } from "./lib";
     import SaveButton from "./SaveButton.svelte";
     import TextInputModal from "./TextInputModal.svelte";
+    import UiModeSwitch from "./UiModeSwitch.svelte";
 
     export let state: DeckOptionsState;
     const configList = state.configList;
@@ -113,6 +114,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             on:remove={dispatchPresetChange}
             on:close={() => dispatch("close")}
         />
+
+        <UiModeSwitch advancedUi={state.advancedUi} />
     </div>
 </StickyContainer>
 

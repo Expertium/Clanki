@@ -9,7 +9,7 @@ import {
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
-import { prepareData, shouldShowRetrievabilityGraph } from "./retrievability";
+import { prepareData, rwkvScoresPending, shouldShowRetrievabilityGraph } from "./retrievability";
 
 test("retrievability graph is shown when RWKV data exists without FSRS", () => {
     const sourceData = new GraphsResponse({
@@ -22,6 +22,17 @@ test("retrievability graph is shown when RWKV data exists without FSRS", () => {
     });
 
     expect(shouldShowRetrievabilityGraph(sourceData)).toBe(true);
+});
+
+// Pins spec/ui.md#ui.stats-one-algorithm
+test("while RWKV calculates, the graph shows and says so, with no other values", () => {
+    const pending = new GraphsResponse({
+        fsrs: true,
+        retrievability: new GraphsResponse_Retrievability({ rwkvPending: true }),
+    });
+    expect(shouldShowRetrievabilityGraph(pending)).toBe(true);
+    expect(rwkvScoresPending(pending)).toBe(true);
+    expect(rwkvScoresPending(new GraphsResponse({ fsrs: true }))).toBe(false);
 });
 
 test("retrievability graph remains available for FSRS without scored cards", () => {

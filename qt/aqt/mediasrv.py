@@ -883,6 +883,15 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
     return b""
 
 
+def set_advanced_ui() -> bytes:
+    """The deck-options Simple | Advanced switch: the same collection flag as
+    the main window's switch, which redraws at once (spec ui.mode-switch)."""
+    value = generic_pb2.Bool()
+    value.ParseFromString(request.data)
+    aqt.mw.taskman.run_on_main(lambda: aqt.mw.set_advanced_ui(value.val))
+    return b""
+
+
 def update_deck_configs() -> bytes:
     return _update_deck_configs(close_on_success=False)
 
@@ -1455,6 +1464,10 @@ def graphs() -> Response:
     prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
         reviewer,
         request_proto.search,
+        # RWKV-Curve's graph shows the Curve's R (spec ui.stats-one-algorithm)
+        prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
+            reviewer
+        ),
     )
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()
@@ -1480,6 +1493,7 @@ def graphs() -> Response:
 
 post_handler_list = [
     congrats_info,
+    set_advanced_ui,
     get_deck_configs_for_update,
     update_deck_configs,
     update_deck_configs_and_close,
