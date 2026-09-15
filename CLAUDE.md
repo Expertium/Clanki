@@ -97,7 +97,18 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
 
    Second pass (Andrew, 2026-09-15): after every accepted speedup, past and
    future, go over the same part of the code again and look for a further
-   speedup, under the same protocol.
+   speedup, under the same protocol. **Always** do this second pass; a
+   speedup is not finished until its second pass has run (and found another
+   accepted speedup or nothing more worth doing).
+
+   Scope (Andrew, 2026-09-15 evening): anything that could possibly cause a
+   lag in the UI is in scope, not only the items in the speed plan. The main
+   goal is a UI that is as responsive as possible: every click, key press,
+   screen change and redraw (deck list, overview, reviewer, Browser, editor,
+   deck options, stats, card info, dialogs, start-up, sync) should respond
+   without a visible delay. Work that blocks the main (UI) thread is the
+   first suspect; moving it off the main thread counts as a speedup of the
+   UI and follows the same protocol.
 8. **Anti-bloat simplification sweep, once every 4 months** (Andrew,
    2026-09-15). Sweep the entire Clanki codebase, excluding `.md` files and
    any other non-code files, for code that can be simplified. The first sweep
