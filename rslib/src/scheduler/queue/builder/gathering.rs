@@ -1,7 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hasher;
 
@@ -16,8 +15,7 @@ use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
-use crate::scheduler::fsrs::memory_state::FsrsCurveModel;
-use crate::scheduler::fsrs::preset::FsrsPreset;
+use crate::scheduler::fsrs::memory_state::FsrsCardCurves;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
@@ -934,8 +932,7 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
 struct ExactReviewOrderKeys {
     timing: SchedTimingToday,
     order: ReviewCardOrder,
-    deck_presets: HashMap<DeckId, FsrsPreset>,
-    models: HashMap<Vec<u32>, FsrsCurveModel>,
+    curves: FsrsCardCurves,
 }
 
 impl ExactReviewOrderKeys {
@@ -943,8 +940,7 @@ impl ExactReviewOrderKeys {
         Self {
             timing,
             order,
-            deck_presets: HashMap::new(),
-            models: HashMap::new(),
+            curves: FsrsCardCurves::default(),
         }
     }
 
@@ -962,37 +958,12 @@ impl ExactReviewOrderKeys {
             return Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0));
         };
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        let preset = self.preset(col, card)?;
-        let desired_retention = card.desired_retention.unwrap_or(preset.desired_retention);
-        let relative_overdueness = matches!(self.order, ReviewCardOrder::RelativeOverdueness);
-        let model = self.model(&preset.params);
-        if relative_overdueness {
-            model.relative_overdueness(state, elapsed_days, desired_retention)
+        if matches!(self.order, ReviewCardOrder::RelativeOverdueness) {
+            self.curves
+                .relative_overdueness(col, card, state, elapsed_days)
         } else {
-            model.current_retrievability(state, elapsed_days)
-        }
-    }
-
-    /// `Collection::fsrs_preset_for_card`, with the home-deck presets kept.
-    fn preset(&mut self, col: &mut Collection, card: &Card) -> Result<FsrsPreset> {
-        if let Some(preset) = col.fsrs_overlay_preset_for_card(card)? {
-            return Ok(preset);
-        }
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        if let Some(preset) = self.deck_presets.get(&deck_id) {
-            return Ok(preset.clone());
-        }
-        let deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        let preset = col.fsrs_preset_for_deck(&deck)?;
-        self.deck_presets.insert(deck_id, preset.clone());
-        Ok(preset)
-    }
-
-    fn model(&mut self, params: &[f32]) -> &mut FsrsCurveModel {
-        let bits: Vec<u32> = params.iter().map(|param| param.to_bits()).collect();
-        match self.models.entry(bits) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(FsrsCurveModel::new(params)),
+            self.curves
+                .current_retrievability(col, card, state, elapsed_days)
         }
     }
 }

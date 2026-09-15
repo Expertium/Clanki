@@ -201,6 +201,77 @@ impl FsrsCurveModel {
     }
 }
 
+/// The retrievability maths of many cards (a queue build, a filtered deck
+/// build): each home deck's preset and each parameter set's model are made
+/// once, not once per card. The results are those of the collection's
+/// per-card functions.
+#[derive(Default)]
+pub(crate) struct FsrsCardCurves {
+    /// Each home deck's preset: the index of its model and its desired
+    /// retention.
+    deck_presets: HashMap<DeckId, (usize, f32)>,
+    /// One model per parameter set, found by the parameters' bits.
+    models: Vec<FsrsCurveModel>,
+    model_indices: HashMap<Vec<u32>, usize>,
+}
+
+impl FsrsCardCurves {
+    /// `Collection::fsrs_current_retrievability_for_card_state`
+    pub(crate) fn current_retrievability(
+        &mut self,
+        col: &mut Collection,
+        card: &Card,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let (model, _) = self.preset(col, card)?;
+        self.models[model].current_retrievability(state, elapsed_days)
+    }
+
+    /// `Collection::fsrs_relative_overdueness_for_card_state`
+    pub(crate) fn relative_overdueness(
+        &mut self,
+        col: &mut Collection,
+        card: &Card,
+        state: FsrsMemoryState,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let (model, preset_retention) = self.preset(col, card)?;
+        self.models[model].relative_overdueness(
+            state,
+            elapsed_days,
+            card.desired_retention.unwrap_or(preset_retention),
+        )
+    }
+
+    /// `Collection::fsrs_preset_for_card`, as the index of its model and its
+    /// desired retention, with the home-deck presets kept.
+    fn preset(&mut self, col: &mut Collection, card: &Card) -> Result<(usize, f32)> {
+        if let Some(preset) = col.fsrs_overlay_preset_for_card(card)? {
+            return Ok((self.model(&preset.params), preset.desired_retention));
+        }
+        let deck_id = card.original_deck_id.or(card.deck_id);
+        if let Some(&preset) = self.deck_presets.get(&deck_id) {
+            return Ok(preset);
+        }
+        let deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
+        let preset = col.fsrs_preset_for_deck(&deck)?;
+        let preset = (self.model(&preset.params), preset.desired_retention);
+        self.deck_presets.insert(deck_id, preset);
+        Ok(preset)
+    }
+
+    /// The index of the parameters' model.
+    fn model(&mut self, params: &[f32]) -> usize {
+        let bits: Vec<u32> = params.iter().map(|param| param.to_bits()).collect();
+        let models = &mut self.models;
+        *self.model_indices.entry(bits).or_insert_with(|| {
+            models.push(FsrsCurveModel::new(params));
+            models.len() - 1
+        })
+    }
+}
+
 /// Scalar compatibility helper for callers that do not have a complete
 /// FSRS-7 state. It assumes difficulty 5 and equal slow/fast stability.
 pub(crate) fn fsrs_current_retrievability_scalar_for_params(
