@@ -4217,6 +4217,131 @@ where id in {ids2str(valid_card_ids)}
     return identities if set(identities) == set(valid_card_ids) else None
 
 
+@dataclass(frozen=True)
+class RwkvGradeNowCards:
+    """The Grade Now request for some cards: the options of the cards to
+    answer, and the cards RWKV-Curve gave no intervals for."""
+
+    card_options: tuple[scheduler_pb2.GradeNowRequest.CardOptions, ...]
+    answered_card_ids: tuple[int, ...]
+    unanswered_card_ids: tuple[int, ...]
+
+
+# how long Grade Now waits for other RWKV work before it leaves RWKV-Curve
+# cards unanswered
+_RWKV_GRADE_NOW_BACKEND_WAIT_SECS = 30.0
+_GRADE_NOW_RATINGS = (
+    scheduler_pb2.CardAnswer.AGAIN,
+    scheduler_pb2.CardAnswer.HARD,
+    scheduler_pb2.CardAnswer.GOOD,
+    scheduler_pb2.CardAnswer.EASY,
+)
+
+
+def grade_now_rating(ease: int) -> scheduler_pb2.CardAnswer.Rating.V:
+    """The answer rating of an ease: 1 Again, 2 Hard, 3 Good, 4 Easy."""
+    if not 1 <= ease <= 4:
+        raise ValueError("ease must be 1-4")
+    return _GRADE_NOW_RATINGS[ease - 1]
+
+
+def rwkv_grade_now_cards(
+    reviewer: object,
+    card_ids: Sequence[int],
+    ease: int,
+    card_options: Sequence[scheduler_pb2.GradeNowRequest.CardOptions] = (),
+) -> RwkvGradeNowCards:
+    """Answer each card with `ease` (1-4) as the reviewer would (spec
+    sched.grade-now-rwkv-curve), without the reviewer showing it.
+
+    Each RWKV card gets the states the reviewer's answer buttons get
+    (`update_reviewer_scheduling_states`) and the S90, retrievability and
+    review kind the reviewer's answer carries (`set_answer_rwkv_metadata`).
+    A card whose buttons would wait for RWKV-Curve
+    (`answer_intervals_pending`) is left unanswered, never answered with
+    FSRS-7's states. A card of an FSRS-7 preset keeps its options as given.
+    `reviewer` supplies the collection (`reviewer.mw.col`); it can be a
+    stand-in without a reviewer screen.
+    """
+
+    col = _collection(reviewer)
+    get_card = getattr(col, "get_card", None)
+    sched = getattr(col, "sched", None)
+    if not callable(get_card) or sched is None:
+        raise ValueError("Grade Now needs a collection")
+    grade_now_rating(ease)
+    given_options = {options.card_id: options for options in card_options}
+    synthetic_states = getattr(reviewer, _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR, None)
+    answered: list[tuple[int, scheduler_pb2.GradeNowRequest.CardOptions]] = []
+    unanswered: list[int] = []
+    # hold the RWKV backend for the whole batch, so other RWKV work cannot
+    # make the reviewer's non-blocking prediction below give up
+    backend_held = _reviewer_backend_execution_lock.acquire(
+        timeout=_RWKV_GRADE_NOW_BACKEND_WAIT_SECS
+    )
+    try:
+        for card_id in dict.fromkeys(card_ids):
+            options = scheduler_pb2.GradeNowRequest.CardOptions(card_id=card_id)
+            if card_id in given_options:
+                options.CopyFrom(given_options[card_id])
+            card = get_card(card_id)
+            # a Grade Now answer takes no time
+            card.start_timer()
+            context = SimpleNamespace(
+                mw=getattr(reviewer, "mw", None),
+                _v3=SimpleNamespace(states=None),
+                _desired_retention_override=(
+                    options.desired_retention_override
+                    if options.HasField("desired_retention_override")
+                    else None
+                ),
+            )
+            if synthetic_states is not None:
+                setattr(
+                    context, _REVIEWER_SYNTHETIC_ANSWER_STATES_ATTR, synthetic_states
+                )
+            if not rwkv_review_active(context, card):
+                answered.append((card_id, options))
+                continue
+
+            states = sched.get_scheduling_states(
+                card_id, context._desired_retention_override
+            )
+            context._v3.states = states
+            if backend_held:
+                states = update_reviewer_scheduling_states(states, context, card)
+            if answer_intervals_pending(context, card):
+                unanswered.append(card_id)
+                continue
+
+            answer = scheduler_pb2.CardAnswer(
+                card_id=card_id,
+                rating=grade_now_rating(ease),
+                answered_at_millis=int(time.time() * 1000),
+            )
+            set_answer_rwkv_metadata(answer, context, card, ease)
+            options.scheduling_states.CopyFrom(states)
+            options.ClearField("rwkv_s90")
+            options.ClearField("rwkv_retrievability")
+            options.ClearField("rwkv_review_kind")
+            if answer.HasField("rwkv_s90"):
+                options.rwkv_s90 = answer.rwkv_s90
+            if answer.HasField("rwkv_retrievability"):
+                options.rwkv_retrievability = answer.rwkv_retrievability
+            if answer.HasField("rwkv_review_kind"):
+                options.rwkv_review_kind = answer.rwkv_review_kind
+            answered.append((card_id, options))
+    finally:
+        if backend_held:
+            _reviewer_backend_execution_lock.release()
+
+    return RwkvGradeNowCards(
+        card_options=tuple(options for _, options in answered),
+        answered_card_ids=tuple(card_id for card_id, _ in answered),
+        unanswered_card_ids=tuple(unanswered),
+    )
+
+
 def prepare_grade_now_reconciliation(
     reviewer: object,
     card_ids: Sequence[int],
