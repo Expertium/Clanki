@@ -3094,6 +3094,13 @@ def test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals() -> N
         requests[0].good,
         requests[0].easy,
     ) == pytest.approx((0.2, 1.5, 9.4, 18.0))
+    # the S90s go along, for the young-leech check (spec sched.rwkv-curve-fuzz)
+    assert (
+        requests[0].again_s90,
+        requests[0].hard_s90,
+        requests[0].good_s90,
+        requests[0].easy_s90,
+    ) == pytest.approx((1, 2, 10, 19))
     # the backend's states are used, with each button's S90 as its stability
     assert updated.again.normal.relearning.learning.scheduled_secs == 120
     assert updated.good.normal.review.scheduled_days == 9
@@ -3110,11 +3117,18 @@ def test_rwkv_curve_states_only_send_supplied_ratings() -> None:
     card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
 
     rwkv_curve_scheduling_states(
-        reviewer, card, SchedulingStates(), RwkvIntervalOverride(good=10.5)
+        reviewer,
+        card,
+        SchedulingStates(),
+        RwkvIntervalOverride(good=10.5),
+        RwkvIntervalOverride(hard=4, good=12.5),
     )
 
     assert not requests[0].HasField("hard")
     assert requests[0].good == pytest.approx(10.5)
+    # an S90 goes only with its button's interval
+    assert not requests[0].HasField("hard_s90")
+    assert requests[0].good_s90 == pytest.approx(12.5)
 
 
 def test_rwkv_curve_states_without_backend_use_whole_days() -> None:

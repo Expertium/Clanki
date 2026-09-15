@@ -33,7 +33,10 @@ configured fuzz range; and each day button sits at least one day above the
 day button before it. The resulting fuzz delta is recorded on the state and
 shown above the answer buttons when that preference is on. This applies to
 every card the preset schedules, new and learning cards included. The S90
-RWKV-Curve supplies for a button becomes that answer's stability.
+RWKV-Curve supplies for a button becomes that answer's stability, in the
+states the backend builds, and the "leech only if young" check
+(`leech_only_if_young`) compares RWKV-Curve's Again S90 with 21 days, not
+FSRS-7's (`sched.next-state-s90`).
 
 Before this entry, RWKV-Curve wrote its interval over the already-fuzzed FSRS
 state and set the delta to 0, so RWKV-Curve users got no fuzz and no sibling
@@ -43,8 +46,12 @@ dispersal at all.
 outcome_, not of FSRS; switching the interval source must not switch them off.
 Andrew, 2026-09-15: Again on a relearning card without steps follows the
 review rule, as upstream did (it had been fuzzed like a graduating card).
+Later the same day (audit of RWKV-Curve): the young-leech check must not
+use FSRS-7's S90 for an RWKV-Curve card, since two cards with the same
+RWKV-Curve intervals were leeches or not depending on FSRS-7.
 
-**Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`
+**Pinned by:** `scheduling_states_with_intervals_apply_the_fsrs_rules`,
+`rwkv_curve_s90s_decide_the_young_leech_check`
 (`rslib/src/scheduler/answering/mod.rs`),
 `external_intervals_are_dispersed_away_from_siblings`
 (`rslib/src/scheduler/states/load_balancer.rs`),

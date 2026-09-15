@@ -8119,6 +8119,11 @@ def rwkv_curve_scheduling_states(
         interval = getattr(overrides, rating)
         if interval is not None:
             setattr(request, rating, _validated_unrounded_interval(interval))
+            # the backend's young-leech check uses RWKV-Curve's S90, not
+            # FSRS-7's (spec sched.rwkv-curve-fuzz)
+            s90 = getattr(s90_overrides, rating)
+            if s90 is not None:
+                setattr(request, f"{rating}_s90", _validated_unrounded_interval(s90))
     rebuilt = SchedulingStates()
     rebuilt.CopyFrom(build(request))
     return apply_review_s90_overrides(rebuilt, overrides, s90_overrides)

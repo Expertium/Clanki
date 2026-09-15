@@ -10,3 +10,5 @@
   reschedule does: rounded to the nearest day (not up), capped at the
   preset's maximum interval, and spread by fuzz, the load balancer and Easy
   Days, so cards with the same interval no longer all land on the same day.
+- Under RWKV-Curve, "Leech only if young" uses RWKV-Curve's stability for
+  Again, not FSRS-7's.

@@ -703,6 +703,12 @@ impl crate::services::SchedulerService for Collection {
         self.scheduling_states_with_intervals(
             CardId(input.card_id),
             [input.again, input.hard, input.good, input.easy],
+            [
+                input.again_s90,
+                input.hard_s90,
+                input.good_s90,
+                input.easy_s90,
+            ],
         )
         .map(Into::into)
     }

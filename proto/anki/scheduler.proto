@@ -774,6 +774,13 @@ message SchedulingStatesWithIntervalsRequest {
   optional float hard = 3;
   optional float good = 4;
   optional float easy = 5;
+  // The external scheduler's unrounded S90 in days, one per answer button:
+  // the next state's stability, and for Again what the "leech only if
+  // young" check compares (spec sched.rwkv-curve-fuzz).
+  optional float again_s90 = 6;
+  optional float hard_s90 = 7;
+  optional float good_s90 = 8;
+  optional float easy_s90 = 9;
 }
 
 message FsrsCurrentRetrievabilityRequest {
