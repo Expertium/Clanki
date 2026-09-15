@@ -248,13 +248,21 @@ def test_older_reviews_are_counted_once_and_newer_ones_every_time(
                     grouped.append(condition.split()[1])
                     return original(dids, condition)
 
+                by_deck = reporter._review_days_by_deck
+
+                def review_days_by_deck(cutoff: int) -> Any:
+                    grouped.append("decks <")
+                    return by_deck(cutoff)
+
                 reporter._review_days = review_days  # type: ignore[method-assign]
+                reporter._review_days_by_deck = review_days_by_deck  # type: ignore[method-assign]
                 assert reporter._cards_done(
                     current_deck_only, None
                 ) == _reviews_per_day_in_one_query(col, settings, current_deck_only)
 
         check()
-        assert grouped == ["<", ">=", "<", ">="]  # one count per scope
+        # one count per scope; a set of decks sums per-deck counts, made once
+        assert grouped == ["<", ">=", "decks <", ">="]
         grouped.clear()
 
         # a new review is counted on its own; the older days are reused
@@ -263,22 +271,34 @@ def test_older_reviews_are_counted_once_and_newer_ones_every_time(
         assert grouped == [">=", ">="]
         grouped.clear()
 
-        # moving an older card changes the current deck's older days only
+        # moving an older card changes the current deck's older days only;
+        # the per-deck counts are made again
         col.set_deck([card_ids[2]], DeckId(1))
         check()
-        assert grouped == [">=", "<", ">="]
+        assert grouped == [">=", "decks <", ">="]
         grouped.clear()
 
         # deleting a card with older reviews changes both
         col.remove_notes([col.get_card(card_ids[0]).nid])
         check()
-        assert grouped == ["<", ">=", "<", ">="]
+        assert grouped == ["<", ">=", "decks <", ">="]
         grouped.clear()
 
         # a review imported from the past is older: both are counted again
         add_review(card_ids[1], 50)
         check()
-        assert grouped == ["<", ">=", "<", ">="]
+        assert grouped == ["<", ">=", "decks <", ">="]
+        grouped.clear()
+
+        # another set of decks is a sum of the per-deck counts: no count
+        other_scope = ActivityReporter(col, settings, cache)
+        scope = [int(DeckId(1)), int(other)]
+        older = other_scope._older_review_days(scope)
+        assert older.cutoff == cache["by deck"].cutoff
+        reference = ActivityReporter(col, settings)._review_days(
+            scope, f"id < {older.cutoff}"
+        )
+        assert older.days == reference
 
         # the history start leaves out earlier days, as a filter on the day
         reporter = ActivityReporter(col, settings, cache)
