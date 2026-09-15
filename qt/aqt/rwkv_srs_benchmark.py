@@ -154,7 +154,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
             retrievability=_probability_as_float(probability),
             curve_retrievability=self._curve_retrievability(review_input),
             current_interval=_whole_interval(intervals.good),
-            current_s90=_whole_interval(s90s.good),
+            current_s90=s90s.good,
             interval_overrides=intervals,
             s90_overrides=s90s,
         )
@@ -219,7 +219,7 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
                 retrievability=_probability_as_float(probability),
                 curve_retrievability=self._curve_retrievability(review_input),
                 current_interval=_whole_interval(intervals.good),
-                current_s90=_whole_interval(s90s.good),
+                current_s90=s90s.good,
                 interval_overrides=intervals,
                 s90_overrides=s90s,
             )
@@ -260,9 +260,11 @@ class SrsBenchmarkRwkvReviewerBackend(RwkvReviewerBackend):
         )
 
     def _s90_overrides(self, review_input: RwkvReviewInput) -> RwkvIntervalOverride:
+        # unrounded, possibly under a day (spec sched.rwkv-curve-s90)
         return self._curve_interval_overrides(
             review_input,
             (0.9, 0.9, 0.9, 0.9),
+            unrounded=True,
         )
 
     def _curve_retrievability(self, review_input: RwkvReviewInput) -> float | None:
@@ -441,9 +443,9 @@ class _RustRwkvRuntime:
                     else None
                 ),
                 current_interval=_optional_interval(current_interval),
-                current_s90=_optional_interval(current_s90),
+                current_s90=_optional_unrounded_interval(current_s90),
                 interval_overrides=_unrounded_interval_override_from_tuple(intervals),
-                s90_overrides=_interval_override_from_tuple(s90s),
+                s90_overrides=_unrounded_interval_override_from_tuple(s90s),
                 button_probabilities=_button_probabilities_from_tuple(
                     button_probabilities
                 ),
@@ -745,9 +747,9 @@ class _RustRwkvRuntime:
                     else None
                 ),
                 current_interval=_optional_interval(current_interval),
-                current_s90=_optional_interval(current_s90),
+                current_s90=_optional_unrounded_interval(current_s90),
                 interval_overrides=_unrounded_interval_override_from_tuple(intervals),
-                s90_overrides=_interval_override_from_tuple(s90s),
+                s90_overrides=_unrounded_interval_override_from_tuple(s90s),
                 button_probabilities=_button_probabilities_from_tuple(
                     button_probabilities
                 ),
@@ -898,7 +900,7 @@ class _RustRwkvRuntime:
             (
                 float(retrievability),
                 int(current_interval) if current_interval else None,
-                int(current_s90) if current_s90 else None,
+                float(current_s90) if current_s90 else None,
             )
             for retrievability, current_interval, current_s90 in outputs
         ]
@@ -1464,14 +1466,15 @@ def _state_bytes(state: object | None) -> bytes | None:
 
 def _whole_interval(value: float | None) -> int | None:
     """A (possibly unrounded) interval in whole days, rounded up, at least 1;
-    the current interval and S90 stay whole days."""
+    the current interval stays whole days (the S90 does not, spec
+    sched.rwkv-curve-s90)."""
 
     return None if value is None else max(1, math.ceil(value))
 
 
 def _unrounded_interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
-    """Answer intervals from the embedded runtime: unrounded days (spec
-    sched.sub-day-intervals)."""
+    """Answer intervals and S90s from the embedded runtime: unrounded days
+    (spec sched.sub-day-intervals, sched.rwkv-curve-s90)."""
 
     if not isinstance(values, tuple) or len(values) != 4:
         return RwkvIntervalOverride()
@@ -1488,18 +1491,6 @@ def _optional_unrounded_interval(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if math.isfinite(value) and value > 0 else None
-
-
-def _interval_override_from_tuple(values: object) -> RwkvIntervalOverride:
-    if not isinstance(values, tuple) or len(values) != 4:
-        return RwkvIntervalOverride()
-
-    return RwkvIntervalOverride(
-        again=_optional_interval(values[0]),
-        hard=_optional_interval(values[1]),
-        good=_optional_interval(values[2]),
-        easy=_optional_interval(values[3]),
-    )
 
 
 def _button_probabilities_from_tuple(

@@ -22,6 +22,9 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- RWKV-Curve's stability (S90) is no longer rounded up to whole days: card
+  info and the stored stability show the exact point where RWKV-Curve's
+  curve meets 90%, which can be under a day.
 - Deck options: the Algorithm dropdown shows a short description under each
   algorithm, and its revert button restores RWKV-Curve (the new-preset
   default). The highlighted entry in any dropdown now opens on the current
