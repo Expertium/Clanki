@@ -38,6 +38,7 @@ use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::memory_state::fsrs_item_for_memory_state;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::memory_state::get_decay_from_params;
+use crate::scheduler::fsrs::params::fractional_elapsed_days_for_params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::round_to_two_decimals;
@@ -669,9 +670,10 @@ impl Collection {
             } else {
                 self.storage.time_of_last_review(card.id)?
             };
+            let fractional = fractional_elapsed_days_for_params(params);
             let days_elapsed = last_review_time
                 .map(|last_review_time| {
-                    fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now)
+                    fsrs_elapsed_days(&card, last_review_time, timing.next_day_at, now, fractional)
                 })
                 .unwrap_or_default();
             elapsed_days_for_log = Some(days_elapsed);
@@ -834,14 +836,21 @@ impl Collection {
     }
 }
 
+/// The elapsed time FSRS sees when a card is answered. With `fractional`
+/// (the FSRS-7 model, spec sched.fsrs7-fractional-elapsed-time) it is always
+/// the exact time since the last review, in days; otherwise only intraday
+/// learning cards get that, and other cards get whole days counted from the
+/// next day rollover.
 pub(crate) fn fsrs_elapsed_days(
     card: &Card,
     last_review_time: TimestampSecs,
     next_day_at: TimestampSecs,
     now: TimestampSecs,
+    fractional: bool,
 ) -> f32 {
-    if matches!(card.queue, CardQueue::Learn)
-        && matches!(card.ctype, CardType::Learn | CardType::Relearn)
+    if fractional
+        || (matches!(card.queue, CardQueue::Learn)
+            && matches!(card.ctype, CardType::Learn | CardType::Relearn))
     {
         (now.elapsed_secs_since(last_review_time).max(0) as f32) / 86_400.0
     } else {
@@ -1438,7 +1447,7 @@ pub(crate) mod test {
 
         use crate::deckconfig::deck_config_inner_for_storage;
 
-        fn setup(legacy: bool) -> Result<(Collection, Card)> {
+        fn setup(legacy: bool, last_review: TimestampSecs) -> Result<(Collection, Card)> {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
             col.update_default_deck_config(|config| {
@@ -1522,13 +1531,15 @@ pub(crate) mod test {
                 stability_fast: None,
                 difficulty: 5.0,
             });
-            card.last_review_time = Some(TimestampSecs::now().adding_secs(-5 * 86_400));
+            card.last_review_time = Some(last_review);
             col.storage.update_card(&card)?;
             Ok((col, card))
         }
 
-        let (mut clean_col, clean_card) = setup(false)?;
-        let (mut legacy_col, legacy_card) = setup(true)?;
+        // FSRS-7 sees the exact elapsed time, so both share the last review
+        let last_review = TimestampSecs::now().adding_secs(-5 * 86_400);
+        let (mut clean_col, clean_card) = setup(false, last_review)?;
+        let (mut legacy_col, legacy_card) = setup(true, last_review)?;
 
         // the preset loads, and the settings that still exist are intact
         let config = legacy_col
@@ -1548,10 +1559,19 @@ pub(crate) mod test {
         assert_eq!(legacy.desired_retention, clean.desired_retention);
         let clean_states = clean.fsrs_next_states.as_ref().unwrap();
         let legacy_states = legacy.fsrs_next_states.as_ref().unwrap();
-        assert_eq!(legacy_states.again.interval, clean_states.again.interval);
-        assert_eq!(legacy_states.hard.interval, clean_states.hard.interval);
-        assert_eq!(legacy_states.good.interval, clean_states.good.interval);
-        assert_eq!(legacy_states.easy.interval, clean_states.easy.interval);
+        // the two updaters may read the clock a second apart (fractional
+        // elapsed time), so equal up to a tiny tolerance
+        for (legacy_interval, clean_interval) in [
+            (legacy_states.again.interval, clean_states.again.interval),
+            (legacy_states.hard.interval, clean_states.hard.interval),
+            (legacy_states.good.interval, clean_states.good.interval),
+            (legacy_states.easy.interval, clean_states.easy.interval),
+        ] {
+            assert!(
+                (legacy_interval - clean_interval).abs() <= 1e-4 * clean_interval.max(1.0),
+                "{legacy_interval} vs {clean_interval}"
+            );
+        }
 
         // answering writes the fixed desired retention onto the card
         let states = legacy_col.get_scheduling_states(legacy_card.id)?;
@@ -2184,6 +2204,89 @@ pub(crate) mod test {
             col.undo()?;
             assert!(col.fsrs_enabled());
             assert!(col.fsrs_short_term_with_steps_enabled());
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-fractional-elapsed-time
+    #[test]
+    fn fsrs7_gets_fractional_elapsed_time_like_training() {
+        const HOUR: i64 = 3600;
+        const DAY: i64 = 86_400;
+        // last review Monday 23:00, answered Wednesday 05:00, rollover 04:00
+        let monday = 1_000 * DAY;
+        let last_review = TimestampSecs(monday + 23 * HOUR);
+        let now = TimestampSecs(monday + 2 * DAY + 5 * HOUR);
+        let next_day_at = TimestampSecs(monday + 3 * DAY + 4 * HOUR);
+        let mut card = Card {
+            queue: CardQueue::Review,
+            ctype: CardType::Review,
+            ..Default::default()
+        };
+        assert_eq!(
+            fsrs_elapsed_days(&card, last_review, next_day_at, now, true),
+            1.25
+        );
+        assert_eq!(
+            fsrs_elapsed_days(&card, last_review, next_day_at, now, false),
+            2.0
+        );
+        // intraday learning cards get the exact time with every model
+        card.queue = CardQueue::Learn;
+        card.ctype = CardType::Relearn;
+        assert_eq!(
+            fsrs_elapsed_days(&card, last_review, next_day_at, now, false),
+            1.25
+        );
+
+        // the FSRS-7 model (34 parameters) is the one trained on fractional deltas
+        assert!(fractional_elapsed_days_for_params(
+            &low_retention_fsrs7_params()
+        ));
+        for len in [0, 17, 19, 21] {
+            assert!(
+                !fractional_elapsed_days_for_params(&vec![0.5; len]),
+                "{len}"
+            );
+        }
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-fractional-elapsed-time
+    #[test]
+    fn fsrs7_review_answer_uses_the_exact_elapsed_time() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.fsrs_version = FsrsVersion::Seven as i32;
+            config.fsrs_params_7 = low_retention_fsrs7_params();
+        });
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 2;
+        card.due = col.timing_today()?.days_elapsed as i32;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 3.0,
+            stability_internal: 3.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        // reviewed 36 hours ago: 1.5 days, never a whole number of days
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-36 * 3600));
+        col.storage.update_card(&card)?;
+
+        let updater = col.card_state_updater(card.clone(), None)?;
+        let fsrs = FSRS::new(&low_retention_fsrs7_params())?;
+        let state = card.memory_state.unwrap().into();
+        let exact = fsrs.current_retrievability(state, 1.5);
+        let seen = updater.fsrs_review_retrievability.unwrap();
+        assert!((seen - exact).abs() < 1e-3, "{seen} vs {exact}");
+        for whole_days in [1.0, 2.0, 3.0] {
+            let rounded = fsrs.current_retrievability(state, whole_days);
+            assert!((seen - rounded).abs() > 1e-3, "{seen} vs {whole_days} days");
         }
         Ok(())
     }

@@ -68,6 +68,15 @@ pub(crate) fn include_same_day_for_params(params: &[f32]) -> bool {
     include_same_day_training_entries(model_version_for_params(params), None)
 }
 
+/// Whether a card answered with these parameters gets its elapsed time as
+/// fractional days, exactly as the review log gives it to training (spec
+/// sched.fsrs7-fractional-elapsed-time): true for the FSRS-7 model, whose
+/// training deltas come from revlog millisecond timestamps; older models are
+/// trained on whole days.
+pub(crate) fn fractional_elapsed_days_for_params(params: &[f32]) -> bool {
+    include_same_day_for_params(params)
+}
+
 pub(crate) fn ignore_revlogs_before_date_to_ms(
     ignore_revlogs_before_date: &String,
 ) -> Result<TimestampMillis> {
