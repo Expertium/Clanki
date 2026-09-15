@@ -65,7 +65,7 @@ use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
-use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
+use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
@@ -480,7 +480,6 @@ impl crate::services::SchedulerService for Collection {
             ..Default::default()
         };
         let fsrs = FSRS::new(config.fsrs_params())?;
-        let params = config.fsrs_params();
         // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
         let fsrs_allow_short_term = true;
         // Always on (spec sched.same-day-steps-always-on); the request field
@@ -498,11 +497,8 @@ impl crate::services::SchedulerService for Collection {
                 config.inner.desired_retention,
                 days_elapsed,
             )?;
-            let fsrs_again_s90 = if config.inner.leech_only_if_young {
-                Some(fsrs_memory_state_for_params(params, fsrs_next_states.again.memory)?.stability)
-            } else {
-                None
-            };
+            let fsrs_next_s90 = Some(fsrs_next_states_s90(&fsrs, &fsrs_next_states));
+
             Ok(crate::scheduler::states::StateContext {
                 fuzz_factor: None,
                 fsrs_next_states: Some(fsrs_next_states),
@@ -523,7 +519,7 @@ impl crate::services::SchedulerService for Collection {
                 fsrs_minimum_interval_secs: config.inner.fsrs_minimum_interval_secs,
                 leech_threshold: config.inner.leech_threshold,
                 leech_only_if_young: config.inner.leech_only_if_young,
-                fsrs_again_s90,
+                fsrs_next_s90,
                 load_balancer_ctx: None,
                 relearn_steps: crate::scheduler::states::steps::LearningSteps::new(
                     &config.inner.relearn_steps,
