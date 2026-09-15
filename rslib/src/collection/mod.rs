@@ -86,6 +86,13 @@ impl CollectionBuilder {
         if !server {
             col.migrate_learning_queues_switch()?;
             col.migrate_to_fsrs7_only()?;
+            // cards another client wrote since the last open, including a
+            // full download or a restored backup (spec
+            // sync.fsrs7-state-of-foreign-cards); a failure must not stop
+            // the collection from opening
+            if let Err(err) = col.repair_fsrs7_state_of_foreign_cards() {
+                tracing::warn!(?err, "repairing the fsrs-7 state of foreign cards failed");
+            }
         }
 
         Ok(col)

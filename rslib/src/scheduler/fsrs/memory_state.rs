@@ -24,6 +24,7 @@ use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
 use crate::scheduler::fsrs::round_to_two_decimals;
+use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::scheduler::states::fuzz::minimum_review_fuzz_interval;
 use crate::scheduler::states::fuzz::with_review_fuzz;
 use crate::scheduler::states::fuzz::ReviewFuzzConfig;
@@ -225,6 +226,30 @@ pub(crate) fn fsrs_memory_state_for_s90(params: &[f32], s90: f32) -> Result<Fsrs
     let fsrs = FSRS::new(params)?;
     let state = memory_state_from_sm2_with_params(&fsrs, params, 2.5, s90, 0.9)?;
     Ok(FsrsMemoryState {
+        stability: s90,
+        stability_internal: state.stability,
+        stability_fast: Some(state.stability_fast),
+        difficulty: state.difficulty,
+    })
+}
+
+/// The FSRS-7 memory state with `difficulty` whose S90 is `s90`, for a card
+/// another client wrote that has no usable review log (spec
+/// sync.fsrs7-state-of-foreign-cards): the fast/internal stability ratio of
+/// the crate's interval conversion, scaled to the S90. None when the crate
+/// cannot convert the S90.
+pub(crate) fn fsrs_memory_state_for_s90_and_difficulty(
+    fsrs: &FSRS,
+    s90: f32,
+    difficulty: f32,
+) -> Option<FsrsMemoryState> {
+    let shape = fsrs.memory_state_from_sm2(2.5, s90, 0.9).ok()?;
+    let shape = MemoryState {
+        difficulty: difficulty.clamp(1.0, 10.0),
+        ..shape
+    };
+    let state = scale_state_to_interval(fsrs, shape, s90, 0.9);
+    Some(FsrsMemoryState {
         stability: s90,
         stability_internal: state.stability,
         stability_fast: Some(state.stability_fast),
@@ -603,24 +628,8 @@ impl Collection {
             return Ok(());
         }
         let restore_schedule = self.get_config_bool(BoolKey::FsrsReschedule);
-
-        let mut card_ids_by_config: HashMap<DeckConfigId, Vec<CardId>> = HashMap::new();
-        let mut deck_desired_retention: HashMap<DeckId, f32> = HashMap::new();
-        for &card_id in conflicts.keys() {
-            let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
-            let deck_id = card.original_or_current_deck_id();
-            let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
-            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-            card_ids_by_config
-                .entry(config_id)
-                .or_default()
-                .push(card_id);
-            if let Ok(normal) = deck.normal() {
-                if let Some(desired_retention) = normal.desired_retention {
-                    deck_desired_retention.insert(deck_id, desired_retention);
-                }
-            }
-        }
+        let (card_ids_by_config, deck_desired_retention) =
+            self.card_ids_by_home_config(conflicts.keys().copied())?;
 
         let timing = self.timing_today()?;
         let usn = self.usn()?;
@@ -634,11 +643,12 @@ impl Collection {
             let params = config.fsrs_params();
             let fsrs = FSRS::new(params)?;
             let last_revlog_info = get_last_revlog_info(&revlog);
+            // spec deck-options.historical-retention-fixed
             let items = fsrs_items_for_memory_states(
                 &fsrs,
                 params,
                 revlog,
-                config.inner.historical_retention,
+                HISTORICAL_RETENTION,
                 ignore_revlogs_before_ms_from_config(&config)?,
             )?;
 
@@ -699,6 +709,154 @@ impl Collection {
         }
 
         Ok(())
+    }
+
+    /// The cards grouped by their home deck's preset (a card in a filtered
+    /// deck counts in its original deck), with the desired retention of each
+    /// home deck that overrides its preset's.
+    #[allow(clippy::type_complexity)]
+    fn card_ids_by_home_config(
+        &mut self,
+        card_ids: impl Iterator<Item = CardId>,
+    ) -> Result<(HashMap<DeckConfigId, Vec<CardId>>, HashMap<DeckId, f32>)> {
+        let mut card_ids_by_config: HashMap<DeckConfigId, Vec<CardId>> = HashMap::new();
+        let mut deck_desired_retention: HashMap<DeckId, f32> = HashMap::new();
+        for card_id in card_ids {
+            let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+            let deck_id = card.original_or_current_deck_id();
+            let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
+            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+            card_ids_by_config
+                .entry(config_id)
+                .or_default()
+                .push(card_id);
+            if let Ok(normal) = deck.normal() {
+                if let Some(desired_retention) = normal.desired_retention {
+                    deck_desired_retention.insert(deck_id, desired_retention);
+                }
+            }
+        }
+        Ok((card_ids_by_config, deck_desired_retention))
+    }
+
+    /// Gives every card whose row another client wrote (a memory state
+    /// without FSRS-7's internal stability: official Anki and AnkiDroid drop
+    /// it, and their memory state is not an FSRS-7 one) its FSRS-7 memory
+    /// state again, with its home preset's parameters (spec
+    /// sync.fsrs7-state-of-foreign-cards): from its review log when that
+    /// has a usable review, else the FSRS-7 state whose S90 is the stored
+    /// stability, keeping the stored difficulty. Desired retention and decay
+    /// come from the preset, as in the post-sync reconcile. Due dates stay.
+    /// The rows are marked modified, so the next sync uploads them. With
+    /// FSRS off nothing runs. Returns the number of such cards found.
+    ///
+    /// Expects a transaction; `repair_fsrs7_state_of_foreign_cards` opens one.
+    pub(crate) fn repair_fsrs7_state_of_foreign_cards_inner(&mut self) -> Result<usize> {
+        if !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(0);
+        }
+        let card_ids = self.storage.card_ids_with_foreign_fsrs_state()?;
+        self.repair_fsrs7_state_of_cards_inner(card_ids)
+    }
+
+    /// The repair of `repair_fsrs7_state_of_foreign_cards_inner` for cards
+    /// known to be foreign (an import finds them in the package, before
+    /// writing them gives them an internal stability): their stored
+    /// stability is taken as the S90.
+    pub(crate) fn repair_fsrs7_state_of_cards_inner(
+        &mut self,
+        card_ids: Vec<CardId>,
+    ) -> Result<usize> {
+        if card_ids.is_empty() || !self.get_config_bool(BoolKey::Fsrs) {
+            return Ok(0);
+        }
+        let (card_ids_by_config, deck_desired_retention) =
+            self.card_ids_by_home_config(card_ids.iter().copied())?;
+        let timing = self.timing_today()?;
+        let usn = self.usn()?;
+        for (config_id, card_ids) in card_ids_by_config {
+            let config = self
+                .storage
+                .get_deck_config(config_id)?
+                .or_not_found(config_id)?;
+            let revlog =
+                self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
+            let params = config.fsrs_params();
+            let fsrs = FSRS::new(params)?;
+            let last_revlog_info = get_last_revlog_info(&revlog);
+            let (items, mut cards_without_items): (
+                Vec<(CardId, FsrsItemForMemoryState)>,
+                Vec<CardId>,
+            ) = fsrs_items_for_memory_states(
+                &fsrs,
+                params,
+                revlog,
+                HISTORICAL_RETENTION,
+                ignore_revlogs_before_ms_from_config(&config)?,
+            )?
+            .into_iter()
+            .partition_map(|(card_id, item)| match item {
+                Some(item) => Either::Left((card_id, item)),
+                None => Either::Right(card_id),
+            });
+            // a card without any review log row is missing from `items`
+            let seen: HashSet<CardId> = items
+                .iter()
+                .map(|(card_id, _)| *card_id)
+                .chain(cards_without_items.iter().copied())
+                .collect();
+            cards_without_items.extend(card_ids.iter().copied().filter(|id| !seen.contains(id)));
+
+            let decay = get_decay_from_params(params);
+            let preset_desired_retention = config.inner.desired_retention;
+            let set_decay_and_desired_retention = |card: &mut Card| {
+                let deck_id = card.original_or_current_deck_id();
+                card.desired_retention = Some(
+                    *deck_desired_retention
+                        .get(&deck_id)
+                        .unwrap_or(&preset_desired_retention),
+                );
+                card.decay = Some(decay);
+            };
+            for card_id in cards_without_items {
+                let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+                let Some(state) = card.memory_state.and_then(|stored| {
+                    fsrs_memory_state_for_s90_and_difficulty(
+                        &fsrs,
+                        stored.stability,
+                        stored.difficulty,
+                    )
+                }) else {
+                    continue;
+                };
+                set_decay_and_desired_retention(&mut card);
+                card.memory_state = Some(state);
+                self.update_reconciled_card_after_sync(&mut card, usn)?;
+            }
+            // no conflicts: last review time from the review log, schedule kept
+            self.reconcile_cards_with_items_after_sync(
+                items,
+                &fsrs,
+                &HashMap::new(),
+                &last_revlog_info,
+                false,
+                timing,
+                set_decay_and_desired_retention,
+                usn,
+            )?;
+        }
+        Ok(card_ids.len())
+    }
+
+    /// `repair_fsrs7_state_of_foreign_cards_inner` in its own transaction,
+    /// without an undo entry; nothing is written when no card needs it.
+    pub(crate) fn repair_fsrs7_state_of_foreign_cards(&mut self) -> Result<usize> {
+        if !self.get_config_bool(BoolKey::Fsrs)
+            || self.storage.card_ids_with_foreign_fsrs_state()?.is_empty()
+        {
+            return Ok(0);
+        }
+        self.transact_no_undo(|col| col.repair_fsrs7_state_of_foreign_cards_inner())
     }
 
     /// Marks the card as changed locally so the running sync uploads it. No
@@ -1481,6 +1639,79 @@ mod tests {
             Some(fsrs_memory_state_for_fsrs(&fsrs, at_0_9)),
         );
         assert!((with_stored_0_7.stability - 100.0).abs() < 0.01);
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.historical-retention-fixed: the
+    // post-sync reconcile ignores a stored historical retention too.
+    #[test]
+    fn post_sync_reconcile_ignores_the_stored_historical_retention() -> Result<()> {
+        fn reconciled_state(stored_historical_retention: f32) -> Result<FsrsMemoryState> {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.update_default_deck_config(|config| {
+                config.historical_retention = stored_historical_retention;
+            });
+            NoteAdder::basic(&mut col).add(&mut col);
+            let mut card = col.get_first_card();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 30;
+            card.ease_factor = 2500;
+            col.storage.update_card(&card)?;
+            // a truncated review log (it starts with a review): the starting
+            // state comes from the SM-2 interval and ease
+            for days_ago in [40, 10] {
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        cid: card.id,
+                        ease_factor: 2500,
+                        interval: 30,
+                        ..revlog(RevlogReviewKind::Review, days_ago)
+                    },
+                    true,
+                )?;
+            }
+            col.transact_no_undo(|col| {
+                col.reconcile_fsrs_state_after_sync(HashMap::from([(
+                    card.id,
+                    FsrsSyncConflict::default(),
+                )]))
+            })?;
+            col.storage
+                .get_card(card.id)?
+                .unwrap()
+                .memory_state
+                .or_invalid("no memory state")
+        }
+
+        assert_eq!(reconciled_state(0.7)?, reconciled_state(0.9)?);
+        Ok(())
+    }
+
+    // Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards: only a memory
+    // state without FSRS-7's internal stability marks a row as foreign.
+    #[test]
+    fn only_rows_without_the_internal_stability_are_foreign() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..4 {
+            NoteAdder::basic(&mut col).add(&mut col);
+        }
+        let card_ids = col.search_cards("", SortMode::NoOrder)?;
+        for (card_id, data) in card_ids.iter().zip([
+            r#"{"s":20.0,"d":6.0,"dr":0.9}"#,
+            r#"{"s":20.0,"s_int":30.0,"d":6.0}"#,
+            r#"{"s":20.0}"#,
+            "",
+        ]) {
+            col.storage
+                .db
+                .execute("update cards set data = ? where id = ?", (data, card_id))?;
+        }
+        assert_eq!(
+            col.storage.card_ids_with_foreign_fsrs_state()?,
+            vec![card_ids[0]]
+        );
         Ok(())
     }
 

@@ -380,7 +380,8 @@ sorting RWKV cards by it has no meaning.
 
 Given any preset, historical retention is 0.9. A memory state inferred from
 SM-2 data (a card with no review log, or a truncated one) uses 0.9 whatever
-`historical_retention` the preset stores; the FSRS simulator and add-on
+`historical_retention` the preset stores; the post-sync reconcile
+(`sync.fsrs-reconcile-after-sync`), the FSRS simulator and add-on
 preset overlays use 0.9 as well, and the value reported for a preset
 (`fsrs_preset_for_card`) is 0.9: the inferred FSRS-7 state reaches 90%
 recall at the card's interval (`sched.fsrs7-sm2-conversion`). The control is gone
@@ -390,7 +391,8 @@ from the screen; the proto field and the stored value stay, and are ignored.
 memory states inferred from SM-2 data under the older FSRS versions, and
 0.9 is the value nearly every preset had.
 
-**Pinned by:** `stored_historical_retention_is_ignored`
+**Pinned by:** `stored_historical_retention_is_ignored`,
+`post_sync_reconcile_ignores_the_stored_historical_retention`
 (`rslib/src/scheduler/fsrs/memory_state.rs`),
 `fsrs_preset_is_derived_from_deck_config`,
 `fsrs_preset_overlay_uses_first_matching_rule`

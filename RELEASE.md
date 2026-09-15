@@ -22,6 +22,15 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- Cards last reviewed in official Anki or AnkiDroid (which store an FSRS-6
+  memory state and drop FSRS-7's extra fields) get their FSRS-7 memory
+  state back: from their review history, or, without one, the FSRS-7 state
+  with the same stability. This happens when the collection opens, during
+  every sync and after importing an .apkg; due dates do not change. Before,
+  such a card's intervals came out about 2.3 times too long.
+- The post-sync repair of conflicting cards now uses the fixed historical
+  retention of 0.9, like everything else, instead of a value stored in the
+  preset.
 - RWKV-Curve's intervals and stability (S90) are now the exact point where
   its forgetting curve meets the target retention. Before, a straight line
   between two search points made them slightly too long (0.27% on median,
