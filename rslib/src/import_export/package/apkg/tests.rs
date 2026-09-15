@@ -237,6 +237,119 @@ fn fsrs_params_preserved_on_export_with_scheduling() {
     assert_eq!(conf.inner.fsrs_params_6.len(), 21);
 }
 
+/// Sets the data column of every card in a legacy .apkg (its collection is
+/// plain SQLite) the way official Anki's export writes it; Clanki's own
+/// export always adds `s_int`.
+fn set_card_data_in_legacy_apkg(apkg: &std::path::Path, data: &str) {
+    let mut archive = zip::ZipArchive::new(File::open(apkg).unwrap()).unwrap();
+    let mut entries = Vec::new();
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+        entries.push((file.name().to_string(), bytes));
+    }
+    drop(archive);
+    let dir = tempfile::tempdir().unwrap();
+    let mut patched = false;
+    for (name, bytes) in &mut entries {
+        if name == "collection.anki2" || name == "collection.anki21" {
+            let path = dir.path().join(name.as_str());
+            std::fs::write(&path, &bytes).unwrap();
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute("update cards set data = ?", [data]).unwrap();
+            db.close().unwrap();
+            *bytes = std::fs::read(&path).unwrap();
+            patched = true;
+        }
+    }
+    assert!(patched, "no legacy collection in the package");
+    let mut writer = zip::ZipWriter::new(File::create(apkg).unwrap());
+    for (name, bytes) in entries {
+        writer
+            .start_file(name, zip::write::FileOptions::<'static, ()>::default())
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+// Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards: an imported card
+// another client wrote (no FSRS-7 internal stability) gets an FSRS-7 memory
+// state; without a review log, the one whose S90 is its stored stability,
+// with its stored difficulty.
+#[test]
+fn imported_foreign_fsrs_state_becomes_an_fsrs7_state() {
+    let (mut src_col, src_tempdir) = open_fs_test_collection("src");
+    let (mut target_col, _target_tempdir) = open_fs_test_collection("target");
+    target_col
+        .set_config_bool(BoolKey::Fsrs, true, false)
+        .unwrap();
+    let apkg_path = src_tempdir.path().join("foreign.apkg");
+    let note = NoteAdder::basic(&mut src_col).add(&mut src_col);
+    // a review card without a review log...
+    src_col
+        .storage
+        .db
+        .execute(
+            "update cards set type = 2, queue = 2, ivl = 20, due = 30 where nid = ?",
+            [note.id],
+        )
+        .unwrap();
+    src_col
+        .export_apkg(
+            &apkg_path,
+            ExportAnkiPackageOptions {
+                with_scheduling: true,
+                with_deck_configs: false,
+                with_media: false,
+                legacy: true,
+            },
+            SearchNode::WholeCollection,
+            None,
+        )
+        .unwrap();
+    // ...in a package as official Anki writes it
+    set_card_data_in_legacy_apkg(&apkg_path, r#"{"s":20.0,"d":6.0}"#);
+    target_col
+        .import_apkg(
+            &apkg_path,
+            ImportAnkiPackageOptions {
+                with_scheduling: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let (card_id, data): (CardId, String) = target_col
+        .storage
+        .db
+        .query_row("select id, data from cards", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert!(data.contains("\"s_int\""), "{data}");
+    let state = target_col
+        .storage
+        .get_card(card_id)
+        .unwrap()
+        .unwrap()
+        .memory_state
+        .unwrap();
+    assert_eq!(state.stability, 20.0);
+    assert_eq!(state.difficulty, 6.0);
+    let fsrs = fsrs::FSRS::new(&fsrs::DEFAULT_PARAMETERS).unwrap();
+    let s90 = fsrs.interval_at_retrievability(
+        fsrs::MemoryState {
+            stability: state.stability_internal,
+            stability_fast: state.stability_fast.unwrap(),
+            difficulty: state.difficulty,
+        },
+        0.9,
+    );
+    assert!((s90 - 20.0).abs() < 0.01, "{state:?} reaches 90% at {s90}");
+}
+
 #[test]
 fn fsrs_params_stripped_on_export_without_scheduling() {
     let conf = export_and_reimport_with_fsrs_params(false);

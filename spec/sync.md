@@ -44,6 +44,47 @@ already held.
 (`rslib/src/sync/collection/tests.rs`); `fsrs_sync_conflict_*`
 (`rslib/src/sync/collection/chunks.rs`) for what counts as a conflict.
 
+## sync.fsrs7-state-of-foreign-cards
+
+Given a card whose stored memory state has a stability (`s`) and a
+difficulty (`d`) but no FSRS-7 internal stability (`s_int`) — Clanki always
+writes it, so the row was last written by another client, such as official
+Anki or AnkiDroid, which drop `s_int` and `s_fast` and compute an FSRS-6
+state — Clanki gives the card an FSRS-7 memory state again with its home
+preset's parameters (the home deck for a card in a filtered deck):
+
+- from the card's review log, the way the post-sync reconcile does
+  (`sync.fsrs-reconcile-after-sync`), when the log holds a usable review;
+  the last review time then comes from the log;
+- otherwise, the FSRS-7 state whose S90 is the stored stability, with the
+  stored difficulty (clamped to 1–10) and the fast/internal ratio of the
+  fsrs crate's interval conversion; the last review time stays.
+
+Desired retention and decay are set from the preset. Due dates, intervals and
+the review log do not change. The repaired row is marked modified, so a sync
+uploads it. This runs when the collection opens (which covers a full download
+and a restored backup), in every normal sync after the reconcile and before
+the upload (so the same sync uploads the rows it repaired), and after an
+`.apkg` import with scheduling, for the imported cards whose rows in the
+package were foreign. A failure leaves the cards as they came and does not stop the
+open, the sync or the import. With FSRS off nothing runs. Cards with `s_int`
+are never touched.
+
+**Why:** Andrew, 2026-09-15 (interval audit #4). Read as it came, such a
+card's FSRS-6 stability became FSRS-7's internal stability as well as its
+S90, which made its next intervals about 2.3 times too long. He chose "S90 =
+stored stability" for these cards; where the card has a usable review log,
+that log already holds the other client's reviews, so the real FSRS-7 state
+comes from it.
+
+**Pinned by:** `fsrs7_state_of_a_foreign_card_is_rebuilt_during_sync`,
+`fsrs7_state_of_a_foreign_card_is_rebuilt_on_open`
+(`rslib/src/sync/collection/tests.rs`);
+`imported_foreign_fsrs_state_becomes_an_fsrs7_state`
+(`rslib/src/import_export/package/apkg/tests.rs`);
+`only_rows_without_the_internal_stability_are_foreign`
+(`rslib/src/scheduler/fsrs/memory_state.rs`).
+
 ## sync.post-sync-reschedule-gate
 
 Given a card flagged by `sync.fsrs-reconcile-after-sync` whose two rows also
