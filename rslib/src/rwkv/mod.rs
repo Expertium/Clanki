@@ -402,11 +402,15 @@ pub struct ReviewOutput {
     pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
-    pub current_s90: Option<u32>,
+    /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
+    /// sched.rwkv-curve-s90).
+    pub current_s90: Option<f32>,
     /// Unrounded answer intervals in days, possibly under one day (spec
     /// sched.sub-day-intervals).
     pub intervals: [Option<f32>; 4],
-    pub s90s: [Option<u32>; 4],
+    /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
+    /// sched.rwkv-curve-s90).
+    pub s90s: [Option<f32>; 4],
     pub card_state: Vec<u8>,
     pub deck_state: Vec<u8>,
     pub note_state: Vec<u8>,
@@ -432,11 +436,15 @@ pub struct ReviewPredictionOutput {
     pub curve_retrievability: Option<f32>,
     pub button_probabilities: [f32; 4],
     pub current_interval: Option<u32>,
-    pub current_s90: Option<u32>,
+    /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
+    /// sched.rwkv-curve-s90).
+    pub current_s90: Option<f32>,
     /// Unrounded answer intervals in days, possibly under one day (spec
     /// sched.sub-day-intervals).
     pub intervals: [Option<f32>; 4],
-    pub s90s: [Option<u32>; 4],
+    /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
+    /// sched.rwkv-curve-s90).
+    pub s90s: [Option<f32>; 4],
 }
 
 /// The subset of `ReviewPredictionOutput` that rescheduling needs, computed
@@ -445,7 +453,9 @@ pub struct ReviewPredictionOutput {
 pub struct ReviewIntervalPrediction {
     pub retrievability: f32,
     pub current_interval: Option<u32>,
-    pub current_s90: Option<u32>,
+    /// RWKV-Curve's S90 in days, unrounded and possibly under one day (spec
+    /// sched.rwkv-curve-s90).
+    pub current_s90: Option<f32>,
 }
 
 pub struct RwkvInference {
@@ -530,7 +540,7 @@ pub struct RwkvWorkloadSimulationOutput {
 struct RwkvWorkloadQueryPrediction {
     retrievability: f32,
     current_interval: Option<u32>,
-    current_s90: Option<u32>,
+    current_s90: Option<f32>,
 }
 
 pub struct RwkvWorkloadReviewModel {
@@ -1394,7 +1404,7 @@ insert into segments (
         &self,
         input: &ReviewInput,
         answer_heads: &[ReviewHeads],
-    ) -> ([Option<f32>; 4], [Option<u32>; 4]) {
+    ) -> ([Option<f32>; 4], [Option<f32>; 4]) {
         let curves = std::array::from_fn(|index| &answer_heads[index].curve);
         let target_retentions = std::array::from_fn(|index| {
             input.target_retentions[index].unwrap_or(self.target_retention)
@@ -1407,7 +1417,7 @@ insert into segments (
                 self.max_interval_days,
                 input.enforce_grade_order,
             ),
-            intervals_for_answer_curves(
+            unrounded_intervals_for_answer_curves(
                 curves,
                 [S90_TARGET_RETENTION; 4],
                 self.max_interval_days,
@@ -1420,11 +1430,15 @@ insert into segments (
         &self,
         input: &ReviewInput,
         heads: &ReviewHeads,
-    ) -> (Option<u32>, Option<u32>) {
+    ) -> (Option<u32>, Option<f32>) {
         let target_retention = input.target_retentions[2].unwrap_or(self.target_retention);
         (
             interval_for_curve(&heads.curve, target_retention, self.max_interval_days),
-            interval_for_curve(&heads.curve, S90_TARGET_RETENTION, self.max_interval_days),
+            unrounded_interval_for_curve(
+                &heads.curve,
+                S90_TARGET_RETENTION,
+                self.max_interval_days,
+            ),
         )
     }
 
@@ -2161,14 +2175,14 @@ fn memorized_from_workload_predictions(predictions: &[RwkvWorkloadQueryPredictio
     (memorized, weighted)
 }
 
-fn s90_weight(current_s90: Option<u32>) -> f32 {
+fn s90_weight(current_s90: Option<f32>) -> f32 {
     let Some(current_s90) = current_s90 else {
         return 1.0;
     };
-    if current_s90 == 0 {
+    if current_s90 <= 0.0 {
         return 1.0;
     }
-    1.0 - ((-8.0 / 365.0) * current_s90 as f32).exp()
+    1.0 - ((-8.0 / 365.0) * current_s90).exp()
 }
 
 fn valid_probability(value: f32) -> bool {
@@ -4632,6 +4646,58 @@ fn interval_for_curve(
     Some(max_interval_days)
 }
 
+/// The unrounded day where `curve` reaches `target_retention`, for
+/// RWKV-Curve's S90 (spec sched.rwkv-curve-s90): searched inside the first
+/// day on `SUB_DAY_SEARCH_POINTS` when the curve is at or below the target
+/// after one day, then on the whole-day grid of `interval_for_curve`, with
+/// linear interpolation between points; rounded up to whole days (at least
+/// 1) it equals `interval_for_curve`.
+fn unrounded_interval_for_curve(
+    curve: &ReviewCurve,
+    target_retention: f32,
+    max_interval_days: u32,
+) -> Option<f32> {
+    if !(0.0..=1.0).contains(&target_retention) || max_interval_days < 1 {
+        return None;
+    }
+    let margin_at =
+        |days: f32| predict_curve(curve, days * SECONDS_PER_DAY as f32) - target_retention;
+
+    let mut points = Vec::new();
+    if margin_at(1.0) <= 0.0 {
+        points.extend(SUB_DAY_SEARCH_POINTS);
+    }
+    points.extend(
+        interval_search_days(max_interval_days)
+            .into_iter()
+            .map(|day| day as f32),
+    );
+
+    let maximum = max_interval_days as f32;
+    let mut previous: Option<(f32, f32)> = None;
+    for point in points {
+        let margin = margin_at(point);
+        if margin <= 0.0 {
+            let crossing = match previous {
+                Some((previous_point, previous_margin)) => {
+                    let denominator = previous_margin - margin;
+                    if denominator <= 0.0 {
+                        point
+                    } else {
+                        previous_point + (point - previous_point) * previous_margin / denominator
+                    }
+                }
+                None => point,
+            };
+            return Some(crossing.min(maximum));
+        }
+        previous = Some((point, margin));
+    }
+    Some(maximum)
+}
+
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn intervals_for_answer_curves(
     curves: [&ReviewCurve; 4],
     target_retentions: [f32; 4],
@@ -4656,6 +4722,8 @@ fn intervals_for_answer_curves(
     })
 }
 
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn intervals_for_pava_adjusted_samples(
     target_retentions: [f32; 4],
     max_interval_days: u32,
@@ -4798,6 +4866,8 @@ fn unrounded_intervals_for_answer_curves(
     std::array::from_fn(|index| valid[index].then(|| intervals[index].unwrap_or(maximum)))
 }
 
+// the whole-day search, kept as the tests' oracle for the unrounded one
+#[cfg(test)]
 fn interpolated_crossing_interval(
     previous_day: u32,
     previous_margin: f32,
@@ -9478,6 +9548,33 @@ order by e.id, e.cid
         let crossing = intervals[0].unwrap();
         let retrievability = predict_curve(&curves[0], crossing * SECONDS_PER_DAY as f32);
         assert!((retrievability - 0.9).abs() < 0.02, "{retrievability}");
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-curve-s90: RWKV-Curve's S90 is the
+    // unrounded point where the curve meets 90%, under a day for a fast
+    // curve, and rounds up to the whole-day S90 computed before.
+    #[test]
+    fn rwkv_curve_s90_is_unrounded() {
+        for basis in [1, 3, 10, 20, 32, 40, 60, 80, 100, 110] {
+            let curve = basis_curve(basis);
+            let s90 = unrounded_interval_for_curve(&curve, S90_TARGET_RETENTION, 36_500).unwrap();
+            let days = interval_for_curve(&curve, S90_TARGET_RETENTION, 36_500).unwrap();
+            assert_eq!(clamped_interval_days(s90, 36_500), days, "basis {basis}");
+            // the same search as the answer S90s without grade order
+            let refs = [&curve, &curve, &curve, &curve];
+            let answer_s90 = unrounded_intervals_for_answer_curves(
+                refs,
+                [S90_TARGET_RETENTION; 4],
+                36_500,
+                false,
+            )[0]
+            .unwrap();
+            assert_eq!(s90, answer_s90, "basis {basis}");
+        }
+        let fast = unrounded_interval_for_curve(&basis_curve(32), 0.9, 36_500).unwrap();
+        assert!(fast > 0.03 && fast < 0.05, "{fast}");
+        let slow = unrounded_interval_for_curve(&basis_curve(60), 0.9, 36_500).unwrap();
+        assert!(slow > 1.0 && slow != slow.round(), "{slow}");
     }
 
     #[test]
