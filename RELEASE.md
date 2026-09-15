@@ -28,6 +28,16 @@ repeated here unless they materially affect a fork feature.
   for relative overdueness), or, for a card RWKV has not scored yet, how far
   into its RWKV interval it is. Before, relative overdueness used a broken
   FSRS formula and the retrievability orders showed cards in due-day order.
+- A card without a usable review history (no review log, or a truncated
+  one) now gets an FSRS-7 memory state whose stability (S90) is its current
+  interval. Before, FSRS-7 took the interval as its internal stability, and
+  a 100-day interval became a stability of about 226 days. The same holds
+  for a card RWKV-Curve answers without an FSRS memory state: its FSRS-7
+  state now matches RWKV's S90.
+- Add-ons: `col.fsrs_next_interval(card_id, stability, retention)` takes
+  the card's stability as shown (S90) and returns the matching FSRS-7
+  interval. It used to read it as FSRS-7's internal stability, which gave
+  intervals about twice as long.
 - Deck options: the Algorithm dropdown shows a short description under each
   algorithm, and its revert button restores RWKV-Curve (the new-preset
   default). The highlighted entry in any dropdown now opens on the current

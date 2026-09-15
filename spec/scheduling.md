@@ -237,6 +237,42 @@ and `rslib/src/deckconfig/update.rs` (including the migration);
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
+## sched.fsrs7-sm2-conversion
+
+Given a card whose FSRS memory state must be inferred from an interval — a
+review card with no usable review log (its current interval and ease), a
+truncated review log (its first entry's interval and ease), a card the
+simulator finds without a memory state, or a card RWKV-Curve answers that
+has no FSRS memory state (RWKV's S90) — the card gets the FSRS-7 state
+whose forgetting curve reaches the historical retention (0.9,
+`deck-options.historical-retention-fixed`) at that interval: its S90 is the
+interval. The state has difficulty 5 (or, for a truncated log whose first
+entry FSRS wrote, the difficulty stored in that entry) and a fast stability
+of 0.8 times the internal stability; the internal stability is solved for.
+Ease is not used. An interval the curve cannot reach gives the nearest
+stability bound (0.0001 or 36,500 days). A card RWKV-Curve answers keeps
+RWKV's S90 as its S90. The `FsrsNextInterval` add-on API
+(`col.fsrs_next_interval`) takes the stability it is given as the card's
+S90 and returns the interval of this state at the requested retention.
+
+**Why:** Andrew, 2026-09-15, "yep, do it" (fix the conversion), then "check
+RWKV-Curve too, since S90 can (and should) be calculated for it too" and
+"fix it ... for cards with missing review logs too". The fsrs crate's FSRS-7
+conversion put the interval into the internal stability, which is not the
+90% point of FSRS-7's two-component curve: a 100-day interval gave an S90 of
+about 226 days, and RWKV-Curve's fallback state did the same with its S90.
+The add-on API made the same mistake; Andrew, 2026-09-15: treat its input as
+the S90.
+
+**Pinned by:** `sm2_conversion_gives_the_interval_as_s90`,
+`truncated_revlog_starting_state_keeps_the_interval_as_s90`,
+`scaling_to_an_unreachable_interval_gives_the_stability_bound`,
+`fsrs_state_for_an_rwkv_s90_has_that_s90`, `next_interval_api_takes_the_s90`,
+`stored_historical_retention_is_ignored`
+(`rslib/src/scheduler/fsrs/memory_state.rs`);
+`rwkv_s90_answer_without_memory_state_gets_an_fsrs7_state_with_that_s90`
+(`rslib/src/scheduler/answering/mod.rs`).
+
 ## sched.fsrs7-fractional-elapsed-time
 
 Given a card answered with FSRS (always FSRS-7, `sched.fsrs7-only`), the
