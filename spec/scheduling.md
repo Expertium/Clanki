@@ -55,6 +55,26 @@ review rule, as upstream did (it had been fuzzed like a graduating card).
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-answers-with-fsrs-switch-off
+
+Given a collection whose algorithm is RWKV-Curve or RWKV-Instant (the
+`schedulingAlgorithm` key, or before the collection has one, the Default
+preset's, `sched.one-global-algorithm`) and whose collection `fsrs` switch is
+still off — a new collection until the first deck-options save — the answer
+states are FSRS states, as with the switch on: RWKV-Curve's intervals replace
+FSRS's (`sched.rwkv-curve-fuzz`), and RWKV-Instant's answers store FSRS
+states. Nothing is written to turn the switch on, so a new, empty collection
+still needs no full sync (`sched.global-algorithm-migration`). Everything
+else that reads the switch is unchanged.
+
+**Why:** Andrew, 2026-09-15 (audit of RWKV-Curve): a new Clanki collection
+runs RWKV-Curve, but with the switch off the answer states were SM-2's, so
+the answer buttons and the answer used SM-2 intervals while RWKV-Curve's S90
+was stored — two algorithms in one answer.
+
+**Pinned by:** `rwkv_answers_use_fsrs_states_while_the_fsrs_switch_is_off`
+(`rslib/src/scheduler/answering/mod.rs`).
+
 ## sched.rwkv-curve-s90
 
 Given a card that RWKV-Curve predicts for, its S90 — the current one (card

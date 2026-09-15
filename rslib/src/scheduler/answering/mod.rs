@@ -28,6 +28,7 @@ use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::config::BoolKey;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
 use crate::decks::Deck;
@@ -596,12 +597,20 @@ impl Collection {
         )
     }
 
+    /// FSRS computes the answer states when the collection `fsrs` switch is
+    /// on, and also while it is still off in a collection that runs
+    /// RWKV-Curve or RWKV-Instant (a new collection until its first
+    /// deck-options save): both need FSRS states. Nothing is written (spec
+    /// sched.rwkv-answers-with-fsrs-switch-off).
     fn fsrs_enabled(&self) -> bool {
         self.state
             .card_queues
             .as_ref()
             .map(|queues| queues.fsrs_enabled)
             .unwrap_or_else(|| self.get_config_bool(BoolKey::Fsrs))
+            || self
+                .effective_scheduling_algorithm()
+                .is_ok_and(|algorithm| algorithm != SchedulingAlgorithm::Fsrs7)
     }
 
     fn fsrs_short_term_with_steps_enabled(&self) -> bool {
@@ -1218,6 +1227,47 @@ pub(crate) mod test {
             [supplied.again, supplied.hard, supplied.good, supplied.easy],
             [fsrs.again, fsrs.hard, fsrs.good, fsrs.easy]
         );
+
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-answers-with-fsrs-switch-off: a new
+    // collection runs RWKV-Curve while its `fsrs` switch is still off; the
+    // answer states still take RWKV-Curve's intervals (not SM-2's), RWKV-Instant
+    // answers with FSRS states, and nothing turns the switch on.
+    #[test]
+    fn rwkv_answers_use_fsrs_states_while_the_fsrs_switch_is_off() -> Result<()> {
+        let mut col = crate::collection::CollectionBuilder::default().build()?;
+        assert!(!col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(
+            col.effective_scheduling_algorithm()?,
+            SchedulingAlgorithm::RwkvCurve
+        );
+        let cid = add_due_review_card(&mut col, 20, 0, None)?;
+        let review_days = |state: CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days,
+            other => panic!("expected a review state, got {other:?}"),
+        };
+
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [Some(3.0), Some(33.0), Some(77.0), Some(90.0)],
+        )?;
+        assert_eq!(
+            [states.again, states.hard, states.good, states.easy].map(review_days),
+            [3, 33, 77, 90]
+        );
+
+        // RWKV-Instant answers with FSRS states too
+        col.update_default_deck_config(|config| {
+            SchedulingAlgorithm::RwkvInstant.apply_to(config)
+        });
+        let CardState::Normal(NormalState::Review(good)) = col.get_scheduling_states(cid)?.good
+        else {
+            panic!("expected a review state");
+        };
+        assert!(good.memory_state.is_some());
+        assert!(!col.get_config_bool(BoolKey::Fsrs));
 
         Ok(())
     }
