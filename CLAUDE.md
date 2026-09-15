@@ -114,6 +114,9 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    In short: a pure refactor that makes the code shorter and does not make
    it slower or harder to understand. The best case lowers both the line
    count and the cognitive load. Such commits are `refactor:` commits.
+   Clever one-liners are welcome as long as they don't look like a magic
+   spell: don't Goodhart yourself by cutting lines at the expense of
+   clarity.
 
 ## Changes already made in Clanki
 
