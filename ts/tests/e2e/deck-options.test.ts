@@ -60,6 +60,17 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     await expect(page.getByText("Skip question when replaying answer", { exact: true })).toHaveCount(0);
 });
 
+// Pins spec/deck-options.md#deck-options.desired-retention-note: the note is
+// there before anything is focused or changed.
+test("the desired-retention note shows when the page opens", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    await page.goto("/deck-options/1");
+
+    await expect(
+        page.getByText("The higher your desired retention, the more frequently cards will be shown to you."),
+    ).toBeVisible();
+});
+
 // Pins spec/deck-options.md#deck-options.collection-wide-in-preferences: the
 // collection-wide settings are not on the deck-options page in either mode.
 test("collection-wide settings are not on the deck-options page", async ({ page }) => {
