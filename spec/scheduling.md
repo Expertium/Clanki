@@ -721,7 +721,9 @@ deck-options save, the RWKV-Curve reschedule, or "Reschedule all cards now"
 after a change of the algorithm (sched.algorithm-change-prompt), the
 affected cards get a new
 interval, due date, memory state and desired retention, and no row is added
-to the review log. Rows of kind `Rescheduled` that older builds wrote are
+to the review log. Advance and Postpone (`sched.advance`, `sched.postpone`)
+change only the interval and the due date, and add no row either. Rows of
+kind `Rescheduled` that older builds wrote are
 still read (statistics keep excluding them). "Set Due Date" and "Forget" are
 not rescheduling and still write their `Manual` rows.
 
@@ -732,7 +734,105 @@ answer and only cluttered the history and the review count.
 **Pinned by:** `reschedule_on_change_writes_no_revlog_rows`
 (`rslib/src/scheduler/fsrs/memory_state.rs`);
 `a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
-(`rslib/src/deckconfig/algorithm.rs`).
+(`rslib/src/deckconfig/algorithm.rs`);
+`a_move_writes_no_review_log_and_undoes_in_one_step`
+(`rslib/src/scheduler/advance_postpone.rs`).
+
+## sched.advance
+
+Given Advance for a scope (a deck and its subdecks — cards in a filtered
+deck by their home deck —, the cards selected in the Browser), its
+candidates are the review cards of the scope in the review queue (not
+suspended, buried or relearning) whose due date (the original due date of a
+card in a filtered deck) is after today, less a card reviewed today that is
+due tomorrow (nothing to bring forward). Each has a target interval T: the
+unrounded day where the collection's forgetting curve for the card
+(`sched.advance-postpone-algorithm`) meets its desired retention (the one
+stored on the card, else its preset's), searched up to 36,500 days. With e
+the whole days since its last review (its last review time, else the
+review log's, else its due date minus its interval), its key is
+1 − e / max(T, 1), the share of the target interval still to go. Candidates
+go in ascending key, then the longer T first, then card id; those with a
+key under 0.13 are "relatively safe" to advance. Advancing N cards takes the
+first N: each becomes due today (tomorrow when it was reviewed today) and
+its interval becomes the days from its last review to that day, at least 1.
+No fuzz or load balancer applies: the point is to review these cards now.
+The memory state, desired retention and everything else stay as they are;
+no review-log row is written (`sched.reschedule-no-revlog`); one undo step
+restores every card. The preview gives, per candidate, its retrievability
+on its due day and on the new due day (whole days after its last review).
+
+**Why:** Andrew, 2026-09-15: "integrate Advance and Postpone features from
+the FSRS Helper add-on, and make them work with RWKV-Curve too". The order,
+the 13% safety threshold and "due today" are the add-on's.
+
+**Pinned by:**
+`advance_takes_the_cards_closest_to_their_target_first_and_makes_them_due_today`,
+`a_deck_scope_takes_subdecks_and_filtered_cards`,
+`a_move_writes_no_review_log_and_undoes_in_one_step`
+(`rslib/src/scheduler/advance_postpone.rs`).
+
+## sched.postpone
+
+Given Postpone for a scope (as for `sched.advance`), its candidates are the
+review cards of the scope in the review queue whose due date is today or
+earlier, less the cards whose days since the last review e plus 1 exceed
+their home preset's maximum interval (they are counted and left out: there
+is no later day to move them to). With T and the desired retention as for
+Advance and I the card's interval, its key is (e + 0.075·I) / max(T, 1) − 1,
+how far the time until review after the postponement exceeds the target
+interval. Candidates go in ascending key, then the longer T first, then
+card id; those with a key under 0.15 are "relatively safe" to postpone.
+Postponing N cards takes the first N, in that order: each gets the
+unrounded interval e + 0.075·I (the middle of the add-on's 5–10%
+extension), turned into whole days in its fuzz range, at least e + 1 (never
+today or earlier) and at most the maximum interval, with the load balancer
+and Easy Days picking the day as in the reschedules (else review fuzz),
+seeded per card for its last review; each moved card counts toward the load
+of the cards after it. It becomes due that many days after its last review.
+Only the interval and the due date change, no review-log row is written,
+and one undo step restores every card. The preview gives, per candidate,
+its retrievability today and at the unrounded new interval.
+
+**Why:** Andrew, 2026-09-15 (as `sched.advance`). The order and the 15%
+threshold are the add-on's; the add-on's own random 5–10% becomes Clanki's
+fuzz range and load balancer, so postponed cards spread over lighter days
+and respect Easy Days like every other interval.
+
+**Pinned by:**
+`postpone_takes_the_least_overdue_cards_first_and_moves_them_past_today`
+(`rslib/src/scheduler/advance_postpone.rs`);
+`rescheduled_interval_days_are_fuzzed_and_load_balanced`
+(`rslib/src/scheduler/fsrs/rescheduler.rs`, the shared fuzz step).
+
+## sched.advance-postpone-algorithm
+
+Given Advance or Postpone, the forgetting curve of every card is the
+collection's algorithm's (`sched.one-global-algorithm`), never another's:
+
+- FSRS-7: FSRS-7's curve of the card's whole memory state (internal and
+  fast stability, difficulty), with its preset's effective FSRS-7
+  parameters (`sched.fsrs7-only`); T comes from the same state.
+- RWKV-Curve: the curve RWKV-Curve stored for the card at its last answered
+  review, as card info shows it (`ui.card-info-rwkv-curve`); T is where
+  that curve meets the desired retention, found on the curve as for the
+  answer intervals (`sched.sub-day-intervals`).
+- RWKV-Instant: none. Advance and Postpone are not available (there are no
+  due dates to move) and do not show (`ui.advance-postpone`).
+
+A card without such a curve — no FSRS-7 memory state, or no stored
+RWKV-Curve curve (RWKV's state still loading or busy, no model, no answered
+review yet) — is left out and counted; nothing falls back to the other
+algorithm. RWKV-Curve's stored S90 is kept (`sched.rwkv-curve-s90-kept`).
+
+**Why:** Andrew, 2026-09-15: make them work with RWKV-Curve too; the
+standing rule never to mix two algorithms (hide rather than fall back).
+
+**Pinned by:** `rwkv_curve_uses_the_stored_curves_and_leaves_out_cards_without_one`,
+`rwkv_instant_has_no_advance_or_postpone`
+(`rslib/src/scheduler/advance_postpone.rs`);
+`stored_curves_reach_the_collection_unchanged` (`rslib/src/rwkv/mod.rs`);
+`test_rwkv_curve_moves_send_the_stored_curves` (`qt/tests/test_advance_postpone.py`).
 
 ## sched.one-global-algorithm
 

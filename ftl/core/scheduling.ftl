@@ -182,3 +182,54 @@ scheduling-forgot-cards =
         [one] Reset { $cards } card.
        *[other] Reset { $cards } cards.
     }
+
+## Advance and Postpone (from the FSRS Helper add-on)
+
+scheduling-advance-available =
+    { $count ->
+        [one] { $count } review card is not due yet and can be advanced to today.
+       *[other] { $count } review cards are not due yet and can be advanced to today.
+    }
+scheduling-advance-safe =
+    { $count ->
+        [one] It is relatively safe to advance up to { $count } card.
+       *[other] It is relatively safe to advance up to { $count } cards.
+    }
+scheduling-postpone-available =
+    { $count ->
+        [one] { $count } due review card can be postponed.
+       *[other] { $count } due review cards can be postponed.
+    }
+scheduling-postpone-safe =
+    { $count ->
+        [one] It is relatively safe to postpone up to { $count } card.
+       *[other] It is relatively safe to postpone up to { $count } cards.
+    }
+scheduling-advance-postpone-warning = You can move more cards if you wish, but it is not recommended: whenever you use Advance or Postpone, you depart from the optimal schedule. The cards that lose the least are moved first.
+scheduling-advance-count = Cards to advance:
+scheduling-postpone-count = Cards to postpone:
+# Retrievability (the probability of recall) of the chosen cards on the day
+# they are reviewed: without the move, and with it.
+scheduling-advance-postpone-effect = Mean retrievability at review: { $before } → { $after }
+scheduling-advance-postpone-without-curve =
+    { $count ->
+        [one] { $count } card was left out because { $algorithm } has no forgetting curve for it yet.
+       *[other] { $count } cards were left out because { $algorithm } has no forgetting curve for them yet.
+    }
+scheduling-postpone-at-maximum-interval =
+    { $count ->
+        [one] { $count } card was left out because it already reaches the maximum interval.
+       *[other] { $count } cards were left out because they already reach the maximum interval.
+    }
+scheduling-advance-no-cards = There are no cards to advance.
+scheduling-postpone-no-cards = There are no cards to postpone.
+scheduling-advance-done =
+    { $count ->
+        [one] Advanced { $count } card.
+       *[other] Advanced { $count } cards.
+    }
+scheduling-postpone-done =
+    { $count ->
+        [one] Postponed { $count } card.
+       *[other] Postponed { $count } cards.
+    }

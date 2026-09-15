@@ -218,6 +218,33 @@ pub(crate) fn rescheduled_interval_days(
         review_fuzz_config,
     )
     .max(1);
+    fuzzed_interval_days(
+        rescheduler,
+        interval,
+        min_interval,
+        max_interval,
+        days_elapsed,
+        deckconfig_id,
+        fuzz_seed,
+        review_fuzz_config,
+    )
+}
+
+/// Whole days, from `min_interval` to `max_interval`, in the fuzz range of
+/// the unrounded `interval`: the load balancer and Easy Days pick the day
+/// when `rescheduler` is given (and the card is not overdue past the fuzz
+/// range), else review fuzz with `fuzz_seed` does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fuzzed_interval_days(
+    rescheduler: Option<&Rescheduler>,
+    interval: f32,
+    min_interval: u32,
+    max_interval: u32,
+    days_elapsed: u32,
+    deckconfig_id: DeckConfigId,
+    fuzz_seed: Option<u64>,
+    review_fuzz_config: ReviewFuzzConfig,
+) -> u32 {
     rescheduler
         .and_then(|rescheduler| {
             rescheduler.find_interval(

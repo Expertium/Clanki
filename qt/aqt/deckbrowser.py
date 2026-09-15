@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aqt
+import aqt.advance_postpone
 import aqt.operations
 import aqt.review_heatmap
 import aqt.rwkv_scheduler
@@ -546,6 +547,7 @@ class DeckBrowser:
         a = m.addAction(tr.actions_options())
         assert a is not None
         qconnect(a.triggered, lambda b, did=did: self._options(DeckId(int(did))))
+        aqt.advance_postpone.add_deck_menu_actions(m, self.mw, int(did))
         self._add_rwkv_menu(m, did)
         a = m.addAction(tr.actions_export())
         assert a is not None

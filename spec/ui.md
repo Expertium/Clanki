@@ -35,7 +35,9 @@ Simple mode the deck list's bottom row shows Find Decks Online (the button
 formerly named "Get Shared") and Create Deck but not Import File (Import
 stays under File); these buttons share one width in both modes, the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
-RWKV-Curve, Reschedule All Decks), Tools > Add-ons is shown in both modes,
+RWKV-Curve, Reschedule All Decks) and no Advance or Postpone entries
+(`ui.advance-postpone`), nor has the Browser's Cards menu, Tools > Add-ons
+is shown in both modes,
 and the
 deck-options screen shows its simplified view
 (`spec/deck-options.md`, `deck-options.advanced-view`). The deck-options
@@ -65,13 +67,51 @@ installed).
 
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
-reset),
+reset), `qt/tests/test_advance_postpone.py` (the Advance and Postpone
+entries),
 `advanced_ui_flag_is_reported` (`rslib/src/deckconfig/update.rs`);
 `test_deck_options_mode_switch_sets_the_main_window_mode`
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
 once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
+
+## ui.advance-postpone
+
+Given Advanced mode (`ui.mode-switch`) and a collection whose algorithm is
+FSRS-7 or RWKV-Curve (`sched.one-global-algorithm`), the deck menu (the
+gear next to a deck) has "Advance Cards..." and "Postpone Cards..." after
+Options, for the deck and its subdecks, and the Browser's Cards menu (and
+its context menu) has "Advance Cards..." and "Postpone Cards..." after
+Grade Now, for the selected cards (disabled without a selection). In Simple
+mode, and under RWKV-Instant, none of them shows. There is no keyboard
+shortcut and no Tools menu entry.
+
+Choosing one gathers the candidates in the background (with a progress
+window; under RWKV-Curve also each card's stored curve from the RWKV
+process) and then shows a dialog: how many cards can move and how many of
+them are relatively safe to move (`sched.advance`, `sched.postpone`), the
+add-on's warning that moving departs from the optimal schedule, how many
+cards were left out and why (no forgetting curve in the collection's
+algorithm; Postpone: already at the maximum interval), a spin box for the
+number of cards (from 0 to all candidates; for a deck the safe count, at
+most 10, as in the add-on; for a Browser selection every candidate of it),
+and, updated as the number changes, the mean retrievability of those cards
+at review without and with the move ("Mean retrievability at review:
+90.0% → 93.5%"). OK (disabled at 0) moves the first that many cards in the
+background as one undoable operation ("Advance Cards" / "Postpone Cards" in
+Edit > Undo), and a tooltip reports how many moved and the same means,
+computed on the days they got. With no candidates, a tooltip says there are
+no cards to advance or postpone (and why cards were left out) instead of
+the dialog.
+
+**Why:** Andrew, 2026-09-15: integrate Advance and Postpone from the FSRS
+Helper add-on. The deck menu and the Browser are where Clanki acts on a
+deck or on chosen cards; they are Advanced-only because they depart from
+the optimal schedule (the add-on's own warning) and are rarely needed, like
+the RWKV reschedule actions.
+
+**Pinned by:** `qt/tests/test_advance_postpone.py`.
 
 ## ui.review-heatmap
 

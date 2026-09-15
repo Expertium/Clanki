@@ -1101,6 +1101,12 @@ class _RustRwkvRuntime:
         with self._locked_process():
             return self._process.card_curve(card_id, list(elapsed_days))
 
+    def card_curve_weights(self, card_ids: Sequence[int]) -> tuple[list[int], bytes]:
+        """The stored RWKV-Curve curves of `card_ids` that have one, packed."""
+        with self._locked_process():
+            ids, curves = self._process.card_curve_weights(list(card_ids))
+            return list(ids), bytes(curves)
+
     def cache_state(self) -> bytes:
         with self._locked_process():
             return bytes(self._process.cache_state())

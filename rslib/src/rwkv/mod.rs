@@ -1475,6 +1475,15 @@ insert into segments (
         curve_points_and_s90(curve, elapsed_days, self.max_interval_days)
     }
 
+    /// The curves RWKV-Curve stored for `card_ids` at each card's last
+    /// answered review, packed for Advance and Postpone in the collection
+    /// (spec sched.advance-postpone-algorithm; `unpack_stored_curves`): the
+    /// ids of the cards that have one, in the order asked, and the curves.
+    /// A card without a stored curve is left out.
+    pub fn card_curve_weights(&self, card_ids: &[i64]) -> (Vec<i64>, Vec<u8>) {
+        pack_stored_curves(&self.curves, card_ids)
+    }
+
     pub fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.features.restore_state(&state.feature_state);
         if let Some(curve) = &state.curve {
@@ -4678,6 +4687,71 @@ fn curve_points_and_s90(
         .map(|days| predict_curve(curve, days * SECONDS_PER_DAY as f32))
         .collect();
     Some((recall, s90))
+}
+
+/// Packs the curves of `card_ids` that `curves` holds: for each, its weight
+/// count (u32) and its weights (f32), little-endian, in the order of the
+/// returned ids.
+fn pack_stored_curves(curves: &HashMap<i64, ReviewCurve>, card_ids: &[i64]) -> (Vec<i64>, Vec<u8>) {
+    let mut ids = Vec::new();
+    let mut bytes = Vec::new();
+    for &card_id in card_ids {
+        if let Some(curve) = curves.get(&card_id) {
+            ids.push(card_id);
+            bytes.extend_from_slice(&(curve.weights.len() as u32).to_le_bytes());
+            for weight in &curve.weights {
+                bytes.extend_from_slice(&weight.to_le_bytes());
+            }
+        }
+    }
+    (ids, bytes)
+}
+
+/// The curves `RwkvInference::card_curve_weights` packed, one per card id;
+/// None when the bytes do not hold exactly one curve per id.
+pub fn unpack_stored_curves(card_ids: &[i64], bytes: &[u8]) -> Option<Vec<(i64, StoredCurve)>> {
+    let mut rest = bytes;
+    let mut curves = Vec::with_capacity(card_ids.len());
+    for &card_id in card_ids {
+        let (count, tail) = rest.split_first_chunk::<4>()?;
+        let (weights, tail) =
+            tail.split_at_checked((u32::from_le_bytes(*count) as usize).checked_mul(4)?)?;
+        rest = tail;
+        let weights = weights
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        curves.push((
+            card_id,
+            StoredCurve {
+                curve: ReviewCurve {
+                    ahead_logits: Vec::new(),
+                    weights,
+                },
+            },
+        ));
+    }
+    rest.is_empty().then_some(curves)
+}
+
+/// A curve RWKV-Curve stored for a card, outside the RWKV process: the same
+/// recall and crossings card info and the reschedule use.
+#[derive(Clone)]
+pub struct StoredCurve {
+    curve: ReviewCurve,
+}
+
+impl StoredCurve {
+    /// The curve's recall `elapsed_days` after the review that stored it.
+    pub fn recall(&self, elapsed_days: f32) -> f32 {
+        predict_curve(&self.curve, elapsed_days * SECONDS_PER_DAY as f32)
+    }
+
+    /// The unrounded day where the curve meets `target_retention`, at most
+    /// `max_interval_days` (`unrounded_interval_for_curve`).
+    pub fn crossing(&self, target_retention: f32, max_interval_days: u32) -> Option<f32> {
+        unrounded_interval_for_curve(&self.curve, target_retention, max_interval_days)
+    }
 }
 
 /// Points (days) searched inside the first day when an answer curve reaches
@@ -9580,6 +9654,45 @@ order by e.id, e.cid
             let at_s90 = predict_curve(&curve, s90 * SECONDS_PER_DAY as f32);
             assert!((at_s90 - 0.9).abs() < 1e-3, "basis {basis}: {at_s90}");
         }
+    }
+
+    // Pins spec/scheduling.md#sched.advance-postpone-algorithm: Advance and
+    // Postpone get each card's stored curve as it is (only the cards that
+    // have one), and evaluate it as card info and the reschedule do.
+    #[test]
+    fn stored_curves_reach_the_collection_unchanged() {
+        let curves = HashMap::from([
+            (1, basis_curve(60)),
+            (
+                3,
+                ReviewCurve {
+                    ahead_logits: vec![0.5],
+                    weights: vec![0.2, 0.0, 0.3, 0.5],
+                },
+            ),
+        ]);
+        let (ids, bytes) = pack_stored_curves(&curves, &[3, 2, 1]);
+        assert_eq!(ids, [3, 1]);
+        let unpacked = unpack_stored_curves(&ids, &bytes).unwrap();
+        assert_eq!(unpacked.len(), 2);
+        for (card_id, stored) in &unpacked {
+            let curve = &curves[card_id];
+            assert_eq!(stored.curve.weights, curve.weights);
+            for days in [0.0, 0.5, 3.0, 40.0] {
+                assert_eq!(
+                    stored.recall(days),
+                    predict_curve(curve, days * SECONDS_PER_DAY as f32)
+                );
+            }
+            assert_eq!(
+                stored.crossing(0.85, 36_500),
+                unrounded_interval_for_curve(curve, 0.85, 36_500)
+            );
+        }
+        // one curve per id, and nothing left over
+        assert!(unpack_stored_curves(&[3], &bytes).is_none());
+        assert!(unpack_stored_curves(&[3, 1, 7], &bytes).is_none());
+        assert!(unpack_stored_curves(&ids, &bytes[..bytes.len() - 1]).is_none());
     }
 
     #[test]
