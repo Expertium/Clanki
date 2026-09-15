@@ -52,6 +52,7 @@ from aqt.rwkv_scheduler import (
     record_collection_redo,
     record_collection_undo,
     record_reviewer_answer,
+    rwkv_card_info_after_review_rows,
     rwkv_card_info_rows,
     rwkv_curve_scheduling_states,
     rwkv_review_enabled,
@@ -66,28 +67,6 @@ from aqt.rwkv_srs_benchmark import (
     _workload_snapshot_for_review_inputs,
 )
 
-RWKV_AFTER_REVIEW_UNAVAILABLE_ROW = (
-    "RWKV : R After Review",
-    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-)
-RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW = (
-    "RWKV : R After 10min",
-    "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-)
-RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS = [
-    RWKV_AFTER_REVIEW_UNAVAILABLE_ROW,
-    RWKV_AFTER_TEN_MINUTES_UNAVAILABLE_ROW,
-]
-NEXT_S90_UNAVAILABLE_ROWS = [
-    (
-        "RWKV Curve Next S90",
-        "Again:Unavailable Hard:Unavailable Good:Unavailable Easy:Unavailable",
-    ),
-]
-RWKV_BUTTON_PROBABILITY_ROW = (
-    "RWKV : Answer Button Probability",
-    "Again:55% Hard:10% Good:20% Easy:15%",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -3480,15 +3459,7 @@ def test_reviewer_rwkv_prediction_uses_reviews_of_other_cards() -> None:
         reviewer=reviewer,
         card=card_b,
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "55%"),
-        ("Retrievability source", "RWKV"),
-        (
-            "RWKV Curve Next S90",
-            "Again:4d Hard:5d Good:7d Easy:10d",
-        ),
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == []
     assert runtime.reviewed == [(1, 3)]
     assert runtime.queries == [
         (2, None, None),
@@ -9726,7 +9697,7 @@ def test_reviewer_rwkv_undo_marks_queue_scores_stale_without_dropping_patch_base
     set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
     rpc = _RwkvQueueScoreRpc()
     rpc.active_scores.update({1: 0.77, 2: 0.66})
-    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
     reviewer._answeredIds = [1]
     reviewer._rwkv_review_prediction = RwkvReviewerPrediction(
         card_id=1,
@@ -14845,7 +14816,7 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
-    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     scheduler = reviewer.mw.col.sched
     original_get_scheduling_states = scheduler.get_scheduling_states
@@ -14861,15 +14832,7 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
         reviewer=reviewer,
         card=card,
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "45%"),
-        ("Retrievability source", "RWKV"),
-        (
-            "RWKV Curve Next S90",
-            "Again:3d Hard:4d Good:6d Easy:9d",
-        ),
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == [("RWKV computed R", "45%")]
     assert runtime.query_inputs[0].current_normal_state_kind == "review"
     assert runtime.query_inputs[0].current_elapsed_days is None
     assert scheduling_state_calls == [1]
@@ -14885,7 +14848,7 @@ def test_card_info_does_not_reinstall_score_after_answer_race(
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
-    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
     original = rwkv_scheduler._queried_card_info_diagnostics
 
@@ -14994,15 +14957,7 @@ def test_card_info_reports_rwkv_retrievability_after_review() -> None:
         AssertionError("Card Info after-review predictions should not read answer time")
     )
 
-    assert rwkv_card_info_rows(
-        reviewer=reviewer,
-        card=card,
-        fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "45%"),
-        RWKV_BUTTON_PROBABILITY_ROW,
-        ("Retrievability source", "RWKV"),
-        *NEXT_S90_UNAVAILABLE_ROWS,
+    assert rwkv_card_info_after_review_rows(reviewer, card) == [
         (
             "RWKV : R After Review",
             "Again:65% Hard:70% Good:75% Easy:80%",
@@ -15063,10 +15018,9 @@ def test_card_info_uses_resident_after_review_prediction_without_snapshot(
     )
 
     rows = dict(
-        rwkv_card_info_rows(
-            reviewer=reviewer,
-            card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
-            fallback_source="FSRS",
+        rwkv_card_info_after_review_rows(
+            reviewer,
+            _rwkv_card(card_id=1, note_id=10, duration_millis=1234),
         )
     )
 
@@ -15077,86 +15031,6 @@ def test_card_info_uses_resident_after_review_prediction_without_snapshot(
         (query.current_elapsed_days, query.current_elapsed_seconds)
         for query in runtime.future_queries
     ] == [(0, 0), (0, 600)]
-
-
-def test_card_info_reports_only_rwkv_next_s90_for_filtered_states(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pins spec/ui.md#ui.card-info-rwkv-curve: no FSRS-7 S90 row, although
-    the scheduling states carry FSRS-7 stabilities."""
-
-    class Backend:
-        def __init__(self) -> None:
-            self.review_inputs: list[RwkvReviewInput] = []
-
-        def predict_reviews(
-            self,
-            candidates: list[RwkvReviewCandidate],
-        ) -> list[RwkvReviewPrediction]:
-            candidate = candidates[0]
-            identity = rwkv_review_identity(candidate.reviewer, candidate.card)
-            assert identity is not None
-            self.review_inputs.append(
-                rwkv_review_input(
-                    reviewer=candidate.reviewer,
-                    card=candidate.card,
-                    identity=identity,
-                    ease=None,
-                )
-            )
-            return [
-                RwkvReviewPrediction(
-                    retrievability=0.45,
-                    s90_overrides=RwkvIntervalOverride(
-                        again=2,
-                        hard=5,
-                        good=10,
-                        easy=20,
-                    ),
-                )
-            ]
-
-    backend = Backend()
-    set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer()
-    now = 42 * 86_400 + 100
-    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
-    states = reviewer.mw.col.sched.states
-    states.current.filtered.rescheduling.original_state.review.elapsed_days = 7
-    states.again.filtered.rescheduling.original_state.relearning.learning.memory_state.stability = 1.25
-    states.hard.normal.learning.memory_state.stability = 2.5
-    states.good.normal.review.memory_state.stability = 3.75
-    states.easy.filtered.preview.scheduled_secs = 600
-    rwkv_scheduler._reviewer_backend_warmup_states[
-        (id(backend), id(reviewer.mw.col))
-    ] = None
-
-    card = _rwkv_card(
-        card_id=1,
-        note_id=10,
-        duration_millis=1234,
-        last_review_time=now - 30,
-    )
-
-    assert rwkv_card_info_rows(
-        reviewer=reviewer,
-        card=card,
-        fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "45%"),
-        ("Retrievability source", "RWKV"),
-        (
-            "RWKV Curve Next S90",
-            "Again:2d Hard:5d Good:10d Easy:20d",
-        ),
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
-    assert len(backend.review_inputs) == 1
-    assert backend.review_inputs[0].card_type == 4
-    assert backend.review_inputs[0].current_state_kind == "filtered"
-    assert backend.review_inputs[0].current_normal_state_kind is None
-    assert backend.review_inputs[0].current_elapsed_days == 0
-    assert backend.review_inputs[0].current_elapsed_seconds == 30
 
 
 def test_future_prediction_snapshot_only_includes_referenced_states() -> None:
@@ -15223,7 +15097,7 @@ def test_card_info_refreshes_after_global_rwkv_state_changes() -> None:
     set_reviewer_backend(backend)
     rpc = _RwkvQueueScoreRpc()
     rpc.active_scores[1] = 0.67
-    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer = _rwkv_reviewer(rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
 
     first_rows = rwkv_card_info_rows(
@@ -15300,12 +15174,7 @@ def test_card_info_uses_shared_card_row_context_for_rwkv_query() -> None:
         reviewer=reviewer,
         card=reviewer.cards[2],
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "61%"),
-        ("Retrievability source", "RWKV"),
-        # an RWKV-Instant preset has no RWKV-Curve rows (one algorithm)
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == [("RWKV computed R", "61%")]
     assert backend.review_inputs[0].current_normal_state_kind == "review"
     assert backend.review_inputs[0].current_elapsed_days == 1
     assert backend.review_inputs[0].card_due == 45
@@ -15331,7 +15200,9 @@ def test_card_info_restores_local_state_cache_before_query(
     )
 
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
-    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    reviewer = _rwkv_cache_reviewer(
+        profile_folder=tmp_path, rows=rows, deck_config_overrides={"rwkvReviewEnabled": False, "rwkvReviewInstantOrderEnabled": True}
+    )
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
 
     restored_runtime = _CacheRuntime()
@@ -15341,12 +15212,7 @@ def test_card_info_restores_local_state_cache_before_query(
         reviewer=reviewer,
         card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "45%"),
-        ("Retrievability source", "RWKV"),
-        *NEXT_S90_UNAVAILABLE_ROWS,
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == [("RWKV computed R", "45%")]
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     assert restored_runtime.reviewed == []
 
@@ -15355,19 +15221,14 @@ def test_card_info_skips_rwkv_query_until_background_warmup_finishes() -> None:
     runtime = _SharedReviewRuntime()
     backend = RwkvStatefulReviewerBackend(runtime)
     set_reviewer_backend(backend)
-    reviewer = _rwkv_reviewer(historical_review_rows=[])
+    reviewer = _rwkv_reviewer(historical_review_rows=[], rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True)
     card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
 
     assert rwkv_card_info_rows(
         reviewer=reviewer,
         card=card,
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "Unavailable"),
-        ("Retrievability source", "FSRS (RWKV unavailable)"),
-        *NEXT_S90_UNAVAILABLE_ROWS,
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == [("RWKV computed R", "Calculating…")]
     assert runtime.queries == []
 
 
@@ -15419,15 +15280,10 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
     )
 
     assert rwkv_card_info_rows(
-        reviewer=_rwkv_reviewer(),
+        reviewer=_rwkv_reviewer(rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True),
         card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
         fallback_source="FSRS",
-    ) == [
-        ("RWKV computed R", "66%"),
-        ("Retrievability source", "RWKV"),
-        *NEXT_S90_UNAVAILABLE_ROWS,
-        *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
-    ]
+    ) == [("RWKV computed R", "66%")]
     assert created == [
         {
             "model_path": model_path,
@@ -18497,6 +18353,38 @@ def test_rwkv_card_info_curve_samples_the_stored_curve(
     assert grid[0] == 0.0 and len(grid) == 301
     assert grid[1] == pytest.approx(60 / 86_400) and grid[-1] == pytest.approx(36_500)
     assert grid[2] / grid[1] == pytest.approx(grid[-1] / grid[-2])
+
+
+def test_rwkv_card_info_curve_gives_the_recall_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-one-algorithm"""
+    grid = rwkv_scheduler.RWKV_CARD_INFO_CURVE_DAYS
+
+    class Backend(_CardCurveBackend):
+        def card_curve(
+            self, card_id: int, elapsed_days: Sequence[float]
+        ) -> tuple[list[float], float]:
+            self.calls.append((card_id, tuple(elapsed_days)))
+            return [1.0 - day / 100 for day in elapsed_days], 3.25
+
+    backend = Backend(None)
+    _card_curve_ready(monkeypatch, backend)
+
+    curve = rwkv_scheduler.rwkv_card_info_curve(
+        object(), SimpleNamespace(id=42), elapsed_days=2.5
+    )
+
+    assert curve is not None
+    # one call: the drawn points, then the time since the last review
+    assert backend.calls == [(42, (*grid, 2.5))]
+    assert curve.elapsed_days == grid and len(curve.recall) == len(grid)
+    assert curve.current_recall == pytest.approx(0.975)
+    # without the elapsed time there is no recall now
+    assert (
+        rwkv_scheduler.rwkv_card_info_curve(object(), SimpleNamespace(id=42)).current_recall
+        is None
+    )
 
 
 @pytest.mark.parametrize("curve_preset", [True, False])

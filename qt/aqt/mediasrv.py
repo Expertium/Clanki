@@ -1405,22 +1405,32 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
     """For a card whose preset runs RWKV-Curve: RWKV's own forgetting curve
     after the last review (the field without points while RWKV has no curve
     for the card), with the latest review's stability showing that curve's
-    S90. The reviews before it keep no FSRS-7 memory state, and neither does
-    the latest one without a curve: card info never mixes two algorithms
-    (spec ui.card-info-rwkv-curve)."""
+    S90, and the curve's recall now as the card's retrievability. The reviews
+    before it keep no FSRS-7 memory state, and neither does the latest one
+    without a curve: card info never mixes two algorithms (spec
+    ui.card-info-rwkv-curve, ui.card-info-one-algorithm)."""
     if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
         return
     response.rwkv_curve.SetInParent()
-    curve = aqt.rwkv_scheduler.rwkv_card_info_curve(reviewer, card)
-    if curve is not None:
-        response.rwkv_curve.elapsed_days.extend(curve.elapsed_days)
-        response.rwkv_curve.recall.extend(curve.recall)
-        response.rwkv_curve.s90 = curve.s90
     # the revlog is newest first
     latest = next(
         (i for i, entry in enumerate(response.revlog) if entry.button_chosen > 0),
         None,
     )
+    elapsed_days = (
+        max(0.0, time.time() - response.revlog[latest].time) / 86_400
+        if latest is not None
+        else None
+    )
+    curve = aqt.rwkv_scheduler.rwkv_card_info_curve(
+        reviewer, card, elapsed_days=elapsed_days
+    )
+    if curve is not None:
+        response.rwkv_curve.elapsed_days.extend(curve.elapsed_days)
+        response.rwkv_curve.recall.extend(curve.recall)
+        response.rwkv_curve.s90 = curve.s90
+        if curve.current_recall is not None:
+            response.rwkv_curve.current_recall = curve.current_recall
     if latest is None:
         return
     for entry in response.revlog[latest + 1 :]:

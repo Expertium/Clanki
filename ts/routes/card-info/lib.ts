@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import type { CardStatsResponse } from "@generated/anki/stats_pb";
 import * as tr2 from "@generated/ftl";
 import { DAY, timeSpan, TimespanUnit, Timestamp } from "@tslib/time";
@@ -14,29 +15,79 @@ export interface StatsRow {
     value: string | number | bigint;
 }
 
-const rwkvRowLabels = [
-    "RWKV computed R",
-    "RWKV : Answer Button Probability",
-    "RWKV Curve Next S90",
-    "RWKV : R After Review",
-    "RWKV : R After 10min",
-    "Retrievability source",
-] as const;
+// The row that carries an RWKV-Instant card's R (rwkv_scheduler.py
+// RWKV_CARD_INFO_R_LABEL); it shows as the card's Retrievability.
+const rwkvRLabel = "RWKV computed R";
 
-export function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
-    type ExtraRow = (typeof stats.extraRows)[number];
-    const statsRows: StatsRow[] = [];
-    const movedRwkvRows = new Set<ExtraRow>();
+function percent(value: number): string {
+    return `${(value * 100).toFixed(0)}%`;
+}
 
-    function pushRwkvRows(): void {
-        for (const label of rwkvRowLabels) {
-            const row = stats.extraRows.find((row) => row.label === label);
-            if (row) {
-                statsRows.push(row);
-                movedRwkvRows.add(row);
+function stabilityRow(days: number): StatsRow {
+    let stability = timeSpan(days * 86400, false, false);
+    if (days > 31) {
+        stability += ` (${timeSpan(days * 86400, false, false, TimespanUnit.Days)})`;
+    }
+    return { label: tr2.cardStatsFsrsStability(), value: stability };
+}
+
+/**
+ * Stability, difficulty and one retrievability, from the collection's
+ * algorithm only (spec ui.card-info-one-algorithm): FSRS-7 shows all three;
+ * RWKV-Curve its curve's S90 (no row while RWKV has no curve,
+ * ui.card-info-rwkv-curve) and its curve's R now; RWKV-Instant only RWKV's
+ * R. RWKV has no difficulty and RWKV-Instant no stability.
+ */
+function memoryStateRows(stats: CardStatsResponse, rwkvR: string | undefined): StatsRow[] {
+    const retrievability = (value: string): StatsRow => ({
+        label: tr2.cardStatsFsrsRetrievability(),
+        value,
+    });
+    switch (stats.schedulingAlgorithm) {
+        case SchedulingAlgorithm.RWKV_CURVE: {
+            const curve = stats.rwkvCurve;
+            const rows = curve?.s90 !== undefined ? [stabilityRow(curve.s90)] : [];
+            rows.push(
+                retrievability(
+                    curve?.currentRecall !== undefined
+                        ? percent(curve.currentRecall)
+                        : tr2.cardStatsCalculating(),
+                ),
+            );
+            return rows;
+        }
+        case SchedulingAlgorithm.RWKV_INSTANT:
+            return [retrievability(rwkvR ?? tr2.cardStatsCalculating())];
+        default: {
+            const state = stats.memoryState!;
+            const rows = [
+                stabilityRow(state.stability),
+                {
+                    label: tr2.cardStatsFsrsDifficulty(),
+                    value: percent((state.difficulty - 1.0) / 9.0),
+                },
+            ];
+            if (stats.fsrsRetrievability != null) {
+                rows.push(retrievability(percent(stats.fsrsRetrievability)));
             }
+            return rows;
         }
     }
+}
+
+/**
+ * RWKV-Instant has no forgetting curve of its own, so card info draws none
+ * rather than FSRS-7's (spec ui.card-info-one-algorithm).
+ */
+export function showsForgettingCurve(stats: CardStatsResponse): boolean {
+    return stats.memoryState != null
+        && stats.schedulingAlgorithm !== SchedulingAlgorithm.RWKV_INSTANT;
+}
+
+export function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
+    const statsRows: StatsRow[] = [];
+    // an RWKV-Instant card's R; it shows as the card's retrievability
+    const rwkvRRow = stats.extraRows.find((row) => row.label === rwkvRLabel);
 
     statsRows.push({ label: tr2.cardStatsAdded(), value: dateString(stats.added) });
 
@@ -72,42 +123,10 @@ export function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
             value: timeSpan(stats.interval * DAY),
         });
     }
-    // An RWKV-Curve card shows RWKV's values only: its curve's S90 as the
-    // stability (no row without a curve), and no FSRS-7 difficulty or
-    // retrievability (spec ui.card-info-rwkv-curve).
-    const rwkvCurve = stats.rwkvCurve;
     if (stats.memoryState) {
-        const stabilityDays = rwkvCurve ? rwkvCurve.s90 : stats.memoryState.stability;
-        if (stabilityDays !== undefined) {
-            let stability = timeSpan(stabilityDays * 86400, false, false);
-            if (stabilityDays > 31) {
-                const nativeStability = timeSpan(stabilityDays * 86400, false, false, TimespanUnit.Days);
-                stability += ` (${nativeStability})`;
-            }
-            statsRows.push({
-                label: tr2.cardStatsFsrsStability(),
-                value: stability,
-            });
-        }
-        if (!rwkvCurve) {
-            const difficulty = (((stats.memoryState.difficulty - 1.0) / 9.0) * 100.0).toFixed(0);
-            statsRows.push({
-                label: tr2.cardStatsFsrsDifficulty(),
-                value: `${difficulty}%`,
-            });
-            if (stats.fsrsRetrievability != null) {
-                const retrievability = (stats.fsrsRetrievability * 100).toFixed(0);
-                statsRows.push({
-                    label: tr2.cardStatsFsrsComputedR(),
-                    value: `${retrievability}%`,
-                });
-            }
-        }
-        if (
-            (rwkvCurve || stats.fsrsRetrievability != null)
-            && stats.extraRows.some((row) => row.label === rwkvRowLabels[0])
-        ) {
-            pushRwkvRows();
+        // Simple mode shows no difficulty, stability or retrievability
+        if (stats.advancedUi) {
+            statsRows.push(...memoryStateRows(stats, rwkvRRow?.value));
         }
     } else if (stats.ease && stats.desiredRetention === undefined) {
         // Prevent showing ease when FSRS is enabled but no memory state exists.
@@ -143,7 +162,7 @@ export function rowsFromStats(stats: CardStatsResponse): StatsRow[] {
     statsRows.push({ label: tr2.cardStatsPreset(), value: stats.preset });
 
     for (const row of stats.extraRows) {
-        if (!movedRwkvRows.has(row)) {
+        if (row !== rwkvRRow) {
             statsRows.push(row);
         }
     }

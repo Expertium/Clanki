@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import CardStats from "./CardStats.svelte";
     import Revlog from "./Revlog.svelte";
     import ForgettingCurve from "./ForgettingCurve.svelte";
+    import { showsForgettingCurve } from "./lib";
 
     export let stats: CardStatsResponse | null = null;
     export let showRevlog: boolean = true;
@@ -32,7 +33,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <Revlog revlog={stats.revlog} {fsrsEnabled} />
             </Row>
         {/if}
-        {#if fsrsEnabled && showCurve}
+        {#if showsForgettingCurve(stats) && showCurve}
             <Row>
                 <ForgettingCurve
                     revlog={stats.revlog}
