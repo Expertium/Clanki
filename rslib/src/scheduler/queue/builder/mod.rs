@@ -45,6 +45,22 @@ pub(crate) struct DueCard {
     pub reps: u32,
 }
 
+impl DueCard {
+    /// The entry `for_each_due_card_in_active_decks` makes of the card's row.
+    pub(crate) fn from_card(card: &Card, kind: DueCardKind) -> Self {
+        DueCard {
+            id: card.id,
+            note_id: card.note_id,
+            mtime: card.mtime,
+            due: card.due,
+            current_deck_id: card.deck_id,
+            original_deck_id: card.original_deck_id,
+            kind,
+            reps: card.reps,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DueCardKind {
     Review,
@@ -159,8 +175,14 @@ impl QueueBuilder {
             timing.days_elapsed,
             new_cards_ignore_review_limit,
         );
-        for (original_deck_id, count) in col.storage.filtered_review_counts_by_original_deck()? {
-            limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+        // the reservation only lowers RWKV review minimums: without any, skip
+        // its scan of every card
+        if limits.any_rwkv_review_minimum_remaining() {
+            for (original_deck_id, count) in
+                col.storage.filtered_review_counts_by_original_deck()?
+            {
+                limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
+            }
         }
         let sort_options = sort_options(&root_deck, &config_map);
         let rwkv_review_queue_scores = if sort_options.uses_rwkv_retrievability_scores() {

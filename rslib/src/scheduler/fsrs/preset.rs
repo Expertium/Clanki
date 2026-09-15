@@ -282,6 +282,20 @@ impl Collection {
     }
 
     pub(crate) fn fsrs_preset_for_card(&mut self, card: &Card) -> Result<FsrsPreset> {
+        if let Some(preset) = self.fsrs_overlay_preset_for_card(card)? {
+            return Ok(preset);
+        }
+        let deck_id = card.original_deck_id.or(card.deck_id);
+        let deck = self.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
+        self.fsrs_preset_for_deck(&deck)
+    }
+
+    /// The add-on overlay preset of the card, or None when the card takes the
+    /// preset of its home deck (`fsrs_preset_for_card`).
+    pub(crate) fn fsrs_overlay_preset_for_card(
+        &mut self,
+        card: &Card,
+    ) -> Result<Option<FsrsPreset>> {
         self.fsrs_preset_overlay_cache()?;
         if let Some(preset) = self
             .state
@@ -295,7 +309,7 @@ impl Collection {
                     .and_then(|cache| cache.presets.get(preset_id))
             })
         {
-            return Ok(preset.clone());
+            return Ok(Some(preset.clone()));
         }
 
         let no_overlay_match = self
@@ -330,7 +344,7 @@ impl Collection {
                         elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
                         "resolved FSRS preset overlay rule for card"
                     );
-                    return Ok(preset);
+                    return Ok(Some(preset));
                 }
             }
             if let Some(cache) = self.state.fsrs_preset_overlay_cache.as_mut() {
@@ -353,9 +367,7 @@ impl Collection {
             }
         }
 
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        let deck = self.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        self.fsrs_preset_for_deck(&deck)
+        Ok(None)
     }
 
     pub(crate) fn fsrs_preset_for_deck(&mut self, deck: &Deck) -> Result<FsrsPreset> {

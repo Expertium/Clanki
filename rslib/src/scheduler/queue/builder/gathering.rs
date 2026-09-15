@@ -1,10 +1,12 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hasher;
 
 use fnv::FnvHasher;
+use fsrs::FSRS;
 
 use super::DueCard;
 use super::NewCard;
@@ -15,6 +17,9 @@ use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_with_model;
+use crate::scheduler::fsrs::memory_state::fsrs_relative_overdueness_with_model;
+use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::queue::DeferredRwkvReview;
 use crate::scheduler::queue::DueCardKind;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
@@ -491,22 +496,38 @@ impl QueueBuilder {
         col: &mut Collection,
     ) -> Result<()> {
         let mut due_cards = Vec::new();
+        // the rows of the interday cards, read by their gather query; the
+        // few due intraday cards are read one by one
+        let mut rows = HashMap::new();
         self.gather_intraday_learning_cards_for_retrievability_sort(col, &mut due_cards)?;
-        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Learning, &mut due_cards)?;
-        self.gather_due_cards_for_retrievability_sort(col, DueCardKind::Review, &mut due_cards)?;
+        self.gather_due_cards_for_retrievability_sort(
+            col,
+            DueCardKind::Learning,
+            &mut due_cards,
+            &mut rows,
+        )?;
+        self.gather_due_cards_for_retrievability_sort(
+            col,
+            DueCardKind::Review,
+            &mut due_cards,
+            &mut rows,
+        )?;
 
+        // the result is sorted by (key, hash, id) below, so the order the
+        // cards were gathered in does not matter
+        let mut keys =
+            ExactReviewOrderKeys::new(self.context.timing, self.context.sort_options.review_order);
         let mut with_key = Vec::with_capacity(due_cards.len());
         for candidate in due_cards {
-            with_key.push((
-                candidate,
-                exact_review_order_key(
-                    col,
-                    candidate.card.id,
-                    self.context.timing,
-                    self.context.sort_options.review_order,
-                )?,
-                fnvhash_due_card(&candidate.card),
-            ));
+            let card_id = candidate.card.id;
+            let key = match rows.get(&card_id) {
+                Some(card) => keys.key(col, card)?,
+                None => {
+                    let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
+                    keys.key(col, &card)?
+                }
+            };
+            with_key.push((candidate, key, fnvhash_due_card(&candidate.card)));
         }
         let descending = matches!(
             self.context.sort_options.review_order,
@@ -594,21 +615,18 @@ impl QueueBuilder {
         col: &mut Collection,
         kind: DueCardKind,
         due_cards: &mut Vec<DueCardForRetrievabilitySort>,
+        rows: &mut HashMap<CardId, Card>,
     ) -> Result<()> {
-        col.storage.for_each_due_card_in_active_decks(
-            self.context.timing,
-            ReviewCardOrder::Day,
-            kind,
-            self.context.fsrs,
-            |card| {
+        col.storage
+            .for_each_due_card_row_in_active_decks(self.context.timing, kind, |card| {
                 due_cards.push(DueCardForRetrievabilitySort {
-                    card,
+                    card: DueCard::from_card(&card, kind),
                     counts_towards_review_limit: true,
                     interday_or_review: true,
                 });
-                Ok(true)
-            },
-        )
+                rows.insert(card.id, card);
+                Ok(())
+            })
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
@@ -649,21 +667,22 @@ impl QueueBuilder {
         col: &mut Collection,
         kind: DueCardKind,
     ) -> Result<()> {
-        let mut due_cards = Vec::new();
-        col.storage.for_each_due_card_in_active_decks(
-            self.context.timing,
-            ReviewCardOrder::Day,
-            kind,
-            self.context.fsrs,
-            |card| {
-                due_cards.push(card);
-                Ok(true)
-            },
-        )?;
-        let card_ids: Vec<_> = due_cards.iter().map(|card| card.id).collect();
+        // one query gives both the queue entries and the rows the keys need;
+        // the result is sorted by (key, hash, id) below, so the order the
+        // rows come in does not matter
+        let mut cards = Vec::new();
+        col.storage
+            .for_each_due_card_row_in_active_decks(self.context.timing, kind, |card| {
+                cards.push(card);
+                Ok(())
+            })?;
+        let due_cards: Vec<_> = cards
+            .iter()
+            .map(|card| DueCard::from_card(card, kind))
+            .collect();
         let keys = rwkv_review_order_keys(
             col,
-            &card_ids,
+            cards,
             self.context.timing,
             self.context.sort_options.review_order,
         )?;
@@ -697,6 +716,12 @@ impl QueueBuilder {
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
+        // Every gather order below takes nothing once the root limit is
+        // reached, so skip its query: a sorted scan of all new cards would
+        // otherwise run on each queue build of a day whose new cards are done.
+        if self.limits.root_limit_reached(LimitKind::New) {
+            return Ok(());
+        }
         let salt = Self::knuth_salt(self.context.timing.days_elapsed);
         match self.context.sort_options.new_gather_priority {
             NewCardGatherPriority::Deck => {
@@ -904,30 +929,73 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
-fn exact_review_order_key(
-    col: &mut Collection,
-    card_id: CardId,
+/// The sort keys of FSRS's retrievability orders: the card's retrievability,
+/// or its relative overdueness (spec sched.fsrs7-only). During one queue
+/// build each home deck's preset and each parameter set's model are made
+/// once, not once per card.
+struct ExactReviewOrderKeys {
     timing: SchedTimingToday,
     order: ReviewCardOrder,
-) -> Result<f32> {
-    let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
-    if let Some(state) = card.memory_state {
-        let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
-        if matches!(order, ReviewCardOrder::RelativeOverdueness) {
-            col.fsrs_relative_overdueness_for_card_state(&card, state, elapsed_days)
-        } else {
-            col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
+    deck_presets: HashMap<DeckId, FsrsPreset>,
+    models: HashMap<Vec<u32>, FSRS>,
+}
+
+impl ExactReviewOrderKeys {
+    fn new(timing: SchedTimingToday, order: ReviewCardOrder) -> Self {
+        Self {
+            timing,
+            order,
+            deck_presets: HashMap::new(),
+            models: HashMap::new(),
         }
-    } else {
-        // keep SM2-style fallback ordering when FSRS state is missing
-        let due = card.original_or_current_due() as i64;
-        let review_day = due.saturating_sub(card.interval as i64);
-        let days_elapsed = if due > 365_000 {
-            (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
-        } else {
-            timing.days_elapsed.saturating_sub(review_day as u32)
+    }
+
+    fn key(&mut self, col: &mut Collection, card: &Card) -> Result<f32> {
+        let timing = self.timing;
+        let Some(state) = card.memory_state else {
+            // keep SM2-style fallback ordering when FSRS state is missing
+            let due = card.original_or_current_due() as i64;
+            let review_day = due.saturating_sub(card.interval as i64);
+            let days_elapsed = if due > 365_000 {
+                (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
+            } else {
+                timing.days_elapsed.saturating_sub(review_day as u32)
+            };
+            return Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0));
         };
-        Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
+        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+        let preset = self.preset(col, card)?;
+        let desired_retention = card.desired_retention.unwrap_or(preset.desired_retention);
+        let relative_overdueness = matches!(self.order, ReviewCardOrder::RelativeOverdueness);
+        let fsrs = self.model(&preset.params)?;
+        if relative_overdueness {
+            fsrs_relative_overdueness_with_model(fsrs, state, elapsed_days, desired_retention)
+        } else {
+            fsrs_current_retrievability_with_model(fsrs, state, elapsed_days)
+        }
+    }
+
+    /// `Collection::fsrs_preset_for_card`, with the home-deck presets kept.
+    fn preset(&mut self, col: &mut Collection, card: &Card) -> Result<FsrsPreset> {
+        if let Some(preset) = col.fsrs_overlay_preset_for_card(card)? {
+            return Ok(preset);
+        }
+        let deck_id = card.original_deck_id.or(card.deck_id);
+        if let Some(preset) = self.deck_presets.get(&deck_id) {
+            return Ok(preset.clone());
+        }
+        let deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
+        let preset = col.fsrs_preset_for_deck(&deck)?;
+        self.deck_presets.insert(deck_id, preset.clone());
+        Ok(preset)
+    }
+
+    fn model(&mut self, params: &[f32]) -> Result<&FSRS> {
+        let bits: Vec<u32> = params.iter().map(|param| param.to_bits()).collect();
+        Ok(match self.models.entry(bits) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(FSRS::new(params)?),
+        })
     }
 }
 
@@ -936,4 +1004,253 @@ fn fnvhash_due_card(card: &DueCard) -> i64 {
     hasher.write_i64(card.id.0);
     hasher.write_i64(card.mtime.0);
     hasher.finish() as i64
+}
+
+#[cfg(test)]
+mod test {
+    use fsrs::DEFAULT_PARAMETERS;
+
+    use super::*;
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
+    use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+    use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+    use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+    use crate::scheduler::fsrs::preset::FsrsPresetRule;
+    use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+
+    /// The key as the queue computed it card by card: the card read again,
+    /// its preset resolved and its model built for each card.
+    fn per_card_key(
+        col: &mut Collection,
+        card_id: CardId,
+        timing: SchedTimingToday,
+        order: ReviewCardOrder,
+    ) -> Result<f32> {
+        let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
+        if let Some(state) = card.memory_state {
+            let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
+            if matches!(order, ReviewCardOrder::RelativeOverdueness) {
+                col.fsrs_relative_overdueness_for_card_state(&card, state, elapsed_days)
+            } else {
+                col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
+            }
+        } else {
+            let due = card.original_or_current_due() as i64;
+            let review_day = due.saturating_sub(card.interval as i64);
+            let days_elapsed = if due > 365_000 {
+                (timing.next_day_at.0 as u32).saturating_sub(due as u32) / 86_400
+            } else {
+                timing.days_elapsed.saturating_sub(review_day as u32)
+            };
+            Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0))
+        }
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn unit(&mut self) -> f32 {
+            self.below(1_000_000) as f32 / 1_000_000.0
+        }
+    }
+
+    fn perturbed_params(rng: &mut Lcg) -> Vec<f32> {
+        DEFAULT_PARAMETERS
+            .iter()
+            .map(|param| param * (0.9 + 0.2 * rng.unit()))
+            .collect()
+    }
+
+    /// Decks with their own presets (one with its own desired retention, one
+    /// taken over by an add-on overlay preset), and cards of every kind the
+    /// keys see.
+    fn random_collection(seed: u64, with_overlay: bool) -> Result<(Collection, Vec<CardId>)> {
+        let mut rng = Lcg(seed);
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut decks = Vec::new();
+        for index in 0..4 {
+            let mut deck = col.get_or_create_normal_deck(&format!("D{index}"))?;
+            let mut config = DeckConfig::default();
+            config.inner.fsrs_params_7 = perturbed_params(&mut rng);
+            config.inner.desired_retention = 0.8 + 0.15 * rng.unit();
+            col.add_or_update_deck_config(&mut config)?;
+            let normal = deck.normal_mut()?;
+            normal.config_id = config.id.0;
+            if index == 3 {
+                normal.desired_retention = Some(0.85);
+            }
+            col.add_or_update_deck(&mut deck)?;
+            decks.push(deck.id);
+        }
+        if with_overlay {
+            col.set_config(
+                FSRS_PRESET_OVERLAY_CONFIG_KEY,
+                &FsrsPresetOverlay {
+                    presets: vec![AddonFsrsPreset {
+                        id: "addon:test:keys".into(),
+                        name: "Keys".into(),
+                        fsrs_version: AddonFsrsVersion::Seven,
+                        params: perturbed_params(&mut rng),
+                        desired_retention: 0.87,
+                        historical_retention: 0.9,
+                        ignore_revlogs_before_date: String::new(),
+                    }],
+                    rules: vec![FsrsPresetRule {
+                        search: "deck:D1".into(),
+                        preset_id: "addon:test:keys".into(),
+                    }],
+                    simulator_rules: Vec::new(),
+                },
+            )?;
+        }
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..40 {
+            let deck_id = decks[rng.below(4) as usize];
+            let mut note = nt.new_note();
+            note.set_field(0, "front")?;
+            col.add_note(&mut note, deck_id)?;
+            let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+            let (queue, ctype) = match rng.below(3) {
+                0 => (CardQueue::Review, CardType::Review),
+                1 => (CardQueue::DayLearn, CardType::Relearn),
+                _ => (CardQueue::Learn, CardType::Relearn),
+            };
+            card.queue = queue;
+            card.ctype = ctype;
+            card.interval = 1 + rng.below(400) as u32;
+            card.due = if queue == CardQueue::Learn {
+                timing.now.0 as i32 - rng.below(3600) as i32
+            } else {
+                timing.days_elapsed as i32 - rng.below(30) as i32
+            };
+            if rng.below(5) > 0 {
+                let stability = 0.5 + 300.0 * rng.unit();
+                card.memory_state = Some(FsrsMemoryState {
+                    stability,
+                    stability_internal: stability * (0.5 + rng.unit()),
+                    stability_fast: (rng.below(2) == 0).then(|| stability * rng.unit()),
+                    difficulty: 1.0 + 9.0 * rng.unit(),
+                });
+            }
+            if rng.below(3) > 0 {
+                card.last_review_time =
+                    Some(timing.now.adding_secs(-(rng.below(90 * 86_400) as i64)));
+            }
+            if rng.below(3) == 0 {
+                card.desired_retention = Some(0.7 + 0.25 * rng.unit());
+            }
+            if rng.below(6) == 0 {
+                // a card whose home deck is another deck, as in a filtered deck
+                card.original_deck_id = decks[rng.below(4) as usize];
+                card.original_due = card.due;
+            }
+            col.storage.update_card(&card)?;
+            ids.push(card.id);
+        }
+        Ok((col, ids))
+    }
+
+    #[test]
+    fn kept_presets_and_models_give_the_per_card_keys() -> Result<()> {
+        for seed in 0..12 {
+            let (mut col, ids) = random_collection(seed, seed % 3 == 0)?;
+            let timing = col.timing_today()?;
+            for order in [
+                ReviewCardOrder::RetrievabilityAscending,
+                ReviewCardOrder::RetrievabilityDescending,
+                ReviewCardOrder::RelativeOverdueness,
+            ] {
+                let mut keys = ExactReviewOrderKeys::new(timing, order);
+                for &card_id in &ids {
+                    let card = col.storage.get_card(card_id)?.unwrap();
+                    let kept = keys.key(&mut col, &card)?;
+                    let per_card = per_card_key(&mut col, card_id, timing, order)?;
+                    assert_eq!(
+                        kept.to_bits(),
+                        per_card.to_bits(),
+                        "seed {seed} {order:?} card {card_id}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    type DueCardFields = (CardId, NoteId, TimestampSecs, i32, DeckId, DeckId, u32);
+
+    fn due_card_fields(card: &DueCard) -> DueCardFields {
+        (
+            card.id,
+            card.note_id,
+            card.mtime,
+            card.due,
+            card.current_deck_id,
+            card.original_deck_id,
+            card.reps,
+        )
+    }
+
+    #[test]
+    fn due_card_rows_are_the_due_cards_and_their_rows() -> Result<()> {
+        for seed in 0..4 {
+            let (mut col, _) = random_collection(seed, false)?;
+            let timing = col.timing_today()?;
+            // every deck is active
+            let root = col.get_or_create_normal_deck("Default")?;
+            col.storage.update_active_decks(&root)?;
+            col.storage
+                .db
+                .execute_batch("insert or ignore into active_decks select id from decks")?;
+            for kind in [DueCardKind::Review, DueCardKind::Learning] {
+                let mut expected = Vec::new();
+                col.storage.for_each_due_card_in_active_decks(
+                    timing,
+                    ReviewCardOrder::Day,
+                    kind,
+                    true,
+                    |card| {
+                        expected.push(due_card_fields(&card));
+                        Ok(true)
+                    },
+                )?;
+                let mut rows = Vec::new();
+                col.storage
+                    .for_each_due_card_row_in_active_decks(timing, kind, |card| {
+                        rows.push(card);
+                        Ok(())
+                    })?;
+                let mut got: Vec<_> = rows
+                    .iter()
+                    .map(|card| due_card_fields(&DueCard::from_card(card, kind)))
+                    .collect();
+                assert!(!expected.is_empty(), "seed {seed}");
+                expected.sort();
+                got.sort();
+                assert_eq!(got, expected, "seed {seed}");
+                let ids: Vec<_> = rows.iter().map(|card| card.id).collect();
+                let mut loaded = col.all_cards_for_ids(&ids, false)?;
+                loaded.sort_by_key(|card| card.id);
+                rows.sort_by_key(|card| card.id);
+                assert_eq!(rows, loaded, "seed {seed}");
+            }
+        }
+        Ok(())
+    }
 }
