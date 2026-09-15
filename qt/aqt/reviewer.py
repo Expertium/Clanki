@@ -2105,10 +2105,8 @@ timeboxReps = 0;
     def _ease_for_answer_key(self, ease: int) -> Literal[1, 2, 3, 4] | None:
         """Which ease an answer key (1-4) triggers; None when the key does nothing."""
         if self._two_button_mode():
-            # keys 1 and 2 follow the two buttons on screen; 3 is Good too;
-            # 4 (Easy) is not available
-            key_to_ease: dict[int, Literal[1, 2, 3, 4]] = {1: 1, 2: 3, 3: 3}
-            return key_to_ease.get(ease)
+            # only the keys of the two buttons on screen: 1 (Again) and 3 (Good)
+            return cast(Literal[1, 3], ease) if ease in (1, 3) else None
         return cast(Literal[1, 2, 3, 4], ease)
 
     def _answerButtonList(self) -> tuple[tuple[int, str], ...]:
