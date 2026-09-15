@@ -25,6 +25,9 @@ repeated here unless they materially affect a fork feature.
 - Simple mode: when only some of the settings behind "Bury siblings" or
   "On-screen timer" are on (set in Advanced mode), the switch shows "Partly
   on (set in Advanced mode)" under it.
+- RWKV-Curve's stability (S90) is no longer rounded up to whole days: card
+  info and the stored stability show the exact point where RWKV-Curve's
+  curve meets 90%, which can be under a day.
 - A card without a usable review history (no review log, or a truncated
   one) now gets an FSRS-7 memory state whose stability (S90) is its current
   interval. Before, FSRS-7 took the interval as its internal stability, and

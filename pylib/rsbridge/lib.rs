@@ -31,7 +31,6 @@ struct RwkvInferenceState {
     inner: rwkv::RwkvInferenceState,
 }
 
-type RwkvIntervalTuple = (Option<u32>, Option<u32>, Option<u32>, Option<u32>);
 /// Unrounded answer intervals in days (spec sched.sub-day-intervals).
 type RwkvUnroundedIntervalTuple = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 type RwkvProbabilityTuple = (f32, f32, f32, f32);
@@ -181,9 +180,9 @@ impl RwkvInference {
         f32,
         Option<f32>,
         Option<u32>,
-        Option<u32>,
+        Option<f32>,
         RwkvUnroundedIntervalTuple,
-        RwkvIntervalTuple,
+        RwkvUnroundedIntervalTuple,
         RwkvProbabilityTuple,
         Py<PyBytes>,
         Py<PyBytes>,
@@ -230,7 +229,7 @@ impl RwkvInference {
             output.current_interval,
             output.current_s90,
             unrounded_interval_tuple(output.intervals),
-            interval_tuple(output.s90s),
+            unrounded_interval_tuple(output.s90s),
             probability_tuple(output.button_probabilities),
             PyBytes::new(py, &output.card_state).unbind(),
             PyBytes::new(py, &output.note_state).unbind(),
@@ -248,9 +247,9 @@ impl RwkvInference {
             f32,
             Option<f32>,
             Option<u32>,
-            Option<u32>,
+            Option<f32>,
             RwkvUnroundedIntervalTuple,
-            RwkvIntervalTuple,
+            RwkvUnroundedIntervalTuple,
             RwkvProbabilityTuple,
         )>,
     > {
@@ -271,7 +270,7 @@ impl RwkvInference {
                             output.current_interval,
                             output.current_s90,
                             unrounded_interval_tuple(output.intervals),
-                            interval_tuple(output.s90s),
+                            unrounded_interval_tuple(output.s90s),
                             probability_tuple(output.button_probabilities),
                         )
                     })
@@ -310,12 +309,13 @@ impl RwkvInference {
 
     /// Query-only current interval and S90 per input from the resident
     /// warm-up state; returns `(retrievability, current_interval, current_s90)`
-    /// with `0` standing for "no interval". Releases the GIL while predicting.
+    /// with `0` standing for "no interval"; the S90 is unrounded days (spec
+    /// sched.rwkv-curve-s90). Releases the GIL while predicting.
     fn predict_current_intervals_many_from_warm_up(
         &mut self,
         py: Python<'_>,
         inputs: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<(f32, u32, u32)>> {
+    ) -> PyResult<Vec<(f32, u32, f32)>> {
         let mut parsed_inputs = Vec::new();
         for input in inputs.try_iter()? {
             parsed_inputs.push(parse_rwkv_review_input(&input?)?);
@@ -332,7 +332,7 @@ impl RwkvInference {
                     (
                         output.retrievability,
                         output.current_interval.unwrap_or(0),
-                        output.current_s90.unwrap_or(0),
+                        output.current_s90.unwrap_or(0.0),
                     )
                 })
                 .collect()
@@ -1113,10 +1113,6 @@ fn parse_rwkv_workload_bucket_probabilities(
 }
 
 fn unrounded_interval_tuple(intervals: [Option<f32>; 4]) -> RwkvUnroundedIntervalTuple {
-    (intervals[0], intervals[1], intervals[2], intervals[3])
-}
-
-fn interval_tuple(intervals: [Option<u32>; 4]) -> RwkvIntervalTuple {
     (intervals[0], intervals[1], intervals[2], intervals[3])
 }
 

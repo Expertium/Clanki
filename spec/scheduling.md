@@ -50,6 +50,25 @@ outcome_, not of FSRS; switching the interval source must not switch them off.
 `test_reviewer_rwkv_curve_intervals_go_through_review_fuzz`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-curve-s90
+
+Given a card that RWKV-Curve predicts for, its S90 — the current one (card
+info, the RWKV-Curve reschedule) and the one for each answer button (the
+stability stored on answer, `sched.rwkv-curve-fuzz`) — is the point in days,
+unrounded, where RWKV-Curve's forgetting curve meets 90% recall: searched on
+the same points as the answer intervals (`sched.sub-day-intervals`),
+including the points inside the first day when the curve is at or below 90%
+after one day, with linear interpolation between points. It can be under one
+day. Rounded up to whole days (at least 1) it equals the S90 before this
+entry. The answer S90s keep grade order the same way as the answer
+intervals when that is enforced.
+
+**Why:** Andrew, 2026-09-15: RWKV-Curve's S90 should be fractional, like
+FSRS-7's. Before this entry it was searched on whole days only and rounded up
+to whole days, at least 1.
+
+**Pinned by:** `rwkv_curve_s90_is_unrounded` (`rslib/src/rwkv/mod.rs`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
