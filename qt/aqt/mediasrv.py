@@ -464,6 +464,17 @@ def _builtin_data(path: str) -> bytes:
         return f.read()
 
 
+def _cacheable_builtin_file(path: str) -> bool:
+    """Scripts, style sheets and images of Clanki's own web folder (jQuery,
+    jQuery UI, the heatmap's d3 bundle, deckbrowser.js, ...). They do not
+    change while the app runs, and Clanki's web profiles are off the record,
+    so the cache is in memory and gone at exit: without it, every load of
+    the deck list or a deck's overview fetched and compiled ~600 KB of
+    scripts again (~130 ms of each ~310 ms load). Not in dev mode, where
+    `web-watch` rebuilds these files under a running app."""
+    return not dev_mode and path.startswith(("js/", "css/", "imgs/"))
+
+
 def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
     path = request.path
     # do we need to serve the fallback page?
@@ -475,7 +486,7 @@ def _handle_builtin_file_request(request: BundledFileRequest) -> Response:
     try:
         data = _builtin_data(data_path)
         response = Response(data, mimetype=mimetype)
-        if immutable:
+        if immutable or _cacheable_builtin_file(path):
             response.headers["Cache-Control"] = "max-age=31536000"
         if request.sveltekit_route:
             is_index = path.endswith("index.html")

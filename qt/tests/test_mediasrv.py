@@ -581,6 +581,37 @@ class TestTrustedPageCSP:
         assert _get_csp(resp) is None
 
     @pytest.mark.parametrize(
+        "path",
+        [
+            "js/vendor/jquery.min.js",
+            "js/deckbrowser.js",
+            "css/webview.css",
+            "imgs/x.svg",
+        ],
+    )
+    def test_own_scripts_styles_and_images_are_cached(self, monkeypatch, path) -> None:
+        from aqt import mediasrv
+
+        monkeypatch.setattr(mediasrv, "dev_mode", False)
+        resp = self._serve_builtin(monkeypatch, BundledFileRequest(path), b"x")
+        assert resp.headers["Cache-Control"] == "max-age=31536000"
+        # web-watch rebuilds them under a running dev build
+        monkeypatch.setattr(mediasrv, "dev_mode", True)
+        resp = self._serve_builtin(monkeypatch, BundledFileRequest(path), b"x")
+        assert "Cache-Control" not in resp.headers
+
+    def test_pages_are_not_cached(self, monkeypatch) -> None:
+        from aqt import mediasrv
+
+        monkeypatch.setattr(mediasrv, "dev_mode", False)
+        for request in (
+            BundledFileRequest("pages/deckconfig.html"),
+            BundledFileRequest("sveltekit/index.html", sveltekit_route="deck-options"),
+        ):
+            resp = self._serve_builtin(monkeypatch, request, self.SVELTEKIT_INDEX)
+            assert "Cache-Control" not in resp.headers
+
+    @pytest.mark.parametrize(
         "context", [PageContext.REVIEWER, PageContext.PREVIEWER, PageContext.UNKNOWN]
     )
     def test_legacy_page_refuses_framing(self, monkeypatch, context) -> None:
