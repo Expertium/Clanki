@@ -37,6 +37,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     } from "./fsrs-param-diagnostics";
     import {
         DeckConfig_Config,
+        DeckConfig_Config_FsrsVersion,
         GetRetentionWorkloadRequest,
         type GetRetentionWorkloadResponse,
         UpdateDeckConfigsMode,
@@ -588,6 +589,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             searchForTraining,
                             ignoreRevlogsBeforeMs: getIgnoreRevlogsBeforeMs(),
                             numOfRelearningSteps: getNumOfRelearningStepsInDay(),
+                            // required on the wire; the backend runs FSRS-7
+                            // whatever it says (spec sched.fsrs7-only)
+                            fsrsVersion: DeckConfig_Config_FsrsVersion.SEVEN,
                             enableSchedulingPenalties:
                                 enableSchedulingPenaltiesOverride(),
                         },
@@ -699,8 +703,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let workloadModal: Modal;
     $: outdatedFsrs7ParamsWarning = fsrsParamDiagnostics($config.fsrsParams7)
         .outdatedFsrs7PreviewParams
-            ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
-            : "";
+        ? OUTDATED_FSRS7_PREVIEW_PARAMS_WARNING
+        : "";
 </script>
 
 <DynamicallySlottable slotHost={Item} api={{}}>
