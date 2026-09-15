@@ -148,6 +148,7 @@ mod tests {
             revlog,
             cards: vec![],
             fsrs_by_preset: Default::default(),
+            fsrs_curve_by_preset: Default::default(),
             fsrs_preset_by_card: Default::default(),
             rwkv_retrievability_scores: None,
             algorithm: crate::deckconfig::algorithm::SchedulingAlgorithm::Fsrs7,
