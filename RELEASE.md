@@ -22,6 +22,14 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+- The next states that add-ons and custom-scheduling scripts get now carry the
+  S90 (the time until recall falls to 90%) as `stability`; FSRS-7's internal
+  stability stays in `stability_internal`. Card info's "FSRS Next S90" row now
+  shows the S90, and the simulator's R*f(S) graph weights each card by its S90.
+- A card RWKV-Curve reschedules without an FSRS memory state gets the FSRS-7
+  state whose S90 is RWKV's, as an RWKV-Curve answer already did. Before, it
+  took RWKV's S90 as FSRS-7's internal stability, which made its FSRS-7 curve
+  reach 90% much later.
 - The periodic backup (checked every 5 minutes) waits while you review, and
   while an FSRS optimization, a reschedule, a sync or another task uses the
   collection. Before, it could make an answer wait, with a "Processing..."

@@ -25,6 +25,7 @@ use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
@@ -238,7 +239,8 @@ impl Collection {
 
                 let original = card.clone();
                 card.interval = item.interval_days;
-                card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90));
+                let params = col.fsrs_preset_for_card(&card)?.params;
+                card.memory_state = Some(rwkv_rescheduled_memory_state(&card, item.s90, &params)?);
                 if let Some(target_retention) = item.target_retention {
                     card.desired_retention = Some(target_retention);
                 }
@@ -1145,23 +1147,29 @@ fn card_reviewed_today(card: &Card, timing: SchedTimingToday) -> bool {
     })
 }
 
-fn rwkv_rescheduled_memory_state(card: &Card, s90: f32) -> FsrsMemoryState {
-    let existing = card.memory_state;
-    FsrsMemoryState {
+/// The memory state of a card RWKV-Curve rescheduled to `s90`: its FSRS-7
+/// state with RWKV's S90, as an RWKV-Curve answer stores; a card without a
+/// usable FSRS-7 state gets the one whose own S90 is RWKV's (spec
+/// sched.fsrs7-sm2-conversion).
+fn rwkv_rescheduled_memory_state(card: &Card, s90: f32, params: &[f32]) -> Result<FsrsMemoryState> {
+    let valid = |value: f32| value.is_finite() && value > 0.0;
+    let Some(existing) = card
+        .memory_state
+        .filter(|state| valid(state.stability_internal))
+    else {
+        return fsrs_memory_state_for_s90(params, s90);
+    };
+    Ok(FsrsMemoryState {
         stability: s90,
-        stability_internal: existing
-            .map(|state| state.stability_internal)
-            .filter(|stability| stability.is_finite() && *stability > 0.0)
-            .unwrap_or(s90),
         stability_fast: existing
-            .and_then(|state| state.stability_fast)
-            .filter(|stability| stability.is_finite() && *stability > 0.0)
+            .stability_fast
+            .filter(|stability| valid(*stability))
             .or(Some(s90)),
-        difficulty: existing
-            .map(|state| state.difficulty)
-            .filter(|difficulty| difficulty.is_finite() && *difficulty > 0.0)
+        difficulty: Some(existing.difficulty)
+            .filter(|difficulty| valid(*difficulty))
             .unwrap_or(5.0),
-    }
+        ..existing
+    })
 }
 
 fn rwkv_rescheduled_due_day(today: u32, elapsed_days: u32, interval_days: u32) -> i32 {
@@ -1334,6 +1342,42 @@ mod test {
             revlogs_before
         );
 
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: a card RWKV-Curve
+    // reschedules without an FSRS memory state gets the FSRS-7 state whose
+    // own S90 is RWKV's, not RWKV's S90 as its internal stability.
+    #[test]
+    fn apply_review_reschedule_without_memory_state_gets_an_fsrs7_state_with_that_s90() -> Result<()>
+    {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32 + 8);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 4;
+        col.add_card(&mut card)?;
+
+        col.apply_rwkv_review_reschedule(vec![RwkvReviewRescheduleItem {
+            card_id: card.id,
+            interval_days: 25,
+            elapsed_days: 4,
+            s90: 20.0,
+            target_retention: None,
+        }])?;
+
+        let memory_state = col
+            .storage
+            .get_card(card.id)?
+            .unwrap()
+            .memory_state
+            .unwrap();
+        assert_eq!(memory_state.stability, 20.0);
+        let fsrs = fsrs::FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+        assert!((s90 - 20.0).abs() < 0.02, "{s90}");
+        assert!(memory_state.stability_internal < 20.0);
         Ok(())
     }
 

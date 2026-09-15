@@ -6,6 +6,7 @@ use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
 use super::CardState;
+use super::FsrsGrade;
 use super::LearnState;
 use super::ReviewState;
 use super::SchedulingStates;
@@ -139,7 +140,7 @@ impl RelearnState {
     }
 
     fn answer_hard(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Hard);
         let hard_delay = if ctx.fsrs_uses_learning_queues() {
             ctx.relearn_steps
                 .hard_delay_secs(self.learning.remaining_steps)
@@ -176,7 +177,7 @@ impl RelearnState {
     }
 
     fn answer_good(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Good);
         let good_delay = if ctx.fsrs_uses_learning_queues() {
             ctx.relearn_steps
                 .good_delay_secs(self.learning.remaining_steps)
@@ -216,7 +217,7 @@ impl RelearnState {
     }
 
     fn answer_easy(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
-        let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.easy.memory.into());
+        let memory_state = ctx.fsrs_next_memory_state(FsrsGrade::Easy);
         match interval {
             Some(interval) => self.graduate(
                 0,
