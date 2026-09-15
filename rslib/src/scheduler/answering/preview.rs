@@ -87,7 +87,8 @@ mod test {
             }))
         ));
 
-        // use Again on the preview
+        // use Again on the preview; RWKV-Curve's S90 does not reach the card
+        // (spec sched.rwkv-curve-s90)
         col.answer_card(&mut CardAnswer {
             card_id: c.id,
             current_state: next.current,
@@ -97,7 +98,7 @@ mod test {
             milliseconds_taken: 0,
             custom_data: None,
             desired_retention_override: None,
-            rwkv_s90: None,
+            rwkv_s90: Some(20.0),
             rwkv_retrievability: None,
             rwkv_review_kind: None,
             from_queue: true,
@@ -105,6 +106,7 @@ mod test {
 
         c = col.storage.get_card(c.id)?.unwrap();
         assert_eq!(c.queue, CardQueue::PreviewRepeat);
+        assert_eq!(c.memory_state, None);
 
         // hard
         let next = col.get_scheduling_states(c.id)?;

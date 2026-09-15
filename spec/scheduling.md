@@ -66,14 +66,16 @@ including the points inside the first day when the curve is at or below 90%
 after one day; the grid points bracket the crossing and the crossing itself
 is found on the curve, as for the answer intervals. It can be under one day.
 The answer S90s keep grade order the same way as the answer intervals when
-that is enforced.
+that is enforced. A preview answer (a filtered deck that does not
+reschedule) stores no S90: the card's memory state is left as it was.
 
 **Why:** Andrew, 2026-09-15: RWKV-Curve's S90 should be fractional, like
 FSRS-7's. Before this entry it was searched on whole days only and rounded up
 to whole days, at least 1.
 
 **Pinned by:** `rwkv_curve_s90_is_unrounded`,
-`intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`).
+`intervals_are_where_the_curve_meets_the_target` (`rslib/src/rwkv/mod.rs`);
+`preview` (`rslib/src/scheduler/answering/preview.rs`).
 
 ## sched.rwkv-instant-no-intervals
 

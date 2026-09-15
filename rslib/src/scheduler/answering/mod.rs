@@ -485,7 +485,13 @@ impl Collection {
         self.maybe_bury_siblings(&original, &updater.config)?;
         let timing = updater.timing;
         let deckconfig_id = updater.original_deck.config_id();
-        if let Some(rwkv_s90) = answer.rwkv_s90 {
+        // a preview answer changes no memory state, so RWKV's S90 is not
+        // stored either (spec sched.rwkv-curve-s90)
+        let preview = matches!(
+            answer.new_state,
+            CardState::Filtered(FilteredState::Preview(_))
+        );
+        if let Some(rwkv_s90) = answer.rwkv_s90.filter(|_| !preview) {
             require!(rwkv_s90.is_finite() && rwkv_s90 > 0.0, "invalid RWKV S90");
             match &mut updater.card.memory_state {
                 Some(memory_state) => memory_state.stability = rwkv_s90,
