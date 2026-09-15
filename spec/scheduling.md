@@ -273,7 +273,10 @@ Good, Easy:
 - a button of 12 hours or more gets whole days (at least 1) after review
   fuzz, and at least one day more than the day button before it: with all
   four at 12 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
-  Easy ≥ Good + 1.
+  Easy ≥ Good + 1. The fuzz range and the load balancer take the unrounded
+  interval for every card (new, learning, relearning and review), so, with
+  the same fuzz, 6.6 days gives the same range (5–8 days) on a new card as
+  on a review card.
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
@@ -304,6 +307,9 @@ RWKV-Curve's curve itself.
 Before this entry only learning and relearning answers under half a day
 went intraday, a review card's Again never did (it was clamped to the
 minimum lapse interval first), and RWKV-Curve rounded up to whole days.
+The FSRS-7 interval audit (2026-09-15; Andrew: fix it) found new, learning
+and relearning buttons fuzzed from the interval rounded to whole days (6.6
+days gave the range 5–9 days, a review card 5–8), an upstream leftover.
 
 **Pinned by:** `button_intervals::test::*`
 (`rslib/src/scheduler/states/button_intervals.rs`),
