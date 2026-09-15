@@ -61,6 +61,20 @@ impl Collection {
         configs: &HashMap<DeckConfigId, DeckConfig>,
         timing: SchedTimingToday,
     ) -> Result<()> {
+        // RWKV-Instant counts only the reviews its scores make due, never
+        // FSRS-7's due cards; without scores, none (spec sched.rwkv-instant-waits)
+        for (deck_id, deck_counts) in counts.iter_mut() {
+            if decks
+                .get(deck_id)
+                .filter(|deck| !deck.is_filtered())
+                .and_then(|deck| deck.config_id())
+                .and_then(|config_id| configs.get(&config_id))
+                .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
+            {
+                deck_counts.review = 0;
+            }
+        }
+
         let deck_count_scores = self.take_rwkv_deck_count_scores_for_day(timing.days_elapsed);
         if !deck_count_scores.is_empty() {
             let filtered_review_counts = self.storage.filtered_review_counts_by_original_deck()?;
@@ -152,15 +166,9 @@ impl Collection {
                 score.intervening_reviews,
                 score.target_retention,
             );
-            let rwkv_due = matches!(eligibility, RwkvReviewScoreEligibility::Eligible);
-            if rwkv_due != metadata.fsrs_due_today {
-                let Some(counts) = counts.get_mut(&metadata.current_deck_id) else {
-                    continue;
-                };
-                if rwkv_due {
+            if matches!(eligibility, RwkvReviewScoreEligibility::Eligible) {
+                if let Some(counts) = counts.get_mut(&metadata.current_deck_id) {
                     counts.review = counts.review.saturating_add(1);
-                } else {
-                    counts.review = counts.review.saturating_sub(1);
                 }
             }
 

@@ -125,6 +125,44 @@ using FSRS-7's values.
 `test_rwkv_instant_card_info_says_the_model_is_missing`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-instant-waits
+
+Given a collection that runs RWKV-Instant:
+
+- the study queue takes review cards only from RWKV-Instant's scores for the
+  studied deck: a review card is gathered when its score makes it due, and a
+  review card without a score is not gathered, even when its FSRS-7 due date
+  has come. Until RWKV-Instant has scored the studied deck, the queue holds no
+  review cards (learning and new cards still come) and reports that the
+  scores are pending;
+- a normal deck's review count is the number of its scored cards whose score
+  makes them due, plus the daily-minimum pulls; a card without a score counts
+  nothing, and FSRS-7's due count never stands in;
+- while the scores are pending, the deck list shows the review count as "…",
+  also when the scoring fails, finds nothing it can score, or gives a stale
+  result (the next refresh of the deck list tries again); the overview shows
+  the review count as "…", the note "Waiting for RWKV-Instant…" ("RWKV model
+  not found" when RWKV cannot run) and no congratulations screen, and asks
+  again every 2 s while RWKV can run; the reviewer shows the review count as
+  "…".
+
+**Why:** Andrew, 2026-09-15: never mix two algorithms; while RWKV is not
+ready, show "…" or "Calculating…", and scheduling waits. Before this entry,
+RWKV-Instant gathered FSRS-7-due cards when it had no scores for the deck or
+none for a card, and its counts fell back to FSRS-7's.
+
+**Pinned by:** `rwkv_instant_without_scores_gathers_no_reviews_and_reports_pending`,
+`rwkv_instant_unscored_due_reviews_wait_for_their_score`
+(`rslib/src/scheduler/queue/builder/mod.rs`);
+`rwkv_deck_tree_counts_exclude_ineligible_scored_reviews`
+(`rslib/src/decks/tree.rs`);
+`test_deck_browser_count_failure_keeps_the_review_count_pending`,
+`test_overview_waits_for_rwkv_instant_instead_of_congratulating`,
+`test_overview_retries_while_rwkv_instant_scores_are_pending`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_remaining_review_count_is_pending_without_rwkv_instant_scores`
+(`qt/tests/test_reviewer.py`).
+
 ## sched.rwkv-state-cache-startup-build
 
 Given a collection that runs RWKV-Curve or RWKV-Instant, a usable RWKV model,
@@ -177,7 +215,8 @@ prediction belongs to one showing: it is cleared before the next prediction
 and once an answer has used it, so a later showing of the same card never
 reuses its intervals or its S90. A preview in a filtered deck without
 rescheduling (no review intervals) and cards of FSRS-7 and RWKV-Instant
-presets never wait.
+presets never wait at the answer buttons (RWKV-Instant waits in the study
+queue instead, `sched.rwkv-instant-waits`).
 
 **Why:** Andrew, 2026-09-15: the buttons must never show, and an answer must
 never store, the intervals of one algorithm while another is on. Before this
@@ -283,7 +322,9 @@ state tests; `test_rwkv_curve_states_*` and
 Given a preset running RWKV-Curve or RWKV-Instant whose review sort order is
 "Retrievability ascending", "Retrievability descending" or "Relative
 overdueness", when the study queue gathers due review cards and interday
-learning cards that it does not rank by RWKV-Instant queue scores, it ranks
+learning cards that it does not rank by RWKV-Instant queue scores (under
+RWKV-Instant only interday learning cards: its review cards come only from
+its scores, `sched.rwkv-instant-waits`), it ranks
 them by RWKV's own measure and applies the daily limits in that order. A
 card's retrievability is its RWKV-Curve retrievability score for today; a
 card without a score gets the value of the exponential forgetting curve

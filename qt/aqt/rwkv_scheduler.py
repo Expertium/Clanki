@@ -6555,7 +6555,9 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             finish()
             return
         logger.exception("RWKV deck browser count %s failed", stage)
-        finish(clear_pending=True)
+        # the count stays "…": without scores RWKV-Instant has no count, and
+        # FSRS-7's never stands in (spec sched.rwkv-instant-waits)
+        finish(clear_pending=False)
 
     def prepare_next_deck() -> None:
         if not should_continue():
@@ -6588,15 +6590,15 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                 fail("preparation")
                 return
             if work is None:
-                if loading:
+                if should_continue():
+                    # nothing to score yet (the state loads, or RWKV cannot
+                    # run): the count stays "…" (spec sched.rwkv-instant-waits)
                     deferred_scopes += 1
                     logger.debug(
-                        "RWKV deck browser count deferred during state cache load: "
-                        "deck_id=%s",
+                        "RWKV deck browser count deferred: deck_id=%s loading=%s",
                         deck_id,
+                        loading,
                     )
-                elif should_continue():
-                    on_update(deck_id, None)
                 prepare_next_deck()
                 return
             if not should_continue():
@@ -6793,7 +6795,7 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                     return tree
 
                 def installed(future: Future[DeckTreeNode | None]) -> None:
-                    nonlocal first_update_elapsed_ms, updated_scopes
+                    nonlocal first_update_elapsed_ms, updated_scopes, deferred_scopes
                     try:
                         tree = future.result()
                     except Exception:
@@ -6806,7 +6808,10 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                                 first_update_elapsed_ms = (
                                     time.monotonic() - start
                                 ) * 1000
-                        on_update(result.deck_id, tree)
+                            on_update(result.deck_id, tree)
+                        else:
+                            # stale scores were not installed: keep "…"
+                            deferred_scopes += 1
                     prepare_next_deck()
 
                 run_in_background(install, installed, uses_collection=True)
@@ -10812,6 +10817,21 @@ def _start_rwkv_state_cache_build(mw: object) -> None:
         run_on_main(build)
     else:
         build()
+
+
+def rwkv_review_scores_pending(col: object) -> bool:
+    """Whether RWKV-Instant has not scored the studied deck yet, so its review
+    cards wait and its review count is unknown (spec sched.rwkv-instant-waits)."""
+    get_queued_cards = getattr(
+        getattr(col, "sched", None), "get_queued_cards_without_states", None
+    )
+    if not callable(get_queued_cards):
+        return False
+    try:
+        return bool(get_queued_cards(fetch_limit=0).rwkv_scores_pending)
+    except Exception:
+        logger.exception("failed to read the RWKV-Instant queue state")
+        return False
 
 
 def rwkv_state_cache_loading(mw: object) -> bool:

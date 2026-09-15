@@ -2088,6 +2088,10 @@ timeboxReps = 0;
         counts: list[int | str]
         idx, counts_ = self._v3.counts()
         counts = cast(list[Union[int, str]], counts_)
+        if self._v3.queued_cards.rwkv_scores_pending:
+            # RWKV-Instant has not scored the deck yet (spec
+            # sched.rwkv-instant-waits)
+            counts[2] = "…"
         count_override = getattr(self, "_rwkv_remaining_count_override", None)
         if count_override is not None and count_override[0] == getattr(
             self, "_review_card_generation", 0

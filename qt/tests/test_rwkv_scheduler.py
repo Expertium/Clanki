@@ -12402,7 +12402,8 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
     ]
     assert collection_flags == [True, False, True, True, True, False, True]
     assert installed_scores == [10, 30]
-    assert updates == [(10, 1), (20, None), (30, 2)]
+    # deck 20 had nothing to score: its count stays pending
+    assert updates == [(10, 1), (30, 2)]
 
 
 def test_deck_browser_count_prepare_skips_work_cancelled_while_queued(
@@ -12507,6 +12508,49 @@ def test_deck_browser_count_prepare_failure_after_cancellation_is_ignored(
     on_done(future)
 
     assert finished == [True]
+
+
+# Pins spec/scheduling.md#sched.rwkv-instant-waits
+def test_deck_browser_count_failure_keeps_the_review_count_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finished: list[bool] = []
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool,
+        ) -> None:
+            future: Future[object] = Future()
+            try:
+                future.set_result(task())
+            except Exception as error:
+                future.set_exception(error)
+            on_done(future)
+
+    def prepare(reviewer: object, *, deck_id: int, reason: str) -> None:
+        if deck_id == 10:
+            raise RuntimeError("scoring failed")
+        return None
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
+    monkeypatch.setattr(rwkv_scheduler.logger, "exception", lambda *a, **k: None)
+    mw = SimpleNamespace(col=SimpleNamespace(), taskman=Taskman())
+
+    for deck_ids in ([10], [20]):
+        rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+            mw,
+            deck_ids,
+            should_continue=lambda: True,
+            on_update=lambda _deck_id, _tree: pytest.fail("no count to show"),
+            on_done=finished.append,
+        )
+
+    # a failure (10) and nothing to score (20) both keep "…"
+    assert finished == [False, False]
 
 
 def test_selecting_deck_cancels_counts_and_defers_overview_until_after_hooks(
@@ -12670,6 +12714,101 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
 
     assert "<span class=review-count>…</span>" in table
     assert "4000" not in table
+
+
+def _pending_overview(
+    monkeypatch: pytest.MonkeyPatch, *, model: bool
+) -> tuple[object, list[str]]:
+    from aqt.overview import Overview
+
+    monkeypatch.setattr(
+        "aqt.overview.tr",
+        SimpleNamespace(
+            qt_misc_rwkv_instant_scores_pending=lambda: "WAITING",
+            qt_misc_rwkv_model_not_found=lambda: "NO MODEL",
+        ),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: model)
+    pages: list[str] = []
+    overview = Overview.__new__(Overview)
+    overview.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            sched=SimpleNamespace(_is_finished=lambda: True),
+            decks=SimpleNamespace(current=lambda: {"name": "Deck", "dyn": 0}),
+        ),
+    )
+    overview.web = SimpleNamespace(
+        stdHtml=lambda body, **kwargs: pages.append(body),
+        load_sveltekit_page=lambda page: pages.append(f"sveltekit:{page}"),
+    )
+    overview._table = lambda: "TABLE"
+    overview._desc = lambda deck: ""
+    overview._rwkv_counts_pending = True
+    return overview, pages
+
+
+# Pins spec/scheduling.md#sched.rwkv-instant-waits
+def test_overview_waits_for_rwkv_instant_instead_of_congratulating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overview, pages = _pending_overview(monkeypatch, model=True)
+    overview._renderPage()
+    assert "TABLE" in pages[0] and "WAITING" in pages[0]
+
+    overview, pages = _pending_overview(monkeypatch, model=False)
+    overview._renderPage()
+    assert "NO MODEL" in pages[0]
+
+    overview, pages = _pending_overview(monkeypatch, model=True)
+    overview._rwkv_counts_pending = False
+    overview._renderPage()
+    assert pages == ["sveltekit:congrats"]
+
+
+# Pins spec/scheduling.md#sched.rwkv-instant-waits
+def test_overview_retries_while_rwkv_instant_scores_are_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.overview import Overview
+
+    timers: list[tuple[int, Callable[[], None]]] = []
+    refreshes: list[int] = []
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: True)
+    overview = Overview.__new__(Overview)
+    overview.mw = SimpleNamespace(
+        state="overview",
+        progress=SimpleNamespace(
+            single_shot=lambda delay, callback, *args: timers.append((delay, callback))
+        ),
+    )
+    overview.refresh = lambda: refreshes.append(1)
+    overview._rwkv_counts_pending = True
+    overview._rwkv_retry_scheduled = False
+
+    overview._retry_rwkv_counts()
+    overview._retry_rwkv_counts()
+    assert [delay for delay, _ in timers] == [2000]
+    timers[0][1]()
+    assert refreshes == [1]
+
+    # no retry once the scores came, and none without a model
+    overview._rwkv_counts_pending = False
+    overview._retry_rwkv_counts()
+    timers[1][1]()
+    assert refreshes == [1]
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: False)
+    overview._rwkv_retry_scheduled = False
+    overview._retry_rwkv_counts()
+    assert len(timers) == 2
+
+    col = SimpleNamespace(
+        sched=SimpleNamespace(
+            get_queued_cards_without_states=lambda fetch_limit: SimpleNamespace(
+                rwkv_scores_pending=fetch_limit == 0
+            )
+        )
+    )
+    assert rwkv_scheduler.rwkv_review_scores_pending(col)
 
 
 @pytest.mark.parametrize("enforce_grade_order", [True, False])

@@ -59,6 +59,7 @@ class Overview:
         self._refresh_needed = False
         self._rwkv_count_generation = 0
         self._rwkv_counts_pending = False
+        self._rwkv_retry_scheduled = False
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
@@ -79,6 +80,8 @@ class Overview:
             self._renderBottom()
             self.mw.web.setFocus()
             gui_hooks.overview_did_refresh(self)
+            if rwkv_counts_pending:
+                self._retry_rwkv_counts()
 
         def get_counts(col: Collection) -> bool:
             rwkv_counts_pending = aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
@@ -87,8 +90,10 @@ class Overview:
                 reason="overview counts",
             )
             col.sched.counts()
-            return rwkv_counts_pending or (
-                aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
+            return (
+                rwkv_counts_pending
+                or aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
+                or aqt.rwkv_scheduler.rwkv_review_scores_pending(col)
             )
 
         QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
@@ -96,6 +101,20 @@ class Overview:
     def refresh_if_needed(self) -> None:
         if self._refresh_needed:
             self.refresh()
+
+    def _retry_rwkv_counts(self) -> None:
+        """RWKV-Instant has not scored the deck yet: ask again in 2 s, unless
+        RWKV cannot run (spec sched.rwkv-instant-waits)."""
+        if self._rwkv_retry_scheduled or not aqt.rwkv_scheduler.rwkv_model_available():
+            return
+        self._rwkv_retry_scheduled = True
+
+        def retry() -> None:
+            self._rwkv_retry_scheduled = False
+            if self.mw.state == "overview" and self._rwkv_counts_pending:
+                self.refresh()
+
+        self.mw.progress.single_shot(2000, retry, False)
 
     def op_executed(
         self, changes: OpChanges, handler: object | None, focused: bool
@@ -205,14 +224,15 @@ class Overview:
             shareLink = '<a class=smallLink href="review">Reviews and Updates</a>'
         else:
             shareLink = ""
-        if self.mw.col.sched._is_finished():
+        # no congratulations while RWKV-Instant's reviews are still unknown
+        if not self._rwkv_counts_pending and self.mw.col.sched._is_finished():
             self._show_finished_screen()
             return
         content = OverviewContent(
             deck=deck["name"],
             shareLink=shareLink,
             desc=self._desc(deck),
-            table=self._table(),
+            table=self._table() + self._rwkv_pending_notice(),
         )
         gui_hooks.overview_will_render_content(self, content)
         content.deck = html.escape(content.deck)
@@ -222,6 +242,16 @@ class Overview:
             js=["js/vendor/jquery.min.js"],
             context=self,
         )
+
+    def _rwkv_pending_notice(self) -> str:
+        if not self._rwkv_counts_pending:
+            return ""
+        notice = (
+            tr.qt_misc_rwkv_instant_scores_pending()
+            if aqt.rwkv_scheduler.rwkv_model_available()
+            else tr.qt_misc_rwkv_model_not_found()
+        )
+        return f'<p class="rwkv-pending">{html.escape(notice)}</p>'
 
     def _show_finished_screen(self) -> None:
         self.web.load_sveltekit_page("congrats")
