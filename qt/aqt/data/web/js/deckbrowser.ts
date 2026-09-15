@@ -34,6 +34,7 @@ function handleDropEvent(event, ui) {
 /** Replace the rows of the deck table (after a collapse or expand) without
  * reloading the page; deckbrowser.py falls back to a reload when this could
  * give a different page. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- called from deckbrowser.py
 function replaceDeckTree(html: string) {
     const table = document.getElementById("decktree");
     if (!table) {
