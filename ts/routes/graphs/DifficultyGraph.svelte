@@ -26,7 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let tableData: TableDatum[] = [];
     let range = PercentageRangeEnum.All;
 
-    $: if (sourceData) {
+    $: if (sourceData?.difficulty) {
         [histogramData, tableData] = prepareData(
             gatherData(sourceData),
             dispatch,
@@ -39,7 +39,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const subtitle = tr.statisticsCardDifficultySubtitle2();
 </script>
 
-{#if sourceData?.fsrs}
+<!-- only under FSRS-7: RWKV has no difficulty (spec ui.stats-one-algorithm) -->
+{#if sourceData?.fsrs && sourceData.difficulty}
     <Graph {title} {subtitle}>
         <PercentageRange bind:range />
 

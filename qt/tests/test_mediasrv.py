@@ -188,7 +188,9 @@ class TestGraphs:
 
         calls: list[str] = []
 
-        def prepare(reviewer: object, search: str) -> RwkvStatsPreparationStatus:
+        def prepare(
+            reviewer: object, search: str, **kwargs: object
+        ) -> RwkvStatsPreparationStatus:
             calls.append(search)
             return getattr(RwkvStatsPreparationStatus, status)
 

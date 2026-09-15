@@ -7619,6 +7619,19 @@ def rwkv_collection_active(reviewer: object) -> bool:
         return True
 
 
+def rwkv_curve_collection_active(reviewer: object) -> bool:
+    """True when the collection runs RWKV-Curve (its ``schedulingAlgorithm``
+    key, spec sched.one-global-algorithm): its R is the Curve's."""
+    get_config = getattr(_collection(reviewer), "get_config", None)
+    if not callable(get_config):
+        return False
+    try:
+        return get_config("schedulingAlgorithm", None) == "rwkvCurve"
+    except Exception:
+        logger.debug("failed to read the collection's scheduling algorithm")
+        return False
+
+
 def _rwkv_review_active_deck_config(
     reviewer: object,
     card: object,

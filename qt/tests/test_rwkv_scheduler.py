@@ -9884,6 +9884,19 @@ def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
     assert rwkv_scheduler.rwkv_collection_active(reviewer)
 
 
+# Pins spec/ui.md#ui.stats-one-algorithm
+def test_rwkv_curve_collection_active_reads_the_algorithm() -> None:
+    def reviewer(algorithm: str | None) -> SimpleNamespace:
+        values = {"schedulingAlgorithm": algorithm}
+        col = SimpleNamespace(get_config=lambda key, default=None: values.get(key))
+        return SimpleNamespace(mw=SimpleNamespace(col=col))
+
+    assert rwkv_scheduler.rwkv_curve_collection_active(reviewer("rwkvCurve"))
+    for other in ("rwkvInstant", "fsrs7", None):
+        assert not rwkv_scheduler.rwkv_curve_collection_active(reviewer(other))
+    assert not rwkv_scheduler.rwkv_curve_collection_active(SimpleNamespace())
+
+
 def test_rwkv_review_enabled_reads_legacy_fsrs_other_key() -> None:
     class Decks:
         def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
