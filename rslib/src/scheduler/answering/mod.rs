@@ -1280,13 +1280,46 @@ pub(crate) mod test {
         assert_eq!(review_days(states.good), 2);
         assert_eq!(review_days(states.easy), 3);
 
-        // without any supplied interval the outcome is FSRS's own
+        // without any supplied interval the outcome is FSRS's own. The two
+        // calls run a moment apart and FSRS-7's elapsed time is exact to the
+        // second, so the memory states may differ in the last digits.
         let supplied = col.scheduling_states_with_intervals(cid, [None; 4], [None; 4])?;
         let fsrs = col.get_scheduling_states(cid)?;
-        assert_eq!(
-            [supplied.again, supplied.hard, supplied.good, supplied.easy],
-            [fsrs.again, fsrs.hard, fsrs.good, fsrs.easy]
-        );
+        let memory = |state: &CardState| match state {
+            CardState::Normal(NormalState::Review(review)) => review.memory_state,
+            CardState::Normal(NormalState::Relearning(relearn)) => relearn.review.memory_state,
+            other => panic!("unexpected state {other:?}"),
+        };
+        let with_memory = |state: CardState, memory: Option<FsrsMemoryState>| match state {
+            CardState::Normal(NormalState::Review(mut review)) => {
+                review.memory_state = memory;
+                CardState::Normal(NormalState::Review(review))
+            }
+            CardState::Normal(NormalState::Relearning(mut relearn)) => {
+                relearn.learning.memory_state = memory;
+                relearn.review.memory_state = memory;
+                CardState::Normal(NormalState::Relearning(relearn))
+            }
+            other => other,
+        };
+        for (supplied, fsrs) in [supplied.again, supplied.hard, supplied.good, supplied.easy]
+            .into_iter()
+            .zip([fsrs.again, fsrs.hard, fsrs.good, fsrs.easy])
+        {
+            let (a, b) = (memory(&supplied).unwrap(), memory(&fsrs).unwrap());
+            let close = |x: f32, y: f32| (x - y).abs() <= 1e-4 * y.abs().max(1.0);
+            assert!(close(a.stability, b.stability), "{a:?} vs {b:?}");
+            assert!(
+                close(a.stability_internal, b.stability_internal),
+                "{a:?} vs {b:?}"
+            );
+            assert!(close(a.difficulty, b.difficulty), "{a:?} vs {b:?}");
+            assert!(
+                close(a.stability_fast.unwrap(), b.stability_fast.unwrap()),
+                "{a:?} vs {b:?}"
+            );
+            assert_eq!(with_memory(supplied, Some(b)), fsrs);
+        }
 
         Ok(())
     }
