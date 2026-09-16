@@ -8319,11 +8319,28 @@ with eligible as (
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
     {deck_clause}
-), retained_starts as (
+), learning_starts as (
   select cid, max(id) as start_id
   from eligible
   where type = 0 and (previous_type is null or previous_type != 0)
   group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
 )
 select
   e.id,
@@ -10718,11 +10735,28 @@ with eligible as (
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
-), retained_starts as (
+), learning_starts as (
   select cid, max(id) as start_id
   from eligible
   where type = 0 and (previous_type is null or previous_type != 0)
   group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
 )
 select e.id, e.cid, e.nid, e.did, e.ease, e.time, e.type, e.id = s.start_id
 from eligible e

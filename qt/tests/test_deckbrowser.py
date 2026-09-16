@@ -22,6 +22,8 @@ def browser(monkeypatch: pytest.MonkeyPatch):
 
     browser = DeckBrowser.__new__(DeckBrowser)
     browser._rwkv_pending_deck_ids = set()
+    browser._pending_collapse = {}
+    browser._rwkv_count_generation = 0
     return browser
 
 
@@ -213,3 +215,217 @@ def test_the_rwkv_submenu_entries_name_the_scope():
 
     assert "decks-reschedule-with-rwkv-curve = Reschedule this deck" in lines
     assert "decks-rwkv-reschedule-all-decks = Reschedule all decks" in lines
+
+
+class _FakeQueryOp:
+    """Runs the deck list's background step when the test asks for it."""
+
+    def __init__(self, *, parent, op, success):
+        self.op = op
+        self.success = success
+        self.parent = parent
+
+    def run_in_background(self, initiator=None):
+        return self
+
+
+class _Page:
+    """The deck list drawn into a fake webview, with the calls it made."""
+
+    def __init__(self):
+        self.html: list[str] = []
+        self.scripts: list[str] = []
+        self.offset_requests: list = []
+        self.buttons = 0
+
+    def stdHtml(self, html, css=None, js=None, context=None):
+        self.html.append(html)
+
+    def eval(self, script):
+        self.scripts.append(script)
+
+    def evalWithCallback(self, script, callback):
+        assert script == "window.pageYOffset"
+        self.offset_requests.append(callback)
+
+    def adjustHeightToFit(self):
+        pass
+
+    def set_bridge_command(self, handler, context):
+        pass
+
+    def scrolls(self) -> list[str]:
+        return [s for s in self.scripts if s.startswith("window.scrollTo(")]
+
+    def swaps(self) -> list[str]:
+        return [s for s in self.scripts if s.startswith("replaceDeckTree(")]
+
+
+def _tree(*, collapsed=False, new=1, review=2, child_review=3):
+    child = DeckTreeNode(
+        deck_id=2, name="child", level=2, new_count=new, review_count=child_review
+    )
+    parent = DeckTreeNode(
+        deck_id=1,
+        name="parent",
+        level=1,
+        children=[child],
+        collapsed=collapsed,
+        new_count=new,
+        review_count=review,
+    )
+    return DeckTreeNode(children=[parent])
+
+
+@pytest.fixture
+def refreshable(browser, monkeypatch):
+    """A deck browser whose page was drawn once into a fake webview, with the
+    background step of the next draw under the test's control."""
+    from aqt import deckbrowser, gui_hooks, review_heatmap, rwkv_scheduler
+
+    for hook in (
+        gui_hooks.webview_will_set_content,
+        gui_hooks.deck_browser_did_render,
+        gui_hooks.deck_browser_will_render_content,
+    ):
+        monkeypatch.setattr(hook, "_hooks", [])
+    monkeypatch.setattr(review_heatmap, "instance", lambda: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "clear_deck_browser_rwkv_count_scores", lambda mw: None
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "deck_browser_rwkv_count_scope_ids", lambda mw, tree: ()
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_deck_browser_rwkv_counts_incrementally",
+        lambda *args, **kwargs: None,
+    )
+    ops: list = []
+    monkeypatch.setattr(
+        deckbrowser,
+        "QueryOp",
+        lambda **kwargs: ops.append(_FakeQueryOp(**kwargs)) or ops[-1],
+    )
+    monkeypatch.setattr(
+        deckbrowser,
+        "set_deck_collapsed",
+        lambda **kwargs: SimpleNamespace(run_in_background=lambda initiator: None),
+    )
+
+    page = _Page()
+    state = SimpleNamespace(tree=_tree(), studied_today="studied today")
+    browser.web = page
+    browser.mw = SimpleNamespace(
+        state="deckBrowser",
+        toolbar=SimpleNamespace(redraw=lambda: None),
+        col=SimpleNamespace(
+            decks=SimpleNamespace(
+                find_deck_in_tree=lambda tree, did: (
+                    tree.children[0] if did == 1 else None
+                )
+            )
+        ),
+    )
+    browser._drawButtons = lambda: setattr(page, "buttons", page.buttons + 1)
+
+    def deliver():
+        """Run the background step of the draw that is waiting and hand its
+        data to the main thread, as QueryOp does."""
+        op = ops.pop(0)
+        col = SimpleNamespace(
+            sched=SimpleNamespace(deck_due_tree=lambda: state.tree),
+            decks=SimpleNamespace(get_current_id=lambda: 1),
+            studied_today=lambda: state.studied_today,
+            v3_scheduler=lambda: True,
+        )
+        op.success(op.op(col))
+
+    monkeypatch.setattr(deckbrowser.av_player, "stop_and_clear_queue", lambda: None)
+    browser.show()
+    deliver()
+    page.html.clear()
+    page.scripts.clear()
+    return SimpleNamespace(browser=browser, page=page, state=state, deliver=deliver)
+
+
+def test_show_draws_the_deck_list_at_the_top(refreshable):
+    page = refreshable.page
+    # the first draw, made by the fixture, asked for no scroll position
+    assert page.offset_requests == []
+    assert refreshable.browser._page_is_drawn()
+
+    refreshable.browser.show()
+    refreshable.deliver()
+
+    assert len(page.html) == 1 and page.offset_requests == [] and page.scrolls() == []
+
+
+def test_refresh_swaps_the_deck_table_in_place_when_the_page_can_stay(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    refreshable.state.tree = _tree(new=7, review=9)
+
+    browser.refresh()
+    refreshable.deliver()
+
+    # the page stayed, so nothing could move it
+    assert page.html == [] and page.offset_requests == [] and page.scrolls() == []
+    assert len(page.swaps()) == 1
+    swapped = json_arg(page.swaps()[0])
+    assert 'class="new-count">7</span>' in swapped
+    assert 'class="review-count">9</span>' in swapped
+
+
+def test_refresh_keeps_the_scroll_position_of_the_open_page(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    # a new heatmap and a new "studied today" make the stats section differ,
+    # so the page has to be drawn again
+    refreshable.state.studied_today = "studied more today"
+    refreshable.state.tree = _tree(new=7)
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert page.html == [] and len(page.offset_requests) == 1
+    page.offset_requests[0](180)
+
+    assert len(page.html) == 1
+    assert "studied more today" in page.html[0]
+    assert 'class="new-count">7</span>' in page.html[0]
+    assert page.scrolls() == ["window.scrollTo(0, 180, 'instant');"]
+
+
+def test_refresh_draws_from_the_top_on_another_screen(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    # an add-on may call refresh() while another screen holds the webview
+    browser.mw.state = "review"
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert len(page.html) == 1
+    assert page.offset_requests == [] and page.scrolls() == [] and page.swaps() == []
+
+
+def test_a_collapse_during_a_refresh_survives_the_refresh(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+
+    browser.refresh()
+    # the user collapses the deck while the counts are read
+    browser._collapse(1)
+    assert browser._pending_collapse == {1: True}
+    # the data was read before the collapse was written
+    refreshable.state.tree = _tree(collapsed=False, new=7)
+    refreshable.deliver()
+
+    assert browser._render_data.tree.children[0].collapsed
+    assert browser._pending_collapse == {1: True}
+    swapped = json_arg(page.swaps()[-1])
+    assert 'class="new-count">7</span>' in swapped
+    assert "child" not in swapped
+
+    # once the written state comes back, the deck browser stops correcting it
+    browser.refresh()
+    refreshable.state.tree = _tree(collapsed=True)
+    refreshable.deliver()
+    assert browser._pending_collapse == {}

@@ -573,3 +573,35 @@ two 30,000-day cards showed about 5,144 days (a debug build crashed).
 
 **Pinned by:** `interval_cell_averages_long_intervals_without_overflow`
 (`rslib/src/browser_table.rs`).
+
+## ui.deck-list-refresh-scroll
+
+Given the deck list on screen and a refresh of it that only reads the
+counts again — the 10-minute timer, the end of a sync, a return of the
+focus to the main window, an answer or an operation of another screen that
+changed the study queues, a deck-options or preset change, a deck added,
+renamed, moved or deleted, and any add-on that calls
+`mw.deckBrowser.refresh()` — Clanki keeps the scroll position of the page.
+The counts, the review limits and the heatmap show the new numbers. Where
+the page can stay (the stats section under the tree, the heatmap included,
+does not change and no add-on decorates a freshly loaded page), only the
+rows of the deck table are swapped, as on a collapse; otherwise the page is
+drawn again and the position is put back around the draw. Given a collapse
+or an expand made while such a refresh reads the counts, the deck keeps the
+state the user chose, so the rows under the kept position are the same
+rows.
+
+Given the user opens the deck list from another screen (start-up, the end
+of a review, Decks in the toolbar), the page starts at the top.
+
+**Why:** Andrew, 2026-09-16: the deck list jumped back to the top every 10
+minutes, because the timer drew the page again without the position. A
+refresh that only changes numbers must not move the view; opening the
+screen is not a refresh.
+
+**Pinned by:** `test_refresh_keeps_the_scroll_position_of_the_open_page`,
+`test_refresh_swaps_the_deck_table_in_place_when_the_page_can_stay`,
+`test_show_draws_the_deck_list_at_the_top`,
+`test_refresh_draws_from_the_top_on_another_screen`,
+`test_a_collapse_during_a_refresh_survives_the_refresh`
+(`qt/tests/test_deckbrowser.py`).
