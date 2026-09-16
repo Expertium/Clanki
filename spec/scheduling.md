@@ -308,18 +308,42 @@ mixed a second algorithm into the screen.
 Given a card whose preset runs RWKV-Curve, shown with its answer in the
 reviewer, the answer buttons appear only after RWKV-Curve has given the
 intervals for this showing of the card. Until then the button area shows
-"Waiting for RWKV-Curve…", the reviewer asks RWKV-Curve again (after 50 ms,
-doubling up to once a second), and answer keys and clicks do nothing. This
-covers every reason RWKV-Curve has no intervals yet: its state still loading,
-another RWKV task holding it, its state changing during the prediction, no
-prediction, a button without an interval, or an error — also an error while
-the answer states are built from RWKV-Curve's intervals, after the
-prediction itself succeeded: no prediction is kept then, so an answer stores
-no RWKV-Curve S90 with states that are not RWKV-Curve's. Without a usable
-RWKV model it does not wait (`sched.rwkv-no-model-error`). Each
-prediction belongs to one showing: it is cleared before the next prediction
-and once an answer has used it, so a later showing of the same card never
-reuses its intervals or its S90. A preview in a filtered deck without
+"Waiting for RWKV-Curve…" and answer keys and clicks do nothing. While it
+waits, the reviewer both asks RWKV-Curve again (after 50 ms, doubling up to
+once a second) and restores RWKV-Curve's resident state off the main thread,
+one restore at a time; leaving the card ends the wait. Asking again alone
+would never end the wait: the other review-time restore of the state runs
+after an answer, and an answer is blocked while the buttons wait.
+
+The wait covers every reason RWKV-Curve has no intervals yet:
+
+| Reason | Ends by itself? |
+|---|---|
+| its state still loading | yes |
+| its state not loaded (cold after a queue change, a sync or an undo) | only because the reviewer restores it |
+| another RWKV task holding it | yes |
+| its state changing during the prediction | yes |
+| no prediction | depends on the run |
+| an error, also an error while the answer states are built from RWKV-Curve's intervals after the prediction itself succeeded | depends on the run |
+| a button without an interval | no: see below |
+
+After an error no prediction is kept, so an answer stores no RWKV-Curve S90
+with states that are not RWKV-Curve's.
+
+The wait always ends. When RWKV-Curve gave a prediction for this showing of
+the card and that prediction has no interval for a button, asking again gives
+the same answer: the button area says at once that RWKV-Curve has no interval
+for this card, and does not wait. Otherwise, after 60 seconds the button area
+says that RWKV-Curve did not give the intervals in 60 seconds, that its state
+could not be loaded, and what the user can do (try again, restart Clanki, or
+choose FSRS-7 for the deck), with a "Try again" button that waits again on the
+same card. Without a usable RWKV model it does not wait at all
+(`sched.rwkv-no-model-error`). In every one of these cases the buttons stay
+hidden: FSRS-7 intervals never stand in for RWKV-Curve's.
+
+Each prediction belongs to one showing: it is cleared before the next
+prediction and once an answer has used it, so a later showing of the same card
+never reuses its intervals or its S90. A preview in a filtered deck without
 rescheduling (no review intervals) and cards of FSRS-7 and RWKV-Instant
 presets never wait at the answer buttons (RWKV-Instant waits in the study
 queue instead, `sched.rwkv-instant-waits`).
@@ -328,12 +352,19 @@ queue instead, `sched.rwkv-instant-waits`).
 never store, the intervals of one algorithm while another is on. Before this
 entry, whenever RWKV-Curve had no intervals the buttons showed FSRS-7's and
 the answer stored them; and a prediction from an earlier showing of the card
-could supply the S90 of a later answer.
+could supply the S90 of a later answer. Andrew, 2026-09-16: the wait never
+ended once RWKV-Curve's state went cold in the middle of a session, because
+only an answer restored the state and the wait blocked the answer.
 
 **Pinned by:** `test_answer_buttons_wait_for_rwkv_curve_intervals`,
+`test_the_waiting_answer_buttons_restore_the_rwkv_curve_state`,
+`test_answer_buttons_stop_waiting_for_rwkv_curve_after_a_minute`,
+`test_answer_buttons_say_rwkv_curve_has_no_interval_for_the_card`,
 `test_answers_are_ignored_while_rwkv_curve_intervals_are_pending`
 (`qt/tests/test_reviewer.py`);
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
+`test_answer_intervals_unavailable_only_when_rwkv_curve_answered`,
+`test_the_answer_button_wait_can_restore_the_resident_state`,
 `test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
 `test_error_building_rwkv_curve_states_leaves_the_buttons_waiting`,
 `test_set_answer_rwkv_metadata_clears_the_prediction`

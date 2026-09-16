@@ -5862,6 +5862,27 @@ def answer_intervals_pending(reviewer: object, card: object) -> bool:
     return prediction is None or not prediction.interval_override_used
 
 
+def answer_intervals_unavailable(reviewer: object, card: object) -> bool:
+    """True when RWKV-Curve has given a prediction for this showing of the
+    card and that prediction has no interval for a button. Asking again gives
+    the same answer, so the reviewer says so at once instead of waiting
+    (spec sched.rwkv-curve-buttons-wait)."""
+    if not rwkv_review_enabled(reviewer, card):
+        return False
+    prediction = _current_reviewer_prediction(reviewer, card)
+    return prediction is not None and not prediction.interval_override_used
+
+
+def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
+    """Restore RWKV-Curve's resident state while the answer buttons wait.
+
+    Nothing else restores the state during review: the other review-time
+    caller runs after an answer, and an answer is blocked while the buttons
+    wait (spec sched.rwkv-curve-buttons-wait). Call this off the Qt main
+    thread: it reads the state cache from the collection."""
+    return _prepare_reviewer_backend_for_review(reviewer)
+
+
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
     card = getattr(reviewer, "card", None)
     deck_config = _rwkv_review_active_deck_config(reviewer, card)
