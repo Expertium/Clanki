@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SuperscriptButton from "./SuperscriptButton.svelte";
     import TextColorButton from "./TextColorButton.svelte";
     import UnderlineButton from "./UnderlineButton.svelte";
+    import { advancedUi } from "../ui-mode";
+    import AdvancedOnly from "./AdvancedOnly.svelte";
 
     let textColor: string = "black";
     let highlightColor: string = "black";
@@ -51,16 +53,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </Item>
 
     <Item>
-        <ButtonGroup>
-            <SuperscriptButton --border-left-radius="5px" />
-            <SubscriptButton --border-right-radius="5px" />
-        </ButtonGroup>
+        <AdvancedOnly buttons={["superscript", "subscript"]}>
+            <ButtonGroup>
+                <SuperscriptButton --border-left-radius="5px" />
+                <SubscriptButton --border-right-radius="5px" />
+            </ButtonGroup>
+        </AdvancedOnly>
     </Item>
 
     <Item>
-        <ButtonGroup>
+        <ButtonGroup class={$advancedUi ? "" : "colour-buttons-simple"}>
             <TextColorButton color={textColor} />
-            <HighlightColorButton color={highlightColor} />
+            <AdvancedOnly buttons={["highlightColor"]}>
+                <HighlightColorButton color={highlightColor} />
+            </AdvancedOnly>
         </ButtonGroup>
     </Item>
 
@@ -70,3 +76,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ButtonGroup>
     </Item>
 </DynamicallySlottable>
+
+<style lang="scss">
+    /* Simple mode hides the highlight colour, so the text colour's own
+       dropdown arrow is the right end of the group. */
+    :global(.colour-buttons-simple .icon-button:last-child) {
+        --border-right-radius: 5px;
+    }
+</style>

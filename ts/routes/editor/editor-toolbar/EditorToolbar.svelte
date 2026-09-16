@@ -48,13 +48,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <script lang="ts">
+    import * as tr from "@generated/ftl";
     import { createEventDispatcher } from "svelte";
     import { writable } from "svelte/store";
 
     import ButtonToolbar from "$lib/components/ButtonToolbar.svelte";
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import Item from "$lib/components/Item.svelte";
+    import UiModeSwitch from "$lib/components/UiModeSwitch.svelte";
 
+    import { loadEditorUiMode, modeSwitch } from "../ui-mode";
+    import AdvancedOnly from "./AdvancedOnly.svelte";
     import BlockButtons from "./BlockButtons.svelte";
     import ImageOcclusionButton from "./ImageOcclusionButton.svelte";
     import InlineButtons from "./InlineButtons.svelte";
@@ -89,6 +93,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     setContextProperty(api);
 
+    // The collection's UI mode (spec ui.editor-simple-view).
+    loadEditorUiMode();
+
     const dispatch = createEventDispatcher();
 
     let clientHeight: number;
@@ -105,7 +112,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item id="settings">
-                <OptionsButtons api={optionsButtons} />
+                <AdvancedOnly buttons={["settings"]}>
+                    <OptionsButtons api={optionsButtons} />
+                </AdvancedOnly>
             </Item>
 
             <Item id="inlineFormatting">
@@ -113,7 +122,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item id="blockFormatting">
-                <BlockButtons api={blockButtons} />
+                <AdvancedOnly buttons={["unorderedList", "orderedList", "alignment"]}>
+                    <BlockButtons api={blockButtons} />
+                </AdvancedOnly>
             </Item>
 
             <Item id="template">
@@ -129,11 +140,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
         </DynamicallySlottable>
     </ButtonToolbar>
+
+    <div class="ui-mode-corner">
+        <UiModeSwitch advancedUi={modeSwitch} tooltip={tr.editingUiModeTooltip()} />
+    </div>
 </div>
 
 <style lang="scss">
     .editor-toolbar {
+        display: flex;
+        align-items: flex-start;
         padding: 0 0 4px;
         border-bottom: 1px solid var(--border);
+
+        :global(> .button-toolbar) {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+    }
+
+    .ui-mode-corner {
+        flex-shrink: 0;
+        margin-left: auto;
+        padding-right: 0.3rem;
     }
 </style>
