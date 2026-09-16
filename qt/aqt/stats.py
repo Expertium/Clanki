@@ -11,6 +11,7 @@ import aqt
 import aqt.forms
 import aqt.main
 import aqt.rwkv_scheduler
+import aqt.stats_prefetch
 import aqt.total_knowledge
 from anki.decks import DeckId
 from anki.utils import is_mac
@@ -84,6 +85,8 @@ class NewDeckStats(QDialog):
         # so does the Retrievability graph's RWKV scoring
         # (spec ui.stats-scoring-cancelled)
         aqt.rwkv_scheduler.cancel_stats_scoring()
+        # and so do the Advanced graphs kept for its Simple | Advanced switch
+        aqt.stats_prefetch.clear()
         self.deck_chooser.cleanup()
         self.form.web.cleanup()
         self.form.web = None  # type: ignore

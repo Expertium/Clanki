@@ -23,6 +23,7 @@ import aqt
 import aqt.forms
 import aqt.progress
 import aqt.sound
+import aqt.stats_prefetch
 from anki import hooks
 from anki._backend import RustBackend as _RustBackend
 from anki._legacy import deprecated
@@ -1777,7 +1778,10 @@ title="{}" {}>{}</button>""".format(
     def set_advanced_ui(self, advanced: bool) -> None:
         if self.col is None or advanced == self.advanced_ui():
             return
-        self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
+        # the Stats page's switch writes the flag as it asks for its Advanced
+        # graphs; that write must not throw the prefetched graphs away
+        with aqt.stats_prefetch.ui_mode_write(self.col):
+            self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
         # in place: a toolbar reload would clear the sync button's colour and
         # spinner (spec ui.mode-switch)

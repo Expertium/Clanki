@@ -167,6 +167,45 @@ class TestRequestLogging:
         assert _should_log_request("_anki/evaluateParamsLegacy")
 
 
+def _fake_main_window(
+    monkeypatch: pytest.MonkeyPatch,
+    graphs_raw: Any,
+    run_in_background: Any = None,
+    col_mod: int = 100,
+    today: int = 5,
+    advanced_ui: bool = False,
+) -> list[Any]:
+    """A main window for the graphs handler: a backend, a collection state
+    and a task runner. The returned list holds the background tasks; they
+    run only when `run_in_background` is given."""
+    import aqt
+    from aqt import stats_prefetch
+
+    stats_prefetch.clear()
+    tasks: list[Any] = []
+
+    def collect(task: Any) -> None:
+        tasks.append(task)
+        if run_in_background is not None:
+            run_in_background(task)
+
+    monkeypatch.setattr(
+        aqt,
+        "mw",
+        SimpleNamespace(
+            col=SimpleNamespace(
+                mod=col_mod,
+                sched=SimpleNamespace(today=today),
+                get_config_bool=lambda key: advanced_ui,
+                _backend=SimpleNamespace(graphs_raw=graphs_raw),
+            ),
+            taskman=SimpleNamespace(run_in_background=collect),
+        ),
+        raising=False,
+    )
+    return tasks
+
+
 class TestGraphs:
     @pytest.mark.parametrize(
         ("status", "expected_header"),
@@ -194,14 +233,10 @@ class TestGraphs:
             calls.append(search)
             return getattr(RwkvStatsPreparationStatus, status)
 
-        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        _fake_main_window(monkeypatch, lambda data: b"graph-data")
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
             prepare,
-        )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
         )
 
         data = GraphsRequest(search="rated:7", days=365).SerializeToString()
@@ -241,14 +276,10 @@ class TestGraphs:
             calls.append(search)
             return RwkvStatsPreparationStatus.PENDING
 
-        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=object()), raising=False)
+        _fake_main_window(monkeypatch, lambda data: b"graph-data")
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
             prepare,
-        )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
         )
 
         data = GraphsRequest(
@@ -296,22 +327,12 @@ class TestGraphs:
             backend_requests.append(backend_request)
             return b"other-graphs"
 
-        backend = SimpleNamespace(graphs_raw=graphs_raw)
-        monkeypatch.setattr(
-            aqt,
-            "mw",
-            SimpleNamespace(col=SimpleNamespace(_backend=backend)),
-            raising=False,
-        )
+        _fake_main_window(monkeypatch, graphs_raw)
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.prepare_stats_retrievability_scores", prepare
         )
         monkeypatch.setattr(
             "aqt.rwkv_scheduler.rwkv_collection_active", lambda reviewer: rwkv
-        )
-        monkeypatch.setattr(
-            "aqt.mediasrv.raw_backend_request",
-            lambda endpoint: lambda: b"graph-data",
         )
 
         data = GraphsRequest(
@@ -333,9 +354,204 @@ class TestGraphs:
         else:
             # FSRS-7: one response with every graph, as before
             assert prepared == ["deck:current"]
-            assert response.get_data() == b"graph-data"
+            assert response.get_data() == b"other-graphs"
             assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) is None
-            assert backend_requests == []
+            (backend_request,) = backend_requests
+            assert list(backend_request.graphs) == []
+
+
+class TestStatsPrefetch:
+    """aqt.stats_prefetch: after a Simple-mode graphs request the Advanced
+    graphs are computed in the background, and the page's switch takes them."""
+
+    @pytest.fixture(autouse=True)
+    def _clear(self) -> Any:
+        from aqt import stats_prefetch
+
+        stats_prefetch.clear()
+        yield
+        stats_prefetch.clear()
+
+    @staticmethod
+    def _simple_request() -> Any:
+        from anki.stats_pb2 import GraphsRequest
+
+        return GraphsRequest(
+            search="deck:current",
+            days=365,
+            graphs=[
+                GraphsRequest.REVIEWS,
+                GraphsRequest.CARD_COUNTS,
+                GraphsRequest.TRUE_RETENTION,
+            ],
+        )
+
+    def test_the_advanced_request_of_a_simple_one(self) -> None:
+        from anki.stats_pb2 import GraphsRequest
+        from aqt import stats_prefetch
+
+        advanced = stats_prefetch.advanced_request(self._simple_request())
+        assert advanced is not None
+        assert advanced.search == "deck:current"
+        assert advanced.days == 365
+        assert list(advanced.graphs) == []
+        assert advanced.rwkv_retrievability_later
+        # a request for every graph is an Advanced one already, and a request
+        # for Retrievability alone is the page's later RWKV request
+        assert stats_prefetch.advanced_request(GraphsRequest(days=365)) is None
+        assert (
+            stats_prefetch.advanced_request(
+                GraphsRequest(days=365, graphs=[GraphsRequest.RETRIEVABILITY])
+            )
+            is None
+        )
+
+    def test_the_identical_request_takes_the_result_once(self) -> None:
+        from aqt import stats_prefetch
+
+        request = stats_prefetch.advanced_request(self._simple_request())
+        stats_prefetch.start(
+            request, (100, 5), lambda req: (b"out", {"h": "1"}), lambda task: task()
+        )
+        assert stats_prefetch.take(request, lambda: (100, 5)) == (b"out", {"h": "1"})
+        assert stats_prefetch.take(request, lambda: (100, 5)) is None
+
+    @pytest.mark.parametrize(
+        ("days", "state"),
+        [
+            (30, (100, 5)),  # another period
+            (365, (101, 5)),  # the collection changed
+            (365, (100, 6)),  # a new day
+        ],
+    )
+    def test_anything_else_computes_again(
+        self, days: int, state: tuple[int, int]
+    ) -> None:
+        from anki.stats_pb2 import GraphsRequest
+        from aqt import stats_prefetch
+
+        request = stats_prefetch.advanced_request(self._simple_request())
+        stats_prefetch.start(
+            request, (100, 5), lambda req: (b"out", {}), lambda task: task()
+        )
+        other = GraphsRequest(
+            search="deck:current", days=days, graphs=[], rwkv_retrievability_later=True
+        )
+        assert stats_prefetch.take(other, lambda: state) is None
+
+    def test_a_failed_prefetch_computes_again(self) -> None:
+        from aqt import stats_prefetch
+
+        def fail(request: Any) -> Any:
+            raise RuntimeError("backend")
+
+        request = stats_prefetch.advanced_request(self._simple_request())
+        stats_prefetch.start(request, (1, 1), fail, lambda task: task())
+        assert stats_prefetch.take(request, lambda: (1, 1)) is None
+
+    def test_the_same_request_is_not_started_twice(self) -> None:
+        from aqt import stats_prefetch
+
+        request = stats_prefetch.advanced_request(self._simple_request())
+        started: list[Any] = []
+        for _ in range(3):
+            stats_prefetch.start(
+                request,
+                (100, 5),
+                lambda req: (b"out", {}),
+                lambda task: started.append(task) or task(),
+            )
+        assert len(started) == 1
+
+    def test_the_handler_prefetches_after_a_simple_request_and_serves_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from anki.stats_pb2 import GraphsRequest, GraphsResponse
+        from aqt.mediasrv import app
+        from aqt.mediasrv import graphs as graphs_handler
+
+        backend_calls: list[GraphsRequest] = []
+
+        def graphs_raw(data: bytes) -> bytes:
+            parsed = GraphsRequest()
+            parsed.ParseFromString(data)
+            backend_calls.append(parsed)
+            # the mode the collection is in while the prefetch runs
+            return GraphsResponse(
+                rollover_hour=len(parsed.graphs), advanced_ui=False
+            ).SerializeToString()
+
+        _fake_main_window(
+            monkeypatch,
+            graphs_raw,
+            run_in_background=lambda task: task(),
+            advanced_ui=True,
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.prepare_stats_retrievability_scores",
+            lambda reviewer, search, **kwargs: _ready_status(),
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.rwkv_collection_active", lambda reviewer: True
+        )
+
+        with app.test_request_context(data=self._simple_request().SerializeToString()):
+            graphs_handler()
+        # the Simple request, then the Advanced one in the background
+        simple_call, advanced_call = backend_calls
+        assert list(simple_call.graphs) == [
+            GraphsRequest.REVIEWS,
+            GraphsRequest.CARD_COUNTS,
+            GraphsRequest.TRUE_RETENTION,
+        ]
+        assert set(advanced_call.graphs) == set(GraphsRequest.Graph.values()) - {
+            GraphsRequest.RETRIEVABILITY
+        }
+
+        # the switch's request is answered without the backend, and carries
+        # the UI mode of the moment it is served
+        advanced = GraphsRequest(
+            search="deck:current", days=365, graphs=[], rwkv_retrievability_later=True
+        )
+        with app.test_request_context(data=advanced.SerializeToString()):
+            response = graphs_handler()
+        served = GraphsResponse()
+        served.ParseFromString(response.get_data())
+        assert served.rollover_hour == len(advanced_call.graphs)
+        assert served.advanced_ui
+        assert len(backend_calls) == 2
+
+    def test_writing_the_ui_mode_flag_keeps_the_prefetch(self) -> None:
+        from aqt import stats_prefetch
+
+        col = SimpleNamespace(mod=100)
+        request = stats_prefetch.advanced_request(self._simple_request())
+        stats_prefetch.start(
+            request, (100, 5), lambda req: (b"out", {}), lambda task: task()
+        )
+        # the switch writes the flag, which changes the modification time
+        with stats_prefetch.ui_mode_write(col):
+            col.mod = 101
+        assert stats_prefetch.take(request, lambda: (101, 5)) == (b"out", {})
+
+    def test_any_other_write_during_the_ui_mode_write_ends_it(self) -> None:
+        from aqt import stats_prefetch
+
+        col = SimpleNamespace(mod=100)
+        request = stats_prefetch.advanced_request(self._simple_request())
+        stats_prefetch.start(
+            request, (100, 5), lambda req: (b"out", {}), lambda task: task()
+        )
+        with stats_prefetch.ui_mode_write(col):
+            col.mod = 101
+        # a review answered afterwards moves the modification time again
+        assert stats_prefetch.take(request, lambda: (102, 5)) is None
+
+
+def _ready_status() -> Any:
+    from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
+
+    return RwkvStatsPreparationStatus.READY
 
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:
