@@ -63,6 +63,20 @@ impl GraphsContext {
             next_day_at: self.next_day_start,
         };
 
+        if let Some(notes) = &self.rwkv_retrievability_notes {
+            // RWKV: the score of each card, and nothing computed from the
+            // card itself, so only its id and its note's id were read
+            for (card_id, note_id) in notes {
+                let retrievability = self
+                    .rwkv_retrievability_scores
+                    .as_ref()
+                    .and_then(|scores| scores.get(card_id))
+                    .copied();
+                rwkv_series.record(note_id.0, retrievability);
+                active.record(note_id.0, retrievability);
+            }
+            return self.finish_retrievability(active, fsrs_series, rwkv_series);
+        }
         for card in &self.cards {
             let rwkv_retrievability = self
                 .rwkv_retrievability_scores
@@ -97,6 +111,15 @@ impl GraphsContext {
             }
         }
 
+        self.finish_retrievability(active, fsrs_series, rwkv_series)
+    }
+
+    fn finish_retrievability(
+        &self,
+        active: RetrievabilitySeries,
+        fsrs_series: RetrievabilitySeries,
+        rwkv_series: RetrievabilitySeries,
+    ) -> Retrievability {
         let (active, _) = active.finish();
         let (fsrs, has_fsrs) = fsrs_series.finish();
         let (rwkv, has_rwkv) = rwkv_series.finish();
@@ -108,7 +131,8 @@ impl GraphsContext {
             sum_by_note: active.sum_by_note,
             fsrs: has_fsrs.then_some(fsrs),
             rwkv: has_rwkv.then_some(rwkv),
-            rwkv_pending: rwkv_algorithm && self.rwkv_retrievability_scores.is_none(),
+            rwkv_pending: self.algorithm != SchedulingAlgorithm::Fsrs7
+                && self.rwkv_retrievability_scores.is_none(),
         }
     }
 }
@@ -238,6 +262,49 @@ mod tests {
         assert!(!retrievability.rwkv_pending);
         assert!(graphs.difficulty.is_none());
         assert!(graphs.stability.is_none());
+        Ok(())
+    }
+
+    #[test]
+    /// Under RWKV the graph draws the score of each card and computes nothing
+    /// from the card itself, so a request for it alone (the Stats page's own
+    /// Retrievability request) reads only the card and note ids. It must give
+    /// what a request for every graph gives.
+    fn rwkv_retrievability_alone_matches_the_whole_request() -> Result<()> {
+        use anki_proto::stats::graphs_request::Graph;
+
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.rwkv_review_instant_order_enabled = true);
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for _ in 0..3 {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+        }
+        let cids = col.search_cards("", SortMode::NoOrder)?;
+        let mut scores = HashMap::new();
+        for (cid, retrievability) in cids.into_iter().zip([0.25_f32, 0.5, 0.75]) {
+            let mut card = col.storage.get_card(cid)?.unwrap();
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 42.0,
+                stability_internal: 42.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(col.timing_today()?.now);
+            col.storage.update_card(&card)?;
+            scores.insert(cid, retrievability);
+        }
+        col.set_rwkv_stats_graph_scores("".into(), scores)?;
+
+        let whole = col.graph_data_for_search("", 365)?.retrievability.unwrap();
+        let alone = col
+            .graph_data_for_graphs("", 365, &[Graph::Retrievability as i32])?
+            .retrievability
+            .unwrap();
+        assert_eq!(whole, alone);
+        assert_eq!(format!("{:.1}", alone.average), "50.0");
+        assert_eq!(alone.rwkv.as_ref().unwrap().retrievability.len(), 3);
         Ok(())
     }
 
