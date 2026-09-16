@@ -22,9 +22,6 @@ from typing import IO, TYPE_CHECKING, Any, Union
 from urllib.parse import parse_qs, urlparse
 from zipfile import ZipFile
 
-import markdown
-from markdown.extensions import md_in_html
-
 import anki
 import anki.utils
 import aqt
@@ -316,6 +313,8 @@ class AddonManager:
                 addons=addons,
             )
             txt = f"# {tr.addons_startup_failed()}\n{error}"
+            import markdown
+
             html2 = markdown.markdown(txt)
             box: QDialogButtonBox
             (diag, box) = showText(
@@ -747,6 +746,9 @@ class AddonManager:
                     contents = f.read()
             else:
                 return ""
+
+        import markdown
+        from markdown.extensions import md_in_html
 
         return markdown.markdown(contents, extensions=[md_in_html.makeExtension()])
 

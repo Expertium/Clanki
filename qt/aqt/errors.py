@@ -11,8 +11,6 @@ import time
 import traceback
 from typing import TYPE_CHECKING, TextIO, cast
 
-from markdown import markdown
-
 import aqt
 from anki.collection import HelpPage
 from anki.errors import BackendError, CardTypeError, Interrupted
@@ -301,6 +299,8 @@ class ErrorHandler(QObject):
             showWarning(tr.qt_misc_your_computers_storage_may_be_full())
             return
         if "disk I/O error" in error:
+            from markdown import markdown
+
             showWarning(markdown(tr.errors_accessing_db()))
             return
         if "unable to get local issuer certificate" in error and is_win:
