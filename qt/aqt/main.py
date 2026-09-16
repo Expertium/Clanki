@@ -631,6 +631,12 @@ class AnkiQt(QMainWindow):
             from aqt import rwkv_scheduler
 
             rwkv_scheduler.finish_rwkv_state_cache_startup(self)
+            # only now: the model-quality graphs read stored predictions and
+            # never compute, so the pass that writes them runs by itself,
+            # off the main thread, and it waits for the RWKV state cache
+            # rather than queueing in front of it (spec
+            # ui.stats-fsrs-predictions-ready)
+            aqt.fsrs_predictions.ensure_ready(self)
             if synced:
                 self._refresh_after_sync()
             if onsuccess:
@@ -796,10 +802,6 @@ class AnkiQt(QMainWindow):
             self.toolbar.draw()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
-            # the model-quality graphs read stored predictions and never
-            # compute, so the pass that writes them runs by itself, off the
-            # main thread (spec ui.stats-fsrs-predictions-ready)
-            aqt.fsrs_predictions.ensure_ready(self)
             self._show_review_heatmap_addon_notice()
             self._show_ankiconnect_addon_notice()
         except Exception:

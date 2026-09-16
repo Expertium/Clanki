@@ -452,9 +452,24 @@ impl crate::services::SchedulerService for Collection {
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
     }
 
-    fn refresh_fsrs_review_predictions(&mut self) -> Result<generic::UInt32> {
+    fn stale_fsrs_prediction_presets(
+        &mut self,
+    ) -> Result<scheduler::StaleFsrsPredictionPresetsResponse> {
+        Ok(scheduler::StaleFsrsPredictionPresetsResponse {
+            deck_config_ids: self
+                .presets_with_stale_fsrs_review_predictions()?
+                .into_iter()
+                .map(|preset| preset.0)
+                .collect(),
+        })
+    }
+
+    fn refresh_fsrs_review_predictions(
+        &mut self,
+        input: scheduler::RefreshFsrsReviewPredictionsRequest,
+    ) -> Result<generic::UInt32> {
         Ok(generic::UInt32 {
-            val: self.refresh_fsrs_review_predictions()?,
+            val: self.refresh_fsrs_review_predictions_of(DeckConfigId(input.deck_config_id))?,
         })
     }
 

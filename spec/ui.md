@@ -821,8 +821,19 @@ of asking the user to make them. The user starts nothing and presses
 nothing.
 
 The pass that writes the rows runs off the main thread, and the Stats page
-never waits for it. It runs when the collection has opened, at most once a
-day, and again at once whenever a preset's FSRS-7 parameters change. It
+never waits for it. It runs after the collection has opened, at most once a
+day, and again at once whenever a preset's FSRS-7 parameters change.
+
+It never starts while the RWKV state cache is loading or building. That load
+holds the collection, so a pass in front of it would make the user wait for
+a backfill before a restore that is already slow; the pass asks again every
+few seconds instead, and starts once the load is done. It recomputes ONE
+PRESET PER CALL, with the collection free between presets, so the main
+thread waits at most for one preset rather than for a whole backfill. It
+reports no progress of its own and clears none, so it cannot wipe or fight
+the progress the main thread is showing; while it runs, the user sees
+nothing except the graphs' own "its predictions for these reviews are being
+computed". It
 covers every preset that has a rated review no stored validation fold
 covers, over that preset's whole card set and the whole collection: it never
 follows the search or the period the Stats page happens to show, because a
@@ -861,7 +872,10 @@ wrong number. The pass costs about 25 seconds on a collection of
 request 125, which is why it runs in the background and at most once a day
 rather than while a page is open.
 
-**Pinned by:** `a_parameter_change_drops_that_presets_predictions`,
+**Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
+`test_the_collection_is_free_between_presets`
+(`qt/tests/test_fsrs_predictions.py`);
+`a_parameter_change_drops_that_presets_predictions`,
 `another_presets_predictions_survive_a_parameter_change`
 (`rslib/src/deckconfig/update.rs`);
 `the_pass_covers_every_preset_with_uncovered_reviews`
