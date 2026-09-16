@@ -8,7 +8,8 @@ the page's period, the probability of recall an algorithm predicted before
 that answer, and the answer itself. Both algorithms write those predictions
 per review while they run, so the backend reads them instead of computing
 them again, and only rows that nothing fitted on the review produced are
-used. The two algorithms are scored on the same reviews.
+used. Each algorithm is scored on every rating it has a row for, and the
+graph names the ratings the algorithms share.
 
 The page starts the job, polls it and cancels it when it closes. The reading
 is quick, but it is still a background job: the window never waits for it,
@@ -18,6 +19,7 @@ and a finished result is kept for the session.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -54,6 +56,7 @@ class _Job:
     state: State.ValueType = State.COMPUTING
     series: dict[Algorithm.ValueType, Series] = field(default_factory=dict)
     scored: int = 0
+    shared: int = 0
     fsrs_only: int = 0
     rwkv_only: int = 0
     unscored: int = 0
@@ -75,6 +78,7 @@ class _Job:
                     for algorithm in ALGORITHMS
                 ],
                 scored=self.scored,
+                shared=self.shared,
                 fsrs_only=self.fsrs_only,
                 rwkv_only=self.rwkv_only,
                 unscored=self.unscored,
@@ -183,6 +187,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         raise InterruptedError()
     with job.lock:
         job.scored = len(data.revlog_ids)
+        job.shared = data.shared
         job.fsrs_only = data.fsrs_only
         job.rwkv_only = data.rwkv_only
         job.unscored = data.unscored
@@ -222,22 +227,36 @@ def _series(
     bins: Sequence[Any] = (),
 ) -> Series:
     """One algorithm's curves: its ROC curve with the area under it, and
-    its calibration bins as the backend binned them."""
-    if not role or not predictions:
+    its calibration bins as the backend binned them.
+
+    The backend sends one entry per rating that any algorithm scored, and
+    marks a rating this algorithm has no row for with NaN. Those ratings are
+    dropped here, so the series covers exactly the ratings this algorithm
+    predicted and never borrows another algorithm's value.
+    """
+    scored = [
+        (prediction, answer)
+        for prediction, answer in zip(predictions, remembered, strict=True)
+        if math.isfinite(prediction)
+    ]
+    if not role or not scored:
         return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
-    points, auc = roc_curve(predictions, remembered)
+    own_predictions = [prediction for prediction, _ in scored]
+    own_remembered = [answer for _, answer in scored]
+    points, auc = roc_curve(own_predictions, own_remembered)
     if not points:
         return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
     return Series(
         algorithm=algorithm,
-        reviews=len(predictions),
+        reviews=len(scored),
         sample_role=role,
         false_positive_rate=[point[0] for point in points],
         true_positive_rate=[point[1] for point in points],
         auc=auc,
         bins=bins,
-        average_predicted=sum(predictions) / len(predictions),
-        actual_recall=sum(1 for answer in remembered if answer) / len(remembered),
+        average_predicted=sum(own_predictions) / len(own_predictions),
+        actual_recall=sum(1 for answer in own_remembered if answer)
+        / len(own_remembered),
     )
 
 

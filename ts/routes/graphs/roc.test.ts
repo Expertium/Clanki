@@ -24,11 +24,16 @@ import {
     unavailableNotes,
 } from "./roc";
 
-function curve(algorithm: SchedulingAlgorithm, auc: number, sampleRole = "validation_fold") {
+function curve(
+    algorithm: SchedulingAlgorithm,
+    auc: number,
+    sampleRole = "validation_fold",
+    reviews = 100,
+) {
     return {
         algorithm,
         unavailable: Unavailable.AVAILABLE,
-        reviews: 100,
+        reviews,
         falsePositiveRate: [0, 0, 1],
         truePositiveRate: [0, 1, 1],
         auc,
@@ -162,48 +167,76 @@ test("the diagonal of random chance is drawn dashed", () => {
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics
-test("the graph says what it scored, what it left out and how fresh it is", () => {
+test("the graph says what each algorithm scored, what they share and how fresh it is", () => {
     const progress = new ReviewMetricsProgress({
         state: JobState.DONE,
         series: [
-            curve(SchedulingAlgorithm.FSRS7, 0.7, "validation_fold"),
+            curve(SchedulingAlgorithm.FSRS7, 0.7, "validation_fold", 40),
             missing(SchedulingAlgorithm.RWKV_CURVE, Unavailable.UNSUPPORTED),
-            curve(SchedulingAlgorithm.RWKV_INSTANT, 0.8, "final_fit"),
+            curve(SchedulingAlgorithm.RWKV_INSTANT, 0.8, "final_fit", 3990),
         ],
         scored: 4000,
+        shared: 30,
         fsrsOnly: 10,
-        rwkvOnly: 20,
+        rwkvOnly: 3960,
         unscored: 30,
+        sharedRatings: true,
         newestScoredSecs: 1700000000n,
         newerReviews: 5,
     });
 
     const notes = dataNotes(progress);
 
-    // the shared count, what was left out, one role line per drawn
-    // algorithm, and the staleness line
-    expect(notes).toHaveLength(5);
+    // the scored total, one coverage line per drawn algorithm, the shared
+    // count, the reviews nothing scored, one role line per drawn algorithm,
+    // and the staleness line
+    expect(notes).toHaveLength(8);
+    expect(notes[0]).toBe(tr.statisticsModelMetricsScored({ reviews: 4000 }));
+    // each algorithm keeps its own reviews: the counts differ, and the small
+    // one does not shrink the large one
+    expect(notes[1]).toBe(
+        tr.statisticsModelMetricsCoverage({
+            algorithm: tr.deckConfigSchedulerChoiceFsrs(),
+            reviews: 40,
+        }),
+    );
     expect(notes[2]).toBe(
+        tr.statisticsModelMetricsCoverage({
+            algorithm: tr.deckConfigSchedulerChoiceRwkvInstant(),
+            reviews: 3990,
+        }),
+    );
+    expect(notes[3]).toBe(tr.statisticsModelMetricsShared({ reviews: 30 }));
+    expect(notes[5]).toBe(
         tr.statisticsModelMetricsRole({
             algorithm: tr.deckConfigSchedulerChoiceFsrs(),
             role: "validation_fold",
         }),
     );
-    expect(notes[3]).toBe(
-        tr.statisticsModelMetricsRole({
-            algorithm: tr.deckConfigSchedulerChoiceRwkvInstant(),
-            role: "final_fit",
-        }),
-    );
     // nothing is said about an algorithm that has no curve
     expect(notes.join(" ")).not.toContain("undefined");
-    // and a graph with nothing left out says nothing about it
-    const clean = new ReviewMetricsProgress({
+});
+
+// Pins spec/ui.md#ui.stats-model-metrics
+test("one drawn algorithm is not told what it shares with anything", () => {
+    const alone = new ReviewMetricsProgress({
         state: JobState.DONE,
-        series: [curve(SchedulingAlgorithm.FSRS7, 0.7)],
+        series: [
+            curve(SchedulingAlgorithm.FSRS7, 0.7, "validation_fold", 10),
+            missing(SchedulingAlgorithm.RWKV_INSTANT, Unavailable.NO_REVIEWS),
+        ],
         scored: 10,
+        shared: 0,
+        sharedRatings: false,
     });
-    expect(dataNotes(clean)).toHaveLength(2);
+
+    const notes = dataNotes(alone);
+
+    // the scored total, its own coverage, and its role: no shared line
+    expect(notes).toHaveLength(3);
+    expect(notes.join(" ")).not.toContain(
+        tr.statisticsModelMetricsShared({ reviews: 0 }),
+    );
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics
