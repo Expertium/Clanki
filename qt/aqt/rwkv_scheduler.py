@@ -5956,11 +5956,22 @@ def search_uses_rwkv_retrievability(search: str) -> bool:
 def prepare_browser_retrievability_scores(
     mw: object,
     search: str,
+    *,
+    warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
 ) -> RwkvStatsPreparationStatus:
-    """Prepare fresh, search-scoped scores before a Browser query runs."""
+    """Prepare fresh, search-scoped scores before a Browser query runs.
+
+    The Browser passes warmup_wait_secs=0 so that a pending RWKV warm-up
+    reports PENDING at once instead of holding the collection for two
+    minutes; the Browser asks again on a timer (spec
+    ui.browser-rwkv-search-does-not-block)."""
 
     reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
-    return prepare_stats_retrievability_scores(reviewer, search)
+    return prepare_stats_retrievability_scores(
+        reviewer,
+        search,
+        warmup_wait_secs=warmup_wait_secs,
+    )
 
 
 def prepare_stats_retrievability_scores(  # noqa: PLR0911
@@ -5972,6 +5983,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
     cancel_when_stats_closes: bool = False,
+    warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
@@ -6021,9 +6033,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         if not warmed_up and _reviewer_backend_warmup_pending(reviewer):
             warmed_up = _wait_for_reviewer_backend_warmup(
                 reviewer,
-                timeout_secs=(
-                    None if warm_up_if_needed else _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS
-                ),
+                timeout_secs=(None if warm_up_if_needed else warmup_wait_secs),
             )
             if warmed_up:
                 warmed_up = prepare_backend(reviewer)
