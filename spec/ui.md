@@ -768,6 +768,39 @@ neither is amber" (`ts/routes/graphs/retrievability.test.ts`); "both axes
 step by 0.1" (`ts/routes/graphs/roc.test.ts`); "both axes step by 0.1, and
 the count bars are blue" (`ts/routes/graphs/calibration.test.ts`).
 
+## ui.browser-rwkv-search-does-not-block
+
+Given a Browser search that asks for RWKV values (`prop:rwkv:r…` or
+`prop:rwkv-curve:r…`), Clanki prepares the scores of that search before it
+runs the search, because the rows depend on them. While it prepares them:
+
+- the window stays usable. There is no progress window over the Browser, the
+  table keeps the rows of the search before it, and the editor keeps the note
+  of the selected row;
+- the window title says that Clanki is calculating RWKV values. The title
+  returns to the normal "Browse (n of m cards selected)" when the rows of the
+  new search arrive;
+- while RWKV is still loading its state, the preparation reports that at once
+  instead of holding the collection until the state is there. The Browser asks
+  again every 250 ms, with the collection free in between, for at most 120
+  seconds. After that the search runs with the scores RWKV has;
+- a new search, or the Browser closing, ends the wait of the search before it.
+
+FSRS-7 values never stand in for RWKV's: the rows of a search that asks for
+RWKV values appear only when RWKV has given them.
+
+**Why:** Andrew, 2026-09-16: the first Browser open waited up to two minutes
+before the editor showed the note. The search held the collection for the
+whole RWKV warm-up (`_RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS`, 120 seconds)
+behind a progress window, so nothing in the Browser could move, not even the
+parts that need no RWKV value.
+
+**Pinned by:** `test_rwkv_browser_search_prepares_scores_before_searching`,
+`test_rwkv_browser_search_waits_without_blocking_the_window`,
+`test_rwkv_browser_search_stops_waiting_after_the_time_limit`,
+`test_non_rwkv_browser_search_runs_without_preparation`
+(`qt/tests/test_browser.py`)
+
 ## ui.browser-interval-average
 
 Given a Browser row with review or relearning cards, the Interval column

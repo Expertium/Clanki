@@ -7,6 +7,7 @@ import functools
 import json
 import math
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -87,6 +88,11 @@ from .previewer import BrowserPreviewer as PreviewDialog
 from .previewer import Previewer
 from .sidebar import SidebarTreeView
 from .table import Table
+
+# how long a search that asks for RWKV scores waits for RWKV's state, and how
+# often it asks again while it waits; it never blocks the window
+RWKV_SCORED_SEARCH_WAIT_SECS = 120.0
+RWKV_SCORED_SEARCH_RETRY_MS = 250
 
 
 class MockModel:
@@ -540,26 +546,70 @@ class Browser(QMainWindow):
         from aqt import rwkv_scheduler
 
         if rwkv_scheduler.search_uses_rwkv_retrievability(search):
-
-            def prepared(_: object) -> None:
-                if (
-                    not self._closeEventHasCleanedUp
-                    and generation == self._rwkv_search_generation
-                    and search == self._lastSearchTxt
-                ):
-                    self._search_table(search)
-
-            QueryOp(
-                parent=self,
-                op=lambda _: rwkv_scheduler.prepare_browser_retrievability_scores(
-                    self.mw,
-                    search,
-                ),
-                success=prepared,
-            ).with_progress().run_in_background()
+            self._start_rwkv_scored_search(
+                search,
+                generation,
+                deadline=time.monotonic() + RWKV_SCORED_SEARCH_WAIT_SECS,
+            )
             return
 
         self._search_table(search)
+
+    def _start_rwkv_scored_search(
+        self,
+        search: str,
+        generation: int,
+        *,
+        deadline: float,
+    ) -> None:
+        """Prepare the RWKV scores of a search that asks for them, without a
+        progress window and without holding the collection while RWKV is still
+        loading its state. The table keeps its rows and the editor its note
+        until the scored rows are there (spec
+        ui.browser-rwkv-search-does-not-block)."""
+        from aqt import rwkv_scheduler
+
+        self.setWindowTitle(
+            without_unicode_isolation(tr.browsing_rwkv_scores_pending())
+        )
+
+        def is_current() -> bool:
+            return (
+                not self._closeEventHasCleanedUp
+                and generation == self._rwkv_search_generation
+                and search == self._lastSearchTxt
+            )
+
+        def prepared(status: object) -> None:
+            if not is_current():
+                return
+            if (
+                status == rwkv_scheduler.RwkvStatsPreparationStatus.PENDING
+                and time.monotonic() < deadline
+            ):
+                # RWKV is still loading its state: ask again later, with the
+                # collection free in between
+                def again() -> None:
+                    if is_current():
+                        self._start_rwkv_scored_search(
+                            search,
+                            generation,
+                            deadline=deadline,
+                        )
+
+                self.mw.progress.single_shot(RWKV_SCORED_SEARCH_RETRY_MS, again)
+                return
+            self._search_table(search)
+
+        QueryOp(
+            parent=self,
+            op=lambda _: rwkv_scheduler.prepare_browser_retrievability_scores(
+                self.mw,
+                search,
+                warmup_wait_secs=0.0,
+            ),
+            success=prepared,
+        ).run_in_background()
 
     def _search_table(self, search: str) -> None:
         try:
