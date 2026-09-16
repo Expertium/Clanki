@@ -24,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import TodayStats from "./TodayStats.svelte";
     import TotalKnowledgeGraph from "./TotalKnowledgeGraph.svelte";
     import TrueRetention from "./TrueRetention.svelte";
+    import UmPlusGraph from "./UmPlusGraph.svelte";
 
     // In Simple mode the page asks the backend only for the data the Simple
     // graphs draw (graphs with their own request need none of it)
@@ -42,6 +43,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         TotalKnowledgeGraph,
         RocGraph,
         CalibrationGraph,
+        UmPlusGraph,
         TrueRetention,
         HourGraph,
         ButtonsGraph,

@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use anki_proto::stats::ReviewPredictionsResponse;
 
 use crate::prelude::*;
@@ -160,6 +161,17 @@ impl Collection {
             &response.remembered,
             &response.card_ids,
         );
+        // one entry per pair of algorithms that share ratings; today only
+        // FSRS-7 and RWKV-Instant have stored predictions
+        if let Some(pair) = um_plus_pair(
+            SchedulingAlgorithmProto::Fsrs7,
+            &response.fsrs_predictions,
+            SchedulingAlgorithmProto::RwkvInstant,
+            &response.rwkv_predictions,
+            &response.remembered,
+        ) {
+            response.um_plus.push(pair);
+        }
         Ok(response)
     }
 }
@@ -470,6 +482,41 @@ mod tests {
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
+    fn um_plus_groups_the_ratings_by_how_far_the_algorithms_differ() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        // four ratings, two remembered; the two algorithms differ by 0.2
+        // on every one of them, so they all fall in one group
+        for index in 0..4 {
+            let review = rate(&mut col, card, -40 + index, if index < 2 { 3 } else { 1 });
+            store_fsrs(
+                &col,
+                review,
+                0.9,
+                FsrsReviewRetrievabilitySampleRole::ValidationFold,
+            );
+            store_rwkv(&col, review, 0.7);
+        }
+
+        let response = col.review_predictions("", 0)?;
+        let pair = &response.um_plus[0];
+        assert_eq!(pair.reviews, 4);
+        assert_eq!(pair.bins.len(), 1);
+        let bin = &pair.bins[0];
+        assert_eq!(bin.index, um_bin_of(0.2) as u32);
+        assert!((bin.sum_difference - 0.8).abs() < 1e-5);
+        // FSRS-7 predicted 0.9 where the mean answer was 0.5, RWKV 0.7
+        assert!((pair.um_a - 0.4).abs() < 1e-5, "{}", pair.um_a);
+        assert!((pair.um_b - 0.2).abs() < 1e-5, "{}", pair.um_b);
+        // closer to zero is better, so RWKV wins this pair
+        assert!(pair.um_b < pair.um_a);
+        // one group gives no slope
+        assert_eq!(pair.slope_a, 0.0);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
     fn the_period_selects_the_ratings() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
@@ -518,6 +565,11 @@ mod tests {
         Ok(())
     }
 }
+
+/// Bins per unit of difference in the UM+ comparison, as in
+/// `UM_plus_plot.py`: 20 each side of "the algorithms agree", 41 in all.
+const UM_BINS_PER_UNIT: i32 = 20;
+const UM_BIN_COUNT: usize = (2 * UM_BINS_PER_UNIT + 1) as usize;
 
 /// Bins of the calibration graph, over the predicted probability.
 const BIN_COUNT: usize = 20;
@@ -641,6 +693,125 @@ fn percentile(values: &[f64], percentile: f64) -> f64 {
     let upper = position.ceil() as usize;
     let weight = position - lower as f64;
     values[lower] * (1.0 - weight) + values[upper] * weight
+}
+
+/// The bin of a difference between two predictions: rounded to the nearest
+/// twentieth, with agreement in the middle (`UM_plus_plot.py`'s binning).
+fn um_bin_of(difference: f64) -> usize {
+    ((difference * UM_BINS_PER_UNIT as f64).round() as i32 + UM_BINS_PER_UNIT)
+        .clamp(0, UM_BIN_COUNT as i32 - 1) as usize
+}
+
+/// One pair of algorithms as the UM+ comparison sees them (spec
+/// ui.stats-model-metrics): the ratings are grouped by how far the two
+/// predictions differ, and each algorithm is scored by how far its mean
+/// prediction sits from the mean answer inside those groups. A rating only
+/// one of them predicted is in no group.
+fn um_plus_pair(
+    algorithm_a: SchedulingAlgorithmProto,
+    predictions_a: &[f32],
+    algorithm_b: SchedulingAlgorithmProto,
+    predictions_b: &[f32],
+    remembered: &[bool],
+) -> Option<anki_proto::stats::UmPlusPair> {
+    let mut difference = vec![0.0f64; UM_BIN_COUNT];
+    let mut error_a = vec![0.0f64; UM_BIN_COUNT];
+    let mut error_b = vec![0.0f64; UM_BIN_COUNT];
+    let mut counts = vec![0u32; UM_BIN_COUNT];
+    let mut reviews = 0u32;
+    for ((&a, &b), &remembered) in predictions_a.iter().zip(predictions_b).zip(remembered) {
+        if !a.is_finite() || !b.is_finite() {
+            continue;
+        }
+        let (a, b, answer) = (a as f64, b as f64, f64::from(remembered));
+        let bin = um_bin_of(a - b);
+        difference[bin] += a - b;
+        error_a[bin] += a - answer;
+        error_b[bin] += b - answer;
+        counts[bin] += 1;
+        reviews += 1;
+    }
+    if reviews == 0 {
+        return None;
+    }
+
+    let bins: Vec<anki_proto::stats::UmPlusBin> = (0..UM_BIN_COUNT)
+        .filter(|&bin| counts[bin] > 0)
+        .map(|bin| anki_proto::stats::UmPlusBin {
+            index: bin as u32,
+            sum_difference: difference[bin],
+            sum_error_a: error_a[bin],
+            sum_error_b: error_b[bin],
+            count: counts[bin],
+        })
+        .collect();
+    Some(anki_proto::stats::UmPlusPair {
+        algorithm_a: algorithm_a as i32,
+        algorithm_b: algorithm_b as i32,
+        um_a: weighted_rms(&bins, |bin| bin.sum_error_a / bin.count as f64),
+        um_b: weighted_rms(&bins, |bin| bin.sum_error_b / bin.count as f64),
+        slope_a: weighted_slope(&bins, |bin| bin.sum_error_a / bin.count as f64),
+        slope_b: weighted_slope(&bins, |bin| bin.sum_error_b / bin.count as f64),
+        reviews,
+        bins,
+    })
+}
+
+/// The root mean square of the bins' values, weighted by their counts: the
+/// Universal Metric Plus itself.
+fn weighted_rms(
+    bins: &[anki_proto::stats::UmPlusBin],
+    value: impl Fn(&anki_proto::stats::UmPlusBin) -> f64,
+) -> f64 {
+    let total: f64 = bins.iter().map(|bin| bin.count as f64).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    (bins
+        .iter()
+        .map(|bin| bin.count as f64 * value(bin).powi(2))
+        .sum::<f64>()
+        / total)
+        .sqrt()
+}
+
+/// The slope of a value against the difference over the bins, weighted by
+/// their counts; 0 when the differences are all alike.
+fn weighted_slope(
+    bins: &[anki_proto::stats::UmPlusBin],
+    value: impl Fn(&anki_proto::stats::UmPlusBin) -> f64,
+) -> f64 {
+    let total: f64 = bins.iter().map(|bin| bin.count as f64).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    let mean_x: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * (bin.sum_difference / bin.count as f64))
+        .sum::<f64>()
+        / total;
+    let mean_y: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * value(bin))
+        .sum::<f64>()
+        / total;
+    let covariance: f64 = bins
+        .iter()
+        .map(|bin| {
+            bin.count as f64
+                * (bin.sum_difference / bin.count as f64 - mean_x)
+                * (value(bin) - mean_y)
+        })
+        .sum();
+    let variance: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * (bin.sum_difference / bin.count as f64 - mean_x).powi(2))
+        .sum();
+    if variance > 1e-12 {
+        covariance / variance
+    } else {
+        0.0
+    }
 }
 
 /// One model's rows, from a single sample role: the first role of `roles`

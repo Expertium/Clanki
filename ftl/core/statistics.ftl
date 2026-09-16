@@ -232,6 +232,23 @@ statistics-calibration-description-line = Each point is a group of reviews with 
 statistics-calibration-description-bars = The grey bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual recall lies with 95% confidence.
 # Shown under the graph when two or more algorithms scored a rating; only these reviews let their scores be compared.
 statistics-model-metrics-shared = Only the { $reviews } reviews every algorithm scored let their scores be compared directly.
+statistics-um-plus-title = UM+ cross-comparison
+statistics-um-plus-subtitle = Where two algorithms disagree, which of them is wrong.
+# Label of the menu that picks the pair of algorithms.
+statistics-um-plus-algorithms = Algorithms
+# One entry of that menu, such as "FSRS-7 against RWKV-Instant".
+statistics-um-plus-pair = { $first } against { $second }
+# Label of the switch that also shows groups of fewer than 200 reviews.
+statistics-um-plus-small-groups = Show small groups (under 200 reviews)
+statistics-um-plus-difference = Difference in predicted probability of recall
+statistics-um-plus-error = Predicted minus actual
+# Legend entry of one algorithm, with its UM+ and the slope of its line.
+statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }
+# Shown under the graph.
+statistics-um-plus-description-axes = Each group of reviews sits at how far the two algorithms disagreed about it; the height is how far that algorithm was from what really happened, and the size of a bubble is how many reviews are in the group.
+statistics-um-plus-description-score = A line that stays near zero across the whole width is the better algorithm: UM+ closer to zero is better, and a slope closer to zero means the algorithm does not drift as the disagreement grows.
+# Shown when small groups are hidden.
+statistics-um-plus-hidden = { $groups } small groups are hidden.
 # Shown under the graph when the newest reviews have no prediction yet.
 statistics-model-metrics-stale = Predictions up to { $date }; { $reviews } newer reviews are not scored yet.
 # Shown under the graph when an algorithm has no curve; $algorithm is its name.
