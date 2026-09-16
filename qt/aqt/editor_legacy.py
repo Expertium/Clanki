@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import functools
 import html
+import importlib
 import itertools
 import json
 import mimetypes
@@ -20,10 +21,6 @@ from enum import Enum
 from random import randrange
 from typing import Any, Iterable, Match, cast
 
-import bs4
-import requests
-from bs4 import BeautifulSoup
-
 import aqt
 import aqt.forms
 import aqt.operations
@@ -33,7 +30,6 @@ from anki.cards import Card
 from anki.collection import Config, SearchNode
 from anki.consts import MODEL_CLOZE
 from anki.hooks import runFilter
-from anki.httpclient import HttpClient
 from anki.models import NotetypeDict, NotetypeId, StockNotetype
 from anki.notes import Note, NoteFieldsCheckResult, NoteId
 from anki.utils import checksum, is_lin, is_win, namedtmp
@@ -62,6 +58,32 @@ from aqt.utils import (
     tr,
 )
 from aqt.webview import AnkiWebView, AnkiWebViewKind
+
+# `bs4`, `requests` and the HTTP client are only needed while pasting HTML or
+# fetching a remote picture, and together they cost a noticeable part of
+# start-up. They load on first use; the names stay reachable from this module
+# for add-ons that import them from here.
+_LAZY_IMPORTS = {
+    "bs4": ("bs4", None),
+    "requests": ("requests", None),
+    "BeautifulSoup": ("bs4", "BeautifulSoup"),
+    "HttpClient": ("anki.httpclient", "HttpClient"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if entry := _LAZY_IMPORTS.get(name):
+        module_name, attribute = entry
+        module = importlib.import_module(module_name)
+        value = module if attribute is None else getattr(module, attribute)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_IMPORTS))
+
 
 pics = (
     "jpg",
@@ -1003,6 +1025,8 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
 
     def _retrieveURL(self, url: str) -> str | None:
         "Download file into media folder and return local filename or None."
+        import requests
+
         local = url.lower().startswith("file://")
         # fetch it into a temporary folder
         self.mw.progress.start(immediate=not local, parent=self.parentWindow)
@@ -1021,6 +1045,8 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                 with urllib.request.urlopen(req) as response:
                     filecontents = response.read()
             else:
+                from anki.httpclient import HttpClient
+
                 with HttpClient() as client:
                     client.timeout = 30
                     with client.get(url) as response:
@@ -1054,6 +1080,9 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
     removeTags = ["script", "iframe", "object", "style"]
 
     def _pastePreFilter(self, html: str, internal: bool) -> str:
+        import bs4
+        from bs4 import BeautifulSoup
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             doc = BeautifulSoup(html, "html.parser")
@@ -1299,6 +1328,8 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             # filter html through beautifulsoup so we can strip out things like a
             # leading </div>
             html_escaped = self.mw.col.media.escape_media_filenames(html)
+            from bs4 import BeautifulSoup
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 html_escaped = str(BeautifulSoup(html_escaped, "html.parser"))

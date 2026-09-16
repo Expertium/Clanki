@@ -18,7 +18,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, Union
+from typing import IO, TYPE_CHECKING, Any, Union
 from urllib.parse import parse_qs, urlparse
 from zipfile import ZipFile
 
@@ -31,7 +31,6 @@ import aqt
 import aqt.forms
 import aqt.main
 from anki.collection import AddonInfo
-from anki.httpclient import HttpClient
 from anki.lang import without_unicode_isolation
 from anki.utils import int_version_to_str
 from aqt import gui_hooks
@@ -57,6 +56,32 @@ from aqt.utils import (
     tooltip,
     tr,
 )
+
+if TYPE_CHECKING:
+    from anki.httpclient import HttpClient
+
+# `requests`, which the HTTP client pulls in, costs a noticeable part of
+# start-up, and nothing downloads an add-on before the main window is up. The
+# name stays reachable for add-ons that import it from here.
+
+
+def __getattr__(name: str) -> Any:
+    if name == "HttpClient":
+        from anki.httpclient import HttpClient
+
+        globals()[name] = HttpClient
+        return HttpClient
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"HttpClient"})
+
+
+def _http_client() -> HttpClient:
+    from anki.httpclient import HttpClient
+
+    return HttpClient()
 
 
 class AbortAddonImport(Exception):
@@ -1363,7 +1388,7 @@ def download_addons(
     force_enable: bool = False,
 ) -> None:
     if client is None:
-        client = HttpClient()
+        client = _http_client()
     downloader = DownloaderInstaller(parent, mgr, client)
     downloader.download(ids, on_done=on_done, force_enable=force_enable)
 
@@ -1623,7 +1648,7 @@ def prompt_to_update(
     on_done: Callable[[list[DownloadLogEntry]], None],
     requested_by_user: bool = True,
 ) -> None:
-    client = HttpClient()
+    client = _http_client()
     if not requested_by_user:
         prompt_update = False
         for addon in updated_addons:
@@ -1655,7 +1680,7 @@ def install_or_update_addon(
             if not updated_addons:
                 on_done([])
                 return
-            client = HttpClient()
+            client = _http_client()
             download_addons(
                 parent, mgr, [addon.id for addon in updated_addons], on_done, client
             )
