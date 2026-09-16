@@ -14,3 +14,18 @@ test("Simple mode keeps only the Simple graphs, in page order", () => {
     expect(graphsForMode(graphs, simple, true)).toStrictEqual(graphs);
     expect(graphsForMode(graphs, null, false)).toStrictEqual(graphs);
 });
+
+// Pins spec/ui.md#ui.stats-total-knowledge: the page keys each graph's block
+// by the component, so a graph both modes show keeps the same key over a mode
+// switch. Its block, and with it everything the graph loaded on its own
+// (Total Knowledge's response and its RWKV job), survives the switch.
+test("a mode switch keeps one block per graph that both modes show", () => {
+    const graphs = [{ id: "today" }, { id: "reviews" }, { id: "knowledge" }];
+    const simple = [graphs[1], graphs[2]];
+    const before = graphsForMode(graphs, simple, false);
+    const after = graphsForMode(graphs, simple, true);
+    for (const graph of before) {
+        // the same object, so the keyed block is moved, never rebuilt
+        expect(after.filter((other) => other === graph)).toHaveLength(1);
+    }
+});

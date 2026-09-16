@@ -333,11 +333,46 @@ and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
 
 Given the Stats page, in both Simple and Advanced mode, the Total Knowledge
 graph shows, for each day from the first rating of a card in the page's
-search through today, two lines: the cards of the search rated at least
-once by that day (the upper bound), and the sum of the cards' R that day
-under the collection's algorithm only (`sched.one-global-algorithm`,
-`ui.stats-one-algorithm`). It always covers the whole review history; the
-page's period does not apply.
+search through today, the sum of the cards' R that day under the
+collection's algorithm only ("Known", blue; `sched.one-global-algorithm`,
+`ui.stats-one-algorithm`), and it may show a second line, the cards of the
+search rated at least once by that day ("Reviewed", grey, the upper bound).
+It always covers the whole review history; the page's period does not apply.
+
+Simple mode never draws "Reviewed" and has no control for it. Under the
+graph it reads "This is Clanki's best estimate of how many cards you knew at
+each point in your review history."
+
+Advanced mode has a checkbox next to the legend, labelled "Reviewed", which
+draws that line and is on when the graph loads, so Advanced mode looks as it
+did before the checkbox. Under the graph it names the collection's algorithm
+("Algorithm: FSRS-7", "Algorithm: RWKV-Curve" or "Algorithm: RWKV-Instant",
+the names of the deck-options Algorithm list) and reads "Reviewed is an upper
+bound on your knowledge: it counts every card you have ever rated, as if you
+never forgot one."
+
+The line under the title reads, in Advanced mode, "The number of cards you
+would recall on each day (the sum of their retrievability), over your whole
+review history."; in Simple mode it says the same without the word
+retrievability: "The number of cards you would recall on each day (each card
+counts as its probability of recall), over your whole review history."
+
+Hovering a day shows the day's date, "Known: N cards" with N the day's sum
+rounded to a whole number of cards, and, where the graph draws it,
+"Reviewed: N cards". The rounding is for the tooltip only; the sum keeps
+every decimal.
+
+Hiding "Reviewed" changes the drawing only: the graph asks the backend for
+the same data, the y axis keeps the bound's maximum as its top, the hover
+tooltip drops the "Reviewed" row, and under RWKV the sweep line still moves
+as the job reaches each day.
+
+A mode switch does not compute the graph again. The Stats page keeps one
+block per graph, keyed by the graph, so a graph that both modes show keeps
+its block and everything in it over a switch: the loaded response, the RWKV
+job and the days it has already computed, and the state of the "Reviewed"
+checkbox. The graph asks the backend again only when the page's search
+changes or the page is opened again.
 
 A day is a scheduler day ("next day starts at" applies). A card's R on a
 day comes from its last event on or before that day: a rating that day
@@ -360,7 +395,8 @@ before the first interday review) gives 0 on the days after it. The
 replay runs in the backend off the main thread; while it runs the graph
 reads "Calculating…".
 
-Under RWKV the upper bound shows at once. A background RWKV job replays the
+Under RWKV the upper bound, where the mode draws it, shows at once. A
+background RWKV job replays the
 collection's review history day by day with a separate RWKV runtime and
 sums the search's cards; the days it has not reached are blurred, and a
 vertical line sweeps from left to right as it goes. RWKV's history of a card
@@ -376,7 +412,13 @@ leaving the page stops the job. With no usable RWKV model the graph reads
 algorithm, FSRS-7 with each card's preset parameters and a complete replay
 from the first review, the full history whatever the period, and for the
 slow RWKV a blurred bound with a sweep line; later the same day: shown in
-Simple mode too.
+Simple mode too. 2026-09-16: the bound is a power user's line, so Simple
+mode shows the estimate alone with one sentence of plain English, and
+Advanced mode gets the checkbox, the algorithm's name and the warning that
+the bound assumes a perfect memory. Simple mode must not say
+"retrievability", so it has its own subtitle. And a mode switch must not
+throw away work the graph has already done, so the page keys its graph
+blocks.
 
 **Pinned by:** `fsrs7_sums_match_the_cards_historical_memory_states`,
 `total_knowledge_covers_the_whole_history`,
@@ -387,7 +429,11 @@ pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
 (`rslib/src/scheduler/fsrs/curve.rs`);
 `curve_day_sums_from_warm_up_are_the_stored_curves` (`rslib/src/rwkv/mod.rs`);
 `qt/tests/test_total_knowledge.py`;
-`ts/routes/graphs/total-knowledge.test.ts`.
+`ts/routes/graphs/total-knowledge.test.ts`;
+"a mode switch keeps one block per graph that both modes show"
+(`ts/routes/graphs/ui-mode.test.ts`);
+"Total Knowledge: the modes differ, and switching does not load it again"
+(`ts/tests/e2e/graphs.test.ts`).
 
 ## ui.browser-interval-average
 
