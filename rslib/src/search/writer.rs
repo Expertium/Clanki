@@ -220,6 +220,13 @@ fn write_property(operator: &str, kind: &PropertyKind) -> String {
     }
 }
 
+/// The search that selects every card of a preset, by its name.
+pub(crate) fn preset_search(name: &str) -> String {
+    write_nodes(&[Node::Search(SearchNode::Preset(escape_anki_wildcards(
+        name,
+    )))])
+}
+
 pub(crate) fn deck_search(name: &str) -> String {
     write_nodes(&[Node::Search(SearchNode::Deck(escape_anki_wildcards(name)))])
 }

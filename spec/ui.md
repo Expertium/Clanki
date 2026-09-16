@@ -782,6 +782,60 @@ calibration count bars "look lame"; he asked for blue or green, and for
 neither is amber" (`ts/routes/graphs/retrievability.test.ts`); "both axes
 step by 0.1" (`ts/routes/graphs/roc.test.ts`); "both axes step by 0.1, and
 the count bars are blue" (`ts/routes/graphs/calibration.test.ts`).
+## ui.stats-fsrs-predictions-ready
+
+Given a collection with FSRS-7 presets, Clanki keeps FSRS-7's per-review
+predictions stored and ready, so the model-quality graphs find rows instead
+of asking the user to make them. The user starts nothing and presses
+nothing.
+
+The pass that writes the rows runs off the main thread, and the Stats page
+never waits for it. It runs when the collection has opened, at most once a
+day, and again at once whenever a preset's FSRS-7 parameters change. It
+covers every preset that has a rated review no stored validation fold
+covers, over that preset's whole card set and the whole collection: it never
+follows the search or the period the Stats page happens to show, because a
+pass that filled only the deck on screen would leave every other deck
+without rows.
+
+When a preset's FSRS-7 parameters change, every prediction those parameters
+produced is wrong, and Clanki deletes that preset's stored rows in the same
+transaction as the change. Only that preset's rows go; parameters are per
+preset, and another preset's rows were made by parameters that did not
+change. Desired retention, easy days and fuzz change the schedule but not
+the prediction, so they delete nothing.
+
+Between the deletion and the end of the pass, FSRS-7 has no rows. The
+graphs then show FSRS-7 as absent with its own reason, "its predictions for
+these reviews are being computed", and never draw a value that the current
+parameters did not produce. No other algorithm is drawn in its place.
+
+The stored rows are validation folds, so nothing that produced a row had
+seen the review it predicts. The rows written while answering carry a
+different sample role, and the graph takes the first role of its list that
+has any row, so those rows stay hidden behind the folds and answering does
+not keep the set fresh; the pass rerunning is what keeps it fresh. Reviews
+newer than the newest stored prediction are named by the graph's own
+staleness line, never silently dropped.
+
+**Why:** Andrew, 2026-09-16: "now we need to make FSRS-7 always have
+predictions ready", and, on what a parameter change means, "If FSRS
+parameters change, then all predictions must be recalculated. This is true
+both for using FSRS in practice and for Stats." A button the user must find
+is not "ready", so the pass runs by itself. Recalculating rather than
+labelling each row with the parameters that made it is his choice: a
+prediction from superseded parameters is not a weaker prediction, it is the
+wrong number. The pass costs about 25 seconds on a collection of
+910,715 rated reviews, measured on main after the parallel replay of pull
+request 125, which is why it runs in the background and at most once a day
+rather than while a page is open.
+
+**Pinned by:** `a_parameter_change_drops_that_presets_predictions`,
+`another_presets_predictions_survive_a_parameter_change`
+(`rslib/src/deckconfig/update.rs`);
+`the_pass_covers_every_preset_with_uncovered_reviews`
+(`rslib/src/scheduler/fsrs/predictions.rs`);
+`qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 
 ## ui.browser-rwkv-search-does-not-block
 

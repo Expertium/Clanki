@@ -452,6 +452,12 @@ impl crate::services::SchedulerService for Collection {
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
     }
 
+    fn refresh_fsrs_review_predictions(&mut self) -> Result<generic::UInt32> {
+        Ok(generic::UInt32 {
+            val: self.refresh_fsrs_review_predictions()?,
+        })
+    }
+
     fn compute_fsrs_review_retrievability_calibration(
         &mut self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
@@ -506,7 +512,8 @@ impl crate::services::SchedulerService for Collection {
             ..Default::default()
         };
         let fsrs = FSRS::new(config.fsrs_params())?;
-        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
+        // FSRS-7 may always schedule inside a day (spec
+        // sched.sub-day-intervals)
         let fsrs_allow_short_term = true;
         // Always on (spec sched.same-day-steps-always-on); the request field
         // is kept for wire compatibility and ignored.

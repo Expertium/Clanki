@@ -6,6 +6,7 @@ pub(crate) mod curve;
 mod error;
 pub mod memory_state;
 pub mod params;
+pub(crate) mod predictions;
 pub(crate) mod preset;
 pub mod rescheduler;
 pub mod retention;
