@@ -18684,21 +18684,25 @@ def test_prepare_stats_retrievability_scores_scores_again_for_another_search() -
     assert backend.predicted_card_ids == [1, 1, 1]
 
 
-def test_prepare_stats_retrievability_scores_scores_again_after_the_reuse_window(
+def test_prepare_stats_retrievability_scores_keep_the_scores_however_long_the_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend, reviewer = _stats_reuse_scaffold()
     previous_backend = set_reviewer_backend(backend)
     rwkv_scheduler.forget_rwkv_stats_scores()
-    monkeypatch.setattr(rwkv_scheduler, "_RWKV_STATS_SCORES_REUSE_SECS", -1.0)
+    clock = [1_000.0]
+    monkeypatch.setattr(rwkv_scheduler.time, "monotonic", lambda: clock[0])
     try:
         prepare_stats_retrievability_scores(reviewer, "rated:7")
+        # a week later, with the day and everything else in the key unchanged
+        clock[0] += 7 * 24 * 3600
         prepare_stats_retrievability_scores(reviewer, "rated:7")
     finally:
         set_reviewer_backend(previous_backend)
         rwkv_scheduler.forget_rwkv_stats_scores()
 
-    assert backend.predicted_card_ids == [1, 1]
+    # no clock ends the reuse (spec ui.stats-rwkv-scores-kept)
+    assert backend.predicted_card_ids == [1]
 
 
 def test_prepare_stats_retrievability_scores_scores_again_after_a_new_day() -> None:

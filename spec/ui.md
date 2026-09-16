@@ -376,28 +376,32 @@ and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
 
 ## ui.stats-rwkv-scores-kept
 
-Given the Stats page asks for the Retrievability graph a second time while
-nothing RWKV reads has changed — the same search, the same day, the same
-RWKV state, the same review inputs and study queues — Clanki reuses the
-score map it published the first time instead of scoring every card again,
-for up to 10 minutes after that first map was published. Any answer, any
-change of the cards or the queues, a new day, another search and any other
-publication of a score map end the reuse, and the next request scores again.
+Given the Stats page asks for the Retrievability graph again while nothing
+RWKV reads has changed — the same collection and RWKV backend, the same
+search, the same day, the same RWKV state generation, the same review inputs
+and study queues — Clanki reuses the score map it published before instead of
+scoring every card again. No clock ends the reuse: the map stands until one
+of those changes. A new day, an answer, any change of the cards or the
+queues, another search or deck, a new RWKV state generation, another backend
+or collection and any other publication of a score map all end it, and the
+next request scores again.
 
-The graph then shows RWKV's R as of the moment the map was built, not of the
-moment of the request. The scoring itself takes minutes on a large
-collection, so the first map is already that old when the page first draws
-it.
+So the numbers the graph shows do not move with the seconds since each card's
+last review: within one day they stay as they were when the map was built.
+The scoring itself takes minutes on a large collection, so the map is already
+minutes old when the page first draws it.
 
 **Why:** Andrew, 2026-09-16: switching the Stats page between Simple and
 Advanced mode, or its period between 12 months and all history, must not
 start the RWKV calculation from zero again. RWKV's answer depends on neither
 the mode nor the period. On Andrew's collection one pass costs 230 seconds
-and 229 of them are RWKV scoring the 38,523 cards of the search.
+and 229 of them are RWKV scoring the 38,523 cards of the search. Andrew, the
+same day, on dropping the earlier ten-minute limit: "p(recall) doesn't fall
+*that* fast for most cards, so remove the time limit."
 
 **Pinned by:** `test_prepare_stats_retrievability_scores_reuses_published_scores`,
+`test_prepare_stats_retrievability_scores_keep_the_scores_however_long_the_wait`,
 `test_prepare_stats_retrievability_scores_scores_again_for_another_search`,
-`test_prepare_stats_retrievability_scores_scores_again_after_the_reuse_window`,
 `test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
 (`qt/tests/test_rwkv_scheduler.py`)
 

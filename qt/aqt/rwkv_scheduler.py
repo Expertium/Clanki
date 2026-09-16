@@ -142,9 +142,6 @@ _FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_fsrs_review_retrievabili
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
-# how long a published RWKV stats score map stands in for a new one
-# (spec ui.stats-rwkv-scores-kept)
-_RWKV_STATS_SCORES_REUSE_SECS = 600.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
 _RWKV_INSTANT_R_SEARCH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])prop:rwkv:r(?=[<>=!])",
@@ -267,9 +264,9 @@ _rwkv_stats_prepare_in_flight: dict[
     RwkvStatsPrepareKey,
     Future[RwkvStatsPreparationStatus],
 ] = {}
-# the last preparation that published a score map, and when it published it
+# the key of the last preparation that published a score map
 # (spec ui.stats-rwkv-scores-kept)
-_rwkv_stats_prepare_memo: tuple[RwkvStatsPrepareKey, float] | None = None
+_rwkv_stats_prepare_memo: RwkvStatsPrepareKey | None = None
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_build_started = False
@@ -6524,18 +6521,15 @@ def _rwkv_stats_prepare_memo_is_current(key: RwkvStatsPrepareKey) -> bool:
     """Whether the score map published for `key` still stands (spec
     ui.stats-rwkv-scores-kept).
 
-    The key already carries everything that makes the map wrong: the backend
-    and the collection, the day, RWKV's state generation, the review-input and
-    study-queue generations, the search and the flags. It cannot carry the one
-    thing that keeps moving, the seconds since each card's last review, so the
-    map is reused only for `_RWKV_STATS_SCORES_REUSE_SECS`.
+    The key carries everything that makes the map wrong: the backend and the
+    collection, the day, RWKV's state generation, the review-input and
+    study-queue generations, the search and the flags. It does not carry the
+    seconds since each card's last review, and no clock ends the reuse:
+    Andrew, 2026-09-16, "p(recall) doesn't fall that fast for most cards".
     """
 
     with _rwkv_stats_prepare_lock:
-        memo = _rwkv_stats_prepare_memo
-    if memo is None or memo[0] != key:
-        return False
-    return time.monotonic() - memo[1] <= _RWKV_STATS_SCORES_REUSE_SECS
+        return _rwkv_stats_prepare_memo == key
 
 
 def _record_rwkv_stats_prepare_memo(
@@ -6546,7 +6540,7 @@ def _record_rwkv_stats_prepare_memo(
 
     with _rwkv_stats_prepare_lock:
         if key is not None and status == RwkvStatsPreparationStatus.READY:
-            _rwkv_stats_prepare_memo = (key, time.monotonic())
+            _rwkv_stats_prepare_memo = key
         else:
             _rwkv_stats_prepare_memo = None
 
