@@ -335,11 +335,11 @@ impl Collection {
         cards: &[Card],
     ) -> Result<Option<SimulationPresetRouter>> {
         let mut fallback = simulation_fallback_preset(req);
-        let presets_by_card = self
-            .fsrs_presets_for_cards(cards)?
-            .into_iter()
+        let presets = self.fsrs_presets_for_cards(cards)?;
+        let presets_by_card = presets
+            .iter()
             .filter_map(|(card_id, preset)| {
-                simulation_addon_preset_for_card(card_id, preset).transpose()
+                simulation_addon_preset_for_card(card_id, preset.clone()).transpose()
             })
             .collect::<Result<HashMap<_, _>>>()?;
         let included_card_ids = cards.iter().map(|card| card.id).collect::<HashSet<_>>();

@@ -216,11 +216,75 @@ fn node_uses_regex(node: &Node) -> bool {
     }
 }
 
+/// The FSRS preset of each card of a set of cards.
+///
+/// A collection has a handful of presets, and one preset is over 200 bytes
+/// (its parameters, its name and two more strings). Storing the preset
+/// itself per card costs about 45 MB on a 159,000-card collection, which
+/// the stats graphs and the browser's retrievability searches both build;
+/// an index per card costs about 2 MB.
+#[derive(Debug, Default)]
+pub(crate) struct FsrsPresetsByCard {
+    presets: Vec<FsrsPreset>,
+    index_by_card: HashMap<CardId, u32>,
+    /// A preset is already stored when its id and its desired retention
+    /// are the same: a deck can override the retention of its preset
+    /// (`Deck::effective_desired_retention`), so the id alone is not enough.
+    index_by_preset: HashMap<(FsrsPresetId, u32), u32>,
+}
+
+impl FsrsPresetsByCard {
+    fn insert(&mut self, card_id: CardId, preset: FsrsPreset) -> Result<u32> {
+        let key = (preset.id.clone(), preset.desired_retention.to_bits());
+        let index = match self.index_by_preset.get(&key) {
+            Some(index) => *index,
+            None => {
+                let index =
+                    u32::try_from(self.presets.len()).or_invalid("too many FSRS presets")?;
+                self.presets.push(preset);
+                self.index_by_preset.insert(key, index);
+                index
+            }
+        };
+        self.index_by_card.insert(card_id, index);
+        Ok(index)
+    }
+
+    fn insert_index(&mut self, card_id: CardId, index: u32) {
+        self.index_by_card.insert(card_id, index);
+    }
+
+    pub(crate) fn get(&self, card_id: CardId) -> Option<&FsrsPreset> {
+        self.index_by_card
+            .get(&card_id)
+            .map(|index| &self.presets[*index as usize])
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.index_by_card.len()
+    }
+
+    pub(crate) fn contains_card(&self, card_id: CardId) -> bool {
+        self.index_by_card.contains_key(&card_id)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (CardId, &FsrsPreset)> + '_ {
+        self.index_by_card
+            .iter()
+            .map(|(card_id, index)| (*card_id, &self.presets[*index as usize]))
+    }
+}
+
 impl Collection {
-    pub(crate) fn fsrs_presets_for_cards(
+    pub(crate) fn fsrs_presets_for_cards(&mut self, cards: &[Card]) -> Result<FsrsPresetsByCard> {
+        let cards: Vec<&Card> = cards.iter().collect();
+        self.fsrs_presets_for_card_refs(&cards)
+    }
+
+    pub(crate) fn fsrs_presets_for_card_refs(
         &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+        cards: &[&Card],
+    ) -> Result<FsrsPresetsByCard> {
         if cards.len() <= FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
             self.fsrs_presets_for_cards_directly(cards)
         } else {
@@ -228,15 +292,13 @@ impl Collection {
         }
     }
 
-    fn fsrs_presets_for_cards_directly(
-        &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+    fn fsrs_presets_for_cards_directly(&mut self, cards: &[&Card]) -> Result<FsrsPresetsByCard> {
         let start = Instant::now();
-        let presets_by_card = cards
-            .iter()
-            .map(|card| Ok((card.id, self.fsrs_preset_for_card(card)?)))
-            .collect::<Result<_>>()?;
+        let mut presets_by_card = FsrsPresetsByCard::default();
+        for card in cards {
+            let preset = self.fsrs_preset_for_card(card)?;
+            presets_by_card.insert(card.id, preset)?;
+        }
 
         tracing::debug!(
             cards = cards.len(),
@@ -247,32 +309,38 @@ impl Collection {
         Ok(presets_by_card)
     }
 
-    fn fsrs_presets_for_cards_in_batch(
-        &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+    fn fsrs_presets_for_cards_in_batch(&mut self, cards: &[&Card]) -> Result<FsrsPresetsByCard> {
         let start = Instant::now();
         let mut presets_by_card = self.fsrs_overlay_presets_for_cards(cards)?;
         let overlay_matches = presets_by_card.len();
         let fallback_start = Instant::now();
         let decks_by_id = self.storage.get_decks_map()?;
         let configs_by_id = self.storage.get_deck_config_map()?;
+        // a deck's cards all get the same preset: build it once per deck
+        let mut index_by_deck: HashMap<DeckId, u32> = HashMap::new();
 
         for card in cards {
-            if presets_by_card.contains_key(&card.id) {
+            if presets_by_card.contains_card(card.id) {
                 continue;
             }
             let deck_id = card.original_deck_id.or(card.deck_id);
+            if let Some(index) = index_by_deck.get(&deck_id) {
+                presets_by_card.insert_index(card.id, *index);
+                continue;
+            }
             let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
             let config_id = deck.config_id().or_invalid("home deck is filtered")?;
             let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
-            presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck)?);
+            let index =
+                presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck)?)?;
+            index_by_deck.insert(deck_id, index);
         }
 
         tracing::debug!(
             cards = cards.len(),
             overlay_matches,
             fallback_matches = cards.len() - overlay_matches,
+            presets = presets_by_card.presets.len(),
             fallback_elapsed_ms = fallback_start.elapsed().as_secs_f64() * 1000.0,
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
             "resolved FSRS presets for card batch"
@@ -431,20 +499,17 @@ impl Collection {
         self.build_fsrs_preset_overlay_cache_from_overlay(overlay)
     }
 
-    fn fsrs_overlay_presets_for_cards(
-        &mut self,
-        cards: &[Card],
-    ) -> Result<HashMap<CardId, FsrsPreset>> {
+    fn fsrs_overlay_presets_for_cards(&mut self, cards: &[&Card]) -> Result<FsrsPresetsByCard> {
         let cache = self.fsrs_preset_overlay_cache()?;
         if cache.rules.is_empty() || cards.is_empty() {
-            return Ok(HashMap::new());
+            return Ok(FsrsPresetsByCard::default());
         }
 
         let start = Instant::now();
         let presets = cache.presets.clone();
         let rules = cache.rules.clone();
         let uses_first_grade = rules.iter().any(|rule| node_uses_first_grade(&rule.node));
-        let mut presets_by_card = HashMap::new();
+        let mut presets_by_card = FsrsPresetsByCard::default();
         let mut unresolved = HashSet::new();
         let mut cached_non_matches = 0;
 
@@ -454,7 +519,7 @@ impl Collection {
                     .get(preset_id)
                     .or_invalid("FSRS preset rule references an unknown preset")?
                     .clone();
-                presets_by_card.insert(card.id, preset);
+                presets_by_card.insert(card.id, preset)?;
             } else if cache.cards_without_preset.contains(&card.id) {
                 cached_non_matches += 1;
             } else {
@@ -524,7 +589,7 @@ impl Collection {
                 self.search_cards_in_fsrs_preset_search_table(rule.node, uses_first_grade)?
             {
                 if unresolved.remove(&card_id) {
-                    presets_by_card.insert(card_id, preset.clone());
+                    presets_by_card.insert(card_id, preset.clone())?;
                     cache_updates.push((card_id, rule_preset_id.clone()));
                     matched_card_ids.push(card_id);
                 }
@@ -676,6 +741,38 @@ mod test {
         // Pins spec/deck-options.md#deck-options.historical-retention-fixed
         assert_eq!(preset.historical_retention, HISTORICAL_RETENTION);
         assert_eq!(preset.ignore_revlogs_before_date, "2024-01-02");
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs_presets_for_cards_keep_each_decks_desired_retention() -> Result<()> {
+        // the presets are stored once for the cards that share one, so two
+        // decks on the same preset must not share it when one of them
+        // overrides the desired retention
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.desired_retention = 0.9);
+        let other = col.get_or_create_normal_deck("other")?;
+        let mut other = other.clone();
+        other.normal_mut()?.desired_retention = Some(0.8);
+        col.update_deck(&mut other)?;
+        let default_note = NoteAdder::basic(&mut col).add(&mut col);
+        let other_note = NoteAdder::basic(&mut col).deck(other.id).add(&mut col);
+
+        let cids = col.search_cards("", SortMode::NoOrder)?;
+        let cards = col.all_cards_for_ids(&cids, false)?;
+        let presets = col.fsrs_presets_for_cards(&cards)?;
+
+        for card in &cards {
+            let preset = presets.get(card.id).unwrap();
+            let expected = if card.note_id == other_note.id {
+                0.8
+            } else {
+                0.9
+            };
+            assert_eq!(preset.desired_retention, expected);
+        }
+        assert_eq!(cards.len(), 2);
+        assert_ne!(default_note.id, other_note.id);
         Ok(())
     }
 
@@ -1166,7 +1263,7 @@ mod test {
 
         assert_eq!(presets.len(), 2);
         for card in cards {
-            let preset = presets.get(&card.id).unwrap();
+            let preset = presets.get(card.id).unwrap();
             if card.note_id == tagged_note.id {
                 assert_eq!(preset.id, FsrsPresetId::Addon("addon:test:tagged".into()));
             } else {
@@ -1232,7 +1329,7 @@ mod test {
             .unwrap();
 
         assert_eq!(
-            presets.get(&tagged_card.id).unwrap().id,
+            presets.get(tagged_card.id).unwrap().id,
             FsrsPresetId::Addon("addon:test:first".into())
         );
         let cache = col.state.fsrs_preset_overlay_cache.as_ref().unwrap();
