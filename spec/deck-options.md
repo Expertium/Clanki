@@ -103,6 +103,18 @@ to RWKV-Instant.
 
 **Pinned by:** markup only; no unit test.
 
+## deck-options.optimize-all-clears-bad-params
+
+When the user starts "Optimize All Presets" and one or more presets hold FSRS
+parameters that the optimizer cannot use, Clanki replaces those parameters with
+the defaults and optimizes. It asks no question and shows no dialog. Presets
+with usable parameters keep them.
+**Why:** the optimizer cannot run on parameters it refuses, and the defaults are
+the only other value it can start from, so the question had one sensible answer
+(Andrew, 2026-09-16).
+**Pinned by:** `optimize_all_presets_clears_the_parameters_it_cannot_use` in
+`ts/routes/deck-options/lib.test.ts`
+
 ## deck-options.fsrs-only-controls
 
 Given the deck-options screen, these controls appear only while FSRS-7 is
