@@ -640,3 +640,26 @@ def test_collection_busy_counts_queued_and_running_collection_tasks() -> None:
     assert taskman.collection_busy()
     taskman.collection_use_finished()
     assert not taskman.collection_busy()
+
+
+def test_startup_objects_are_kept_out_of_garbage_collection() -> None:
+    # The collection after a dialog closes and the 15-minute one then walk
+    # only what the session built after the first profile opened.
+    import gc
+
+    mw = SimpleNamespace(
+        keep_startup_objects_out_of_garbage_collection=(
+            AnkiQt.keep_startup_objects_out_of_garbage_collection
+        )
+    )
+    before = gc.get_freeze_count()
+    try:
+        AnkiQt.keep_startup_objects_out_of_garbage_collection(mw)  # type: ignore[arg-type]
+        assert gc.get_freeze_count() > before
+        # objects made afterwards are still collected
+        cycle = {}
+        cycle["self"] = cycle
+        del cycle
+        assert gc.collect() > 0
+    finally:
+        gc.unfreeze()

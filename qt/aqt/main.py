@@ -391,6 +391,7 @@ class AnkiQt(QMainWindow):
             self.closeFires = True
 
     def setupProfile(self) -> None:
+        self.keep_startup_objects_out_of_garbage_collection()
         if self.pm.meta["firstRun"]:
             # load the new deck user profile
             self.pm.load(self.pm.profiles()[0])
@@ -2181,6 +2182,16 @@ title="{}" {}>{}</button>""".format(
     def disable_automatic_garbage_collection(self) -> None:
         gc.collect()
         gc.disable()
+
+    def keep_startup_objects_out_of_garbage_collection(self) -> None:
+        """Everything built before the first profile opens - the modules, the
+        add-ons, the main window - lives until Anki exits, so every later
+        collection may skip it (gc.freeze moves it to the permanent
+        generation). The collection after a dialog closes and the one every
+        15 minutes then only walk what the session has built since, which is
+        what makes them slow enough to be felt."""
+        gc.collect()
+        gc.freeze()
 
     def garbage_collect_now(self) -> None:
         # gc.collect() has optional arguments that will cause problems if
