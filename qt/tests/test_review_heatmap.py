@@ -116,6 +116,33 @@ def test_nothing_is_drawn_while_the_preference_is_off() -> None:
     assert content.table == "<table></table>"
 
 
+def test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off(
+    tmp_path: Any,
+) -> None:
+    from anki.collection import Collection
+
+    path = str(tmp_path / "default.anki2")
+    col = Collection(path)
+    try:
+        # a new collection draws the heatmap; the user finds no setting first
+        assert col.get_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED)
+        heatmap = ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+        assert heatmap.enabled()
+        # a user who turns it off keeps it off
+        col.set_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED, False)
+        assert not heatmap.enabled()
+    finally:
+        col.close(downgrade=False)
+
+    col = Collection(path)
+    try:
+        assert not col.get_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED)
+        heatmap = ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+        assert not heatmap.enabled()
+    finally:
+        col.close(downgrade=False)
+
+
 def test_render_uses_the_reporter_and_caches_per_input_fingerprint() -> None:
     heatmap = _heatmap(enabled=True)
     heatmap.mw.col.mod = 1

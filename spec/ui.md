@@ -153,7 +153,9 @@ the RWKV reschedule actions.
 
 ## ui.review-heatmap
 
-Given the collection flag `reviewHeatmapEnabled` on (the default), Clanki
+Given the collection flag `reviewHeatmapEnabled` on — its value in a new
+collection, so a new user gets the heatmap out of the box, while a
+collection where the user turned it off keeps it off — Clanki
 draws a review heatmap — the Review Heatmap add-on (Glutanimate, AGPLv3)
 made native: a calendar of reviews per day with the due forecast in a
 second colour, previous / today / next navigation, and four figures
@@ -214,6 +216,7 @@ colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
 link, disabling the add-on, the one-time notice,
 `test_the_settings_button_shows_the_deck_lists_gear`,
+`test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off`,
 `test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
 `test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`
