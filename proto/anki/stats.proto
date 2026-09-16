@@ -225,6 +225,37 @@ message ReviewPredictionsResponse {
   // share; false when one model alone is scored, on all of its own
   // ratings, because one curve is not a comparison.
   bool shared_ratings = 15;
+  // Every pair of algorithms that has ratings both of them scored.
+  repeated UmPlusPair um_plus = 16;
+}
+
+// One bin of the UM+ comparison: the ratings whose two predictions differ
+// by about the same amount (spec ui.stats-model-metrics).
+message UmPlusBin {
+  // 0 to 40; 20 is "the two algorithms agree".
+  uint32 index = 1;
+  // The sums the graph divides by `count`: the difference between the two
+  // predictions, and each algorithm's prediction minus the answer.
+  double sum_difference = 2;
+  double sum_error_a = 3;
+  double sum_error_b = 4;
+  uint32 count = 5;
+}
+
+// One pair of algorithms, as the UM+ graph compares them.
+message UmPlusPair {
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm_a = 1;
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm_b = 2;
+  repeated UmPlusBin bins = 3;
+  // Each algorithm's Universal Metric Plus over the pair's bins: the
+  // weighted root mean square of the bins' mean error. Lower is better.
+  double um_a = 4;
+  double um_b = 5;
+  // The slope of each algorithm's error against the difference, weighted
+  // by the bins' counts; 0 when the bins give no slope.
+  double slope_a = 6;
+  double slope_b = 7;
+  uint32 reviews = 8;
 }
 
 // One bin of the calibration graph: the ratings whose predicted probability
@@ -315,6 +346,8 @@ message ReviewMetricsProgress {
   // True when two or more algorithms are drawn, so every curve is
   // restricted to the ratings they share.
   bool shared_ratings = 11;
+  // Every pair of algorithms the UM+ graph can compare.
+  repeated UmPlusPair um_plus = 12;
 }
 
 message GraphsResponse {

@@ -14,3 +14,9 @@ import { writable } from "svelte/store";
 
 /** The calibration graph's one algorithm; null = the first that has data. */
 export const chosenCalibrationAlgorithm = writable<SchedulingAlgorithm | null>(null);
+
+/** The UM+ graph's pair, as "<first>-<second>"; null = the first pair. */
+export const chosenUmPlusPair = writable<string | null>(null);
+
+/** The UM+ graph's switch for groups of fewer than 200 ratings. */
+export const showSmallUmPlusGroups = writable(false);
