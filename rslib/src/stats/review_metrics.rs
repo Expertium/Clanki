@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use anki_proto::stats::ReviewPredictionsResponse;
 
+use rayon::prelude::*;
+
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::search::SortMode;
@@ -529,11 +531,14 @@ fn bin_of(prediction: f32) -> usize {
         .min(BIN_COUNT - 1)
 }
 
-/// One card's answers in one bin, for the bootstrap.
-#[derive(Default, Clone, Copy)]
+/// One card's answers in one bin, for the bootstrap. A card is reviewed a
+/// handful of times, so it touches a handful of bins: keeping only those
+/// makes a resampling round read a few entries per card instead of twenty.
+#[derive(Clone, Copy)]
 struct BinTally {
-    remembered: f64,
-    count: f64,
+    bin: usize,
+    remembered: f32,
+    count: f32,
 }
 
 /// The calibration bins of one model over the scored ratings: each bin's
@@ -546,7 +551,7 @@ fn calibration_bins(
     remembered: &[bool],
     card_ids: &[i64],
 ) -> Vec<anki_proto::stats::CalibrationBin> {
-    let mut sums = vec![BinTally::default(); BIN_COUNT];
+    let mut sums = vec![(0.0f64, 0.0f64); BIN_COUNT];
     let mut predicted = vec![0.0f64; BIN_COUNT];
     let mut by_card: HashMap<i64, Vec<BinTally>> = HashMap::new();
     for ((&prediction, &remembered), &card_id) in predictions.iter().zip(remembered).zip(card_ids) {
@@ -556,23 +561,30 @@ fn calibration_bins(
         let bin = bin_of(prediction);
         let answer = f64::from(remembered);
         predicted[bin] += prediction as f64;
-        sums[bin].remembered += answer;
-        sums[bin].count += 1.0;
-        let card = by_card
-            .entry(card_id)
-            .or_insert_with(|| vec![BinTally::default(); BIN_COUNT]);
-        card[bin].remembered += answer;
-        card[bin].count += 1.0;
+        sums[bin].0 += answer;
+        sums[bin].1 += 1.0;
+        let card = by_card.entry(card_id).or_default();
+        match card.iter_mut().find(|tally| tally.bin == bin) {
+            Some(tally) => {
+                tally.remembered += answer as f32;
+                tally.count += 1.0;
+            }
+            None => card.push(BinTally {
+                bin,
+                remembered: answer as f32,
+                count: 1.0,
+            }),
+        }
     }
 
     let intervals = bootstrap_intervals(&by_card.into_values().collect::<Vec<_>>());
     (0..BIN_COUNT)
-        .filter(|&bin| sums[bin].count > 0.0)
+        .filter(|&bin| sums[bin].1 > 0.0)
         .map(|bin| anki_proto::stats::CalibrationBin {
             index: bin as u32,
             sum_predicted: predicted[bin],
-            sum_remembered: sums[bin].remembered,
-            count: sums[bin].count as u32,
+            sum_remembered: sums[bin].0,
+            count: sums[bin].1 as u32,
             low: intervals[bin].0,
             high: intervals[bin].1,
         })
@@ -582,31 +594,42 @@ fn calibration_bins(
 /// For each bin, the 2.5 and 97.5 percentiles of its share of remembered
 /// answers over resamples of the cards; (0, 0) for a bin no resample fills.
 fn bootstrap_intervals(cards: &[Vec<BinTally>]) -> Vec<(f64, f64)> {
-    let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
     if cards.is_empty() {
         return vec![(0.0, 0.0); BIN_COUNT];
     }
-    let mut state = BOOTSTRAP_SEED;
-    let mut next = || {
-        // xorshift64*, so the interval is the same on every machine
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    };
-    for _ in 0..BOOTSTRAP_ROUNDS {
-        let mut remembered = vec![0.0f64; BIN_COUNT];
-        let mut counts = vec![0.0f64; BIN_COUNT];
-        for _ in 0..cards.len() {
-            let card = &cards[(next() % cards.len() as u64) as usize];
-            for bin in 0..BIN_COUNT {
-                remembered[bin] += card[bin].remembered;
-                counts[bin] += card[bin].count;
+    // Each round is its own draw, so the rounds run in parallel; each keeps
+    // the seed of its own number, so the interval does not depend on the
+    // machine or on how the work is shared out.
+    let rounds: Vec<Vec<Option<f64>>> = (0..BOOTSTRAP_ROUNDS)
+        .into_par_iter()
+        .map(|round| {
+            let mut state = BOOTSTRAP_SEED.wrapping_add((round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut next = move || {
+                // xorshift64*, so the interval is the same on every machine
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            };
+            let mut remembered = vec![0.0f64; BIN_COUNT];
+            let mut counts = vec![0.0f64; BIN_COUNT];
+            for _ in 0..cards.len() {
+                for tally in &cards[(next() % cards.len() as u64) as usize] {
+                    remembered[tally.bin] += tally.remembered as f64;
+                    counts[tally.bin] += tally.count as f64;
+                }
             }
-        }
-        for bin in 0..BIN_COUNT {
-            if counts[bin] > 0.0 {
-                shares[bin].push(remembered[bin] / counts[bin]);
+            (0..BIN_COUNT)
+                .map(|bin| (counts[bin] > 0.0).then(|| remembered[bin] / counts[bin]))
+                .collect()
+        })
+        .collect();
+
+    let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
+    for round in rounds {
+        for (bin, share) in round.into_iter().enumerate() {
+            if let Some(share) = share {
+                shares[bin].push(share);
             }
         }
     }
