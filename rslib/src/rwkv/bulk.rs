@@ -124,6 +124,8 @@ fn warm_up_reviews_bulk_impl(
     if rows == 0 {
         return Ok(vec![]);
     }
+    // Every state this batch reads has to be resident before the modules run.
+    inference.warm_up_states.ensure_loaded_many(&inputs)?;
 
     let model = inference.model.clone();
 

@@ -6533,7 +6533,7 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
     assert metadata["checkpoints"] == [checkpoint_entry]
 
 
-def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
+def test_rwkv_delta_store_prune_removes_unreachable_entity_states(
     tmp_path: Path,
 ) -> None:
     store_path = tmp_path / "state.sqlite3"
@@ -6549,18 +6549,19 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
               id integer primary key,
               parent_id integer
             );
-            create table segment_state_chunks (
+            create table entity_states (
               id integer primary key,
               segment_id integer not null,
-              chunk_index integer not null,
-              state_delta blob not null
+              kind integer not null,
+              entity_id integer not null,
+              state blob
             );
             insert into store_metadata values ('generation', 'generation');
             insert into segments values (1, null), (2, 1), (3, null);
-            insert into segment_state_chunks values
-              (1, 1, 0, X'01'),
-              (2, 2, 0, X'02'),
-              (3, 3, 0, X'03');
+            insert into entity_states values
+              (1, 1, 0, 10, X'01'),
+              (2, 2, 0, 11, X'02'),
+              (3, 3, 0, 12, X'03');
             """
         )
 
@@ -6576,7 +6577,7 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
             (2,),
         ]
         assert connection.execute(
-            "select segment_id from segment_state_chunks order by segment_id"
+            "select segment_id from entity_states order by segment_id"
         ).fetchall() == [(1,), (2,)]
 
 
