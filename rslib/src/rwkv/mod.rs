@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -57,6 +58,13 @@ const STATE_CACHE_GLOBAL_ENTITY_ID: i64 = 0;
 /// One row per (segment, kind, entity). A null `state` is the "this entity
 /// has no cached state" that the old delta stream wrote as a zero marker. The
 /// unique index is what turns a warm-up state read into a point lookup.
+///
+/// Do not put the states back into one blob per segment. Schema 4 did that,
+/// and a blob cannot be read by key: SQLite reaches an offset inside a blob by
+/// walking its overflow-page chain, so it cannot skip the pages in between.
+/// A scan of Andrew's 3.28 GB store that asked for the 947,593 bytes of keys
+/// alone still made 50,304 read operations and still read 3.29 GB from the
+/// operating system. Only an index gives a point lookup.
 const STATE_CACHE_ENTITY_STATES_DDL: &str = r#"
 create table entity_states (
   id integer primary key,
@@ -3966,6 +3974,16 @@ impl ReviewStateMaps {
         segment_id: i64,
         full: bool,
     ) -> io::Result<()> {
+        // A full checkpoint restates every entity, so a session that still has
+        // states in the store would write a "full" segment holding only what it
+        // touched, and every other card would lose its state. Refuse instead of
+        // trusting the caller to have called `force_load_all` first.
+        if full && self.lazy.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a full RWKV state checkpoint needs every state resident",
+            ));
+        }
         let mut statement = transaction
             .prepare(
                 "insert into entity_states (segment_id, kind, entity_id, state) \
@@ -4584,12 +4602,17 @@ fn validate_state_cache_parent(
     Ok(())
 }
 
-fn state_cache_delta_chunk_ids(connection: &Connection, segment_id: i64) -> io::Result<Vec<i64>> {
+/// The chunk rows of one schema-4 segment, in the attached store the upgrade
+/// reads from.
+fn old_state_cache_delta_chunk_ids(
+    connection: &Connection,
+    segment_id: i64,
+) -> io::Result<Vec<i64>> {
     let mut statement = connection
         .prepare(
             r#"
 select id, chunk_index
-from segment_state_chunks
+from old_store.segment_state_chunks
 where segment_id = ?
 order by chunk_index
 "#,
@@ -4633,7 +4656,7 @@ impl<'conn> StateCacheDeltaChunkReader<'conn> {
         })?;
         let blob = connection
             .blob_open(
-                MAIN_DB,
+                STATE_CACHE_OLD_STORE_NAME,
                 "segment_state_chunks",
                 "state_delta",
                 first_chunk_id,
@@ -4701,64 +4724,240 @@ fn state_cache_segment_chain(
     Ok(chain)
 }
 
+/// The name of the half-built store the upgrade writes beside the old one.
+const STATE_CACHE_UPGRADE_SUFFIX: &str = "upgrade";
+/// The name the upgrade attaches the schema-4 store under.
+const STATE_CACHE_OLD_STORE_NAME: &std::ffi::CStr = c"old_store";
+
 /// Rewrites a schema-4 store, which kept one serialized delta stream per
 /// segment, as one `entity_states` row per (segment, kind, entity).
 ///
 /// Every entry in a stream was already a full snapshot of one entity - an RNN
 /// state is replaced at each review, never accumulated - so the conversion is
-/// a straight copy and no replay is needed.
-fn migrate_state_cache_store(path: &PathBuf) -> io::Result<()> {
-    let mut connection = Connection::open(path).map_err(state_cache_store_error)?;
-    connection
-        .execute_batch(
-            "pragma journal_mode = delete;
-             pragma synchronous = full;",
+/// a straight copy and no review is replayed.
+///
+/// The new store is built in a file beside the old one and is put in its place
+/// only after every row is written and counted. An interruption therefore
+/// costs a second run and never the cache: the schema-4 store is untouched
+/// until the rename, and a half-built file left behind is removed by the next
+/// run.
+fn migrate_state_cache_store(path: &Path) -> io::Result<()> {
+    {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(state_cache_store_error)?;
-    let schema_version = connection
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(state_cache_store_error)?;
-    if schema_version != STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION {
+        let schema_version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .map_err(state_cache_store_error)?;
+        connection
+            .close()
+            .map_err(|(_, error)| state_cache_store_error(error))?;
+        if schema_version != STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION {
+            return Ok(());
+        }
+    }
+    let upgrade_path = state_cache_upgrade_path(path);
+    if upgrade_path.exists() {
+        std::fs::remove_file(&upgrade_path)?;
+    }
+    check_state_cache_upgrade_space(path)?;
+    let result = build_upgraded_state_cache_store(path, &upgrade_path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&upgrade_path);
+        return result;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&upgrade_path)?
+        .sync_all()?;
+    std::fs::rename(&upgrade_path, path)?;
+    Ok(())
+}
+
+/// Refuses the upgrade when the disk cannot hold the store twice.
+///
+/// The new store is built beside the old one and holds the same states, so the
+/// upgrade needs about the size of the store again, plus room for the rows'
+/// own overhead. Running out of space in the middle costs nothing but the
+/// time - the old store is untouched until the rename - so this check exists
+/// to say why, not to keep the cache safe.
+fn check_state_cache_upgrade_space(path: &Path) -> io::Result<()> {
+    let store_bytes = std::fs::metadata(path)?.len();
+    let needed = store_bytes + store_bytes / 20;
+    let directory = path.parent().unwrap_or(Path::new("."));
+    let Some(available) = available_disk_space(directory) else {
+        return Ok(());
+    };
+    if available >= needed {
         return Ok(());
     }
-    connection
-        .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
-        .map_err(state_cache_store_error)?;
-    let segment_ids = {
-        let mut statement = connection
-            .prepare("select id from segments order by id")
-            .map_err(state_cache_store_error)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(state_cache_store_error)?;
-        rows.collect::<rusqlite::Result<Vec<i64>>>()
-            .map_err(state_cache_store_error)?
-    };
-    for segment_id in segment_ids {
-        let transaction = connection.transaction().map_err(state_cache_store_error)?;
-        migrate_state_cache_segment(&transaction, segment_id)?;
-        transaction
-            .execute(
-                "delete from segment_state_chunks where segment_id = ?",
-                [segment_id],
-            )
-            .map_err(state_cache_store_error)?;
-        transaction.commit().map_err(state_cache_store_error)?;
+    Err(io::Error::other(format!(
+        "the RWKV state cache cannot be upgraded: it needs {needed} bytes of \
+         free space in {} and {available} bytes are free",
+        directory.display()
+    )))
+}
+
+/// Free space a normal user can still use in `directory`, or `None` when the
+/// platform did not answer.
+#[cfg(windows)]
+fn available_disk_space(directory: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Declared here rather than through a new crate feature: one call, one
+    // signature, and no other part of rslib asks about free space.
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory_name: *const u16,
+            free_bytes_available_to_caller: *mut u64,
+            total_bytes: *mut u64,
+            total_free_bytes: *mut u64,
+        ) -> i32;
     }
-    connection
-        .execute_batch("drop table segment_state_chunks;")
-        .map_err(state_cache_store_error)?;
-    connection
-        .pragma_update(None, "user_version", STATE_CACHE_STORE_SCHEMA_VERSION)
-        .map_err(state_cache_store_error)?;
-    // The old store used 64 KiB pages because its rows were multi-megabyte
-    // chunks. One vacuum moves the file to the page size a per-entity store
-    // wants and gives back the pages the chunks held.
+
+    let mut wide: Vec<u16> = directory.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut available = 0_u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(unix)]
+fn available_disk_space(directory: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut path = directory.as_os_str().as_bytes().to_vec();
+    path.push(0);
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::statvfs(path.as_ptr().cast::<libc::c_char>(), &mut stats) };
+    if ok != 0 {
+        return None;
+    }
+    Some((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
+}
+
+/// No answer on a platform that is neither Windows nor unix, so the upgrade
+/// runs and fails on a full disk instead of refusing first.
+#[cfg(not(any(windows, unix)))]
+fn available_disk_space(_directory: &Path) -> Option<u64> {
+    None
+}
+
+fn state_cache_upgrade_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(STATE_CACHE_UPGRADE_SUFFIX);
+    path.with_file_name(name)
+}
+
+/// Writes the whole schema-5 store to `upgrade_path`, reading the schema-4
+/// store at `path` through an attached database.
+fn build_upgraded_state_cache_store(path: &Path, upgrade_path: &Path) -> io::Result<()> {
+    let mut connection = Connection::open(upgrade_path).map_err(state_cache_store_error)?;
     connection
         .pragma_update(None, "page_size", STATE_CACHE_STORE_PAGE_SIZE)
         .map_err(state_cache_store_error)?;
+    // The file is thrown away unless it is complete, so its own durability
+    // does not matter; only the rename at the end has to be ordered.
     connection
-        .execute_batch("vacuum;")
+        .execute_batch(
+            "pragma journal_mode = off;
+             pragma synchronous = off;",
+        )
+        .map_err(state_cache_store_error)?;
+    connection
+        .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+        .map_err(state_cache_store_error)?;
+    connection
+        .execute_batch(
+            r#"
+create table store_metadata (
+  key text primary key,
+  value text not null
+) without rowid;
+create table segments (
+  id integer primary key,
+  parent_id integer references segments(id),
+  last_review_id integer not null,
+  review_count integer not null,
+  history_hash text not null,
+  replay_key text not null,
+  previous_review_ids blob not null,
+  previous_intervals blob not null,
+  review_counts blob not null,
+  runtime_state blob not null
+);
+"#,
+        )
+        .map_err(state_cache_store_error)?;
+    let old_path = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("RWKV state-cache path is not valid unicode"))?;
+    connection
+        .execute("attach database ? as old_store", [old_path])
+        .map_err(state_cache_store_error)?;
+    let expected = (|| -> io::Result<(i64, i64)> {
+        let transaction = connection.transaction().map_err(state_cache_store_error)?;
+        transaction
+            .execute_batch(
+                "insert into store_metadata select * from old_store.store_metadata;
+                 insert into segments select * from old_store.segments;",
+            )
+            .map_err(state_cache_store_error)?;
+        let segment_ids = {
+            let mut statement = transaction
+                .prepare("select id from old_store.segments order by id")
+                .map_err(state_cache_store_error)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(state_cache_store_error)?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()
+                .map_err(state_cache_store_error)?
+        };
+        let mut rows = 0_i64;
+        let mut state_bytes = 0_i64;
+        for segment_id in segment_ids {
+            let (segment_rows, segment_bytes) =
+                migrate_state_cache_segment(&transaction, segment_id)?;
+            rows += segment_rows;
+            state_bytes += segment_bytes;
+        }
+        transaction.commit().map_err(state_cache_store_error)?;
+        Ok((rows, state_bytes))
+    })()?;
+    connection
+        .execute_batch("detach database old_store")
+        .map_err(state_cache_store_error)?;
+    // `length()` of a blob column reads the row header, not the blob, so this
+    // check costs a scan of the table's own pages and not of the states.
+    let written = connection
+        .query_row(
+            "select count(*), coalesce(sum(length(state)), 0) from entity_states",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(state_cache_store_error)?;
+    if written != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the upgraded RWKV state-cache store is incomplete: \
+                 wrote {} rows of {} bytes, expected {} rows of {} bytes",
+                written.0, written.1, expected.0, expected.1
+            ),
+        ));
+    }
+    connection
+        .pragma_update(None, "user_version", STATE_CACHE_STORE_SCHEMA_VERSION)
         .map_err(state_cache_store_error)?;
     connection
         .close()
@@ -4766,8 +4965,16 @@ fn migrate_state_cache_store(path: &PathBuf) -> io::Result<()> {
 }
 
 /// Converts one schema-4 segment's delta stream into `entity_states` rows.
-fn migrate_state_cache_segment(transaction: &Transaction<'_>, segment_id: i64) -> io::Result<()> {
-    let chunk_ids = state_cache_delta_chunk_ids(transaction, segment_id)?;
+///
+/// Returns the number of rows written and the number of state bytes in them,
+/// so that the caller can check the finished store against the source.
+fn migrate_state_cache_segment(
+    transaction: &Transaction<'_>,
+    segment_id: i64,
+) -> io::Result<(i64, i64)> {
+    let mut rows = 0_i64;
+    let mut state_bytes = 0_i64;
+    let chunk_ids = old_state_cache_delta_chunk_ids(transaction, segment_id)?;
     let mut statement = transaction
         .prepare(
             "insert into entity_states (segment_id, kind, entity_id, state) \
@@ -4792,6 +4999,8 @@ fn migrate_state_cache_segment(transaction: &Transaction<'_>, segment_id: i64) -
         for _ in 0..read_state_cache_u32(&mut state_delta)? {
             let entity_id = read_state_cache_i64(&mut state_delta)?;
             let state = read_state_cache_delta_state(&mut state_delta)?;
+            rows += 1;
+            state_bytes += state.as_ref().map_or(0, |state| state.len() as i64);
             statement
                 .execute(params![segment_id, kind, entity_id, state])
                 .map_err(state_cache_store_error)?;
@@ -4800,6 +5009,7 @@ fn migrate_state_cache_segment(transaction: &Transaction<'_>, segment_id: i64) -
     match read_state_cache_u8(&mut state_delta)? {
         0 => {}
         1 => {
+            rows += 1;
             statement
                 .execute(params![
                     segment_id,
@@ -4813,6 +5023,8 @@ fn migrate_state_cache_segment(transaction: &Transaction<'_>, segment_id: i64) -
             let size = read_state_cache_u32(&mut state_delta)? as usize;
             let mut state = vec![0; size];
             io::Read::read_exact(&mut state_delta, &mut state)?;
+            rows += 1;
+            state_bytes += size as i64;
             statement
                 .execute(params![
                     segment_id,
@@ -4831,7 +5043,7 @@ fn migrate_state_cache_segment(transaction: &Transaction<'_>, segment_id: i64) -
             "trailing RWKV state-cache delta data",
         ));
     }
-    Ok(())
+    Ok((rows, state_bytes))
 }
 
 fn read_state_cache_delta_state(input: &mut impl io::Read) -> io::Result<Option<Vec<u8>>> {
@@ -9964,6 +10176,300 @@ order by e.id, e.cid
             distinct.len(),
             card_states.len()
         );
+    }
+
+    /// Rewrites a schema-5 store in the schema-4 format the upgrade has to
+    /// read, and returns the rows it wrote, keyed by (kind, entity).
+    ///
+    /// The code that wrote schema 4 is gone, so the bytes are laid out here
+    /// from the format's own description. The returned map is what the test
+    /// checks the upgraded store against, so the check does not go through the
+    /// upgrade's own reader.
+    fn downgrade_state_cache_store_to_v4(
+        path: &std::path::Path,
+        chunk_bytes: usize,
+    ) -> HashMap<(i64, i64, i64), Option<Vec<u8>>> {
+        let connection = Connection::open(path).unwrap();
+        let mut rows: HashMap<(i64, i64, i64), Option<Vec<u8>>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare("select segment_id, kind, entity_id, state from entity_states")
+                .unwrap();
+            let mapped = statement
+                .query_map([], |row| {
+                    Ok((
+                        (
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ),
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                })
+                .unwrap();
+            for row in mapped {
+                let (key, state) = row.unwrap();
+                rows.insert(key, state);
+            }
+        }
+        let segment_ids = {
+            let mut statement = connection
+                .prepare("select id from segments order by id")
+                .unwrap();
+            let mapped = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
+            mapped.map(|row| row.unwrap()).collect::<Vec<i64>>()
+        };
+        connection
+            .execute_batch(
+                r#"
+drop table entity_states;
+create table segment_state_chunks (
+  id integer primary key,
+  segment_id integer not null references segments(id) on delete cascade,
+  chunk_index integer not null,
+  state_delta blob not null,
+  unique (segment_id, chunk_index)
+);
+"#,
+            )
+            .unwrap();
+        for segment_id in segment_ids {
+            let mut stream = Vec::new();
+            stream.extend_from_slice(STATE_CACHE_DELTA_MAGIC);
+            for kind in [
+                STATE_CACHE_KIND_CARD,
+                STATE_CACHE_KIND_NOTE,
+                STATE_CACHE_KIND_DECK,
+                STATE_CACHE_KIND_PRESET,
+            ] {
+                let mut entities = rows
+                    .iter()
+                    .filter(|((row_segment, row_kind, _), _)| {
+                        *row_segment == segment_id && *row_kind == kind
+                    })
+                    .map(|((_, _, entity_id), state)| (*entity_id, state.clone()))
+                    .collect::<Vec<_>>();
+                entities.sort_by_key(|(entity_id, _)| *entity_id);
+                stream.extend_from_slice(&(entities.len() as u32).to_le_bytes());
+                for (entity_id, state) in entities {
+                    stream.extend_from_slice(&entity_id.to_le_bytes());
+                    match state {
+                        Some(state) => {
+                            stream.push(1);
+                            stream.extend_from_slice(&(state.len() as u32).to_le_bytes());
+                            stream.extend_from_slice(&state);
+                        }
+                        None => stream.push(0),
+                    }
+                }
+            }
+            match rows.get(&(
+                segment_id,
+                STATE_CACHE_KIND_GLOBAL,
+                STATE_CACHE_GLOBAL_ENTITY_ID,
+            )) {
+                None => stream.push(0),
+                Some(None) => stream.push(1),
+                Some(Some(state)) => {
+                    stream.push(2);
+                    stream.extend_from_slice(&(state.len() as u32).to_le_bytes());
+                    stream.extend_from_slice(state);
+                }
+            }
+            for (chunk_index, chunk) in stream.chunks(chunk_bytes).enumerate() {
+                connection
+                    .execute(
+                        "insert into segment_state_chunks (segment_id, chunk_index, state_delta) \
+                         values (?, ?, ?)",
+                        params![segment_id, chunk_index as i64, chunk],
+                    )
+                    .unwrap();
+            }
+        }
+        connection
+            .pragma_update(None, "user_version", STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION)
+            .unwrap();
+        connection.close().unwrap();
+        rows
+    }
+
+    /// Pins the upgrade of a store an older Clanki wrote: every row of the
+    /// upgraded store carries the bytes the schema-4 stream held for that key,
+    /// and the upgraded store restores the session the states came from.
+    #[test]
+    fn a_schema_4_store_upgrades_without_changing_a_state() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(40, 3);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "upgrade-generation";
+
+        let mut expected = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        expected.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = expected
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "upgrade-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        expected.finish_warm_up_state_checkpoints().unwrap();
+
+        // 512-byte chunks, so a state spans about a hundred of them and the
+        // upgrade's reader has to cross chunk boundaries inside one entity.
+        let written = downgrade_state_cache_store_to_v4(&store_path, 512);
+        assert!(written.len() > 60, "fixture should hold many entities");
+        let version: i64 = Connection::open(&store_path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION);
+
+        migrate_state_cache_store(&store_path).unwrap();
+
+        let connection = Connection::open(&store_path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, STATE_CACHE_STORE_SCHEMA_VERSION);
+        assert!(
+            !state_cache_upgrade_path(&store_path).exists(),
+            "the half-built store should be gone"
+        );
+        let mut upgraded: HashMap<(i64, i64, i64), Option<Vec<u8>>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare("select segment_id, kind, entity_id, state from entity_states")
+                .unwrap();
+            let mapped = statement
+                .query_map([], |row| {
+                    Ok((
+                        (
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ),
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                })
+                .unwrap();
+            for row in mapped {
+                let (key, state) = row.unwrap();
+                assert!(
+                    upgraded.insert(key, state).is_none(),
+                    "a key should appear once per segment"
+                );
+            }
+        }
+        assert_eq!(upgraded, written, "the upgrade changed a stored state");
+        let chunk_table: i64 = connection
+            .query_row(
+                "select count(*) from sqlite_master where type = 'table' and name = ?",
+                ["segment_state_chunks"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunk_table, 0, "the old chunk table should be gone");
+        drop(connection);
+
+        let mut restored = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        restored
+            .restore_warm_up_state_checkpoint(store_path, generation, segment_id)
+            .unwrap();
+        assert_warm_up_parity(&mut expected, &mut restored);
+    }
+
+    /// Pins the guard on the full-checkpoint writer: a session that still has
+    /// states in the store may not write a segment that claims to hold them
+    /// all. The three callers load everything first; a fourth one that forgets
+    /// gets an error instead of a store with the other cards dropped.
+    #[test]
+    fn a_full_checkpoint_refuses_a_session_that_still_reads_lazily() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(40, 3);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "guard-generation";
+
+        let mut resident = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        resident.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = resident
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "guard-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        resident.finish_warm_up_state_checkpoints().unwrap();
+
+        let mut lazy = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        lazy.restore_warm_up_state_checkpoint(store_path.clone(), generation, segment_id)
+            .unwrap();
+        assert!(lazy.warm_up_states.lazy.is_some());
+        let error = {
+            let mut connection = Connection::open(temporary_dir.path().join("guard.sqlite3"))
+                .unwrap();
+            connection
+                .execute_batch("create table segments (id integer primary key);")
+                .unwrap();
+            connection
+                .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+                .unwrap();
+            connection
+                .execute("insert into segments (id) values (1)", [])
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            lazy.warm_up_states
+                .write_checkpoint_rows(&transaction, 1, true)
+                .expect_err("a full checkpoint needs every state resident")
+        };
+        assert!(
+            error.to_string().contains("needs every state resident"),
+            "unexpected error: {error}"
+        );
+
+        // The same writer accepts the full checkpoint once the states are read.
+        lazy.warm_up_states.force_load_all().unwrap();
+        let mut connection =
+            Connection::open(temporary_dir.path().join("guard2.sqlite3")).unwrap();
+        connection
+            .execute_batch("create table segments (id integer primary key);")
+            .unwrap();
+        connection
+            .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+            .unwrap();
+        connection
+            .execute("insert into segments (id) values (1)", [])
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        lazy.warm_up_states
+            .write_checkpoint_rows(&transaction, 1, true)
+            .unwrap();
+        transaction.commit().unwrap();
     }
 
     /// Pins the day-to-day flow: a session that restored lazily and then
