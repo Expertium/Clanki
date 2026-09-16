@@ -213,4 +213,3 @@ def test_the_rwkv_submenu_entries_name_the_scope():
 
     assert "decks-reschedule-with-rwkv-curve = Reschedule this deck" in lines
     assert "decks-rwkv-reschedule-all-decks = Reschedule all decks" in lines
-
