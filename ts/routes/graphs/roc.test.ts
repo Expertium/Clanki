@@ -12,6 +12,7 @@ import * as tr from "@generated/ftl";
 import { expect, test } from "vitest";
 
 import {
+    axisTenths,
     chanceLabel,
     curveLabel,
     dataNotes,
@@ -203,4 +204,23 @@ test("the graph says what it scored, what it left out and how fresh it is", () =
         scored: 10,
     });
     expect(dataNotes(clean)).toHaveLength(2);
+});
+
+// Pins spec/ui.md#ui.stats-model-metrics
+test("both axes step by 0.1", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const progress = new ReviewMetricsProgress({
+        state: JobState.DONE,
+        series: [curve(SchedulingAlgorithm.FSRS7, 0.7)],
+    });
+
+    renderRoc(svg, rocBounds(), rocCurves(progress));
+
+    expect(axisTenths).toHaveLength(11);
+    // 11 ticks on each of the two axes
+    expect(svg.querySelectorAll(".tick")).toHaveLength(22);
+    // the decimal separator follows the locale, so match on either
+    const labels = Array.from(svg.querySelectorAll(".tick text")).map((t) => t.textContent);
+    expect(labels.filter((l) => /^0[.,]1$/.test(l ?? ""))).toHaveLength(2);
+    expect(labels.filter((l) => /^0[.,]7$/.test(l ?? ""))).toHaveLength(2);
 });

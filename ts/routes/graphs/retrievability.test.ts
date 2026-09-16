@@ -9,7 +9,13 @@ import {
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
-import { prepareData, rwkvScoresPending, shouldShowRetrievabilityGraph } from "./retrievability";
+import {
+    fsrsColour,
+    prepareData,
+    rwkvColour,
+    rwkvScoresPending,
+    shouldShowRetrievabilityGraph,
+} from "./retrievability";
 
 test("retrievability graph is shown when RWKV data exists without FSRS", () => {
     const sourceData = new GraphsResponse({
@@ -84,4 +90,11 @@ test("retrievability graph searches FSRS on shift-click", () => {
 
 test("retrievability graph searches FSRS on an ordinary click without RWKV", () => {
     expect(clickQuery(false, false)).toBe("\"prop:r>=0.75\" AND \"prop:r<0.8\"");
+});
+
+// Pins spec/ui.md#ui.stats-graph-colours
+test("the two retrievability series draw green and blue, and neither is amber", () => {
+    expect(fsrsColour).toBe("#2f9e44");
+    expect(rwkvColour).toBe("#1c7ed6");
+    expect(fsrsColour).not.toBe(rwkvColour);
 });

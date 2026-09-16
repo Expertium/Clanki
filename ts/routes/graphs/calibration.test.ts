@@ -12,7 +12,9 @@ import {
 import { expect, test } from "vitest";
 
 import {
+    axisTenths,
     binPoints,
+    COUNT_BAR_COLOUR,
     calibrationBounds,
     calibrationSeries,
     chooserOptions,
@@ -132,4 +134,13 @@ test("the drawing area is square and holds the diagonal, the bars and the bars' 
     expect(svg.querySelectorAll(".calibration-counts rect")).toHaveLength(2);
     expect(svg.querySelectorAll(".calibration-drawing circle")).toHaveLength(2);
     expect(svg.querySelectorAll(".calibration-interval")).toHaveLength(2);
+});
+
+// Pins spec/ui.md#ui.stats-model-metrics
+test("both axes step by 0.1, and the count bars are blue", () => {
+    expect(axisTenths).toHaveLength(11);
+    expect(axisTenths[1] - axisTenths[0]).toBeCloseTo(0.1);
+    expect(axisTenths[axisTenths.length - 1]).toBe(1);
+    // the reference diagonal stays grey; only the bars changed
+    expect(COUNT_BAR_COLOUR).toBe("#6ba3d6");
 });

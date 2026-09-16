@@ -21,6 +21,9 @@ import { axisBottom, axisLeft, line, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
 
+/** Every tenth: the axes step by 0.1, not 0.2 (spec ui.stats-model-metrics). */
+export const axisTenths = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+
 /** One colour per algorithm, so a curve keeps its colour everywhere. */
 export const ALGORITHM_COLOURS: Record<number, string> = {
     [SchedulingAlgorithm.FSRS7]: "#3b82f6",
@@ -213,11 +216,11 @@ export function renderRoc(
     const axes = svg.append("g").attr("class", "roc-axis");
     axes.append("g")
         .attr("transform", `translate(0, ${bounds.height - bounds.marginBottom})`)
-        .call(axisBottom(x).ticks(5).tickFormat((value) => localizedNumber(value as number, 1)))
+        .call(axisBottom(x).tickValues(axisTenths).tickFormat((value) => localizedNumber(value as number, 1)))
         .attr("opacity", 0.6);
     axes.append("g")
         .attr("transform", `translate(${bounds.marginLeft}, 0)`)
-        .call(axisLeft(y).ticks(5).tickFormat((value) => localizedNumber(value as number, 1)))
+        .call(axisLeft(y).tickValues(axisTenths).tickFormat((value) => localizedNumber(value as number, 1)))
         .attr("opacity", 0.6);
     axes.append("text")
         .attr("x", (bounds.marginLeft + bounds.width - bounds.marginRight) / 2)

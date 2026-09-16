@@ -742,6 +742,32 @@ user's own rebuild, never to opening a page.
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`.
 
+## ui.stats-graph-colours
+
+Given the Stats graphs, their colours and their axis steps are these:
+
+| Graph                       | What it draws            | Colour            |
+| --------------------------- | ------------------------ | ----------------- |
+| Card Retrievability         | the FSRS-7 series        | green `#2f9e44`   |
+| Card Retrievability         | the RWKV series          | blue `#1c7ed6`    |
+| Calibration                 | the count bars behind it | blue `#6ba3d6`    |
+| Calibration                 | the perfect diagonal     | grey `#8a8a8a`    |
+| AUC-ROC                     | the random-chance line   | grey `#8a8a8a`    |
+| AUC-ROC and Calibration     | one curve per algorithm  | `ALGORITHM_COLOURS` |
+
+The AUC-ROC and Calibration graphs step both axes by 0.1, from 0 to 1, on
+eleven ticks each. Only the two reference lines are grey: a grey series
+reads as a graph that is turned off.
+
+**Why:** Andrew, 2026-09-16: the amber Retrievability bars and the grey
+calibration count bars "look lame"; he asked for blue or green, and for
+0.1 steps rather than 0.2 on both graphs.
+
+**Pinned by:** "the two retrievability series draw green and blue, and
+neither is amber" (`ts/routes/graphs/retrievability.test.ts`); "both axes
+step by 0.1" (`ts/routes/graphs/roc.test.ts`); "both axes step by 0.1, and
+the count bars are blue" (`ts/routes/graphs/calibration.test.ts`).
+
 ## ui.browser-interval-average
 
 Given a Browser row with review or relearning cards, the Interval column
