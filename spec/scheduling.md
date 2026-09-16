@@ -328,6 +328,50 @@ could supply the S90 of a later answer.
 `test_set_answer_rwkv_metadata_clears_the_prediction`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.grade-now-rwkv-curve
+
+Given Grade Now answering cards with one rating (the Browser's Cards >
+Grade Now, or `grade_cards_now` in `aqt.operations.scheduling`), each card
+is answered as the reviewer answers it once it has shown the card:
+
+- under RWKV-Curve, the answer states are the ones the reviewer's answer
+  buttons get from RWKV-Curve's prediction for the card
+  (`sched.rwkv-curve-fuzz`: RWKV-Curve's unrounded intervals with review
+  fuzz and, while the study queues are loaded, the load balancer and
+  sibling dispersal); the card stores RWKV-Curve's S90 for that rating
+  (`sched.rwkv-curve-s90`); its review-log row has the review kind, and the
+  RWKV retrievability cache the retrievability, that the reviewer's answer
+  writes. A card whose answer buttons would wait for RWKV-Curve
+  (`sched.rwkv-curve-buttons-wait`: no usable model, the RWKV state not
+  ready, other RWKV work holding it for more than 30 s, no prediction, or no
+  interval for a button) is left unanswered, and the Browser's message says
+  how many cards were not graded. FSRS-7's states never stand in: the
+  backend's Grade Now refuses a card of an RWKV-Curve collection whose
+  states the caller does not supply. A preview card of a filtered deck that
+  does not reschedule gets its preview states, as in the reviewer;
+- under RWKV-Instant, the card gets the FSRS states the reviewer stores
+  (`sched.rwkv-instant-no-intervals`), with the review kind and RWKV
+  retrievability the reviewer's answer writes;
+- under FSRS-7, nothing changes.
+
+Each answer takes 0 ms, and all the cards graded at once are one undo step.
+
+**Why:** Andrew's standing rule: never mix two algorithms; hide rather than
+fall back. Before this entry, Grade Now under RWKV-Curve answered every card
+with FSRS-7's states: a review card that RWKV-Curve gives 200 days and an
+S90 of 210 days for Good got FSRS-7's 88 days and FSRS-7's S90 of 88.3 days.
+
+**Pinned by:**
+`grade_now_under_rwkv_curve_answers_like_the_reviewer_and_never_with_fsrs7`,
+`grade_now_under_rwkv_instant_answers_with_fsrs_states`
+(`rslib/src/scheduler/reviews.rs`);
+`test_grade_now_gives_rwkv_curve_cards_rwkv_curve_intervals`,
+`test_grade_now_leaves_rwkv_curve_cards_without_intervals_unanswered`,
+`test_backend_grade_now_refuses_rwkv_curve_cards_without_their_states`,
+`test_grade_now_under_rwkv_instant_answers_as_the_reviewer`,
+`test_grade_now_under_fsrs7_keeps_the_given_options`
+(`qt/tests/test_grade_now.py`).
+
 ## sched.rwkv-exact-elapsed
 
 Given a learning card that RWKV predicts for, the elapsed time RWKV gets is

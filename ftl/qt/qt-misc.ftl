@@ -81,6 +81,12 @@ qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
 qt-misc-rwkv-model-not-found = RWKV model not found
 # RWKV-Instant has not scored the deck yet, so its reviews are not shown.
 qt-misc-rwkv-instant-scores-pending = Waiting for RWKV-Instant…
+# Grade Now left these cards unanswered: RWKV-Curve gave no intervals for them.
+qt-misc-rwkv-curve-grade-now-skipped =
+    { $cards ->
+        [one] { $cards } card was not graded: RWKV-Curve has no intervals for it yet.
+       *[other] { $cards } cards were not graded: RWKV-Curve has no intervals for them yet.
+    }
 qt-misc-rwkv-model-missing = The RWKV model file is missing or does not load, so RWKV cannot schedule your cards. Reinstall Clanki, or choose FSRS-7 as the algorithm in deck options (Advanced mode).
 
 ## deprecated- these strings will be removed in the future, and do not need
