@@ -402,11 +402,9 @@ export function forgettingCurveTooltip(
     return `${maxDays >= 365 ? "Date" : "Date Time"}: ${
         maxDays >= 365 ? d.date.toLocaleDateString() : d.date.toLocaleString()
     }<br>
-        ${tr.cardStatsReviewLogElapsedTime()}: ${
-        timeSpan(d.elapsedDaysSinceLastReview * 86400)
-    }<br>${recallLabel(advancedUi)}: ${
-        d.retrievability.toFixed(2)
-    }%<br>${tr.cardStatsFsrsStability()} (S90): ${timeSpan(d.stabilityS90 * 86400)}`;
+        ${tr.cardStatsReviewLogElapsedTime()}: ${timeSpan(d.elapsedDaysSinceLastReview * 86400)}<br>${
+        recallLabel(advancedUi)
+    }: ${d.retrievability.toFixed(2)}%<br>${tr.cardStatsFsrsStability()} (S90): ${timeSpan(d.stabilityS90 * 86400)}`;
 }
 
 export function renderForgettingCurve(
