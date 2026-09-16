@@ -58,8 +58,8 @@ export interface RetrievabilityHistogramData {
     xTickFormat: (d: number) => string;
 }
 
-const fsrsColour = "#2f9e44";
-const rwkvColour = "#d6a21d";
+export const fsrsColour = "#2f9e44";
+export const rwkvColour = "#1c7ed6";
 
 export function shouldShowRetrievabilityGraph(data: GraphsResponse | null): boolean {
     return Boolean(

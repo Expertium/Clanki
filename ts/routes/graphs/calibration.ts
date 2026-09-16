@@ -18,7 +18,12 @@ import { axisBottom, axisLeft, axisRight, line, max, scaleLinear, select } from 
 import type { GraphBounds } from "./graph-helpers";
 import { algorithmName, ALGORITHM_COLOURS } from "./roc";
 
+/** Every tenth: the axes step by 0.1, not 0.2 (spec ui.stats-model-metrics). */
+export const axisTenths = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+
 const COUNT_COLOUR = "#8a8a8a";
+/** The count bars, blue so that they do not read as a disabled graph. */
+export const COUNT_BAR_COLOUR = "#6ba3d6";
 
 /** The drawing area is square, as on the AUC-ROC graph. */
 export function calibrationBounds(): GraphBounds {
@@ -161,12 +166,12 @@ export function renderCalibration(
     drawing
         .append("g")
         .attr("transform", `translate(0, ${bounds.height - bounds.marginBottom})`)
-        .call(axisBottom(x).ticks(5).tickFormat((value) => localizedNumber(value as number, 1)))
+        .call(axisBottom(x).tickValues(axisTenths).tickFormat((value) => localizedNumber(value as number, 1)))
         .attr("opacity", 0.6);
     drawing
         .append("g")
         .attr("transform", `translate(${bounds.marginLeft}, 0)`)
-        .call(axisLeft(y).ticks(5).tickFormat((value) => localizedNumber(value as number, 1)))
+        .call(axisLeft(y).tickValues(axisTenths).tickFormat((value) => localizedNumber(value as number, 1)))
         .attr("opacity", 0.6);
     drawing
         .append("text")
@@ -222,7 +227,7 @@ export function renderCalibration(
             .attr("y", countScale(point.count))
             .attr("width", width)
             .attr("height", bounds.height - bounds.marginBottom - countScale(point.count))
-            .attr("fill", COUNT_COLOUR)
+            .attr("fill", COUNT_BAR_COLOUR)
             .attr("opacity", 0.25);
     }
     drawing
