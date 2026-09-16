@@ -84,6 +84,8 @@ waitress.wasyncore._DISCONNECTED = waitress.wasyncore._DISCONNECTED.union({EPROT
 logger = logging.getLogger(__name__)
 app = flask.Flask(__name__, root_path="/fake")
 RWKV_STATS_PENDING_HEADER = "X-Anki-Rwkv-Stats-Pending"
+# the graphs response leaves Retrievability for the page's next request
+RWKV_RETRIEVABILITY_LATER_HEADER = "X-Anki-Rwkv-Retrievability-Later"
 _QUIET_DEBUG_REQUEST_PATHS = frozenset(
     {
         "_anki/latestProgress",
@@ -1480,15 +1482,35 @@ def _graphs_request_wants_retrievability(request_proto: GraphsRequest) -> bool:
     )
 
 
+def _graphs_without_retrievability(request_proto: GraphsRequest) -> bytes:
+    """The request with Retrievability taken out of its graphs."""
+    wanted = request_proto.graphs or GraphsRequest.Graph.values()
+    request_proto.graphs[:] = [
+        graph for graph in wanted if graph != GraphsRequest.RETRIEVABILITY
+    ]
+    return request_proto.SerializeToString()
+
+
 def graphs() -> Response:
     start = time.monotonic()
     request_proto = GraphsRequest()
     request_proto.ParseFromString(request.data)
     reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
     prepare_start = time.monotonic()
+    retrievability_later = False
+    if (
+        request_proto.rwkv_retrievability_later
+        and _graphs_request_wants_retrievability(request_proto)
+        and aqt.rwkv_scheduler.rwkv_collection_active(reviewer)
+    ):
+        # RWKV scores every searched card for the Retrievability graph, which
+        # can take minutes: the page gets the other graphs now and asks for
+        # Retrievability on its own (spec ui.stats-one-algorithm)
+        retrievability_later = True
+        prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
     # only the Retrievability graph draws RWKV's values: a request without it
     # (the Stats page in Simple mode) needs no RWKV scores
-    if _graphs_request_wants_retrievability(request_proto):
+    elif _graphs_request_wants_retrievability(request_proto):
         prepare_status = aqt.rwkv_scheduler.prepare_stats_retrievability_scores(
             reviewer,
             request_proto.search,
@@ -1501,12 +1523,19 @@ def graphs() -> Response:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()
-    output = raw_backend_request("graphs")()
+    if retrievability_later:
+        output = aqt.mw.col._backend.graphs_raw(
+            _graphs_without_retrievability(request_proto)
+        )
+    else:
+        output = raw_backend_request("graphs")()
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
     response = flask.make_response(output)
     response.headers["Content-Type"] = "application/binary"
     if prepare_status == aqt.rwkv_scheduler.RwkvStatsPreparationStatus.PENDING:
         response.headers[RWKV_STATS_PENDING_HEADER] = "1"
+    if retrievability_later:
+        response.headers[RWKV_RETRIEVABILITY_LATER_HEADER] = "1"
     logger.debug(
         "graphs served: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
         "backend_elapsed_ms=%.1f response_bytes=%s elapsed_ms=%.1f",
