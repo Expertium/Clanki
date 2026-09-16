@@ -17,6 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import IntervalsGraph from "./IntervalsGraph.svelte";
     import RangeBox from "./RangeBox.svelte";
     import RetrievabilityGraph from "./RetrievabilityGraph.svelte";
+    import RocGraph from "./RocGraph.svelte";
     import ReviewsGraph from "./ReviewsGraph.svelte";
     import StabilityGraph from "./StabilityGraph.svelte";
     import TodayStats from "./TodayStats.svelte";
@@ -38,6 +39,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         DifficultyGraph,
         RetrievabilityGraph,
         TotalKnowledgeGraph,
+        RocGraph,
         TrueRetention,
         HourGraph,
         ButtonsGraph,

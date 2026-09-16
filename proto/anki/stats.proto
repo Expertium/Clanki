@@ -26,6 +26,11 @@ service BackendStatsService {
   // It reads the collection, then replays FSRS-7 with the collection free,
   // so other collection work does not wait for the replay.
   rpc TotalKnowledge(TotalKnowledgeRequest) returns (TotalKnowledgeResponse);
+  // The model-quality graphs' FSRS-7 predictions (spec
+  // ui.stats-model-metrics). Like TotalKnowledge, it reads the collection and
+  // then replays FSRS-7 with the collection free.
+  rpc ReviewPredictions(ReviewPredictionsRequest)
+      returns (ReviewPredictionsResponse);
 }
 
 message ReviewLogs {
@@ -175,6 +180,83 @@ message TotalKnowledgeRwkvProgress {
   int32 first_day = 3;
   repeated double sum_r = 4;
   string error = 5;
+}
+
+// The model-quality graphs' FSRS-7 predictions (spec ui.stats-model-metrics):
+// for every rating of the search's cards in the page's period that follows an
+// earlier rating of the same card, the probability of recall FSRS-7 predicted
+// before that answer, with the answer itself.
+message ReviewPredictionsRequest {
+  string search = 1;
+  // The page's period in days; 0 = the whole history.
+  uint32 days = 2;
+}
+
+message ReviewPredictionsResponse {
+  // One entry per predicted rating, in review order. The three lists have
+  // the same length.
+  repeated int64 revlog_ids = 1;
+  repeated int64 card_ids = 2;
+  repeated float predictions = 3;
+  // The answers: true = Hard, Good or Easy, false = Again.
+  repeated bool remembered = 4;
+  // No preset of the searched cards has usable FSRS-7 parameters, so the
+  // FSRS-7 series is unavailable (spec ui.stats-model-metrics).
+  bool no_params = 5;
+}
+
+// Starts (or joins) the model-quality graphs' computation: FSRS-7's
+// predictions from the backend, and RWKV's from a replay of the review
+// history (spec ui.stats-model-metrics).
+message ReviewMetricsRequest {
+  string search = 1;
+  // The page's period in days; 0 = the whole history.
+  uint32 days = 2;
+}
+
+message ReviewMetricsJob {
+  uint32 job_id = 1;
+}
+
+message ReviewMetricsProgress {
+  enum State {
+    COMPUTING = 0;
+    DONE = 1;
+    FAILED = 2;
+    CANCELLED = 3;
+  }
+  // Why an algorithm has no series. It is never replaced by another
+  // algorithm's values (spec ui.stats-model-metrics).
+  enum Unavailable {
+    AVAILABLE = 0;
+    // No usable RWKV model.
+    NO_MODEL = 1;
+    // No preset of the searched cards has FSRS-7 parameters.
+    NO_PARAMS = 2;
+    // The search and period hold no rating this algorithm predicts.
+    NO_REVIEWS = 3;
+    // This build's RWKV cannot predict the algorithm's value per review.
+    UNSUPPORTED = 4;
+    // Still being computed.
+    NOT_READY = 5;
+  }
+  message Series {
+    deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm = 1;
+    Unavailable unavailable = 2;
+    // The ratings this algorithm predicted.
+    uint32 reviews = 3;
+    // The ROC curve, in order; the two lists have the same length.
+    repeated float false_positive_rate = 4;
+    repeated float true_positive_rate = 5;
+    double auc = 6;
+  }
+  State state = 1;
+  uint32 job_id = 2;
+  // One entry per algorithm, always all three, in menu order.
+  repeated Series series = 3;
+  string error = 4;
+  // The share of the RWKV replay that is done, 0-1.
+  float rwkv_done = 5;
 }
 
 message GraphsResponse {

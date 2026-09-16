@@ -195,6 +195,25 @@ statistics-total-knowledge-description = This is Clanki's best estimate of how m
 statistics-total-knowledge-algorithm = Algorithm: { $algorithm }
 # Shown under the graph in Advanced mode, about the Reviewed line.
 statistics-total-knowledge-reviewed-upper-bound = Reviewed is an upper bound on your knowledge: it counts every card you have ever rated, as if you never forgot one.
+statistics-roc-title = AUC-ROC
+statistics-roc-subtitle = How well each algorithm separates the reviews you remembered from the ones you forgot.
+# Legend entry of one curve; $algorithm is the algorithm's name, $auc its area
+# under the curve, such as "FSRS-7, AUC=0.7230".
+statistics-roc-legend = { $algorithm }, AUC={ $auc }
+# Legend entry of the dashed diagonal line.
+statistics-roc-chance = Random chance, AUC={ $auc }
+statistics-roc-false-positive-rate = False positive rate
+statistics-roc-true-positive-rate = True positive rate
+# Shown under the graph.
+statistics-roc-description-curve = Each curve plots the true positive rate against the false positive rate, at every prediction threshold; the dashed line is random chance.
+statistics-roc-description-auc = A higher AUC is better: 1.0 puts every remembered review above every forgotten one, and 0.5 is random chance.
+# Shown under every model-quality graph; it says which reviews the graph counts.
+statistics-model-metrics-description-reviews = It counts every rating that follows an earlier rating of the same card: Hard, Good and Easy count as remembered, Again counts as forgotten.
+# Shown under the graph when an algorithm has no curve; $algorithm is its name.
+statistics-model-metrics-no-model = { $algorithm } is not shown: no RWKV model was found.
+statistics-model-metrics-no-params = { $algorithm } is not shown: no preset of these cards has FSRS-7 parameters.
+statistics-model-metrics-no-reviews = { $algorithm } is not shown: these cards have no review it predicts.
+statistics-model-metrics-unsupported = { $algorithm } is not shown: this version cannot compute its prediction for a past review.
 statistics-future-due-title = Future Due
 statistics-future-due-subtitle = The number of reviews due in the future.
 statistics-added-title = Added

@@ -163,6 +163,19 @@ pub(crate) struct FsrsReviewPredictionSource {
     targets: Vec<(RevlogId, usize)>,
 }
 
+impl FsrsReviewPredictionSource {
+    /// The card's ratings, oldest first.
+    pub(crate) fn reviews(&self) -> &[FSRSReview] {
+        &self.reviews
+    }
+
+    /// The ratings FSRS-7 predicts, as (review, its index in `reviews`):
+    /// every rating that follows an earlier rating of the same card.
+    pub(crate) fn targets(&self) -> &[(RevlogId, usize)] {
+        &self.targets
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct FsrsReviewPredictionContext {
     items: Vec<FSRSItem>,
@@ -823,7 +836,7 @@ fn fsrs_items_for_training(
     TrainingItemsForFsrs::with_card_and_revlog_ids(items, card_ids, revlog_ids, prediction_sources)
 }
 
-fn fsrs_prediction_source_from_filtered_revlogs(
+pub(crate) fn fsrs_prediction_source_from_filtered_revlogs(
     entries: &[RevlogEntry],
 ) -> Option<FsrsReviewPredictionSource> {
     let delta_ts = fsrs_review_delta_ts(entries);

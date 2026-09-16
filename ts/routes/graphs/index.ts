@@ -49,6 +49,7 @@ import HourGraph from "./HourGraph.svelte";
 import IntervalsGraph from "./IntervalsGraph.svelte";
 import RangeBox from "./RangeBox.svelte";
 import RetrievabilityGraph from "./RetrievabilityGraph.svelte";
+import RocGraph from "./RocGraph.svelte";
 import ReviewsGraph from "./ReviewsGraph.svelte";
 import StabilityGraph from "./StabilityGraph.svelte";
 import TodayStats from "./TodayStats.svelte";
@@ -66,6 +67,7 @@ export const graphComponents = {
     DifficultyGraph,
     RetrievabilityGraph,
     TotalKnowledgeGraph,
+    RocGraph,
     HourGraph,
     ButtonsGraph,
     AddedGraph,

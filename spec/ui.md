@@ -548,6 +548,74 @@ pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
 "Total Knowledge: the modes differ, and switching does not load it again"
 (`ts/tests/e2e/graphs.test.ts`).
 
+## ui.stats-model-metrics
+
+Given the Stats page in Advanced mode, the model-quality graphs compare the
+scheduling algorithms on the same reviews. Simple mode never shows them.
+These graphs are the one place where the values of two algorithms may stand
+side by side (`sched.one-global-algorithm`, `ui.stats-one-algorithm`),
+because comparing the algorithms is their whole purpose. Every drawn value
+carries the name of the algorithm it comes from, no value ever falls back to
+another algorithm, and an algorithm that cannot be computed is absent, with a
+line under the graph that names it and says why.
+
+They all use the same data: for every rating of the search's cards in the
+page's period, the probability of recall an algorithm predicted before that
+answer, and the answer itself (Hard, Good or Easy = remembered; Again =
+forgotten). A rating counts only when it follows an earlier rating of the
+same card in the same learning sequence, so a card's first rating, and its
+first rating after a reset, are left out: no algorithm has a memory state
+before them. Manual reschedules, resets and cram answers are not ratings.
+The period selects the ratings; the algorithms still read the whole history
+before each of them, because that is where the memory state comes from. A
+card whose review log holds no learning step has no FSRS-7 prediction at
+all, as in FSRS's own evaluation of its parameters, and RWKV's history of a
+card starts at its latest learning start, as RWKV's scheduling does.
+
+| Algorithm    | Its prediction of a rating                                        |
+| ------------ | ----------------------------------------------------------------- |
+| FSRS-7       | FSRS-7's forgetting curve at the memory state after the card's previous rating, at the days since it, with the card's preset parameters |
+| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous rating, at the time since it |
+| RWKV-Instant | RWKV-Instant's prediction of the card at that moment, from its state before the answer |
+
+The AUC-ROC graph draws one curve per algorithm, all at once, with no
+chooser. A curve plots the true positive rate against the false positive
+rate at every prediction threshold. The drawing area is square, so the
+dashed line of random chance runs at 45 degrees; that line's legend entry
+reads "Random chance, AUC=0.5000". Each algorithm's legend entry is its name
+and its area under the curve to four decimals, such as "FSRS-7,
+AUC=0.7230". Ratings with the same prediction form one step of the curve,
+and the area follows the trapezoid rule. An algorithm whose reviews were all
+remembered, or all forgotten, has no curve. Each curve uses the ratings its
+own algorithm predicts, so a curve appears as soon as its data is ready and
+does not wait for the others.
+
+FSRS-7's predictions come from the backend, which reads the collection under
+its lock and replays with the lock free. RWKV's come from a background job
+that replays the collection's whole review history through a separate RWKV
+runtime: the replay predicts every review before it applies it, which is
+RWKV-Instant's number, and RWKV-Curve's comes from a curve prediction of the
+same reviews. The page stays usable while the job runs and reads
+"Calculating…". A second request for the same cards, period and collection
+state joins the running job, a finished result is kept for the session, and
+a Simple/Advanced switch or a second visit does not start it again. Leaving
+the page or closing the window stops the job.
+
+**Why:** Andrew, 2026-09-16: add the Search Stats Extended fork's
+model-quality graphs, so that the algorithms can be compared on his own
+reviews. The no-mixing rule is deliberately relaxed here and nowhere else,
+because a comparison of one algorithm with itself says nothing; the honesty
+rules (a name on every series, no fallback, an absent series with a reason)
+are what keep the relaxation safe. All three curves at once on the AUC-ROC
+graph, and the square drawing area with the labelled diagonal, are his
+words.
+
+**Pinned by:** `fsrs7_predictions_follow_an_earlier_rating`,
+`a_cards_first_rating_has_no_prediction`,
+`the_period_selects_the_ratings_not_the_history`
+(`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
+`ts/routes/graphs/roc.test.ts`.
+
 ## ui.browser-interval-average
 
 Given a Browser row with review or relearning cards, the Interval column

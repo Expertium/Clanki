@@ -58,6 +58,25 @@ impl crate::services::BackendStatsService for Backend {
         );
         Ok(response)
     }
+
+    /// Reads the collection under its lock, then replays FSRS-7 with the
+    /// collection free (spec ui.stats-model-metrics).
+    fn review_predictions(
+        &self,
+        input: anki_proto::stats::ReviewPredictionsRequest,
+    ) -> error::Result<anki_proto::stats::ReviewPredictionsResponse> {
+        let start = std::time::Instant::now();
+        let data = self.with_col(|col| col.review_predictions_input(&input.search, input.days))?;
+        let read_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let response = data.compute()?;
+        tracing::debug!(
+            reviews = response.predictions.len(),
+            read_ms,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "computed FSRS-7 review predictions"
+        );
+        Ok(response)
+    }
 }
 
 impl From<RevlogReviewKind> for i32 {
