@@ -347,6 +347,7 @@ class AnkiQt(QMainWindow):
         self.toolbar.draw()
         # add-ons are only available here after setupAddons
         gui_hooks.reviewer_did_init(self.reviewer)
+        self.freeze_startup_objects()
 
     def setupProfileAfterWebviewsLoaded(self) -> None:
         for w in (self.web, self.bottomWeb):
@@ -2181,6 +2182,17 @@ title="{}" {}>{}</button>""".format(
     def disable_automatic_garbage_collection(self) -> None:
         gc.collect()
         gc.disable()
+
+    def freeze_startup_objects(self) -> None:
+        """Keep the collections below away from what start-up created.
+
+        The modules, classes, windows and add-ons that exist once the window
+        has finished its setup live as long as the process, but every manual
+        collection still walked all of them. `gc.freeze()` moves them into the
+        permanent generation, which is never walked. The collection, its cards
+        and every dialog are created afterwards and are still collected.
+        """
+        gc.freeze()
 
     def garbage_collect_now(self) -> None:
         # gc.collect() has optional arguments that will cause problems if
