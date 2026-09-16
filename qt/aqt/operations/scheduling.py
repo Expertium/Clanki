@@ -452,7 +452,14 @@ def _prepare_filtered_deck_retrievability_scores(
         rwkv_scheduler.RwkvStatsPreparationStatus.PENDING,
         rwkv_scheduler.RwkvStatsPreparationStatus.FAILED,
     }:
-        raise RuntimeError(tr.qt_misc_rwkv_filtered_deck_preparation_failed())
+        raise RuntimeError(_filtered_deck_preparation_failed_message(col))
+
+
+def _filtered_deck_preparation_failed_message(col: Collection) -> str:
+    """Simple mode never says "retrievability" (spec ui.simple-recall-wording)."""
+    if col.get_config_bool(Config.Bool.ADVANCED_UI):
+        return tr.qt_misc_rwkv_filtered_deck_preparation_failed()
+    return tr.qt_misc_rwkv_filtered_deck_preparation_failed_simple()
 
 
 def unbury_deck(

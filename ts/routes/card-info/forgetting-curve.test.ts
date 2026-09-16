@@ -1,9 +1,18 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import * as tr from "@generated/ftl";
 import { expect, test, vi } from "vitest";
 
-import { chartRevlog, prepareData, rwkvRecallAt, stabilityS90 } from "./forgetting-curve";
+import type { DataPoint } from "./forgetting-curve";
+import {
+    chartRevlog,
+    forgettingCurveTooltip,
+    prepareData,
+    recallLabel,
+    rwkvRecallAt,
+    stabilityS90,
+} from "./forgetting-curve";
 
 function fsrs7Params(): number[] {
     return [
@@ -175,4 +184,35 @@ test("without an RWKV curve yet the chart stops at the last review", () => {
     } finally {
         vi.useRealTimers();
     }
+});
+
+function tooltipPoint(): DataPoint {
+    return {
+        date: new Date("2024-01-16T00:00:00Z"),
+        daysSinceFirstLearn: 10,
+        elapsedDaysSinceLastReview: 5,
+        retrievability: 82.88,
+        stability: 20,
+        stabilityS90: 20,
+    };
+}
+
+// spec/ui.md, ui.simple-recall-wording. The English wording of the two strings
+// is pinned in Rust (simple_mode_names_the_retrievability_column_in_plain_words);
+// here the point is that Simple mode takes the plain string and Advanced mode
+// the technical one.
+test("Simple mode's forgetting-curve tooltip does not say retrievability", () => {
+    expect(recallLabel(false)).toBe(tr.cardStatsRecallProbability());
+    expect(recallLabel(false)).not.toBe(tr.cardStatsFsrsRetrievability());
+
+    const tooltip = forgettingCurveTooltip(tooltipPoint(), 30, false);
+    expect(tooltip).not.toContain(tr.cardStatsFsrsRetrievability());
+    expect(tooltip).toContain(`${tr.cardStatsRecallProbability()}: 82.88%`);
+});
+
+test("Advanced mode's forgetting-curve tooltip keeps retrievability", () => {
+    expect(recallLabel(true)).toBe(tr.cardStatsFsrsRetrievability());
+
+    const tooltip = forgettingCurveTooltip(tooltipPoint(), 30, true);
+    expect(tooltip).toContain(`${tr.cardStatsFsrsRetrievability()}: 82.88%`);
 });

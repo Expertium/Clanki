@@ -285,6 +285,17 @@ export class DeckOptionsState {
         return cleared;
     }
 
+    /**
+     * Clears the FSRS parameters that Optimize All Presets cannot use, and
+     * returns how many presets it cleared. Optimize All Presets always does
+     * this: the default parameters give a better result than parameters the
+     * optimizer refuses, and no question is asked
+     * (spec/deck-options.md, `deck-options.optimize-all-clears-bad-params`).
+     */
+    prepareComputeAllParams(): number {
+        return this.clearIncompatibleFsrsParams();
+    }
+
     setCurrentName(name: string): void {
         if (this.configs[this.selectedIdx].config.name === name) {
             return;

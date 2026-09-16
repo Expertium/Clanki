@@ -19,8 +19,10 @@ decks-review-header = Due
 # Shown beside a review count reduced by daily limits, including subdeck limits.
 decks-review-limit-tooltip = { $total } review cards are due. Daily review limits allow { $count } to be shown.
 decks-rwkv = RWKV
-decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
-decks-rwkv-reschedule-all-decks = Reschedule All Decks
+# The RWKV submenu of a deck's gear menu. The submenu is named RWKV, so
+# the entries do not repeat the algorithm's name (Andrew, 2026-09-16).
+decks-reschedule-with-rwkv-curve = Reschedule this deck
+decks-rwkv-reschedule-all-decks = Reschedule all decks
 
 ##
 decks-unmovable-cards = Show any excluded cards
