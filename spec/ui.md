@@ -316,7 +316,8 @@ a card RWKV has not scored. While RWKV has not scored the page's search yet
 until the scores arrive; under FSRS-7 no RWKV score is prepared at all
 (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
 each card now, while card info evaluates the curve stored at the card's
-last review (`ui.card-info-one-algorithm`); the two can differ slightly.
+last review (`ui.card-info-one-algorithm`); the two differ, on Andrew's
+collection by 0.04 in the median card and by up to 0.33.
 
 **Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
 RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
@@ -328,6 +329,33 @@ RWKV has no difficulty and RWKV-Instant no stability.
 `test_rwkv_curve_collection_active_reads_the_algorithm`
 (`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
+
+## ui.stats-rwkv-scores-kept
+
+Given the Stats page asks for the Retrievability graph a second time while
+nothing RWKV reads has changed — the same search, the same day, the same
+RWKV state, the same review inputs and study queues — Clanki reuses the
+score map it published the first time instead of scoring every card again,
+for up to 10 minutes after that first map was published. Any answer, any
+change of the cards or the queues, a new day, another search and any other
+publication of a score map end the reuse, and the next request scores again.
+
+The graph then shows RWKV's R as of the moment the map was built, not of the
+moment of the request. The scoring itself takes minutes on a large
+collection, so the first map is already that old when the page first draws
+it.
+
+**Why:** Andrew, 2026-09-16: switching the Stats page between Simple and
+Advanced mode, or its period between 12 months and all history, must not
+start the RWKV calculation from zero again. RWKV's answer depends on neither
+the mode nor the period. On Andrew's collection one pass costs 230 seconds
+and 229 of them are RWKV scoring the 38,523 cards of the search.
+
+**Pinned by:** `test_prepare_stats_retrievability_scores_reuses_published_scores`,
+`test_prepare_stats_retrievability_scores_scores_again_for_another_search`,
+`test_prepare_stats_retrievability_scores_scores_again_after_the_reuse_window`,
+`test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
+(`qt/tests/test_rwkv_scheduler.py`)
 
 ## ui.stats-total-knowledge
 
