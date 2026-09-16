@@ -495,7 +495,7 @@ fn calibration_bins(
     card_ids: &[i64],
 ) -> Vec<anki_proto::stats::CalibrationBin> {
     let mut sums = vec![BinTally::default(); BIN_COUNT];
-    let mut predicted = vec![0.0f64; BIN_COUNT];
+    let mut predicted = [0.0f64; BIN_COUNT];
     let mut by_card: HashMap<i64, Vec<BinTally>> = HashMap::new();
     for ((&prediction, &remembered), &card_id) in predictions.iter().zip(remembered).zip(card_ids) {
         if !prediction.is_finite() || !(0.0..=1.0).contains(&prediction) {
@@ -543,8 +543,8 @@ fn bootstrap_intervals(cards: &[Vec<BinTally>]) -> Vec<(f64, f64)> {
         state.wrapping_mul(0x2545_F491_4F6C_DD1D)
     };
     for _ in 0..BOOTSTRAP_ROUNDS {
-        let mut remembered = vec![0.0f64; BIN_COUNT];
-        let mut counts = vec![0.0f64; BIN_COUNT];
+        let mut remembered = [0.0f64; BIN_COUNT];
+        let mut counts = [0.0f64; BIN_COUNT];
         for _ in 0..cards.len() {
             let card = &cards[(next() % cards.len() as u64) as usize];
             for bin in 0..BIN_COUNT {

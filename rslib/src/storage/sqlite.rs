@@ -588,12 +588,26 @@ impl SqliteStorage {
             storage.commit_trx()?;
         }
 
+        storage.ensure_sort_field_index()?;
+
         if storage.migrate_review_retrievability_cache_to_sidecar()? > 0 {
             storage.mark_review_retrievability_cache_cleanup_full_sync()?;
             storage.set_schema_modified_time(TimestampMillis::now())?;
         }
 
         Ok(storage)
+    }
+
+    /// Creates the index the browser's sort needs, if the collection has none
+    /// (spec database.sort-field-index). The schema version does not change,
+    /// so a collection stays readable by upstream Anki and by the other
+    /// clients; a collection that arrives from a full sync download simply
+    /// gets the index the next time it opens.
+    pub(crate) fn ensure_sort_field_index(&self) -> Result<()> {
+        self.db.execute_batch(
+            "create index if not exists ix_notes_sfld_nocase on notes (sfld collate nocase);",
+        )?;
+        Ok(())
     }
 
     pub(crate) fn close(self, desired_version: Option<SchemaVersion>) -> Result<()> {
@@ -775,3 +789,45 @@ mod test {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod sort_field_index_test {
+    use crate::collection::Collection;
+    use crate::error::Result;
+
+    /// Pins spec/database.md#database.sort-field-index.
+    #[test]
+    fn sort_field_index_exists_and_the_browser_sort_uses_it() -> Result<()> {
+        let col = Collection::new();
+
+        let exists: bool = col.storage.db.query_row(
+            "select exists(select 1 from sqlite_master where type = 'index' and name = ?)",
+            ["ix_notes_sfld_nocase"],
+            |row| row.get(0),
+        )?;
+        assert!(exists, "the sort-field index is missing");
+
+        let plan: String = col.storage.db.query_row(
+            "explain query plan select n.id from notes n order by n.sfld collate nocase asc",
+            [],
+            |row| row.get(3),
+        )?;
+        assert!(
+            plan.contains("ix_notes_sfld_nocase"),
+            "the browser sort does not use the index: {plan}"
+        );
+
+        // a collection that arrives without the index gets it at the next open
+        col.storage.db.execute_batch("drop index ix_notes_sfld_nocase;")?;
+        col.storage.ensure_sort_field_index()?;
+        let exists: bool = col.storage.db.query_row(
+            "select exists(select 1 from sqlite_master where type = 'index' and name = ?)",
+            ["ix_notes_sfld_nocase"],
+            |row| row.get(0),
+        )?;
+        assert!(exists, "the index was not created again");
+
+        Ok(())
+    }
+}
+
