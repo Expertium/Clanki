@@ -48,7 +48,7 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     await expect(page.getByText("Desired retention", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Bury siblings", { exact: true }).first()).toBeVisible();
     await expect(
-        page.locator('[role="button"][aria-label="FSRS Parameters"]'),
+        page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]"),
     ).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
@@ -102,7 +102,7 @@ test("collection-wide settings are not on the deck-options page", async ({ page 
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {
     const advanced = page.locator("details.fsrs-advanced");
-    const parameters = page.locator('[role="button"][aria-label="FSRS Parameters"]');
+    const parameters = page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]");
     const input = parameters.locator("textarea");
 
     async function setTimeoutMs(ms: number): Promise<void> {
