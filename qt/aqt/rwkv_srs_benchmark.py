@@ -463,6 +463,7 @@ class _RustRwkvRuntime:
         *,
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
+        curve_recorder: Callable[[int, float], None] | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
@@ -508,6 +509,7 @@ class _RustRwkvRuntime:
                         review_ids,
                         processed,
                         predictions,
+                        curve_recorder=curve_recorder,
                     )
 
                 processed += len(chunk)
@@ -1318,22 +1320,48 @@ def _record_warm_up_predictions(
     prediction_recorder: Callable[[int, float], None],
     review_ids: Sequence[int],
     processed: int,
-    predictions: Sequence[tuple[int, float]],
+    predictions: Sequence[tuple[int, float, float | None]],
+    *,
+    curve_recorder: Callable[[int, float], None] | None = None,
 ) -> None:
-    rows = [
-        (review_ids[review_index], float(retrievability))
-        for index, retrievability in predictions
-        if 0 <= (review_index := processed + int(index)) < len(review_ids)
-    ]
+    """Hands each recorder its OWN algorithm's value.
+
+    The replay reports two numbers per review: RWKV-Instant's rating head,
+    and RWKV-Curve's value, which is the curve the replay had stored at the
+    card's previous answered review evaluated at this review's elapsed time.
+    A card's first review has no such curve, and gets no curve row rather
+    than a substitute (spec ui.stats-model-metrics).
+    """
+    rows = []
+    curve_rows = []
+    for prediction in predictions:
+        index, retrievability = prediction[0], prediction[1]
+        curve = prediction[2] if len(prediction) > 2 else None
+        review_index = processed + int(index)
+        if not 0 <= review_index < len(review_ids):
+            continue
+        review_id = review_ids[review_index]
+        rows.append((review_id, float(retrievability)))
+        if curve is not None and math.isfinite(curve):
+            curve_rows.append((review_id, float(curve)))
+
+    _hand_to_recorder(prediction_recorder, rows)
+    if curve_recorder is not None:
+        _hand_to_recorder(curve_recorder, curve_rows)
+
+
+def _hand_to_recorder(
+    recorder: Callable[[int, float], None],
+    rows: Sequence[tuple[int, float]],
+) -> None:
     if not rows:
         return
-
-    record_many = getattr(prediction_recorder, "record_many", None)
+    record_many = getattr(recorder, "record_many", None)
     if callable(record_many):
         record_many(rows)
     else:
-        for review_id, retrievability in rows:
-            prediction_recorder(review_id, retrievability)
+        for review_id, prediction in rows:
+            recorder(review_id, prediction)
 
 
 def _prediction_request_row(

@@ -21,10 +21,12 @@ use std::fmt::Write;
 
 pub(crate) use revlog::FsrsReviewRetrievabilityCacheRow;
 pub(crate) use revlog::FsrsReviewRetrievabilitySampleRole;
+pub(crate) use revlog::ReviewPredictionRow;
 pub(crate) use revlog::RwkvHistoricalReviewRow;
 pub(crate) use revlog::RwkvReviewRetrievabilityCacheRow;
 pub(crate) use revlog::RwkvReviewRetrievabilitySampleRole;
 pub(crate) use revlog::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE;
+pub(crate) use revlog::REVIEW_PREDICTIONS_TABLE;
 pub(crate) use revlog::RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE;
 pub(crate) use sqlite::ProcessTextFlags;
 pub(crate) use sqlite::SqliteStorage;

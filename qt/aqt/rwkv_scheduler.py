@@ -3210,6 +3210,84 @@ class _RwkvReviewRetrievabilityCacheWriter:
             logger.exception("failed to store RWKV review retrievability cache")
 
 
+# every generic prediction row names its algorithm
+_RWKV_CURVE_ALGORITHM = (
+    deck_config_pb2.DeckConfigsForUpdate.SchedulingAlgorithm.RWKV_CURVE
+)
+
+
+class _RwkvCurveReviewPredictionWriter:
+    """RWKV-Curve's per-review predictions, into the generic table.
+
+    Its own algorithm id on every row, so the value can never be read as
+    RWKV-Instant's (spec ui.stats-model-metrics). `sample_role` is
+    `final_fit` as RWKV-Instant's is: the weights are frozen, so the role
+    carries no honesty claim for either RWKV series. The source names the
+    pass that wrote the row, so a reader can tell a startup build from a
+    recompute.
+    """
+
+    def __init__(
+        self,
+        reviewer: object,
+        *,
+        source: str = "rwkv_curve_state_cache_build",
+        sample_role: str = _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
+    ) -> None:
+        self._col: Any | None = _collection(reviewer)
+        self._source = source
+        self._sample_role = sample_role
+        self._rows: list[tuple[int, float]] = []
+
+    def __call__(self, review_id: int, prediction: float) -> None:
+        self.record(review_id, prediction)
+
+    def record(self, review_id: int, prediction: float) -> None:
+        self.record_many([(review_id, prediction)])
+
+    def record_many(self, rows: Sequence[tuple[int, float]]) -> None:
+        if self._col is None:
+            return
+        for review_id, prediction in rows:
+            if (
+                review_id <= 0
+                or not math.isfinite(prediction)
+                or prediction < 0
+                or prediction > 1
+            ):
+                continue
+            self._rows.append((review_id, prediction))
+            if len(self._rows) >= 1000:
+                self.flush()
+
+    def flush(self) -> None:
+        if self._col is None or not self._rows:
+            return
+        rows = self._rows
+        self._rows = []
+        backend = getattr(self._col, "_backend", None)
+        store_rows = getattr(backend, "set_review_predictions", None)
+        if not callable(store_rows):
+            logger.debug("RWKV-Curve predictions skipped: backend unavailable")
+            return
+        try:
+            store_rows(
+                algorithm=_RWKV_CURVE_ALGORITHM,
+                source=self._source,
+                rows=[
+                    scheduler_pb2.ReviewPredictionRowsRequest.Row(
+                        revlog_id=review_id,
+                        prediction=prediction,
+                        sample_role=self._sample_role,
+                        fold_index=-1,
+                    )
+                    for review_id, prediction in rows
+                ],
+            )
+        except Exception:
+            logger.exception("failed to store RWKV-Curve predictions")
+
+
 def set_reviewer_backend(
     backend: RwkvReviewerBackend | None,
 ) -> RwkvReviewerBackend | None:
@@ -10325,6 +10403,13 @@ def recompute_rwkv_calibration_data(
                 sample_role_by_review_id=sample_role_by_review_id,
                 fold_index_by_review_id=fold_index_by_review_id,
             )
+            # this replay already walks the whole history with the recorder
+            # attached, so RWKV-Curve's rows cost a second writer rather
+            # than a second walk (spec ui.stats-model-metrics)
+            curve_writer = _RwkvCurveReviewPredictionWriter(
+                reviewer,
+                source="rwkv_curve_calibration_recompute",
+            )
             started_at = time.monotonic()
 
             def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
@@ -10337,15 +10422,26 @@ def recompute_rwkv_calibration_data(
                 )
 
             try:
+                warm_up_kwargs: dict[str, Any] = {
+                    "review_ids": history.review_ids,
+                    "prediction_recorder": writer.record,
+                    "progress": replay_progress,
+                }
+                # a backend that cannot report the curve head simply does
+                # not record RWKV-Curve; it is never given another
+                # algorithm's value instead
+                if _callable_accepts_keyword(
+                    inspect.signature(warm_up).parameters, "curve_recorder"
+                ):
+                    warm_up_kwargs["curve_recorder"] = curve_writer.record
                 cast(Callable[..., object], warm_up)(
                     history.reviews,
-                    review_ids=history.review_ids,
-                    prediction_recorder=writer.record,
-                    progress=replay_progress,
+                    **warm_up_kwargs,
                 )
                 operation.require_current()
             finally:
                 writer.flush()
+                curve_writer.flush()
             logger.debug(
                 "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
                 len(history.reviews),

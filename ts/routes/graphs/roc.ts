@@ -114,6 +114,8 @@ export function unavailableText(series: ReviewMetricsProgress_Series): string | 
             return tr.statisticsModelMetricsUnsupported({ algorithm });
         case Unavailable.COMPUTING_PREDICTIONS:
             return tr.statisticsModelMetricsComputing({ algorithm });
+        case Unavailable.NOT_RECORDED:
+            return tr.statisticsModelMetricsNotRecorded({ algorithm });
         default:
             return null;
     }
@@ -171,6 +173,21 @@ export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
                 tr.statisticsModelMetricsRole({
                     algorithm: algorithmName(series.algorithm),
                     role: series.sampleRole,
+                }),
+            );
+        }
+    }
+    for (const series of curves) {
+        // a series whose rows start part way through the history says so,
+        // so it cannot look like it covers reviews it has never seen
+        if (series.earlierReviews > 0 && series.recordedFromSecs > 0n) {
+            notes.push(
+                tr.statisticsModelMetricsRecordedFrom({
+                    algorithm: algorithmName(series.algorithm),
+                    date: localizedDate(
+                        new Date(Number(series.recordedFromSecs) * 1000),
+                    ),
+                    reviews: series.earlierReviews,
                 }),
             );
         }

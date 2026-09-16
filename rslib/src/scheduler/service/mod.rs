@@ -1010,6 +1010,50 @@ impl crate::services::SchedulerService for Collection {
         })
     }
 
+    /// One algorithm's per-review predictions, into the generic table. The
+    /// algorithm is named in the request, so a write cannot land in another
+    /// algorithm's rows (spec ui.stats-model-metrics).
+    fn set_review_predictions(
+        &mut self,
+        input: scheduler::ReviewPredictionRowsRequest,
+    ) -> Result<generic::UInt32> {
+        require!(!input.source.is_empty(), "missing prediction source");
+        let algorithm = input.algorithm();
+        let contract = crate::stats::algorithms::ALGORITHMS
+            .iter()
+            .find(|entry| entry.algorithm == algorithm);
+        let Some(contract) = contract else {
+            invalid_input!("unknown scheduling algorithm");
+        };
+        let mut rows = Vec::with_capacity(input.rows.len());
+        for row in input.rows {
+            require!(row.revlog_id > 0, "invalid review id");
+            require!(
+                row.prediction.is_finite() && (0.0..=1.0).contains(&row.prediction),
+                "invalid prediction"
+            );
+            // the role must be one this algorithm's own contract allows,
+            // rather than one a shared list allows
+            let Some(sample_role) = contract
+                .honest_roles
+                .iter()
+                .find(|role| **role == row.sample_role)
+            else {
+                invalid_input!("sample role is not one this algorithm declares");
+            };
+            rows.push(crate::storage::ReviewPredictionRow {
+                revlog_id: RevlogId(row.revlog_id),
+                prediction: row.prediction,
+                sample_role,
+                fold_index: row.fold_index,
+            });
+        }
+        let stored = self
+            .storage
+            .set_review_predictions(algorithm as i32, &rows, &input.source)?;
+        Ok(generic::UInt32 { val: stored as u32 })
+    }
+
     fn set_rwkv_review_retrievability_cache_rows(
         &mut self,
         input: RwkvReviewRetrievabilityCacheRowsRequest,

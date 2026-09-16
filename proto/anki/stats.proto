@@ -202,12 +202,17 @@ message ReviewPredictionsResponse {
   // The answers: true = Hard, Good or Easy, false = Again.
   repeated bool remembered = 3;
   repeated float fsrs_predictions = 4;
-  // RWKV-Instant's head; RWKV-Curve has no stored per-review value yet.
+  // RWKV-Instant's head.
   repeated float rwkv_predictions = 5;
+  // RWKV-Curve: the curve the replay had stored at the card's previous
+  // answered review, at this review's own elapsed time. Its own table, so
+  // it can never be mistaken for RWKV-Instant's value.
+  repeated float rwkv_curve_predictions = 18;
   // The sample role each model's rows came from, such as "validation_fold";
   // empty when that model has no usable row. Roles are never mixed.
   string fsrs_role = 6;
   string rwkv_role = 7;
+  string rwkv_curve_role = 19;
   // How the scored ratings split between the models: only FSRS-7 has a
   // row, only RWKV has one, both have one, or neither has one.
   uint32 fsrs_only = 8;
@@ -222,6 +227,14 @@ message ReviewPredictionsResponse {
   // order, empty bins left out (spec ui.stats-model-metrics).
   repeated CalibrationBin fsrs_bins = 13;
   repeated CalibrationBin rwkv_bins = 14;
+  repeated CalibrationBin rwkv_curve_bins = 20;
+  // How far back RWKV-Curve's recording reaches: the oldest rating it has
+  // a row for, as a Unix timestamp in seconds (0 = none), and the ratings
+  // of the search BEFORE it that it has no row for. Rows written before
+  // the recording shipped do not exist, so a series can cover days while
+  // looking as if it covered years; the graph says so instead.
+  int64 rwkv_curve_oldest_secs = 21;
+  uint32 rwkv_curve_earlier_reviews = 22;
   // True when both models scored at least one rating of the search and
   // period, so the two scores can be put beside each other over the
   // ratings they share.
@@ -310,6 +323,9 @@ message ReviewMetricsProgress {
     NO_REVIEWS = 3;
     // This build's RWKV cannot predict the algorithm's value per review.
     UNSUPPORTED = 4;
+    // Nothing has recorded this algorithm's predictions of these reviews
+    // yet; a warm-up of the RWKV state cache writes them.
+    NOT_RECORDED = 7;
     // Still being computed.
     NOT_READY = 5;
     // The algorithm's stored predictions are being written: none yet, or
@@ -334,6 +350,11 @@ message ReviewMetricsProgress {
     // over every scored rating, for the panel's tiles.
     double average_predicted = 9;
     double actual_recall = 10;
+    // How far back this algorithm's recording reaches, when it does not
+    // reach the whole history: the oldest rating it has a row for, and how
+    // many earlier ratings it has none for.
+    int64 recorded_from_secs = 11;
+    uint32 earlier_reviews = 12;
   }
   State state = 1;
   uint32 job_id = 2;
