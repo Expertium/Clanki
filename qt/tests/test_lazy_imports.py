@@ -11,18 +11,21 @@ import sys
 
 import pytest
 
+import anki.httpclient
 import aqt.addons
 import aqt.editor_legacy
-from anki.httpclient import HttpClient
 
 
 def _env() -> dict[str, str]:
     """The child interpreter needs the same import paths as this one."""
-    return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    return {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if isinstance(p, str) and p),
+    }
 
 
 def test_addons_module_keeps_the_http_client_name() -> None:
-    assert aqt.addons.HttpClient is HttpClient
+    assert aqt.addons.HttpClient is anki.httpclient.HttpClient
     assert "HttpClient" in dir(aqt.addons)
 
 
@@ -31,7 +34,7 @@ def test_editor_keeps_the_names_it_used_to_import() -> None:
 
     assert aqt.editor_legacy.bs4 is bs4
     assert aqt.editor_legacy.BeautifulSoup is bs4.BeautifulSoup
-    assert aqt.editor_legacy.HttpClient is HttpClient
+    assert aqt.editor_legacy.HttpClient is anki.httpclient.HttpClient
     assert aqt.editor_legacy.requests.__name__ == "requests"
     for name in ("bs4", "BeautifulSoup", "HttpClient", "requests"):
         assert name in dir(aqt.editor_legacy)

@@ -75,9 +75,7 @@ def __getattr__(name: str) -> Any:
     if entry := _LAZY_IMPORTS.get(name):
         module_name, attribute = entry
         module = importlib.import_module(module_name)
-        value = module if attribute is None else getattr(module, attribute)
-        globals()[name] = value
-        return value
+        return module if attribute is None else getattr(module, attribute)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

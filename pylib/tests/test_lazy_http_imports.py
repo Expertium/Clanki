@@ -11,18 +11,23 @@ import sys
 
 import pytest
 
+import anki.httpclient
 import anki.sync
-from anki.httpclient import HttpClient
 
 
 def _env() -> dict[str, str]:
     """The child interpreter needs the same import paths as this one."""
-    return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    return {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if isinstance(p, str) and p),
+    }
 
 
 def test_sync_module_keeps_its_legacy_http_client_names() -> None:
-    assert anki.sync.HttpClient is HttpClient
-    assert anki.sync.AnkiRequestsClient is HttpClient
+    # the module, not a name bound earlier: another test reloads it
+    current = anki.httpclient.HttpClient
+    assert anki.sync.HttpClient is current
+    assert anki.sync.AnkiRequestsClient is current
     names = dir(anki.sync)
     assert "HttpClient" in names
     assert "AnkiRequestsClient" in names
@@ -35,11 +40,7 @@ def test_sync_module_raises_for_an_unknown_name() -> None:
 
 
 def test_importing_the_sync_module_does_not_import_requests() -> None:
-    code = (
-        "import sys\n"
-        "import anki.sync\n"
-        "print('requests' in sys.modules)\n"
-    )
+    code = "import sys\nimport anki.sync\nprint('requests' in sys.modules)\n"
     out = subprocess.run(
         [sys.executable, "-c", code],
         check=True,

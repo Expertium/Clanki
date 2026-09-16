@@ -66,7 +66,6 @@ def __getattr__(name: str) -> Any:
     if name == "HttpClient":
         from anki.httpclient import HttpClient
 
-        globals()[name] = HttpClient
         return HttpClient
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
