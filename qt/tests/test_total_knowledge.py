@@ -221,6 +221,23 @@ def test_the_page_joins_the_running_job_and_the_result_is_kept(
     wait_for_runs(started, 2)
 
 
+def test_a_kept_result_holds_a_digest_of_the_card_ids_not_the_ids(
+    started: dict[str, Any],
+) -> None:
+    # the ids of a 159k-card search cost 8.5 MB per kept result
+    mw = started["mw"]
+    job = total_knowledge.start_rwkv(mw, "deck:a", curve=True)
+    wait_for_runs(started, 1)
+    started["release"].set()
+    assert wait_until_done(job.job_id).state == Progress.DONE
+
+    (key,) = total_knowledge._results
+    assert key == (True, total_knowledge._cards_digest((1, 2)), 100, TODAY)
+    assert len(key[1]) == 16
+    # another search over the same cards reads the same result
+    assert total_knowledge._cards_digest((1, 2)) != total_knowledge._cards_digest((1,))
+
+
 # Pins spec/ui.md#ui.stats-total-knowledge
 def test_leaving_the_page_or_another_search_cancels_the_job(
     started: dict[str, Any],
