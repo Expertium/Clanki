@@ -133,8 +133,12 @@ export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
     }
     const notes: string[] = [];
     if (progress.scored > 0) {
+        // two curves are only comparable over the ratings they share; one
+        // curve is not a comparison, so it keeps all of its own
         notes.push(
-            tr.statisticsModelMetricsScored({ reviews: progress.scored }),
+            progress.sharedRatings
+                ? tr.statisticsModelMetricsShared({ reviews: progress.scored })
+                : tr.statisticsModelMetricsScored({ reviews: progress.scored }),
         );
     }
     if (progress.fsrsOnly + progress.rwkvOnly + progress.unscored > 0) {

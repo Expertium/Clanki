@@ -662,11 +662,17 @@ only when nothing that produced it was fitted on that very review:
 | FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
 | RWKV      | any role, because the weights are frozen and were trained on other collections  |
 
-Each algorithm uses one role only, the first of its list that has any row
-for the search, and the graph names the role it used. The two algorithms are
-scored on the same ratings: a rating only one of them has a row for is left
-out, and the graph says how many were left out for each reason. A rating
-with no usable row for an algorithm is never filled in from a fresh
+Each algorithm uses one role only, and the graph names the role it used.
+FSRS-7 takes the first role of its list that has any row, because that list
+is in order of honesty. RWKV's roles carry no such order, so it takes the
+role with the most rows and rests on as many ratings as it can.
+
+Two or more drawn algorithms are scored on the ratings they share: a rating
+only one of them has a row for is left out, the graph says how many were
+left out for each reason, and it says plainly that the algorithms are
+compared on the shared ratings. One drawn algorithm is not a comparison, so
+it keeps every rating it can score, and the graph says how many that is. A
+rating with no usable row for an algorithm is never filled in from a fresh
 computation with today's parameters, because those parameters have seen the
 rating.
 
@@ -674,6 +680,23 @@ Reading the rows does not start any computation. Ratings newer than the
 newest stored prediction are left out, and the graph says "Predictions up to
 &lt;date&gt;; N newer reviews are not scored yet", so it never silently drops
 the newest reviews.
+
+The calibration graph draws one algorithm, picked from a menu of all three:
+an algorithm that cannot be scored is in the menu but cannot be chosen, and
+is never replaced silently. The menu keeps its choice while the page reloads
+its data, over a Simple / Advanced switch and over a change of period, and
+choosing another algorithm computes nothing again, because the data is the
+same for every algorithm. The drawing area is square. The x axis is the
+predicted probability of recall in 20 bins, spaced so that the crowded high
+probabilities get more bins than the low ones; the y axis is the share of
+each bin's ratings that were remembered. A dashed diagonal is a perfect
+algorithm: a point above it means the algorithm predicted too little, below
+it too much. Each point carries a vertical line through the 2.5 and 97.5
+percentiles of its share, from 500 resamples of the CARDS (not of the
+ratings, because a card's own ratings are not independent). The ratings of
+each bin are drawn as grey bars behind the line, on their own axis at the
+right. Three tiles above the graph give the average predicted probability,
+the actual recall, and the number of ratings.
 
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
@@ -711,10 +734,13 @@ user's own rebuild, never to opening a page.
 
 **Pinned by:** `only_rows_the_algorithm_had_not_seen_are_used`,
 `both_algorithms_are_scored_on_the_same_ratings`,
+`one_algorithm_alone_keeps_all_of_its_ratings`,
+`rwkv_takes_the_role_with_the_most_rows`,
 `the_period_selects_the_ratings`,
-`newer_ratings_than_the_stored_predictions_are_reported`
+`newer_ratings_than_the_stored_predictions_are_reported`,
+`calibration_bins_and_their_intervals`
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
-`ts/routes/graphs/roc.test.ts`.
+`ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`.
 
 ## ui.browser-interval-average
 

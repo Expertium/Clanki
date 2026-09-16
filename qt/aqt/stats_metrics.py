@@ -59,6 +59,7 @@ class _Job:
     unscored: int = 0
     newest_scored_secs: int = 0
     newer_reviews: int = 0
+    shared_ratings: bool = False
     error: str = ""
 
     def progress(self) -> Progress:
@@ -79,6 +80,7 @@ class _Job:
                 unscored=self.unscored,
                 newest_scored_secs=self.newest_scored_secs,
                 newer_reviews=self.newer_reviews,
+                shared_ratings=self.shared_ratings,
                 error=self.error,
             )
 
@@ -186,12 +188,25 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         job.unscored = data.unscored
         job.newest_scored_secs = data.newest_scored_secs
         job.newer_reviews = data.newer_reviews
+        job.shared_ratings = data.shared_ratings
 
     job.set_series(
-        _series(FSRS_7, data.fsrs_predictions, data.remembered, data.fsrs_role)
+        _series(
+            FSRS_7,
+            data.fsrs_predictions,
+            data.remembered,
+            data.fsrs_role,
+            data.fsrs_bins,
+        )
     )
     job.set_series(
-        _series(RWKV_INSTANT, data.rwkv_predictions, data.remembered, data.rwkv_role)
+        _series(
+            RWKV_INSTANT,
+            data.rwkv_predictions,
+            data.remembered,
+            data.rwkv_role,
+            data.rwkv_bins,
+        )
     )
     # RWKV-Curve's prediction of a past review is the curve stored at the
     # card's previous answered review. Nothing stores that per review yet,
@@ -204,8 +219,10 @@ def _series(
     predictions: Sequence[float],
     remembered: Sequence[bool],
     role: str = "",
+    bins: Sequence[Any] = (),
 ) -> Series:
-    """One algorithm's ROC curve and its AUC."""
+    """One algorithm's curves: its ROC curve with the area under it, and
+    its calibration bins as the backend binned them."""
     if not role or not predictions:
         return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
     points, auc = roc_curve(predictions, remembered)
@@ -218,6 +235,9 @@ def _series(
         false_positive_rate=[point[0] for point in points],
         true_positive_rate=[point[1] for point in points],
         auc=auc,
+        bins=bins,
+        average_predicted=sum(predictions) / len(predictions),
+        actual_recall=sum(1 for answer in remembered if answer) / len(remembered),
     )
 
 

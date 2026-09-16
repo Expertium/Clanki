@@ -487,10 +487,6 @@ impl SqliteStorage {
                      from {table}
                      where sample_role = ?1
                        and revlog_id > ?2
-                       and revlog_id in (
-                           select id from revlog
-                           where cid in (select cid from search_cids)
-                       )
                  )
                  where rank = 1"
             ))?
@@ -498,25 +494,18 @@ impl SqliteStorage {
             .collect()
     }
 
-    /// The newest review of the searched cards that the given model and
-    /// role have a prediction for, and how many later ratings have none.
-    pub(crate) fn newest_cached_review_prediction(
-        &self,
-        table: &str,
-        sample_role: &str,
-    ) -> Result<Option<RevlogId>> {
+    /// How many predictions each sample role holds, newest first by count:
+    /// the caller picks one role and never mixes two (spec
+    /// ui.stats-model-metrics).
+    pub(crate) fn cached_review_prediction_roles(&self, table: &str) -> Result<Vec<(String, u32)>> {
         let table = Self::qualified_retrievability_cache_table(table);
         self.db
             .prepare_cached(&format!(
-                "select max(revlog_id) from {table}
-                 where sample_role = ?1
-                   and revlog_id in (
-                       select id from revlog
-                       where cid in (select cid from search_cids)
-                   )"
+                "select sample_role, count(distinct revlog_id) from {table}
+                 group by sample_role"
             ))?
-            .query_row((sample_role,), |row| row.get::<_, Option<RevlogId>>(0))
-            .map_err(Into::into)
+            .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
     }
 
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {

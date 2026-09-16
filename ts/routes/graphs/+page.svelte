@@ -8,6 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import AddedGraph from "./AddedGraph.svelte";
     import ButtonsGraph from "./ButtonsGraph.svelte";
     import CalendarGraph from "./CalendarGraph.svelte";
+    import CalibrationGraph from "./CalibrationGraph.svelte";
     import CardCounts from "./CardCounts.svelte";
     import DifficultyGraph from "./DifficultyGraph.svelte";
     import EaseGraph from "./EaseGraph.svelte";
@@ -40,6 +41,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         RetrievabilityGraph,
         TotalKnowledgeGraph,
         RocGraph,
+        CalibrationGraph,
         TrueRetention,
         HourGraph,
         ButtonsGraph,

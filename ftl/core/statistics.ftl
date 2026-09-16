@@ -210,11 +210,26 @@ statistics-roc-description-auc = A higher AUC is better: 1.0 puts every remember
 # Shown under every model-quality graph; it says which reviews the graph counts.
 statistics-model-metrics-description-reviews = It counts every rating that follows an earlier rating of the same card: Hard, Good and Easy count as remembered, Again counts as forgotten.
 # Shown under the graph; $reviews is how many ratings every drawn algorithm scored.
-statistics-model-metrics-scored = Every algorithm here is scored on the same { $reviews } reviews.
+statistics-model-metrics-scored = Scored on { $reviews } reviews.
 # Shown under the graph when some ratings are left out.
 statistics-model-metrics-left-out = Left out: { $fsrs } that only FSRS-7 scored, { $rwkv } that only RWKV scored, { $none } that neither scored.
 # Shown under the graph; $role is a stored sample role, such as "validation_fold".
 statistics-model-metrics-role = { $algorithm } uses its "{ $role }" predictions, made before the algorithm had seen these reviews.
+statistics-calibration-title = Calibration
+statistics-calibration-subtitle = How close an algorithm's predicted probability of recall is to what really happened.
+# Label of the menu that picks the one algorithm the graph draws.
+statistics-calibration-algorithm = Algorithm
+statistics-calibration-predicted = Predicted probability of recall
+statistics-calibration-actual = Actual recall
+# The tiles above the graph.
+statistics-calibration-average-predicted = Average predicted
+statistics-calibration-actual-recall = Actual recall
+statistics-calibration-reviews = Reviews
+# Shown under the graph.
+statistics-calibration-description-line = Each point is a group of reviews with a similar predicted probability: the dashed diagonal is a perfect algorithm, a point above it means the algorithm predicted too little, a point below it too much.
+statistics-calibration-description-bars = The grey bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual recall lies with 95% confidence.
+# Shown under the graph when two or more algorithms are drawn together.
+statistics-model-metrics-shared = The algorithms are compared on the { $reviews } reviews they can all score.
 # Shown under the graph when the newest reviews have no prediction yet.
 statistics-model-metrics-stale = Predictions up to { $date }; { $reviews } newer reviews are not scored yet.
 # Shown under the graph when an algorithm has no curve; $algorithm is its name.

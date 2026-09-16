@@ -217,6 +217,30 @@ message ReviewPredictionsResponse {
   // graph says "predictions up to <date>; N newer reviews not scored".
   int64 newest_scored_secs = 11;
   uint32 newer_reviews = 12;
+  // The calibration bins of each model over the scored ratings, in bin
+  // order, empty bins left out (spec ui.stats-model-metrics).
+  repeated CalibrationBin fsrs_bins = 13;
+  repeated CalibrationBin rwkv_bins = 14;
+  // True when two models have rows, so the ratings are the ones they
+  // share; false when one model alone is scored, on all of its own
+  // ratings, because one curve is not a comparison.
+  bool shared_ratings = 15;
+}
+
+// One bin of the calibration graph: the ratings whose predicted probability
+// falls in it (spec ui.stats-model-metrics).
+message CalibrationBin {
+  // 0 to 19, the bin's place on the x axis.
+  uint32 index = 1;
+  // The sums the graph divides by `count` to get the bin's mean predicted
+  // probability and its share of remembered answers.
+  double sum_predicted = 2;
+  double sum_remembered = 3;
+  uint32 count = 4;
+  // The 2.5 and 97.5 percentiles of the bin's share of remembered answers,
+  // from a bootstrap over cards; both 0 when the bin has no interval.
+  double low = 5;
+  double high = 6;
 }
 
 // Starts (or joins) the model-quality graphs' computation: FSRS-7's
@@ -266,14 +290,20 @@ message ReviewMetricsProgress {
     // The sample role the predictions came from, such as
     // "validation_fold"; the graph names it, and roles are never mixed.
     string sample_role = 7;
+    // The calibration graph's bins, in bin order, empty bins left out.
+    repeated CalibrationBin bins = 8;
+    // The mean predicted probability and the share of remembered answers
+    // over every scored rating, for the panel's tiles.
+    double average_predicted = 9;
+    double actual_recall = 10;
   }
   State state = 1;
   uint32 job_id = 2;
   // One entry per algorithm, always all three, in menu order.
   repeated Series series = 3;
   string error = 4;
-  // The ratings both algorithms scored, and the ones left out: scored by
-  // one algorithm only, or by neither.
+  // The ratings every drawn algorithm scored, and the ones left out:
+  // scored by one algorithm only, or by neither.
   uint32 scored = 5;
   uint32 fsrs_only = 6;
   uint32 rwkv_only = 7;
@@ -282,6 +312,9 @@ message ReviewMetricsProgress {
   // and the ratings of the search after it that nothing has scored.
   int64 newest_scored_secs = 9;
   uint32 newer_reviews = 10;
+  // True when two or more algorithms are drawn, so every curve is
+  // restricted to the ratings they share.
+  bool shared_ratings = 11;
 }
 
 message GraphsResponse {
