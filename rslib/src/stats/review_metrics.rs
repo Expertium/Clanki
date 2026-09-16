@@ -29,6 +29,8 @@ const FSRS_ROLES: &[&str] = &["validation_fold", "post_optimization"];
 /// RWKV's weights are frozen and were trained on other people's reviews,
 /// and a replayed prediction is built from the reviews before it, so its
 /// raw output cannot have seen the review whatever role the row carries.
+/// With no honesty order to keep, it takes the role that covers the most
+/// reviews, so the comparison rests on as many ratings as possible.
 const RWKV_ROLES: &[&str] = &["test_fold", "post_optimization", "final_fit"];
 
 /// One model's cached predictions for the searched ratings, and the role
@@ -76,12 +78,14 @@ impl Collection {
             FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
             FSRS_ROLES,
             cutoff,
+            false,
         )?;
         let rwkv = read_predictions(
             storage,
             RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
             RWKV_ROLES,
             cutoff,
+            true,
         )?;
 
         let mut response = ReviewPredictionsResponse {
@@ -89,17 +93,36 @@ impl Collection {
             rwkv_role: rwkv.role.clone(),
             ..Default::default()
         };
+        // Two models with rows are compared, so they are scored on the
+        // ratings they share; one model alone is not a comparison, so it
+        // keeps all of its own ratings (spec ui.stats-model-metrics).
+        let shared = !fsrs.by_review.is_empty() && !rwkv.by_review.is_empty();
+        response.shared_ratings = shared;
         let mut ratings = ratings;
         ratings.sort_unstable_by_key(|entry| entry.id);
         for entry in &ratings {
-            match (fsrs.by_review.get(&entry.id), rwkv.by_review.get(&entry.id)) {
-                (Some(&fsrs_value), Some(&rwkv_value)) => {
-                    response.revlog_ids.push(entry.id.0);
-                    response.card_ids.push(entry.cid.0);
-                    response.remembered.push(entry.button_chosen > 1);
-                    response.fsrs_predictions.push(fsrs_value);
-                    response.rwkv_predictions.push(rwkv_value);
-                }
+            let fsrs_value = fsrs.by_review.get(&entry.id);
+            let rwkv_value = rwkv.by_review.get(&entry.id);
+            let scored = if shared {
+                fsrs_value.is_some() && rwkv_value.is_some()
+            } else {
+                fsrs_value.is_some() || rwkv_value.is_some()
+            };
+            if scored {
+                response.revlog_ids.push(entry.id.0);
+                response.card_ids.push(entry.cid.0);
+                response.remembered.push(entry.button_chosen > 1);
+                // a model without a row for this rating has no number
+                // here, and its series is absent rather than filled in
+                response
+                    .fsrs_predictions
+                    .push(fsrs_value.copied().unwrap_or(f32::NAN));
+                response
+                    .rwkv_predictions
+                    .push(rwkv_value.copied().unwrap_or(f32::NAN));
+            }
+            match (fsrs_value, rwkv_value) {
+                (Some(_), Some(_)) => {}
                 (Some(_), None) => response.fsrs_only += 1,
                 (None, Some(_)) => response.rwkv_only += 1,
                 (None, None) => response.unscored += 1,
@@ -108,19 +131,13 @@ impl Collection {
 
         // how fresh the predictions are: the newest rating either model has
         // scored, and the ratings of the search after it
-        let newest = [
-            storage.newest_cached_review_prediction(
-                FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
-                &fsrs.role,
-            )?,
-            storage.newest_cached_review_prediction(
-                RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
-                &rwkv.role,
-            )?,
-        ]
-        .into_iter()
-        .flatten()
-        .max();
+        let newest = ratings
+            .iter()
+            .filter(|entry| {
+                fsrs.by_review.contains_key(&entry.id) || rwkv.by_review.contains_key(&entry.id)
+            })
+            .map(|entry| entry.id)
+            .max();
         if let Some(newest) = newest {
             response.newest_scored_secs = newest.as_secs().0;
             response.newer_reviews = ratings
@@ -132,6 +149,17 @@ impl Collection {
         } else {
             response.newer_reviews = ratings.len().try_into().unwrap_or(u32::MAX);
         }
+
+        response.fsrs_bins = calibration_bins(
+            &response.fsrs_predictions,
+            &response.remembered,
+            &response.card_ids,
+        );
+        response.rwkv_bins = calibration_bins(
+            &response.rwkv_predictions,
+            &response.remembered,
+            &response.card_ids,
+        );
         Ok(response)
     }
 }
@@ -182,6 +210,25 @@ mod tests {
         col.storage
             .set_fsrs_review_retrievability_predictions(
                 &[FsrsReviewRetrievabilityCacheRow {
+                    revlog_id: review,
+                    prediction,
+                    sample_role: role,
+                    fold_index: -1,
+                }],
+                "test",
+            )
+            .unwrap();
+    }
+
+    fn store_rwkv_role(
+        col: &Collection,
+        review: RevlogId,
+        prediction: f32,
+        role: RwkvReviewRetrievabilitySampleRole,
+    ) {
+        col.storage
+            .set_rwkv_review_retrievability_predictions(
+                &[RwkvReviewRetrievabilityCacheRow {
                     revlog_id: review,
                     prediction,
                     sample_role: role,
@@ -276,6 +323,92 @@ mod tests {
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
+    fn one_algorithm_alone_keeps_all_of_its_ratings() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        let first = rate(&mut col, card, -30, 3);
+        let second = rate(&mut col, card, -20, 1);
+        // only RWKV has rows: one curve is not a comparison, so it keeps
+        // every rating it can score
+        store_rwkv(&col, first, 0.9);
+        store_rwkv(&col, second, 0.4);
+
+        let response = col.review_predictions("", 0)?;
+        assert_eq!(response.revlog_ids, vec![first.0, second.0]);
+        assert_eq!(response.rwkv_predictions, vec![0.9, 0.4]);
+        assert!(!response.shared_ratings);
+        assert!(response.fsrs_role.is_empty());
+        // FSRS-7 has no number for these ratings, and is not filled in
+        assert!(response.fsrs_predictions.iter().all(|value| value.is_nan()));
+        assert_eq!(response.rwkv_only, 2);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn rwkv_takes_the_role_with_the_most_rows() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        let reviews: Vec<RevlogId> = (0..5)
+            .map(|index| rate(&mut col, card, -30 + index, 3))
+            .collect();
+        // one post-optimization row, four final-fit rows: RWKV's roles
+        // carry no honesty order, so the bigger role wins
+        store_rwkv_role(
+            &col,
+            reviews[0],
+            0.5,
+            RwkvReviewRetrievabilitySampleRole::PostOptimization,
+        );
+        for review in &reviews[1..] {
+            store_rwkv_role(
+                &col,
+                *review,
+                0.8,
+                RwkvReviewRetrievabilitySampleRole::FinalFit,
+            );
+        }
+
+        let response = col.review_predictions("", 0)?;
+        assert_eq!(response.rwkv_role, "final_fit");
+        assert_eq!(response.revlog_ids.len(), 4);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn calibration_bins_and_their_intervals() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        let mut reviews = vec![];
+        for index in 0..20 {
+            let review = rate(
+                &mut col,
+                card,
+                -100 + index,
+                if index % 4 == 0 { 1 } else { 3 },
+            );
+            store_rwkv(&col, review, 0.75);
+            reviews.push(review);
+        }
+
+        let response = col.review_predictions("", 0)?;
+        // every rating has the same prediction, so they share one bin
+        assert_eq!(response.rwkv_bins.len(), 1);
+        let bin = &response.rwkv_bins[0];
+        assert_eq!(bin.count, 20);
+        assert_eq!(bin.index, bin_of(0.75) as u32);
+        // 15 of the 20 answers were remembered
+        assert!((bin.sum_remembered - 15.0).abs() < 1e-9);
+        assert!((bin.sum_predicted - 15.0).abs() < 1e-4);
+        // one card gives a degenerate interval: every resample is the same
+        assert!((bin.low - 0.75).abs() < 1e-9);
+        assert!((bin.high - 0.75).abs() < 1e-9);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
     fn the_period_selects_the_ratings() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
@@ -325,22 +458,163 @@ mod tests {
     }
 }
 
-/// The first role of `roles` that has any prediction for the searched
-/// ratings, and its rows; roles are never mixed.
+/// Bins of the calibration graph, over the predicted probability.
+const BIN_COUNT: usize = 20;
+/// Resamples of the cards for a bin's confidence interval.
+const BOOTSTRAP_ROUNDS: usize = 500;
+const LOW_PERCENTILE: f64 = 0.025;
+const HIGH_PERCENTILE: f64 = 0.975;
+/// A fixed seed, so the same reviews always give the same interval.
+const BOOTSTRAP_SEED: u64 = 0x5f37_59df;
+
+/// The bin of a predicted probability: the bins are log-spaced, so the
+/// crowded high probabilities get more of them than the low ones (the same
+/// binning as the Search Stats Extended fork).
+fn bin_of(prediction: f32) -> usize {
+    let scaled = ((BIN_COUNT + 1) as f64).ln() * prediction.clamp(0.0, 1.0) as f64;
+    (scaled.exp().floor() as usize)
+        .saturating_sub(1)
+        .min(BIN_COUNT - 1)
+}
+
+/// One card's answers in one bin, for the bootstrap.
+#[derive(Default, Clone, Copy)]
+struct BinTally {
+    remembered: f64,
+    count: f64,
+}
+
+/// The calibration bins of one model over the scored ratings: each bin's
+/// mean prediction, its share of remembered answers, and the 2.5 and 97.5
+/// percentiles of that share over 500 resamples of the cards (spec
+/// ui.stats-model-metrics). Resampling cards rather than reviews keeps a
+/// card's own reviews together, because they are not independent.
+fn calibration_bins(
+    predictions: &[f32],
+    remembered: &[bool],
+    card_ids: &[i64],
+) -> Vec<anki_proto::stats::CalibrationBin> {
+    let mut sums = vec![BinTally::default(); BIN_COUNT];
+    let mut predicted = vec![0.0f64; BIN_COUNT];
+    let mut by_card: HashMap<i64, Vec<BinTally>> = HashMap::new();
+    for ((&prediction, &remembered), &card_id) in predictions.iter().zip(remembered).zip(card_ids) {
+        if !prediction.is_finite() || !(0.0..=1.0).contains(&prediction) {
+            continue;
+        }
+        let bin = bin_of(prediction);
+        let answer = f64::from(remembered);
+        predicted[bin] += prediction as f64;
+        sums[bin].remembered += answer;
+        sums[bin].count += 1.0;
+        let card = by_card
+            .entry(card_id)
+            .or_insert_with(|| vec![BinTally::default(); BIN_COUNT]);
+        card[bin].remembered += answer;
+        card[bin].count += 1.0;
+    }
+
+    let intervals = bootstrap_intervals(&by_card.into_values().collect::<Vec<_>>());
+    (0..BIN_COUNT)
+        .filter(|&bin| sums[bin].count > 0.0)
+        .map(|bin| anki_proto::stats::CalibrationBin {
+            index: bin as u32,
+            sum_predicted: predicted[bin],
+            sum_remembered: sums[bin].remembered,
+            count: sums[bin].count as u32,
+            low: intervals[bin].0,
+            high: intervals[bin].1,
+        })
+        .collect()
+}
+
+/// For each bin, the 2.5 and 97.5 percentiles of its share of remembered
+/// answers over resamples of the cards; (0, 0) for a bin no resample fills.
+fn bootstrap_intervals(cards: &[Vec<BinTally>]) -> Vec<(f64, f64)> {
+    let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
+    if cards.is_empty() {
+        return vec![(0.0, 0.0); BIN_COUNT];
+    }
+    let mut state = BOOTSTRAP_SEED;
+    let mut next = || {
+        // xorshift64*, so the interval is the same on every machine
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    for _ in 0..BOOTSTRAP_ROUNDS {
+        let mut remembered = vec![0.0f64; BIN_COUNT];
+        let mut counts = vec![0.0f64; BIN_COUNT];
+        for _ in 0..cards.len() {
+            let card = &cards[(next() % cards.len() as u64) as usize];
+            for bin in 0..BIN_COUNT {
+                remembered[bin] += card[bin].remembered;
+                counts[bin] += card[bin].count;
+            }
+        }
+        for bin in 0..BIN_COUNT {
+            if counts[bin] > 0.0 {
+                shares[bin].push(remembered[bin] / counts[bin]);
+            }
+        }
+    }
+    shares
+        .into_iter()
+        .map(|mut values| {
+            if values.is_empty() {
+                return (0.0, 0.0);
+            }
+            values.sort_by(|a, b| a.total_cmp(b));
+            (
+                percentile(&values, LOW_PERCENTILE),
+                percentile(&values, HIGH_PERCENTILE),
+            )
+        })
+        .collect()
+}
+
+/// The percentile of sorted values, interpolated between the two nearest.
+fn percentile(values: &[f64], percentile: f64) -> f64 {
+    let position = (values.len() - 1) as f64 * percentile;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    let weight = position - lower as f64;
+    values[lower] * (1.0 - weight) + values[upper] * weight
+}
+
+/// One model's rows, from a single sample role: the first role of `roles`
+/// that has any row, or, when `most_rows` is set, the role of `roles` with
+/// the most rows. Roles are never mixed.
 fn read_predictions(
     storage: &crate::storage::SqliteStorage,
     table: &str,
     roles: &[&str],
     after: TimestampMillis,
+    most_rows: bool,
 ) -> Result<CachedPredictions> {
-    for role in roles {
-        let rows = storage.cached_review_predictions(table, role, after)?;
-        if !rows.is_empty() {
-            return Ok(CachedPredictions {
-                role: (*role).to_string(),
-                by_review: rows.into_iter().collect(),
-            });
-        }
-    }
-    Ok(CachedPredictions::none())
+    let stored = storage.cached_review_prediction_roles(table)?;
+    let count_of = |role: &str| {
+        stored
+            .iter()
+            .find(|(stored, _)| stored == role)
+            .map_or(0, |(_, count)| *count)
+    };
+    let chosen = if most_rows {
+        roles
+            .iter()
+            .filter(|role| count_of(role) > 0)
+            .max_by_key(|role| count_of(role))
+    } else {
+        roles.iter().find(|role| count_of(role) > 0)
+    };
+    let Some(role) = chosen else {
+        return Ok(CachedPredictions::none());
+    };
+    Ok(CachedPredictions {
+        role: (*role).to_string(),
+        by_review: storage
+            .cached_review_predictions(table, role, after)?
+            .into_iter()
+            .collect(),
+    })
 }

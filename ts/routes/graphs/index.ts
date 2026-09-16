@@ -40,6 +40,7 @@ export async function setupGraphs(
 import AddedGraph from "./AddedGraph.svelte";
 import ButtonsGraph from "./ButtonsGraph.svelte";
 import CalendarGraph from "./CalendarGraph.svelte";
+import CalibrationGraph from "./CalibrationGraph.svelte";
 import CardCounts from "./CardCounts.svelte";
 import DifficultyGraph from "./DifficultyGraph.svelte";
 import EaseGraph from "./EaseGraph.svelte";
@@ -68,6 +69,7 @@ export const graphComponents = {
     RetrievabilityGraph,
     TotalKnowledgeGraph,
     RocGraph,
+    CalibrationGraph,
     HourGraph,
     ButtonsGraph,
     AddedGraph,
