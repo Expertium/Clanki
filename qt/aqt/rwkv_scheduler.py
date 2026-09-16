@@ -142,6 +142,9 @@ _FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_fsrs_review_retrievabili
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_REVIEW_UNDO_LIMIT = 30
 _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS = 120.0
+# how long a published RWKV stats score map stands in for a new one
+# (spec ui.stats-rwkv-scores-kept)
+_RWKV_STATS_SCORES_REUSE_SECS = 600.0
 _RWKV_STATS_WARMUP_WAIT_INTERVAL_SECS = 0.05
 _RWKV_INSTANT_R_SEARCH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])prop:rwkv:r(?=[<>=!])",
@@ -264,6 +267,9 @@ _rwkv_stats_prepare_in_flight: dict[
     RwkvStatsPrepareKey,
     Future[RwkvStatsPreparationStatus],
 ] = {}
+# the last preparation that published a score map, and when it published it
+# (spec ui.stats-rwkv-scores-kept)
+_rwkv_stats_prepare_memo: tuple[RwkvStatsPrepareKey, float] | None = None
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_build_started = False
@@ -5993,6 +5999,16 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_curve_retrievability=prepare_curve_retrievability,
         )
         prepare_generation = state_token.state_generation
+        if prepare_key is not None and _rwkv_stats_prepare_memo_is_current(prepare_key):
+            # the map this request needs is already published: the Stats page
+            # switched mode or changed its period, and RWKV's answer does not
+            # depend on either (spec ui.stats-rwkv-scores-kept)
+            logger.debug(
+                "RWKV stats preparation reused the published scores: search=%r",
+                search,
+            )
+            prepare_status = RwkvStatsPreparationStatus.READY
+            return prepare_status
         if prepare_key is not None:
             prepare_future, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
             if not owns_prepare:
@@ -6151,6 +6167,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return RwkvStatsPreparationStatus.FAILED
     finally:
         if owns_prepare and prepare_key is not None and prepare_future is not None:
+            _record_rwkv_stats_prepare_memo(prepare_key, prepare_status)
             _finish_rwkv_stats_prepare(
                 prepare_key,
                 prepare_future,
@@ -6501,6 +6518,46 @@ def _reviewer_backend_state_generation(backend: object | None = None) -> int:
         return 0
 
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _rwkv_stats_prepare_memo_is_current(key: RwkvStatsPrepareKey) -> bool:
+    """Whether the score map published for `key` still stands (spec
+    ui.stats-rwkv-scores-kept).
+
+    The key already carries everything that makes the map wrong: the backend
+    and the collection, the day, RWKV's state generation, the review-input and
+    study-queue generations, the search and the flags. It cannot carry the one
+    thing that keeps moving, the seconds since each card's last review, so the
+    map is reused only for `_RWKV_STATS_SCORES_REUSE_SECS`.
+    """
+
+    with _rwkv_stats_prepare_lock:
+        memo = _rwkv_stats_prepare_memo
+    if memo is None or memo[0] != key:
+        return False
+    return time.monotonic() - memo[1] <= _RWKV_STATS_SCORES_REUSE_SECS
+
+
+def _record_rwkv_stats_prepare_memo(
+    key: RwkvStatsPrepareKey | None,
+    status: RwkvStatsPreparationStatus,
+) -> None:
+    global _rwkv_stats_prepare_memo
+
+    with _rwkv_stats_prepare_lock:
+        if key is not None and status == RwkvStatsPreparationStatus.READY:
+            _rwkv_stats_prepare_memo = (key, time.monotonic())
+        else:
+            _rwkv_stats_prepare_memo = None
+
+
+def forget_rwkv_stats_scores() -> None:
+    """Drop the published-score memo, so the next stats request scores again."""
+
+    global _rwkv_stats_prepare_memo
+
+    with _rwkv_stats_prepare_lock:
+        _rwkv_stats_prepare_memo = None
 
 
 def _begin_rwkv_stats_prepare(
@@ -22673,6 +22730,11 @@ def _set_rwkv_stats_graph_scores(
     )
     if not callable(set_scores):
         return
+
+    # any other publication may push the memo's map out of the collection's
+    # eight stats searches, so the memo only survives its own publication:
+    # the preparation that owns the work records it again right afterwards
+    forget_rwkv_stats_scores()
 
     target_retentions_by_card_id = target_retentions_by_card_id or {}
     intervening_reviews_by_card_id = intervening_reviews_by_card_id or {}

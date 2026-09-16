@@ -34,8 +34,8 @@ with "…" placeholders meanwhile) is not done. In
 Simple mode the deck list's bottom row shows Find Decks Online (the button
 formerly named "Get Shared") and Create Deck but not Import File (Import
 stays under File); these buttons share one width in both modes, the
-deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
-RWKV-Curve, Reschedule All Decks) and no Advance or Postpone entries
+deck menu (the gear next to a deck) has no RWKV submenu (Reschedule this
+deck, Reschedule all decks) and no Advance or Postpone entries
 (`ui.advance-postpone`), nor has the Browser's Cards menu, Tools > Add-ons
 is shown in both modes,
 and the
@@ -75,6 +75,44 @@ entries),
 once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
+
+## ui.simple-recall-wording
+
+Given Simple mode (`ui.mode-switch`), no text the user sees calls the chance
+of recalling a card now "retrievability"; it is called "Probability of
+recall" instead. Advanced mode keeps the technical word. The places that show
+the word in both modes are:
+
+| Where                                            | Simple mode                                           | Advanced mode             |
+| ------------------------------------------------ | ----------------------------------------------------- | ------------------------- |
+| Browser column (name and notes tooltip)           | Probability of recall                                 | Retrievability            |
+| Card info, the forgetting-curve tooltip           | Probability of recall                                 | Retrievability            |
+| Filtered deck, the "Cards selected by" orders     | Ascending / Descending probability of recall          | Ascending / Descending retrievability |
+| Filtered-deck rebuild failure (RWKV)              | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt. | RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt. |
+
+The Browser reads the mode when it builds its column list and the
+filtered-deck dialog when it opens, so a mode switch reaches those names the
+next time the window is opened. Only the text
+changes: the search syntax (`prop:r`), the column key `retrievability`, the
+order of the cards, and every API and protobuf name stay as they are. The graphs,
+deck-options settings and dialogs that name retrievability show in Advanced
+mode only (`ui.mode-switch`, `ui.advance-postpone`,
+`deck-options.simple-view`), so they keep the technical word everywhere.
+
+**Why:** Andrew, 2026-09-16: "don't use the word 'retrievability' in Simple
+mode"; he chose the replacement wording "probability of recall". Simple mode
+is for users who do not read the FSRS papers. "Probability of recall" states
+what the number is; "memory strength" would be wrong, because that is
+stability.
+
+**Pinned by:** `simple_mode_names_the_retrievability_column_in_plain_words`
+(`rslib/src/browser_table.rs`);
+`simple_mode_names_the_filtered_deck_orders_in_plain_words`
+(`rslib/src/decks/service.rs`); "Simple mode's forgetting-curve tooltip does
+not say retrievability" and "Advanced mode's forgetting-curve tooltip keeps
+retrievability" (`ts/routes/card-info/forgetting-curve.test.ts`);
+`test_filtered_deck_failure_avoids_retrievability_in_simple_mode`
+(`qt/tests/test_ui_mode.py`).
 
 ## ui.advance-postpone
 
@@ -348,33 +386,102 @@ Given the Stats page, its graphs draw only the collection's algorithm
 
 Under RWKV there is no FSRS-7 series beside RWKV's and no FSRS-7 value for
 a card RWKV has not scored. While RWKV has not scored the page's search yet
-(its state loading or warming up), the Retrievability graph shows
-"Calculating…" instead of values, and the page asks again every 2 seconds
-until the scores arrive; under FSRS-7 no RWKV score is prepared at all
-(`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
+(its state loading or warming up, or RWKV scoring the searched cards), the
+Retrievability graph shows "Calculating…" instead of values, and the page
+asks again every 2 seconds until the scores arrive. The page's other graphs
+do not wait for RWKV's scores: they are drawn first, and the Retrievability
+graph fills in when the scores arrive. Under FSRS-7 no RWKV score is
+prepared at all (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
 each card now, while card info evaluates the curve stored at the card's
-last review (`ui.card-info-one-algorithm`); the two can differ slightly.
+last review (`ui.card-info-one-algorithm`); the two differ, on Andrew's
+collection by 0.04 in the median card and by up to 0.33.
 
 **Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
 RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
-RWKV has no difficulty and RWKV-Instant no stability.
+RWKV has no difficulty and RWKV-Instant no stability. 2026-09-16: RWKV
+scoring every card of a big deck takes minutes (about 4 on two cores for
+Andrew's 159k cards), during which the Stats page showed only its spinner.
 
 **Pinned by:** `retrievability_graph_uses_rwkv_scores_for_matching_search`,
 `fsrs7_stats_show_no_rwkv_values_and_rwkv_curve_uses_the_curve`
 (`rslib/src/stats/graphs/retrievability.rs`);
 `test_rwkv_curve_collection_active_reads_the_algorithm`
-(`qt/tests/test_rwkv_scheduler.py`); "while RWKV calculates, the graph shows
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_graphs_leave_rwkv_retrievability_for_later_when_asked`
+(`qt/tests/test_mediasrv.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
+
+## ui.stats-rwkv-scores-kept
+
+Given the Stats page asks for the Retrievability graph a second time while
+nothing RWKV reads has changed — the same search, the same day, the same
+RWKV state, the same review inputs and study queues — Clanki reuses the
+score map it published the first time instead of scoring every card again,
+for up to 10 minutes after that first map was published. Any answer, any
+change of the cards or the queues, a new day, another search and any other
+publication of a score map end the reuse, and the next request scores again.
+
+The graph then shows RWKV's R as of the moment the map was built, not of the
+moment of the request. The scoring itself takes minutes on a large
+collection, so the first map is already that old when the page first draws
+it.
+
+**Why:** Andrew, 2026-09-16: switching the Stats page between Simple and
+Advanced mode, or its period between 12 months and all history, must not
+start the RWKV calculation from zero again. RWKV's answer depends on neither
+the mode nor the period. On Andrew's collection one pass costs 230 seconds
+and 229 of them are RWKV scoring the 38,523 cards of the search.
+
+**Pinned by:** `test_prepare_stats_retrievability_scores_reuses_published_scores`,
+`test_prepare_stats_retrievability_scores_scores_again_for_another_search`,
+`test_prepare_stats_retrievability_scores_scores_again_after_the_reuse_window`,
+`test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
+(`qt/tests/test_rwkv_scheduler.py`)
 
 ## ui.stats-total-knowledge
 
 Given the Stats page, in both Simple and Advanced mode, the Total Knowledge
 graph shows, for each day from the first rating of a card in the page's
-search through today, two lines: the cards of the search rated at least
-once by that day (the upper bound), and the sum of the cards' R that day
-under the collection's algorithm only (`sched.one-global-algorithm`,
-`ui.stats-one-algorithm`). It always covers the whole review history; the
-page's period does not apply.
+search through today, the sum of the cards' R that day under the
+collection's algorithm only ("Known", blue; `sched.one-global-algorithm`,
+`ui.stats-one-algorithm`), and it may show a second line, the cards of the
+search rated at least once by that day ("Reviewed", grey, the upper bound).
+It always covers the whole review history; the page's period does not apply.
+
+Simple mode never draws "Reviewed" and has no control for it. Under the
+graph it reads "This is Clanki's best estimate of how many cards you knew at
+each point in your review history."
+
+Advanced mode has a checkbox next to the legend, labelled "Reviewed", which
+draws that line and is on when the graph loads, so Advanced mode looks as it
+did before the checkbox. Under the graph it names the collection's algorithm
+("Algorithm: FSRS-7", "Algorithm: RWKV-Curve" or "Algorithm: RWKV-Instant",
+the names of the deck-options Algorithm list) and reads "Reviewed is an upper
+bound on your knowledge: it counts every card you have ever rated, as if you
+never forgot one."
+
+The line under the title reads, in Advanced mode, "The number of cards you
+would recall on each day (the sum of their retrievability), over your whole
+review history."; in Simple mode it says the same without the word
+retrievability: "The number of cards you would recall on each day (each card
+counts as its probability of recall), over your whole review history."
+
+Hovering a day shows the day's date, "Known: N cards" with N the day's sum
+rounded to a whole number of cards, and, where the graph draws it,
+"Reviewed: N cards". The rounding is for the tooltip only; the sum keeps
+every decimal.
+
+Hiding "Reviewed" changes the drawing only: the graph asks the backend for
+the same data, the y axis keeps the bound's maximum as its top, the hover
+tooltip drops the "Reviewed" row, and under RWKV the sweep line still moves
+as the job reaches each day.
+
+A mode switch does not compute the graph again. The Stats page keeps one
+block per graph, keyed by the graph, so a graph that both modes show keeps
+its block and everything in it over a switch: the loaded response, the RWKV
+job and the days it has already computed, and the state of the "Reviewed"
+checkbox. The graph asks the backend again only when the page's search
+changes or the page is opened again.
 
 A day is a scheduler day ("next day starts at" applies). A card's R on a
 day comes from its last event on or before that day: a rating that day
@@ -397,7 +504,8 @@ before the first interday review) gives 0 on the days after it. The
 replay runs in the backend off the main thread; while it runs the graph
 reads "Calculating…".
 
-Under RWKV the upper bound shows at once. A background RWKV job replays the
+Under RWKV the upper bound, where the mode draws it, shows at once. A
+background RWKV job replays the
 collection's review history day by day with a separate RWKV runtime and
 sums the search's cards; the days it has not reached are blurred, and a
 vertical line sweeps from left to right as it goes. RWKV's history of a card
@@ -413,7 +521,13 @@ leaving the page stops the job. With no usable RWKV model the graph reads
 algorithm, FSRS-7 with each card's preset parameters and a complete replay
 from the first review, the full history whatever the period, and for the
 slow RWKV a blurred bound with a sweep line; later the same day: shown in
-Simple mode too.
+Simple mode too. 2026-09-16: the bound is a power user's line, so Simple
+mode shows the estimate alone with one sentence of plain English, and
+Advanced mode gets the checkbox, the algorithm's name and the warning that
+the bound assumes a perfect memory. Simple mode must not say
+"retrievability", so it has its own subtitle. And a mode switch must not
+throw away work the graph has already done, so the page keys its graph
+blocks.
 
 **Pinned by:** `fsrs7_sums_match_the_cards_historical_memory_states`,
 `total_knowledge_covers_the_whole_history`,
@@ -424,7 +538,11 @@ pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
 (`rslib/src/scheduler/fsrs/curve.rs`);
 `curve_day_sums_from_warm_up_are_the_stored_curves` (`rslib/src/rwkv/mod.rs`);
 `qt/tests/test_total_knowledge.py`;
-`ts/routes/graphs/total-knowledge.test.ts`.
+`ts/routes/graphs/total-knowledge.test.ts`;
+"a mode switch keeps one block per graph that both modes show"
+(`ts/routes/graphs/ui-mode.test.ts`);
+"Total Knowledge: the modes differ, and switching does not load it again"
+(`ts/tests/e2e/graphs.test.ts`).
 
 ## ui.browser-interval-average
 

@@ -265,6 +265,78 @@ class TestGraphs:
             "1" if prepared else None
         )
 
+    @pytest.mark.parametrize("rwkv", [True, False])
+    def test_graphs_leave_rwkv_retrievability_for_later_when_asked(
+        self, monkeypatch: pytest.MonkeyPatch, rwkv: bool
+    ) -> None:
+        # Pins spec/ui.md#ui.stats-one-algorithm: under RWKV the other graphs
+        # do not wait for RWKV to score the search
+        import aqt
+        from anki.stats_pb2 import GraphsRequest
+        from aqt.mediasrv import (
+            RWKV_RETRIEVABILITY_LATER_HEADER,
+            RWKV_STATS_PENDING_HEADER,
+            app,
+        )
+        from aqt.mediasrv import graphs as graphs_handler
+        from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
+
+        prepared: list[str] = []
+        backend_requests: list[GraphsRequest] = []
+
+        def prepare(
+            reviewer: object, search: str, **kwargs: object
+        ) -> RwkvStatsPreparationStatus:
+            prepared.append(search)
+            return RwkvStatsPreparationStatus.PENDING
+
+        def graphs_raw(data: bytes) -> bytes:
+            backend_request = GraphsRequest()
+            backend_request.ParseFromString(data)
+            backend_requests.append(backend_request)
+            return b"other-graphs"
+
+        backend = SimpleNamespace(graphs_raw=graphs_raw)
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            SimpleNamespace(col=SimpleNamespace(_backend=backend)),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.prepare_stats_retrievability_scores", prepare
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.rwkv_collection_active", lambda reviewer: rwkv
+        )
+        monkeypatch.setattr(
+            "aqt.mediasrv.raw_backend_request",
+            lambda endpoint: lambda: b"graph-data",
+        )
+
+        data = GraphsRequest(
+            search="deck:current", days=365, rwkv_retrievability_later=True
+        ).SerializeToString()
+        with app.test_request_context(data=data):
+            response = graphs_handler()
+
+        if rwkv:
+            # every graph but Retrievability, and no RWKV scoring yet
+            assert prepared == []
+            assert response.get_data() == b"other-graphs"
+            assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) == "1"
+            assert response.headers.get(RWKV_STATS_PENDING_HEADER) is None
+            (backend_request,) = backend_requests
+            assert set(backend_request.graphs) == set(GraphsRequest.Graph.values()) - {
+                GraphsRequest.RETRIEVABILITY
+            }
+        else:
+            # FSRS-7: one response with every graph, as before
+            assert prepared == ["deck:current"]
+            assert response.get_data() == b"graph-data"
+            assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) is None
+            assert backend_requests == []
+
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:
     path = os.path.join(tmpdir, filename)

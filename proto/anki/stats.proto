@@ -125,6 +125,10 @@ message GraphsRequest {
   // every graph. The Stats page in Simple mode asks only for the graphs it
   // shows.
   repeated Graph graphs = 3;
+  // For the media server: under RWKV, leave Retrievability out and say so
+  // (the page then asks for it on its own), so that the other graphs do
+  // not wait for RWKV to score every searched card. The backend ignores it.
+  bool rwkv_retrievability_later = 4;
 }
 
 // Total Knowledge (spec ui.stats-total-knowledge): the search's cards over

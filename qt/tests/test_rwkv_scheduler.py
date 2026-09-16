@@ -18643,3 +18643,127 @@ def test_rwkv_card_info_curve_result_is_pending_while_rwkv_is_not_ready(
     )
     assert result.curve is None and result.pending
     assert not backend.calls
+
+
+def _stats_reuse_scaffold(
+    days_elapsed: int = 42,
+) -> tuple[Any, SimpleNamespace]:
+    """A collection and an RWKV backend for the score-reuse tests
+    (spec ui.stats-rwkv-scores-kept)."""
+
+    class Backend:
+        def __init__(self) -> None:
+            self.predicted_card_ids: list[int] = []
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            self.predicted_card_ids.append(card.id)
+            return RwkvReviewPrediction(retrievability=0.75)
+
+        def review_answered(self, *, reviewer: object, card: object, ease: int) -> None:
+            raise AssertionError("unexpected answer update")
+
+    class Decks:
+        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
+            assert deck_id == 100
+            return {"id": 1000, "rwkvReviewEnabled": True}
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.days_elapsed = days_elapsed
+
+        def _timing_today(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                days_elapsed=self.days_elapsed,
+                next_day_at=(self.days_elapsed + 1) * 86_400,
+            )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            assert args == ()
+            if "from revlog" in sql:
+                return []
+            return [(1, 10, 100, 0, 2, 2, 50, 0, 4, 2500, 5, 1, "")]
+
+    class Collection:
+        def __init__(self, rpc: _RwkvQueueScoreRpc) -> None:
+            self._backend = rpc
+            self.db = DB()
+            self.decks = Decks()
+            self.sched = Scheduler()
+
+        def find_cards(self, search: str, order: bool = False) -> list[int]:
+            return [1]
+
+    backend = Backend()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(_RwkvQueueScoreRpc())))
+    return backend, reviewer
+
+
+def test_prepare_stats_retrievability_scores_reuses_published_scores() -> None:
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        first = prepare_stats_retrievability_scores(reviewer, "rated:7")
+        second = prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert first == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert second == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    # the second request is the Stats page switching mode or period: it must
+    # not score the search again
+    assert backend.predicted_card_ids == [1]
+
+
+def test_prepare_stats_retrievability_scores_scores_again_for_another_search() -> None:
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        prepare_stats_retrievability_scores(reviewer, "deck:current")
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert backend.predicted_card_ids == [1, 1, 1]
+
+
+def test_prepare_stats_retrievability_scores_scores_again_after_the_reuse_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_STATS_SCORES_REUSE_SECS", -1.0)
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert backend.predicted_card_ids == [1, 1]
+
+
+def test_prepare_stats_retrievability_scores_scores_again_after_a_new_day() -> None:
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        reviewer.mw.col.sched.days_elapsed += 1
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert backend.predicted_card_ids == [1, 1]

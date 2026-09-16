@@ -10,8 +10,6 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from markdown import markdown
-
 import aqt
 import aqt.advance_postpone
 import aqt.browser
@@ -508,6 +506,8 @@ class Browser(QMainWindow):
         try:
             normed = self.col.build_search_string(text)
         except SearchError as err:
+            from markdown import markdown
+
             showWarning(markdown(str(err)))
         except Exception as err:
             showWarning(str(err))
