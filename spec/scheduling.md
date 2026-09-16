@@ -410,6 +410,11 @@ Python replay query (`_historical_rwkv_review_rows`,
 re-derives the start row, so the reviewer's replay and Grade Now cannot drift
 apart: Grade Now reads the same query, filtered to the graded card.
 
+The two SQL texts are held together by the backend fingerprint, which hashes
+the rows the backend read and compares them with the rows Python read. A text
+that drifts reports `history_is_valid = false` instead of disagreeing in
+silence.
+
 The Forget cut applies **only** to a card with no rated Learning row. A card
 that has a learning start keeps that start row, so a Forget after it is ignored
 and the rows from before it stay. A card with no learning start whose last row
@@ -443,7 +448,9 @@ may cut at.
 `test_historical_replay_keeps_a_learning_start_over_a_later_forget`,
 `test_grade_now_and_the_replay_agree_on_a_forgotten_fallback_card`,
 `test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start`
-(`qt/tests/test_rwkv_scheduler.py`).
+(`qt/tests/test_rwkv_scheduler.py`) and
+`test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint`
+(`qt/tests/test_rwkv_replay_sql_drift.py`).
 
 ## sched.rwkv-exact-elapsed
 
