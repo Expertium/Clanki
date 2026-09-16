@@ -15,7 +15,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { expect, test } from "./fixtures";
-import { bridgeCalls, decodeRequestBody, editableField, isRpc } from "./helpers";
+import { bridgeCalls, chooseEditorMode, decodeRequestBody, editableField, isRpc } from "./helpers";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "anki-e2e-media-"));
 test.afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -70,6 +70,9 @@ test("attach button uses openFilePicker+addMediaFromPath RPCs, not the Qt bridge
 });
 
 test("record button uses recordAudio+addMediaFromPath RPCs and plays the file", async ({ editor: page }) => {
+    // Record audio is an Advanced-mode button (spec ui.editor-simple-view).
+    await chooseEditorMode(page, "Advanced");
+
     const wavName = `e2e-record-${Date.now()}.wav`;
     const wavPath = path.join(tmpDir, wavName);
     fs.writeFileSync(wavPath, Buffer.from(""));
@@ -163,6 +166,9 @@ test("legacy attach button delegates to the Qt bridge and inserts resolved media
 });
 
 test("legacy record button delegates to the Qt bridge and inserts resolved media on refocus", async ({ legacyEditor: page }) => {
+    // Record audio is an Advanced-mode button (spec ui.editor-simple-view).
+    await chooseEditorMode(page, "Advanced");
+
     const legacyRoot = page.locator(".note-editor").nth(1);
     const rpcHits = await legacyMediaRoundTrip(page, {
         button: recordButton(legacyRoot),

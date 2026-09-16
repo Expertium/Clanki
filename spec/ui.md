@@ -48,8 +48,10 @@ redraws as above; it does not wait for Save, and closing without saving
 keeps the new mode. The Stats page has the same control at the top right of
 its top bar, with the same effect: in Simple mode the page shows only the
 Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
-order; Advanced mode shows every graph. The page takes the mode when it
-loads and from its own switch. Hidden settings keep their stored values and
+order; Advanced mode shows every graph. The note editor has the same control
+at the right end of its toolbar row, and Simple mode there hides a part of
+the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
+mode when it loads and from its own switch. Hidden settings keep their stored values and
 keep taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
@@ -74,7 +76,44 @@ entries),
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
 once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
-graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
+graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
+"Simple mode shows only the Simple editor buttons, in toolbar order"
+(`ts/routes/editor/ui-mode.test.ts`).
+
+## ui.editor-simple-view
+
+Given the note editor (Add, Edit Current, the Browser's editing pane) in
+Simple mode (`ui.mode-switch`), its toolbar shows Fields..., Bold, Italic,
+Underline, the text colour, Remove formatting and Attach pictures/audio/video,
+and hides Cards..., the editor's own settings gear, Superscript, Subscript,
+the text highlight colour, Unordered list, Ordered list, Alignment, Record
+audio and Equations (MathJax/LaTeX). Advanced mode shows every one of them.
+The buttons an add-on adds (`editor_did_init_buttons`,
+`editor_did_init_left_buttons`) show in both modes. The field list, the
+audio play buttons inside the fields and the Tags row show in both modes.
+A hidden button stays in the page and is only hidden from sight, so its
+keyboard shortcut still runs it (Ctrl+L for Cards..., Ctrl+= and Ctrl+Shift+= for
+Superscript and Subscript, Ctrl+, and Ctrl+. for the lists, Ctrl+Shift+, and
+Ctrl+Shift+. for the indents, F5 for Record audio, the Ctrl+M and Ctrl+T
+combinations for the equations), its entry stays in the Remove formatting
+list, and the format it registers keeps reading and writing existing HTML.
+The switch sits at the right end of the toolbar row and changes the toolbar
+at once: the note is not reloaded and text the user has typed is kept.
+
+**Why:** plan item 2 — the Simplified/Advanced split, Simple by default.
+Andrew, 2026-09-16, chose this list: a beginner writes text, colours it,
+attaches media and tags the note; card templates, the block formatting and
+MathJax are power-user tools. Tags stay in both modes because tags are data,
+and Anki itself writes the leech tag. Add-on buttons stay because Clanki must
+not hide a feature the user installed on purpose. Hiding a button is a UI
+change, not a behavior change, so the shortcut and the feature keep working.
+
+**Pinned by:** "Simple mode shows only the Simple editor buttons, in toolbar
+order", "Advanced mode shows every editor button", "the Advanced-only buttons
+are the ones Simple drops" (`ts/routes/editor/ui-mode.test.ts`); "the editor
+switch changes the toolbar at once and keeps the typed text", "a hidden
+button keeps its shortcut", "add-on buttons show in both modes"
+(`ts/tests/e2e/editor-ui-mode.spec.ts`).
 
 ## ui.simple-recall-wording
 
@@ -153,7 +192,9 @@ the RWKV reschedule actions.
 
 ## ui.review-heatmap
 
-Given the collection flag `reviewHeatmapEnabled` on (the default), Clanki
+Given the collection flag `reviewHeatmapEnabled` on — its value in a new
+collection, so a new user gets the heatmap out of the box, while a
+collection where the user turned it off keeps it off — Clanki
 draws a review heatmap — the Review Heatmap add-on (Glutanimate, AGPLv3)
 made native: a calendar of reviews per day with the due forecast in a
 second colour, previous / today / next navigation, and four figures
@@ -183,10 +224,13 @@ latter on by default); and decks left out of the main-screen heatmap, with
 their subdecks. The settings are stored in the collection config under
 `reviewHeatmap` and sync. Until they are first saved, the add-on's stored
 settings are used (its `heatmap` collection config and profile entries),
-except a color scheme left at the add-on's own default. The heatmap's gear
-opens the tab; Shift+click on the gear cycles the color scheme and
-Shift+click on "today" cycles the calendar mode. With the switch off, or
-where neither the calendar nor the figures show, nothing is computed.
+except a color scheme left at the add-on's own default. A gear button at the
+right of the heatmap's controls opens the tab — the same gear icon the deck
+list draws for deck options (`imgs/gears.svg`), in the size and the grey of
+the three navigation buttons beside it; Shift+click on the gear cycles the
+color scheme and Shift+click on "today" cycles the calendar mode. With the
+switch off, or where neither the calendar nor the figures show, nothing is
+computed.
 
 Given the Review Heatmap add-on installed and enabled at start-up, Clanki
 disables it before add-ons load (both would draw a heatmap) and, the first
@@ -200,13 +244,18 @@ before.
 **Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
 settings, in a Preferences tab of their own, magenta by default, and retire
 the add-on with a one-time notice. Later the same day: a user who tries to
-enable the add-on must be told that Clanki has this built in.
+enable the add-on must be told that Clanki has this built in. Andrew,
+2026-09-16: the settings button carried the add-on's own three-bar mark,
+which does not say "settings" to a reader; it now shows the gear that the
+rest of Clanki uses.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
 colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
 link, disabling the add-on, the one-time notice,
+`test_the_settings_button_shows_the_deck_lists_gear`,
+`test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off`,
 `test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
 `test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`

@@ -83,6 +83,19 @@ def test_render_report_marks_view_and_falls_back_without_data() -> None:
     assert "/_anki/js/vendor/anki-review-heatmap.js" in html
 
 
+def test_the_settings_button_shows_the_deck_lists_gear() -> None:
+    today = 100 * DAY
+    report = compute_activity([(today, 12)], [], today, offset=4)
+    html = render_report(report, HeatmapView.deckbrowser, current_deck_only=False)
+    # the same gear the deck list draws, not the add-on's own three-bar mark
+    assert "/_anki/imgs/gears.svg" in html
+    assert "heatmap-options.svg" not in html
+    # size, place and tooltip of the button are unchanged
+    assert '<div class="hm-btn opts-btn" title="Settings' in html
+    assert ".heatmap .heatmap-controls .hm-btn {" in html
+    assert "width: 28px;" in html
+
+
 def _heatmap(enabled: bool, stored: object = None) -> ReviewHeatmap:
     col = MagicMock()
     col.get_config_bool.side_effect = lambda key: (
@@ -101,6 +114,33 @@ def test_nothing_is_drawn_while_the_preference_is_off() -> None:
     heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
     assert content.stats == "<b>today</b>"
     assert content.table == "<table></table>"
+
+
+def test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off(
+    tmp_path: Any,
+) -> None:
+    from anki.collection import Collection
+
+    path = str(tmp_path / "default.anki2")
+    col = Collection(path)
+    try:
+        # a new collection draws the heatmap; the user finds no setting first
+        assert col.get_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED)
+        heatmap = ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+        assert heatmap.enabled()
+        # a user who turns it off keeps it off
+        col.set_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED, False)
+        assert not heatmap.enabled()
+    finally:
+        col.close(downgrade=False)
+
+    col = Collection(path)
+    try:
+        assert not col.get_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED)
+        heatmap = ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+        assert not heatmap.enabled()
+    finally:
+        col.close(downgrade=False)
 
 
 def test_render_uses_the_reporter_and_caches_per_input_fingerprint() -> None:
