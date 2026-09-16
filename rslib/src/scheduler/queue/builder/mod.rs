@@ -574,6 +574,12 @@ mod test {
     impl Collection {
         fn set_deck_gather_order(&mut self, deck: &mut Deck, order: NewCardGatherPriority) {
             let mut conf = DeckConfig::default();
+            // these tests count sibling cards in the queue, and were written
+            // before siblings were buried by default
+            // (spec deck-options.new-preset-defaults)
+            conf.inner.bury_new = false;
+            conf.inner.bury_reviews = false;
+            conf.inner.bury_interday_learning = false;
             conf.inner.new_card_gather_priority = order as i32;
             conf.inner.new_card_sort_order = NewCardSortOrder::NoSort as i32;
             self.add_or_update_deck_config(&mut conf).unwrap();
@@ -583,6 +589,9 @@ mod test {
 
         fn set_deck_new_limit(&mut self, deck: &mut Deck, new_limit: u32) {
             let mut conf = DeckConfig::default();
+            conf.inner.bury_new = false;
+            conf.inner.bury_reviews = false;
+            conf.inner.bury_interday_learning = false;
             conf.inner.new_per_day = new_limit;
             self.add_or_update_deck_config(&mut conf).unwrap();
             deck.normal_mut().unwrap().config_id = conf.id.0;
@@ -1735,6 +1744,11 @@ mod test {
         let mut col = Collection::new();
         let mut deck = col.get_or_create_normal_deck("Default")?;
         let mut conf = DeckConfig::default();
+        // this test counts both siblings in the queue, and was written before
+        // siblings were buried by default (spec deck-options.new-preset-defaults)
+        conf.inner.bury_new = false;
+        conf.inner.bury_reviews = false;
+        conf.inner.bury_interday_learning = false;
         conf.inner.new_card_gather_priority =
             NewCardGatherPriority::DescendingRetrievability as i32;
         conf.inner.new_card_sort_order = NewCardSortOrder::Template as i32;

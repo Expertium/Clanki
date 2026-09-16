@@ -376,7 +376,8 @@ pub struct LapseConfSchema11 {
 impl Default for RevConfSchema11 {
     fn default() -> Self {
         RevConfSchema11 {
-            bury: false,
+            // siblings are buried by default (spec deck-options.new-preset-defaults)
+            bury: true,
             ease4: 1.3,
             ivl_fct: 1.0,
             max_ivl: 36500,
@@ -390,7 +391,8 @@ impl Default for RevConfSchema11 {
 impl Default for NewConfSchema11 {
     fn default() -> Self {
         NewConfSchema11 {
-            bury: false,
+            // siblings are buried by default (spec deck-options.new-preset-defaults)
+            bury: true,
             delays: vec![1.0, 10.0],
             initial_factor: INITIAL_EASE_FACTOR_THOUSANDS,
             ints: NewCardIntervals::default(),
@@ -454,7 +456,7 @@ impl Default for DeckConfSchema11 {
             review_order: 11,
             new_sort_order: 0,
             new_gather_priority: 0,
-            bury_interday_learning: false,
+            bury_interday_learning: true,
             fsrs_params_4: vec![],
             fsrs_params_5: vec![],
             fsrs_params_6: vec![],

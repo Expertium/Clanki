@@ -412,9 +412,9 @@ defaults" — its learning steps and relearning steps are empty and its
 algorithm is the collection's (`sched.one-global-algorithm`), or, in a
 collection that has none yet, RWKV-Curve (`rwkv_review_enabled` on,
 `rwkv_review_instant_order_enabled` off), its leech action is Tag Only, its
-maximum reviews/day is 9999 and its review sort order is descending
-retrievability (most likely to be recalled first); the revert buttons
-restore these values. Given a new collection, its default preset has these values,
+maximum reviews/day is 9999, it buries siblings (new, review and interday
+learning) and its review sort order is descending retrievability (most
+likely to be recalled first); the revert buttons restore these values. Given a new collection, its default preset has these values,
 so the collection starts on RWKV-Curve. Existing presets keep their stored
 values: a stored preset without the RWKV flag still reads as FSRS-7, and
 scheduling outcomes for existing presets do not change. (Same-day reviews for
@@ -424,7 +424,8 @@ scheduling outcomes for existing presets do not change. (Same-day reviews for
 get, and it needs no learning steps. Andrew, 2026-09-15: no practical review
 cap by default; descending retrievability keeps retention closest to the
 desired retention when not every due card gets done (a backlog, a session
-stopped early).
+stopped early). Andrew, 2026-09-16: bury siblings by default, because a
+sibling seen on the same day gives the answer away.
 Existing presets must keep the assumptions their review histories were
 built on.
 
