@@ -9,6 +9,7 @@ import {
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
+import { setAdvancedUi } from "./helpers";
 
 const largeSeedCount = Number(process.env.ANKI_E2E_SEED_REVIEW_CARDS || 0);
 const fakeRwkvBackendEnabled = process.env.ANKI_E2E_FAKE_RWKV_BACKEND === "1";
@@ -42,25 +43,34 @@ async function expectGraphConsoleMessage(
     }).toBeTruthy();
 }
 
+// Today and Card Retrievability are Advanced-only graphs: in Simple mode the
+// Stats page draws Reviews, Card Counts, Retention and Total Knowledge alone
+// (spec/ui.md, `ui.mode-switch`), so both tests below ask for Advanced mode
+// and put the collection back in Simple mode, its default, afterwards.
 test("graphs page clears loading state after graph data arrives", async ({ page }) => {
     const graphConsoleMessages = collectGraphConsoleMessages(page);
     const responsePromise = graphResponsePromise(page);
 
-    await page.goto(graphDebugPath);
-    await expect(page.locator("#statisticsSearchText")).toBeVisible();
+    await setAdvancedUi(page, true);
+    try {
+        await page.goto(graphDebugPath);
+        await expect(page.locator("#statisticsSearchText")).toBeVisible();
 
-    const graphResponse = await responsePromise;
-    expect(graphResponse.ok()).toBeTruthy();
+        const graphResponse = await responsePromise;
+        expect(graphResponse.ok()).toBeTruthy();
 
-    await expect(page.locator(".spin.loading")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
-    await expectGraphConsoleMessage(graphConsoleMessages, "graphs postProto decoded");
-    await expectGraphConsoleMessage(graphConsoleMessages, "graphs data applied");
+        await expect(page.locator(".spin.loading")).toHaveCount(0);
+        await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+        await expectGraphConsoleMessage(graphConsoleMessages, "graphs postProto decoded");
+        await expectGraphConsoleMessage(graphConsoleMessages, "graphs data applied");
 
-    await test.info().attach("graphs-console", {
-        body: graphConsoleMessages.join("\n") || "(no graph console messages)",
-        contentType: "text/plain",
-    });
+        await test.info().attach("graphs-console", {
+            body: graphConsoleMessages.join("\n") || "(no graph console messages)",
+            contentType: "text/plain",
+        });
+    } finally {
+        await setAdvancedUi(page, false);
+    }
 });
 
 test("RWKV retrievability graph is visible when FSRS is disabled", async ({ page }) => {
@@ -81,9 +91,14 @@ test("RWKV retrievability graph is visible when FSRS is disabled", async ({ page
         });
     });
 
-    await page.goto(graphDebugPath);
+    await setAdvancedUi(page, true);
+    try {
+        await page.goto(graphDebugPath);
 
-    await expect(page.getByRole("heading", { name: "Card Retrievability" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Card Retrievability" })).toBeVisible();
+    } finally {
+        await setAdvancedUi(page, false);
+    }
 });
 
 test("seeded RWKV graphs page clears loading after bulk stats scoring", async ({ page }) => {

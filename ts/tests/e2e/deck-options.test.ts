@@ -4,30 +4,41 @@
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
+import { setAdvancedUi } from "./helpers";
 
 /**
- * Switches the collection between Simple and Advanced mode (the `advancedUi`
- * flag; spec/ui.md, `ui.mode-switch`) through the backend, as the main
- * window's toolbar does. The deck-options page has no switch of its own.
- *
- * The body is a hand-encoded `SetConfigBoolRequest`: field 1 (`key`, varint)
- * = `ConfigKey.Bool.ADVANCED_UI` (31), field 2 (`value`, varint) = 1. A
- * false value is the proto default and is left out.
+ * How many elements with exactly this text the user can see. The help modals
+ * and the collapsed expanders hold copies that are in the DOM but drawn
+ * nowhere; a copy inside a closed `<details>` even keeps its offsetParent and
+ * its box, because the expander hides it with `content-visibility`. Only
+ * checkVisibility() answers for all of them.
  */
-async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
-    const body = on ? [0x08, 0x1f, 0x10, 0x01] : [0x08, 0x1f];
-    const response = await page.request.post("/_anki/setConfigBool", {
-        headers: { "Content-Type": "application/binary" },
-        data: Buffer.from(body),
-    });
-    expect(response.ok()).toBeTruthy();
+async function visibleCount(page: Page, text: string): Promise<number> {
+    return page.getByText(text, { exact: true }).evaluateAll((elements) =>
+        elements.filter((e) =>
+            e.checkVisibility({
+                contentVisibilityAuto: true,
+                opacityProperty: true,
+                visibilityProperty: true,
+            })
+        ).length
+    );
 }
 
-/** How many elements with exactly this text are rendered (help modals hold hidden copies). */
-async function visibleCount(page: Page, text: string): Promise<number> {
-    return page
-        .getByText(text, { exact: true })
-        .evaluateAll((elements) => elements.filter((e) => (e as HTMLElement).offsetParent !== null).length);
+/**
+ * Picks an entry of the Algorithm (global) list, the only list whose value is
+ * one of the three algorithm names. The choice is not saved, so it lasts for
+ * this page only; a reload brings the collection's algorithm back.
+ */
+async function chooseAlgorithm(page: Page, label: string): Promise<void> {
+    const algorithm = page
+        .getByRole("combobox")
+        .filter({ hasText: /FSRS-7|RWKV-Curve|RWKV-Instant/ });
+    await algorithm.click();
+    // Each entry shows the label and a description line, so the accessible
+    // name of the option is not the label alone.
+    await page.getByRole("option").getByText(label, { exact: true }).click();
+    await expect(algorithm).toHaveText(label);
 }
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice,
@@ -41,16 +52,15 @@ async function visibleCount(page: Page, text: string): Promise<number> {
 test("Simple mode shows desired retention but no Algorithm dropdown", async ({ page }) => {
     await setAdvancedUi(page, false);
     await page.goto("/deck-options/1");
+    await expect.poll(() => visibleCount(page, "Desired retention")).toBeGreaterThan(0);
 
     await expect(page.getByRole("checkbox", { name: /^FSRS\b/ })).toHaveCount(0);
-    await expect(page.getByText("Algorithm", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Algorithm (global)", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Desired retention", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("Bury siblings", { exact: true }).first()).toBeVisible();
+    expect(await visibleCount(page, "Bury siblings")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Algorithm")).toBe(0);
+    expect(await visibleCount(page, "Algorithm (global)")).toBe(0);
     await expect(
         page.locator('[role="button"][aria-label="FSRS Parameters"]'),
     ).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
     // Maximum reviews/day and the preset / deck / today tabs are Advanced-only
     expect(await visibleCount(page, "New cards/day")).toBeGreaterThan(0);
@@ -58,6 +68,21 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     await expect(page.getByRole("button", { name: "This deck" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Today only" })).toHaveCount(0);
     await expect(page.getByText("Skip question when replaying answer", { exact: true })).toHaveCount(0);
+
+    // Optimize All Presets is FSRS-7 only, and a new collection runs
+    // RWKV-Curve. The page's switch keeps the unsaved algorithm choice, so
+    // Simple mode shows the button and still hides the FSRS parameters.
+    try {
+        await page.getByRole("button", { name: "Advanced", exact: true }).click();
+        await chooseAlgorithm(page, "FSRS-7");
+        await page.getByRole("button", { name: "Simple", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
+        await expect(
+            page.locator('[role="button"][aria-label="FSRS Parameters"]'),
+        ).toHaveCount(0);
+    } finally {
+        await setAdvancedUi(page, false);
+    }
 });
 
 // Pins spec/deck-options.md#deck-options.desired-retention-note: the note is
@@ -122,6 +147,8 @@ test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }
     try {
         await page.clock.install();
         await page.goto("/deck-options/1");
+        await page.clock.resume();
+        await chooseAlgorithm(page, "FSRS-7");
         await expect(parameters).toHaveCount(1);
         await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
 
@@ -138,6 +165,8 @@ test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }
         // Host preferences last for this page only; a fresh page starts at the default.
         await setTimeoutMs(2000);
         await page.reload();
+        await page.clock.resume();
+        await chooseAlgorithm(page, "FSRS-7");
         await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
         await advanced.locator("summary").click();
         await clickThreeTimes(750);
@@ -157,11 +186,11 @@ test("the deck-options switch changes the view at once", async ({ page }) => {
         expect(await visibleCount(page, "Maximum reviews/day")).toBe(0);
 
         await page.getByRole("button", { name: "Advanced", exact: true }).click();
-        await expect(page.getByText("Maximum reviews/day", { exact: true }).first()).toBeVisible();
+        await expect.poll(() => visibleCount(page, "Maximum reviews/day")).toBeGreaterThan(0);
 
         // the flag is stored: a fresh page opens in Advanced mode
         await page.reload();
-        await expect(page.getByText("Maximum reviews/day", { exact: true }).first()).toBeVisible();
+        await expect.poll(() => visibleCount(page, "Maximum reviews/day")).toBeGreaterThan(0);
     } finally {
         await setAdvancedUi(page, false);
     }
@@ -173,10 +202,14 @@ test("Easy Days is collapsed in Simple mode and open in Advanced mode", async ({
     await setAdvancedUi(page, false);
     await page.goto("/deck-options/1");
     await expect(page.locator("details.easy-days")).toHaveCount(1);
-    expect(await visibleCount(page, "Monday")).toBe(0);
+    expect(await visibleCount(page, "Mon")).toBe(0);
 
     await setAdvancedUi(page, true);
-    await page.goto("/deck-options/1");
-    await expect(page.locator("details.easy-days")).toHaveCount(0);
-    expect(await visibleCount(page, "Monday")).toBeGreaterThan(0);
+    try {
+        await page.goto("/deck-options/1");
+        await expect(page.locator("details.easy-days")).toHaveCount(0);
+        expect(await visibleCount(page, "Mon")).toBeGreaterThan(0);
+    } finally {
+        await setAdvancedUi(page, false);
+    }
 });
