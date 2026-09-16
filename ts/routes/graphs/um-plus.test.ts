@@ -17,7 +17,9 @@ import {
     pairKey,
     pairOptions,
     renderUmPlus,
+    PAIR_FLOOR,
     SMALL_GROUP,
+    thinPairNotes,
     umPlusBounds,
     umPlusView,
 } from "./um-plus";
@@ -79,6 +81,55 @@ test("the chosen pair is kept, and an unknown one falls to the first", () => {
     );
     expect(chosenPair(data, "9-9")).toBe(data.umPlus[0]);
     expect(chosenPair(null, null)).toBeNull();
+});
+
+/** A pair with too few shared ratings to be worth drawing. */
+function thinPair(): UmPlusPair {
+    return new UmPlusPair({
+        algorithmA: SchedulingAlgorithm.FSRS7,
+        algorithmB: SchedulingAlgorithm.RWKV_INSTANT,
+        bins: [bin(20, 23, 0, 0.0, 0.0)],
+        umA: 0.01,
+        umB: 0.01,
+        slopeA: 0,
+        slopeB: 0,
+        reviews: 23,
+    });
+}
+
+// Pins spec/ui.md#ui.stats-model-metrics
+test("a pair with too few shared reviews is named, not drawn", () => {
+    const data = new ReviewMetricsProgress({
+        state: JobState.DONE,
+        umPlus: [thinPair()],
+    });
+
+    // Andrew's collection before FSRS-7's predictions exist: the one pair
+    // rests on 23 ratings, so the menu offers nothing and nothing is drawn
+    expect(pairOptions(data)).toHaveLength(0);
+    expect(chosenPair(data, null)).toBeNull();
+
+    // and the reason says what it has, what it needs and what would fill it
+    const notes = thinPairNotes(data);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toBe(
+        tr.statisticsUmPlusTooFew({
+            pair: tr.statisticsUmPlusPair({
+                first: tr.deckConfigSchedulerChoiceFsrs(),
+                second: tr.deckConfigSchedulerChoiceRwkvInstant(),
+            }),
+            reviews: 23,
+            needed: PAIR_FLOOR,
+        }),
+    );
+
+    // a pair at the floor is drawn, and says nothing
+    const atFloor = new ReviewMetricsProgress({
+        state: JobState.DONE,
+        umPlus: [new UmPlusPair({ ...thinPair(), reviews: PAIR_FLOOR })],
+    });
+    expect(pairOptions(atFloor)).toHaveLength(1);
+    expect(thinPairNotes(atFloor)).toHaveLength(0);
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics

@@ -20,6 +20,14 @@ import { algorithmName, ALGORITHM_COLOURS } from "./roc";
 
 /** A group with fewer ratings than this is hidden unless asked for. */
 export const SMALL_GROUP = 200;
+/**
+ * A pair with fewer shared ratings than this is named but never drawn
+ * (spec ui.stats-model-metrics). UM+ spreads a pair's ratings over 41
+ * groups, so under this floor the middle groups hold a handful of ratings
+ * each and one card's run of answers moves a bubble visibly. A graph built
+ * on that misleads worse than an absent one.
+ */
+export const PAIR_FLOOR = 200;
 const ZERO_COLOUR = "#8a8a8a";
 
 /** The UM+ graph is wide, not square: its x axis is a difference. */
@@ -59,33 +67,67 @@ export function pairKey(pair: UmPlusPair): string {
     return `${pair.algorithmA}-${pair.algorithmB}`;
 }
 
-/** The pairs the menu offers, in the order the backend computed them. */
+export function pairLabel(pair: UmPlusPair): string {
+    return tr.statisticsUmPlusPair({
+        first: algorithmName(pair.algorithmA),
+        second: algorithmName(pair.algorithmB),
+    });
+}
+
+/** A pair with enough shared ratings to be worth drawing. */
+export function drawable(pair: UmPlusPair): boolean {
+    return pair.reviews >= PAIR_FLOOR;
+}
+
+/**
+ * The pairs the menu offers: only those with enough shared ratings. A pair
+ * that exists but is too thin is not offered, and is named under the graph
+ * instead, so it is never drawn and never silently missing.
+ */
 export function pairOptions(
     progress: ReviewMetricsProgress | null,
 ): { key: string; label: string }[] {
     if (!progress) {
         return [];
     }
-    return progress.umPlus.map((pair) => ({
+    return progress.umPlus.filter(drawable).map((pair) => ({
         key: pairKey(pair),
-        label: tr.statisticsUmPlusPair({
-            first: algorithmName(pair.algorithmA),
-            second: algorithmName(pair.algorithmB),
-        }),
+        label: pairLabel(pair),
     }));
 }
 
-/** The chosen pair while it is there, else the first the backend has. */
+/**
+ * One line per pair that has ratings but too few of them, saying how many
+ * it has, how many it needs, and what would fill it.
+ */
+export function thinPairNotes(progress: ReviewMetricsProgress | null): string[] {
+    if (!progress) {
+        return [];
+    }
+    return progress.umPlus
+        .filter((pair) => !drawable(pair))
+        .map((pair) =>
+            tr.statisticsUmPlusTooFew({
+                pair: pairLabel(pair),
+                reviews: pair.reviews,
+                needed: PAIR_FLOOR,
+            })
+        );
+}
+
+/** The chosen pair while it is drawable, else the first drawable one. */
 export function chosenPair(
     progress: ReviewMetricsProgress | null,
     chosen: string | null,
 ): UmPlusPair | null {
-    if (!progress || progress.umPlus.length === 0) {
+    if (!progress) {
         return null;
     }
-    return (
-        progress.umPlus.find((pair) => pairKey(pair) === chosen) ?? progress.umPlus[0]
-    );
+    const pairs = progress.umPlus.filter(drawable);
+    if (pairs.length === 0) {
+        return null;
+    }
+    return pairs.find((pair) => pairKey(pair) === chosen) ?? pairs[0];
 }
 
 function points(bins: UmPlusBin[], reviews: number): UmPlusPoint[] {

@@ -23,6 +23,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         pairKey,
         pairOptions,
         renderUmPlus,
+        thinPairNotes,
         umPlusBounds,
         umPlusView,
     } from "./um-plus";
@@ -44,7 +45,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: options = pairOptions(progress);
     $: pair = chosenPair(progress, $chosenUmPlusPair);
     $: view = umPlusView(pair, $showSmallUmPlusGroups);
-    $: notes = [...dataNotes(progress), ...unavailableNotes(progress)];
+    $: notes = [
+        ...dataNotes(progress),
+        ...thinPairNotes(progress),
+        ...unavailableNotes(progress),
+    ];
     $: if (svg) {
         renderUmPlus(svg, bounds, view);
     }

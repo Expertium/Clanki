@@ -249,6 +249,8 @@ statistics-um-plus-description-axes = Each group of reviews sits at how far the 
 statistics-um-plus-description-score = A line that stays near zero across the whole width is the better algorithm: UM+ closer to zero is better, and a slope closer to zero means the algorithm does not drift as the disagreement grows.
 # Shown when small groups are hidden.
 statistics-um-plus-hidden = { $groups } small groups are hidden.
+# Shown under the graph for a pair of algorithms with too few shared reviews to draw.
+statistics-um-plus-too-few = { $pair } is not shown: only { $reviews } of these reviews have a prediction from both, and { $needed } are needed. Both algorithms need stored predictions of the same reviews.
 # Shown under the graph when the newest reviews have no prediction yet.
 statistics-model-metrics-stale = Predictions up to { $date }; { $reviews } newer reviews are not scored yet.
 # Shown under the graph when an algorithm has no curve; $algorithm is its name.

@@ -707,7 +707,14 @@ right. Three tiles above the graph give the average predicted probability,
 the actual recall, and the number of ratings.
 
 The UM+ comparison draws a PAIR of algorithms, picked from a menu of the
-pairs that share ratings. Its shape is wide, not square. Each point is a
+pairs that share ratings. Three algorithms make three pairs. A pair is
+offered only when at least 200 ratings have a prediction from both of its
+algorithms; a pair with fewer is not in the menu and is not drawn, and is
+named under the graph with the ratings it has, the ratings it needs, and
+what would fill it. UM+ spreads a pair's ratings over 41 groups, so under
+200 the middle groups hold a handful of ratings each and one card's run of
+answers moves a bubble visibly: such a graph misleads worse than an absent
+one. Its shape is wide, not square. Each point is a
 group of ratings whose two predictions differ by about the same amount: the
 x axis is that difference (the first algorithm's prediction minus the
 second's, in 41 groups, one for each twentieth from -1 to 1), and the height
