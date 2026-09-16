@@ -498,12 +498,14 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    /// Each prediction is `(index, RWKV-Instant's value, RWKV-Curve's value
+    /// or None)`; RWKV-Curve has no value on a card's first review.
     fn warm_up_reviews(
         &mut self,
         py: Python<'_>,
         reviews: &Bound<'_, PyAny>,
         record_predictions: bool,
-    ) -> PyResult<Vec<(usize, f32)>> {
+    ) -> PyResult<Vec<(usize, f32, Option<f32>)>> {
         let mut parsed_reviews = Vec::new();
         for review in reviews.try_iter()? {
             parsed_reviews.push(parse_rwkv_review_input(&review?)?);
@@ -513,6 +515,7 @@ impl RwkvInference {
             self.inner
                 .warm_up_reviews(parsed_reviews, record_predictions)
         })
+        .map(warm_up_predictions_as_tuples)
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
@@ -521,12 +524,13 @@ impl RwkvInference {
         py: Python<'_>,
         reviews: &Bound<'_, PyBytes>,
         record_predictions: bool,
-    ) -> PyResult<Vec<(usize, f32)>> {
+    ) -> PyResult<Vec<(usize, f32, Option<f32>)>> {
         let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
         py.detach(|| {
             self.inner
                 .warm_up_reviews(parsed_reviews, record_predictions)
         })
+        .map(warm_up_predictions_as_tuples)
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
@@ -860,6 +864,23 @@ fn parse_packed_rwkv_prediction_requests(
 }
 
 const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU2";
+
+/// The warm-up's predictions as plain tuples for Python: the review's place
+/// in the batch, RWKV-Instant's value, and RWKV-Curve's value or None.
+fn warm_up_predictions_as_tuples(
+    predictions: Vec<rwkv::WarmUpPrediction>,
+) -> Vec<(usize, f32, Option<f32>)> {
+    predictions
+        .into_iter()
+        .map(|prediction| {
+            (
+                prediction.index,
+                prediction.retrievability,
+                prediction.curve_retrievability,
+            )
+        })
+        .collect()
+}
 
 fn parse_packed_rwkv_review_inputs(reviews: &[u8]) -> PyResult<Vec<rwkv::ReviewInput>> {
     let mut cursor = PackedPredictionRequestCursor::new(reviews);

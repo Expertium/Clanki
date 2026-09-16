@@ -24,6 +24,11 @@ use crate::revlog::RevlogReviewKind;
 
 pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_fsrs_review_retrievability";
+/// Every algorithm's per-review predictions, addressed BY ALGORITHM, so a
+/// query cannot reach a row without saying whose it is (spec
+/// ui.stats-model-metrics). FSRS-7 and RWKV-Instant still have tables of
+/// their own; moving them here is a separate, bit-identical refactor.
+pub(crate) const REVIEW_PREDICTIONS_TABLE: &str = "review_predictions";
 pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_rwkv_review_retrievability";
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
@@ -90,6 +95,15 @@ pub(crate) struct RwkvReviewRetrievabilityCacheRow {
     pub revlog_id: RevlogId,
     pub prediction: f32,
     pub sample_role: RwkvReviewRetrievabilitySampleRole,
+    pub fold_index: i32,
+}
+
+/// One row of the generic prediction table, for one algorithm.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReviewPredictionRow {
+    pub revlog_id: RevlogId,
+    pub prediction: f32,
+    pub sample_role: &'static str,
     pub fold_index: i32,
 }
 
@@ -447,6 +461,127 @@ impl SqliteStorage {
             }
             Ok(stored)
         })
+    }
+
+    /// The generic prediction table. A collection that has never recorded
+    /// an algorithm's predictions gets it empty: the algorithm's series
+    /// then says it has no rows yet, and whatever produces them fills it.
+    /// Nothing has to be deleted by hand.
+    ///
+    /// `sample_role` carries no CHECK here. Which roles are legitimate is a
+    /// fact about one algorithm, and it belongs to that algorithm's
+    /// contract, not to a table every algorithm shares.
+    fn ensure_review_predictions_schema(&self) -> Result<()> {
+        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {table} (
+                algorithm INTEGER NOT NULL,
+                revlog_id INTEGER NOT NULL,
+                prediction REAL NOT NULL CHECK(prediction >= 0 AND prediction <= 1),
+                sample_role TEXT NOT NULL DEFAULT 'final_fit',
+                fold_index INTEGER NOT NULL DEFAULT -1,
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (algorithm, revlog_id, sample_role, fold_index, source)
+            );
+            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_review_predictions_algorithm_role_revlog
+                ON {REVIEW_PREDICTIONS_TABLE} (algorithm, sample_role, revlog_id);
+            "
+        ))?;
+        Ok(())
+    }
+
+    /// Stores one algorithm's predictions. The key holds the role, the fold
+    /// and the source as well as the algorithm and the review, so two roles
+    /// of the same review coexist: 362 of Andrew's reviews hold both a
+    /// `final_fit` row and a `post_optimization` row, and the role counts
+    /// and the staleness query both depend on that.
+    pub(crate) fn set_review_predictions(
+        &self,
+        algorithm: i32,
+        rows: &[ReviewPredictionRow],
+        source: &str,
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.ensure_review_predictions_schema()?;
+        self.with_retrievability_cache_write_batch(|| {
+            let updated_at = TimestampMillis::now().0;
+            let mut stored = 0;
+            let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+            let mut stmt = self.db.prepare_cached(&format!(
+                "
+                INSERT INTO {table}
+                    (algorithm, revlog_id, prediction, sample_role, fold_index, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(algorithm, revlog_id, sample_role, fold_index, source) DO UPDATE SET
+                    prediction = excluded.prediction,
+                    updated_at = excluded.updated_at
+                WHERE {table}.prediction IS NOT excluded.prediction
+                "
+            ))?;
+            for row in rows {
+                if row.revlog_id.0 > 0
+                    && row.prediction.is_finite()
+                    && (0.0..=1.0).contains(&row.prediction)
+                {
+                    stmt.execute(params![
+                        algorithm,
+                        row.revlog_id,
+                        row.prediction,
+                        row.sample_role,
+                        row.fold_index,
+                        source,
+                        updated_at
+                    ])?;
+                    stored += 1;
+                }
+            }
+            Ok(stored)
+        })
+    }
+
+    /// How many reviews each sample role holds, for ONE algorithm.
+    pub(crate) fn review_prediction_roles(&self, algorithm: i32) -> Result<Vec<(String, u32)>> {
+        self.ensure_review_predictions_schema()?;
+        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+        self.db
+            .prepare_cached(&format!(
+                "select sample_role, count(distinct revlog_id) from {table}
+                 where algorithm = ?1
+                 group by sample_role"
+            ))?
+            .query_and_then((algorithm,), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
+    /// One algorithm's newest prediction of each review, from one role.
+    pub(crate) fn review_predictions_of(
+        &self,
+        algorithm: i32,
+        sample_role: &str,
+        after: TimestampMillis,
+    ) -> Result<Vec<(RevlogId, f32)>> {
+        self.ensure_review_predictions_schema()?;
+        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+        self.db
+            .prepare_cached(&format!(
+                "select revlog_id, prediction from (
+                     select revlog_id, prediction, row_number() over (
+                         partition by revlog_id
+                         order by updated_at desc, fold_index desc, source
+                     ) as rank
+                     from {table}
+                     where algorithm = ?1 and sample_role = ?2 and revlog_id > ?3
+                 )
+                 where rank = 1"
+            ))?
+            .query_and_then((algorithm, sample_role, after.0), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect()
     }
 
     pub(crate) fn set_rwkv_review_retrievability_prediction(

@@ -389,6 +389,21 @@ pub struct ReviewInput {
     pub enforce_grade_order: bool,
 }
 
+/// One review of a warm-up replay, as the replay predicted it before the
+/// answer (spec ui.stats-model-metrics).
+#[derive(Clone, Copy, Debug)]
+pub struct WarmUpPrediction {
+    /// The review's place in the `reviews` slice the caller passed in.
+    pub index: usize,
+    /// RWKV-Instant's head for this review.
+    pub retrievability: f32,
+    /// RWKV-Curve's prediction of this review: the curve the replay stored
+    /// at this card's previous answered review, at this review's own
+    /// elapsed time. `None` on a card's first review, and on a review whose
+    /// input carries no elapsed time; it is never a substitute value.
+    pub curve_retrievability: Option<f32>,
+}
+
 pub struct ReviewState<'a> {
     pub card: Option<&'a [u8]>,
     pub deck: Option<&'a [u8]>,
@@ -1144,7 +1159,7 @@ impl RwkvInference {
         &mut self,
         reviews: Vec<ReviewInput>,
         record_predictions: bool,
-    ) -> io::Result<Vec<(usize, f32)>> {
+    ) -> io::Result<Vec<WarmUpPrediction>> {
         // The scan-capture harness records per-timestep coefficients from the
         // answer pass only, so it needs the per-review path.
         #[cfg(test)]
@@ -1161,7 +1176,7 @@ impl RwkvInference {
         &mut self,
         reviews: Vec<ReviewInput>,
         record_predictions: bool,
-    ) -> io::Result<Vec<(usize, f32)>> {
+    ) -> io::Result<Vec<WarmUpPrediction>> {
         let mut predictions = vec![];
         for (index, input) in reviews.into_iter().enumerate() {
             if input.ease.is_none() {
@@ -1200,7 +1215,20 @@ impl RwkvInference {
                 None => (None, model.review(&features, state)),
             };
             if let Some(retrievability) = query_retrievability {
-                predictions.push((index, retrievability));
+                // RWKV-Curve's prediction of THIS review is the curve the
+                // card carried before it, read here while `self.curves`
+                // still holds the previous answered review's curve, and
+                // evaluated at the elapsed time of the input itself. A
+                // card's first review has no such curve, and gets none.
+                let curve_retrievability = self
+                    .curves
+                    .get(&input.card_id)
+                    .and_then(|curve| current_curve_retrievability(&input, curve));
+                predictions.push(WarmUpPrediction {
+                    index,
+                    retrievability,
+                    curve_retrievability,
+                });
             }
 
             self.features.store_review(&input);
@@ -8607,11 +8635,12 @@ order by e.id, e.cid
                     inference.warm_up_reviews(call.to_vec(), record_predictions)
                 }
                 .expect("RWKV warm-up call failed");
-                predictions.extend(
-                    call_predictions
-                        .into_iter()
-                        .map(|(index, value)| (index + offset, value)),
-                );
+                predictions.extend(call_predictions.into_iter().map(|prediction| {
+                    WarmUpPrediction {
+                        index: prediction.index + offset,
+                        ..prediction
+                    }
+                }));
             }
             Ok::<_, std::io::Error>(predictions)
         } else if force_fast_query {
@@ -8659,11 +8688,11 @@ order by e.id, e.cid
         if record_predictions {
             let prediction_values = predictions
                 .iter()
-                .map(|(_, prediction)| *prediction)
+                .map(|prediction| prediction.retrievability)
                 .collect::<Vec<_>>();
             let outcomes = predictions
                 .iter()
-                .map(|(index, _)| reviews[*index].ease != Some(1))
+                .map(|prediction| reviews[prediction.index].ease != Some(1))
                 .collect::<Vec<_>>();
             let metrics = MetricAccumulator::from_predictions(&prediction_values, &outcomes);
             println!("log_loss={:.15}", metrics.log_loss);
@@ -9130,42 +9159,81 @@ order by e.id, e.cid
         );
     }
 
-    fn assert_prediction_parity(sequential: &[(usize, f32)], bulk: &[(usize, f32)]) {
+    fn assert_prediction_parity(sequential: &[WarmUpPrediction], bulk: &[WarmUpPrediction]) {
         assert_eq!(sequential.len(), bulk.len(), "prediction counts diverged");
-        for ((sequential_index, sequential_value), (bulk_index, bulk_value)) in
-            sequential.iter().zip(bulk)
-        {
-            assert_eq!(sequential_index, bulk_index, "prediction order diverged");
+        for (expected, actual) in sequential.iter().zip(bulk) {
+            assert_eq!(expected.index, actual.index, "prediction order diverged");
             assert_eq!(
-                sequential_value.to_bits(),
-                bulk_value.to_bits(),
-                "prediction values diverged at review {sequential_index}"
+                expected.retrievability.to_bits(),
+                actual.retrievability.to_bits(),
+                "prediction values diverged at review {}",
+                expected.index
             );
+            assert_curve_parity(expected, actual);
         }
     }
 
-    fn assert_prediction_close(expected: &[(usize, f32)], actual: &[(usize, f32)], tolerance: f32) {
+    /// RWKV-Curve's per-review value must match between the two paths bit
+    /// for bit, including which reviews have none (spec
+    /// ui.stats-model-metrics).
+    fn assert_curve_parity(expected: &WarmUpPrediction, actual: &WarmUpPrediction) {
+        match (expected.curve_retrievability, actual.curve_retrievability) {
+            (None, None) => {}
+            (Some(expected_value), Some(actual_value)) => assert_eq!(
+                expected_value.to_bits(),
+                actual_value.to_bits(),
+                "curve value diverged at review {}",
+                expected.index
+            ),
+            (expected_value, actual_value) => panic!(
+                "curve presence diverged at review {}: {expected_value:?} vs {actual_value:?}",
+                expected.index
+            ),
+        }
+    }
+
+    fn assert_prediction_close(
+        expected: &[WarmUpPrediction],
+        actual: &[WarmUpPrediction],
+        tolerance: f32,
+    ) {
         assert_eq!(expected.len(), actual.len(), "prediction counts diverged");
-        for ((expected_index, expected_value), (actual_index, actual_value)) in
-            expected.iter().zip(actual)
-        {
-            assert_eq!(expected_index, actual_index, "prediction order diverged");
-            let delta = (expected_value - actual_value).abs();
+        for (expected, actual) in expected.iter().zip(actual) {
+            assert_eq!(expected.index, actual.index, "prediction order diverged");
+            let delta = (expected.retrievability - actual.retrievability).abs();
             assert!(
                 delta <= tolerance,
-                "prediction diverged at review {expected_index}: {expected_value} vs {actual_value} (delta {delta})"
+                "prediction diverged at review {}: {} vs {} (delta {delta})",
+                expected.index,
+                expected.retrievability,
+                actual.retrievability
             );
+            match (expected.curve_retrievability, actual.curve_retrievability) {
+                (None, None) => {}
+                (Some(expected_value), Some(actual_value)) => {
+                    let delta = (expected_value - actual_value).abs();
+                    assert!(
+                        delta <= tolerance,
+                        "curve diverged at review {}: {expected_value} vs {actual_value}",
+                        expected.index
+                    );
+                }
+                (expected_value, actual_value) => panic!(
+                    "curve presence diverged at review {}: {expected_value:?} vs {actual_value:?}",
+                    expected.index
+                ),
+            }
         }
     }
 
-    fn prediction_log_loss(predictions: &[(usize, f32)], reviews: &[ReviewInput]) -> f64 {
+    fn prediction_log_loss(predictions: &[WarmUpPrediction], reviews: &[ReviewInput]) -> f64 {
         let values = predictions
             .iter()
-            .map(|(_, prediction)| *prediction)
+            .map(|prediction| prediction.retrievability)
             .collect::<Vec<_>>();
         let outcomes = predictions
             .iter()
-            .map(|(index, _)| reviews[*index].ease != Some(1))
+            .map(|prediction| reviews[prediction.index].ease != Some(1))
             .collect::<Vec<_>>();
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
     }
@@ -9625,16 +9693,121 @@ order by e.id, e.cid
             let calls: Vec<ReviewInput> = reviews[offset..offset + call].to_vec();
             let predictions =
                 bulk::warm_up_reviews_bulk_chunked(&mut bulk, calls, true, 7).unwrap();
-            bulk_predictions.extend(
-                predictions
-                    .into_iter()
-                    .map(|(index, value)| (index + offset, value)),
-            );
+            bulk_predictions.extend(predictions.into_iter().map(|prediction| WarmUpPrediction {
+                index: prediction.index + offset,
+                ..prediction
+            }));
             offset += call;
         }
 
         assert_prediction_parity(&sequential_predictions, &bulk_predictions);
         assert_warm_up_parity(&sequential, &bulk);
+    }
+
+    /// The gap the RWKV session named: a card's FIRST row inside a batch
+    /// has its previous answered review in an EARLIER call, so the bulk
+    /// path must read that card's carried-in curve, not None and not this
+    /// batch's last row. Rows 1-3 of one card go in the first call and rows
+    /// 4-5 in the second (spec ui.stats-model-metrics).
+    #[test]
+    fn curve_values_survive_a_card_split_across_two_warm_up_calls() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        // one card, five answered reviews, so every row after the first has
+        // a previous row and therefore a curve
+        let reviews: Vec<ReviewInput> = (0..5)
+            .map(|index| ReviewInput {
+                card_id: 42,
+                note_id: Some(4200),
+                deck_id: Some(2000),
+                preset_id: Some(3000),
+                is_query: false,
+                ease: Some(if index % 4 == 0 { 1 } else { 3 }),
+                duration_millis: Some(2500),
+                card_type: Some(1),
+                day_offset: Some(7300 + index as i64 * 3),
+                current_elapsed_days: Some(3),
+                current_elapsed_seconds: Some(3 * 86_400),
+                target_retentions: [None; 4],
+                enforce_grade_order: false,
+            })
+            .collect();
+
+        let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let expected = sequential
+            .warm_up_reviews_sequential(reviews.clone(), true)
+            .unwrap();
+        assert_eq!(expected.len(), 5);
+        // the card's first review has no earlier curve, and gets none
+        assert!(expected[0].curve_retrievability.is_none());
+        for prediction in &expected[1..] {
+            assert!(
+                prediction.curve_retrievability.is_some(),
+                "review {} should have a curve",
+                prediction.index
+            );
+        }
+
+        // the same history, split 3 + 2 across two calls on one inference
+        let mut bulk = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let mut actual = Vec::new();
+        let mut offset = 0;
+        for call in [3usize, 2] {
+            let batch: Vec<ReviewInput> = reviews[offset..offset + call].to_vec();
+            let predictions = bulk::warm_up_reviews_bulk(&mut bulk, batch, true).unwrap();
+            actual.extend(predictions.into_iter().map(|prediction| WarmUpPrediction {
+                index: prediction.index + offset,
+                ..prediction
+            }));
+            offset += call;
+        }
+
+        assert_eq!(actual.len(), expected.len());
+        for (expected, actual) in expected.iter().zip(&actual) {
+            assert_curve_parity(expected, actual);
+        }
+        // row 4 is the first of the SECOND call: its curve comes from row 3,
+        // which this call never saw, and it must not be None
+        assert!(actual[3].curve_retrievability.is_some());
+        assert!(actual[0].curve_retrievability.is_none());
+    }
+
+    /// The whole batch, many cards, both paths: today's equivalence test
+    /// covers `retrievability` only, so this one covers the curve as well.
+    #[test]
+    fn bulk_warm_up_curve_values_match_sequential_over_a_batch() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(230);
+
+        let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        let expected = sequential
+            .warm_up_reviews_sequential(reviews.clone(), true)
+            .unwrap();
+        let mut bulk = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let actual = bulk::warm_up_reviews_bulk(&mut bulk, reviews, true).unwrap();
+
+        assert_eq!(expected.len(), actual.len());
+        let mut with_curve = 0;
+        let mut without_curve = 0;
+        for (expected, actual) in expected.iter().zip(&actual) {
+            assert_curve_parity(expected, actual);
+            if expected.curve_retrievability.is_some() {
+                with_curve += 1;
+            } else {
+                without_curve += 1;
+            }
+        }
+        // the fixture must exercise both sides, or the test could not fail
+        assert!(with_curve > 100, "only {with_curve} reviews carry a curve");
+        assert!(
+            without_curve > 0,
+            "no review is a card's first, so None is never checked"
+        );
     }
 
     #[test]
@@ -9685,12 +9858,25 @@ order by e.id, e.cid
 
         assert_eq!(exact_predictions.len(), fast_predictions.len());
         let mut max_delta = 0.0_f32;
-        for ((exact_index, exact), (fast_index, fast)) in
-            exact_predictions.iter().zip(&fast_predictions)
-        {
-            assert_eq!(exact_index, fast_index);
-            max_delta = max_delta.max((exact - fast).abs());
+        let mut max_curve_delta = 0.0_f32;
+        for (exact, fast) in exact_predictions.iter().zip(&fast_predictions) {
+            assert_eq!(exact.index, fast.index);
+            max_delta = max_delta.max((exact.retrievability - fast.retrievability).abs());
+            match (exact.curve_retrievability, fast.curve_retrievability) {
+                (None, None) => {}
+                (Some(exact_value), Some(fast_value)) => {
+                    max_curve_delta = max_curve_delta.max((exact_value - fast_value).abs());
+                }
+                (exact_value, fast_value) => panic!(
+                    "curve presence diverged at review {}: {exact_value:?} vs {fast_value:?}",
+                    exact.index
+                ),
+            }
         }
+        assert!(
+            max_curve_delta <= 1e-5,
+            "max fast bulk curve delta: {max_curve_delta}"
+        );
         assert!(
             max_delta <= 1e-5,
             "max fast bulk prediction delta: {max_delta}"

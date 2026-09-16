@@ -223,10 +223,27 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
             data.rwkv_bins,
         )
     )
-    # RWKV-Curve's prediction of a past review is the curve stored at the
-    # card's previous answered review. Nothing stores that per review yet,
-    # so the algorithm is absent, never replaced by another's values.
-    job.set_unavailable([RWKV_CURVE], Unavailable.UNSUPPORTED)
+    # RWKV-Curve's prediction of a past review is the curve the replay had
+    # stored at the card's previous answered review, evaluated at that
+    # review's elapsed time. The warm-up records it per review, so the
+    # series is read like any other; when no row exists yet the reason says
+    # that Clanki has not recorded them, never that the model cannot
+    # compute them (spec ui.stats-model-metrics).
+    curve = _series(
+        RWKV_CURVE,
+        data.rwkv_curve_predictions,
+        data.remembered,
+        data.rwkv_curve_role,
+        data.rwkv_curve_bins,
+    )
+    if curve.unavailable == Unavailable.NO_REVIEWS:
+        curve = Series(algorithm=RWKV_CURVE, unavailable=Unavailable.NOT_RECORDED)
+    else:
+        # how far back the recording reaches, so a series covering days
+        # cannot look like one covering years
+        curve.recorded_from_secs = data.rwkv_curve_oldest_secs
+        curve.earlier_reviews = data.rwkv_curve_earlier_reviews
+    job.set_series(curve)
 
 
 def _series(
@@ -244,9 +261,12 @@ def _series(
     dropped here, so the series covers exactly the ratings this algorithm
     predicted and never borrows another algorithm's value.
     """
+    # An algorithm that sent no list at all has no rows, which is not an
+    # error: zip stops at the shorter of the two, so an empty list gives an
+    # empty series rather than an exception.
     scored = [
         (prediction, answer)
-        for prediction, answer in zip(predictions, remembered, strict=True)
+        for prediction, answer in zip(predictions, remembered)
         if math.isfinite(prediction)
     ]
     if not role or not scored:

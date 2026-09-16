@@ -258,6 +258,10 @@ statistics-model-metrics-no-model = { $algorithm } is not shown: no RWKV model w
 statistics-model-metrics-no-params = { $algorithm } is not shown: no preset of these cards has FSRS-7 parameters.
 statistics-model-metrics-no-reviews = { $algorithm } is not shown: these cards have no review it predicts.
 statistics-model-metrics-unsupported = { $algorithm } is not shown: this version cannot compute its prediction for a past review.
+# Shown when an algorithm could predict these reviews but nothing has stored its predictions yet.
+statistics-model-metrics-not-recorded = { $algorithm } is not shown yet: Clanki has not recorded its predictions of these reviews. Rebuilding the RWKV review history records them.
+# Shown under the graph when an algorithm's recording does not reach the whole history.
+statistics-model-metrics-recorded-from = { $algorithm } recorded from { $date }; { $reviews } earlier reviews are not recorded.
 # Shown while the pass that writes an algorithm's stored predictions is running.
 statistics-model-metrics-computing = { $algorithm } is not shown yet: its predictions for these reviews are being computed.
 statistics-future-due-title = Future Due

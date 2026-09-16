@@ -154,6 +154,10 @@ service SchedulerService {
   rpc GetRwkvRetrievabilityScore(cards.CardId)
       returns (RwkvRetrievabilityScoreResponse);
   // Stores derived local RWKV review-time retrievability cache rows.
+  // Stores one algorithm's per-review predictions in the generic table
+  // (spec ui.stats-model-metrics). The algorithm is named on every row, so
+  // no write can land in another algorithm's rows.
+  rpc SetReviewPredictions(ReviewPredictionRowsRequest) returns (generic.UInt32);
   rpc SetRwkvReviewRetrievabilityCacheRows(
       RwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
   // Applies desktop-computed RWKV reschedule intervals and S90 values.
@@ -1003,6 +1007,19 @@ message RwkvCardInfoScoreRequest {
 
 message RwkvRetrievabilityScoreResponse {
   optional float retrievability = 1;
+}
+
+message ReviewPredictionRowsRequest {
+  message Row {
+    int64 revlog_id = 1;
+    float prediction = 2;
+    string sample_role = 3;
+    int32 fold_index = 4;
+  }
+  deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm = 1;
+  // where the rows came from, such as "rwkv_curve_state_cache_build"
+  string source = 2;
+  repeated Row rows = 3;
 }
 
 message RwkvReviewRetrievabilityCacheRowsRequest {

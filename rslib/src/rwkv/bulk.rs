@@ -46,7 +46,7 @@ pub(super) fn warm_up_reviews_bulk(
     inference: &mut RwkvInference,
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
-) -> io::Result<Vec<(usize, f32)>> {
+) -> io::Result<Vec<WarmUpPrediction>> {
     warm_up_reviews_bulk_impl(
         inference,
         reviews,
@@ -64,7 +64,7 @@ pub(super) fn warm_up_reviews_bulk_chunked(
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
     chunk_rows: usize,
-) -> io::Result<Vec<(usize, f32)>> {
+) -> io::Result<Vec<WarmUpPrediction>> {
     warm_up_reviews_bulk_impl(
         inference,
         reviews,
@@ -80,7 +80,7 @@ pub(super) fn warm_up_reviews_bulk_fast_query_chunked(
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
     chunk_rows: usize,
-) -> io::Result<Vec<(usize, f32)>> {
+) -> io::Result<Vec<WarmUpPrediction>> {
     warm_up_reviews_bulk_impl(
         inference,
         reviews,
@@ -96,7 +96,7 @@ fn warm_up_reviews_bulk_impl(
     record_predictions: bool,
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
-) -> io::Result<Vec<(usize, f32)>> {
+) -> io::Result<Vec<WarmUpPrediction>> {
     // Feature prepass, in review order. Query features are assigned before
     // answer features for each review so first-seen ID encodings keep the
     // same benchmark-compatible order as the per-review path.
@@ -163,24 +163,58 @@ fn warm_up_reviews_bulk_impl(
         );
     }
 
-    // Recall curves: the per-review path stores one curve per answered
+    // Recall curves. The per-review path stores one curve per answered
     // review, keyed by card, so only each card's chronologically last row
-    // survives.
+    // survives in `inference.curves`. While recording predictions the
+    // replay also reports RWKV-Curve's prediction of every review, which is
+    // the curve of that card's PREVIOUS row, so every row's curve is needed
+    // and not only the last one.
     #[cfg(test)]
     let profile_started = rwkv_warmup_profile_start();
     let mut last_row_by_card = HashMap::new();
-    for (row, input) in inputs.iter().enumerate() {
-        last_row_by_card.insert(input.card_id, row);
+    let mut previous_row_of_same_card = vec![None; rows];
+    for (row_index, input) in inputs.iter().enumerate() {
+        previous_row_of_same_card[row_index] = last_row_by_card.insert(input.card_id, row_index);
     }
-    let curves: Vec<(i64, ReviewCurve)> = last_row_by_card
+    // A card's FIRST row in this batch has its previous answered review in
+    // an earlier call, and its curve is the one `inference.curves` holds
+    // right now. Snapshot it before the loop below overwrites the map with
+    // this batch's LAST rows, which are later reviews and the wrong curve.
+    let carried_in_curves: HashMap<i64, ReviewCurve> = record_predictions
+        .then(|| {
+            inputs
+                .iter()
+                .enumerate()
+                .filter(|(row_index, _)| previous_row_of_same_card[*row_index].is_none())
+                .filter_map(|(_, input)| {
+                    inference
+                        .curves
+                        .get(&input.card_id)
+                        .map(|curve| (input.card_id, curve.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let curve_rows: Vec<usize> = if record_predictions {
+        (0..rows).collect()
+    } else {
+        last_row_by_card.values().copied().collect()
+    };
+    let mut curve_by_row: Vec<Option<ReviewCurve>> = vec![None; rows];
+    let computed: Vec<(usize, ReviewCurve)> = curve_rows
         .into_par_iter()
-        .map(|(card_id, row_index)| {
+        .map(|row_index| {
             let prehead = model.prehead_norm.apply(row(&x, row_index));
-            (card_id, model.curve_head(&prehead))
+            (row_index, model.curve_head(&prehead))
         })
         .collect();
-    for (card_id, curve) in curves {
-        inference.curves.insert(card_id, curve);
+    for (row_index, curve) in computed {
+        curve_by_row[row_index] = Some(curve);
+    }
+    for (&card_id, &row_index) in &last_row_by_card {
+        if let Some(curve) = &curve_by_row[row_index] {
+            inference.curves.insert(card_id, curve.clone());
+        }
     }
     for input in &inputs {
         inference.warm_up_states.mark_dirty(input);
@@ -198,9 +232,36 @@ fn warm_up_reviews_bulk_impl(
             model.retrievability_head(&prehead)
         })
         .collect();
+    // RWKV-Curve's prediction of a row is the curve of that card's previous
+    // answered review, at this row's own elapsed time. That review is
+    // usually an earlier row of this batch; for a card's first row in the
+    // batch it is the curve carried in from an earlier call. A card with
+    // neither has no value, and it is never filled in.
+    let curve_retrievabilities: Vec<Option<f32>> = (0..rows)
+        .into_par_iter()
+        .map(|row_index| {
+            let curve = match previous_row_of_same_card[row_index] {
+                Some(previous) => curve_by_row[previous].as_ref()?,
+                None => carried_in_curves.get(&inputs[row_index].card_id)?,
+            };
+            current_curve_retrievability(&inputs[row_index], curve)
+        })
+        .collect();
+    drop(curve_by_row);
     #[cfg(test)]
     rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Heads, profile_started);
-    Ok(original_indices.into_iter().zip(retrievabilities).collect())
+    Ok(original_indices
+        .into_iter()
+        .zip(retrievabilities)
+        .zip(curve_retrievabilities)
+        .map(
+            |((index, retrievability), curve_retrievability)| WarmUpPrediction {
+                index,
+                retrievability,
+                curve_retrievability,
+            },
+        )
+        .collect())
 }
 
 #[cfg(test)]

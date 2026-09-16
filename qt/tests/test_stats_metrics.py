@@ -117,7 +117,7 @@ def test_an_algorithm_with_no_usable_rows_is_absent() -> None:
     assert series.reviews == 0
 
 
-def test_the_job_reads_the_backend_and_keeps_rwkv_curve_absent() -> None:
+def test_the_job_reads_each_algorithm_from_its_own_rows() -> None:
     from anki.stats_pb2 import ReviewPredictionsResponse
 
     class _Backend:
@@ -128,8 +128,10 @@ def test_the_job_reads_the_backend_and_keeps_rwkv_curve_absent() -> None:
                 remembered=[True, False, True, False],
                 fsrs_predictions=[0.9, 0.8, 0.7, 0.6],
                 rwkv_predictions=[0.6, 0.7, 0.8, 0.9],
+                rwkv_curve_predictions=[0.55, 0.65, 0.75, 0.85],
                 fsrs_role="validation_fold",
                 rwkv_role="final_fit",
+                rwkv_curve_role="final_fit",
                 fsrs_only=2,
                 rwkv_only=1,
                 unscored=3,
@@ -149,14 +151,78 @@ def test_the_job_reads_the_backend_and_keeps_rwkv_curve_absent() -> None:
     assert by_algorithm[metrics.FSRS_7].auc == 0.75
     assert by_algorithm[metrics.FSRS_7].sample_role == "validation_fold"
     assert by_algorithm[metrics.RWKV_INSTANT].auc == 0.25
-    # RWKV-Curve has no stored per-review value: absent, never another's
+    # RWKV-Curve is read from its own rows, never from RWKV-Instant's
+    curve = by_algorithm[metrics.RWKV_CURVE]
+    assert curve.unavailable == metrics.Unavailable.AVAILABLE
+    assert curve.reviews == 4
+    assert curve.sample_role == "final_fit"
+    # its own numbers, not RWKV-Instant's
     assert (
-        by_algorithm[metrics.RWKV_CURVE].unavailable == metrics.Unavailable.UNSUPPORTED
+        curve.average_predicted != by_algorithm[metrics.RWKV_INSTANT].average_predicted
     )
-    assert not by_algorithm[metrics.RWKV_CURVE].false_positive_rate
     # the graph can say what was left out and how fresh the rows are
     assert progress.scored == 4
     assert progress.shared == 4
     assert (progress.fsrs_only, progress.rwkv_only, progress.unscored) == (2, 1, 3)
     assert progress.newest_scored_secs == 1_700_000_000
     assert progress.newer_reviews == 5
+
+
+# Pins spec/ui.md#ui.stats-model-metrics
+def test_an_algorithm_whose_rows_nothing_wrote_says_so() -> None:
+    from anki.stats_pb2 import ReviewPredictionsResponse
+
+    class _Backend:
+        def review_predictions(self, search: str, days: int) -> object:
+            # RWKV-Instant has rows; RWKV-Curve has none yet
+            return ReviewPredictionsResponse(
+                revlog_ids=[1, 2],
+                card_ids=[1, 1],
+                remembered=[True, False],
+                rwkv_predictions=[0.9, 0.4],
+                rwkv_role="final_fit",
+            )
+
+    class _Collection:
+        _backend = _Backend()
+
+    job = metrics._Job(job_id=1, key=("test",))
+    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    by_algorithm = {series.algorithm: series for series in job.progress().series}
+
+    # not "the model cannot compute it": nothing has recorded it yet
+    assert (
+        by_algorithm[metrics.RWKV_CURVE].unavailable == metrics.Unavailable.NOT_RECORDED
+    )
+    assert not by_algorithm[metrics.RWKV_CURVE].false_positive_rate
+
+
+# Pins spec/ui.md#ui.stats-model-metrics
+def test_a_partly_recorded_algorithm_says_how_far_back_it_reaches() -> None:
+    from anki.stats_pb2 import ReviewPredictionsResponse
+
+    class _Backend:
+        def review_predictions(self, search: str, days: int) -> object:
+            return ReviewPredictionsResponse(
+                revlog_ids=[1, 2],
+                card_ids=[1, 1],
+                remembered=[True, False],
+                rwkv_curve_predictions=[0.9, 0.4],
+                rwkv_curve_role="final_fit",
+                rwkv_curve_oldest_secs=1_700_000_000,
+                rwkv_curve_earlier_reviews=4321,
+            )
+
+    class _Collection:
+        _backend = _Backend()
+
+    job = metrics._Job(job_id=1, key=("test",))
+    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    curve = {series.algorithm: series for series in job.progress().series}[
+        metrics.RWKV_CURVE
+    ]
+
+    # a series covering days must not look like one covering years
+    assert curve.unavailable == metrics.Unavailable.AVAILABLE
+    assert curve.recorded_from_secs == 1_700_000_000
+    assert curve.earlier_reviews == 4321

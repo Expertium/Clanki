@@ -654,7 +654,29 @@ card starts at its latest learning start, as RWKV's scheduling does.
 
 The predictions are not computed for the graph. Each algorithm writes them
 per review while it runs, and the graph reads those rows: FSRS-7's when its
-parameters are optimized, RWKV's when its state cache is built. A row counts
+parameters are optimized, RWKV's when its state cache is built. RWKV-Curve's
+value is recorded by the same replay that records RWKV-Instant's: the
+warm-up already computes the curve head at every review, and its prediction
+of a review is the curve the replay had stored at that card's PREVIOUS
+answered review, at that review's own elapsed time. A card's first review
+has no such curve and gets no row; nothing is substituted for it.
+
+Each algorithm's rows live under its own name. RWKV-Curve's are in the
+generic `review_predictions` table, which is keyed by algorithm as well as
+by review, so a read cannot reach another algorithm's number without naming
+whose it is; FSRS-7 and RWKV-Instant still have a table each, and moving
+them is a separate change that must be bit-identical. Which sample roles
+are legitimate, and whether the first honest role or the role with the most
+rows wins, are facts each algorithm declares rather than a rule the graph
+applies to all of them.
+
+An algorithm that could predict these reviews but whose rows nothing has
+written yet is absent for THAT reason: the graph says Clanki has not
+recorded its predictions and what records them. It never says the algorithm
+cannot compute them. When an algorithm's rows begin part way through the
+history, the graph says "recorded from &lt;date&gt;; N earlier reviews are not
+recorded", so a series covering days cannot look like one covering years;
+after a full replay records the history, that line is gone. A row counts
 only when nothing that produced it was fitted on that very review:
 
 | Algorithm | Rows that count                                                                |
@@ -782,6 +804,9 @@ user's own rebuild, never to opening a page.
 `newer_ratings_than_the_stored_predictions_are_reported`,
 `calibration_bins_and_their_intervals`,
 `um_plus_groups_the_ratings_by_how_far_the_algorithms_differ`,
+`curve_values_survive_a_card_split_across_two_warm_up_calls`,
+`bulk_warm_up_curve_values_match_sequential_over_a_batch`
+(`rslib/src/rwkv/mod.rs`),
 `the_same_reviews_always_give_the_same_interval`,
 `the_parallel_bootstrap_draws_what_one_thread_drew`
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;

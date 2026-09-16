@@ -21,20 +21,12 @@ use rayon::prelude::*;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::search::SortMode;
-use crate::storage::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE;
-use crate::storage::RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE;
-
-/// FSRS-7's parameters are fitted on this collection, so only the rows of a
-/// model that had not seen the review count: a validation fold, or a run
-/// after the optimization that produced the parameters. `final_fit` rows
-/// are never used, not even labelled.
-const FSRS_ROLES: &[&str] = &["validation_fold", "post_optimization"];
-/// RWKV's weights are frozen and were trained on other people's reviews,
-/// and a replayed prediction is built from the reviews before it, so its
-/// raw output cannot have seen the review whatever role the row carries.
-/// With no honesty order to keep, it takes the role that covers the most
-/// reviews, so the comparison rests on as many ratings as possible.
-const RWKV_ROLES: &[&str] = &["test_fold", "post_optimization", "final_fit"];
+use crate::stats::algorithms::PredictionStore;
+use crate::stats::algorithms::PredictsRecall;
+use crate::stats::algorithms::RoleChoice;
+use crate::stats::algorithms::FSRS7;
+use crate::stats::algorithms::RWKV_CURVE;
+use crate::stats::algorithms::RWKV_INSTANT;
 
 /// One model's cached predictions for the searched ratings, and the role
 /// they came from.
@@ -76,24 +68,16 @@ impl Collection {
             .into_iter()
             .filter(|entry| entry.has_rating_and_affects_scheduling() && entry.id.0 > cutoff.0)
             .collect();
-        let fsrs = read_predictions(
-            storage,
-            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
-            FSRS_ROLES,
-            cutoff,
-            false,
-        )?;
-        let rwkv = read_predictions(
-            storage,
-            RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
-            RWKV_ROLES,
-            cutoff,
-            true,
-        )?;
+        // each algorithm names itself; no read can reach another
+        // algorithm's rows without saying whose they are
+        let fsrs = read_predictions(storage, &FSRS7, cutoff)?;
+        let rwkv = read_predictions(storage, &RWKV_INSTANT, cutoff)?;
+        let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff)?;
 
         let mut response = ReviewPredictionsResponse {
             fsrs_role: fsrs.role.clone(),
             rwkv_role: rwkv.role.clone(),
+            rwkv_curve_role: rwkv_curve.role.clone(),
             ..Default::default()
         };
         // Each model is scored on every rating it has an honest row for, so
@@ -106,7 +90,8 @@ impl Collection {
         for entry in &ratings {
             let fsrs_value = fsrs.by_review.get(&entry.id);
             let rwkv_value = rwkv.by_review.get(&entry.id);
-            if fsrs_value.is_some() || rwkv_value.is_some() {
+            let curve_value = rwkv_curve.by_review.get(&entry.id);
+            if fsrs_value.is_some() || rwkv_value.is_some() || curve_value.is_some() {
                 response.revlog_ids.push(entry.id.0);
                 response.card_ids.push(entry.cid.0);
                 response.remembered.push(entry.button_chosen > 1);
@@ -119,6 +104,9 @@ impl Collection {
                 response
                     .rwkv_predictions
                     .push(rwkv_value.copied().unwrap_or(f32::NAN));
+                response
+                    .rwkv_curve_predictions
+                    .push(curve_value.copied().unwrap_or(f32::NAN));
             }
             match (fsrs_value, rwkv_value) {
                 (Some(_), Some(_)) => response.shared += 1,
@@ -136,7 +124,9 @@ impl Collection {
         let newest = ratings
             .iter()
             .filter(|entry| {
-                fsrs.by_review.contains_key(&entry.id) || rwkv.by_review.contains_key(&entry.id)
+                fsrs.by_review.contains_key(&entry.id)
+                    || rwkv.by_review.contains_key(&entry.id)
+                    || rwkv_curve.by_review.contains_key(&entry.id)
             })
             .map(|entry| entry.id)
             .max();
@@ -162,17 +152,66 @@ impl Collection {
             &response.remembered,
             &response.card_ids,
         );
-        // one entry per pair of algorithms that share ratings; today only
-        // FSRS-7 and RWKV-Instant have stored predictions
-        if let Some(pair) = um_plus_pair(
-            SchedulingAlgorithmProto::Fsrs7,
-            &response.fsrs_predictions,
-            SchedulingAlgorithmProto::RwkvInstant,
-            &response.rwkv_predictions,
-            &response.remembered,
-        ) {
-            response.um_plus.push(pair);
+        // How far back the curve recording reaches. A collection that has
+        // been replayed since the recording shipped has rows for its whole
+        // history; one that has not has rows only from the day it started,
+        // and the graph must say so rather than show three days of data
+        // looking like three years.
+        let oldest_curve = ratings
+            .iter()
+            .find(|entry| rwkv_curve.by_review.contains_key(&entry.id))
+            .map(|entry| entry.id);
+        if let Some(oldest) = oldest_curve {
+            response.rwkv_curve_oldest_secs = oldest.as_secs().0;
+            response.rwkv_curve_earlier_reviews = ratings
+                .iter()
+                .filter(|entry| entry.id < oldest)
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
         }
+
+        response.rwkv_curve_bins = calibration_bins(
+            &response.rwkv_curve_predictions,
+            &response.remembered,
+            &response.card_ids,
+        );
+        // one entry per pair of algorithms that share ratings; three
+        // algorithms make three pairs, and a pair with no shared rating is
+        // simply absent
+        let pairs = [
+            (
+                SchedulingAlgorithmProto::Fsrs7,
+                &response.fsrs_predictions,
+                SchedulingAlgorithmProto::RwkvCurve,
+                &response.rwkv_curve_predictions,
+            ),
+            (
+                SchedulingAlgorithmProto::Fsrs7,
+                &response.fsrs_predictions,
+                SchedulingAlgorithmProto::RwkvInstant,
+                &response.rwkv_predictions,
+            ),
+            (
+                SchedulingAlgorithmProto::RwkvCurve,
+                &response.rwkv_curve_predictions,
+                SchedulingAlgorithmProto::RwkvInstant,
+                &response.rwkv_predictions,
+            ),
+        ];
+        let mut um_plus = vec![];
+        for (algorithm_a, predictions_a, algorithm_b, predictions_b) in pairs {
+            if let Some(pair) = um_plus_pair(
+                algorithm_a,
+                predictions_a,
+                algorithm_b,
+                predictions_b,
+                &response.remembered,
+            ) {
+                um_plus.push(pair);
+            }
+        }
+        response.um_plus = um_plus;
         Ok(response)
     }
 }
@@ -982,39 +1021,44 @@ fn weighted_slope(
     }
 }
 
-/// One model's rows, from a single sample role: the first role of `roles`
-/// that has any row, or, when `most_rows` is set, the role of `roles` with
-/// the most rows. Roles are never mixed.
+/// One algorithm's rows, from a single sample role: the role its own
+/// contract chooses out of the roles it has rows for. Roles are never
+/// mixed, and no other algorithm's rows are reachable from here.
 fn read_predictions(
     storage: &crate::storage::SqliteStorage,
-    table: &str,
-    roles: &[&str],
+    algorithm: &PredictsRecall,
     after: TimestampMillis,
-    most_rows: bool,
 ) -> Result<CachedPredictions> {
-    let stored = storage.cached_review_prediction_roles(table)?;
+    let stored = match algorithm.store {
+        PredictionStore::Generic => storage.review_prediction_roles(algorithm.id())?,
+        PredictionStore::Legacy(table) => storage.cached_review_prediction_roles(table)?,
+    };
     let count_of = |role: &str| {
         stored
             .iter()
             .find(|(stored, _)| stored == role)
             .map_or(0, |(_, count)| *count)
     };
-    let chosen = if most_rows {
-        roles
+    let chosen = match algorithm.role_choice {
+        RoleChoice::MostRows => algorithm
+            .honest_roles
             .iter()
             .filter(|role| count_of(role) > 0)
-            .max_by_key(|role| count_of(role))
-    } else {
-        roles.iter().find(|role| count_of(role) > 0)
+            .max_by_key(|role| count_of(role)),
+        RoleChoice::FirstHonest => algorithm
+            .honest_roles
+            .iter()
+            .find(|role| count_of(role) > 0),
     };
     let Some(role) = chosen else {
         return Ok(CachedPredictions::none());
     };
+    let rows = match algorithm.store {
+        PredictionStore::Generic => storage.review_predictions_of(algorithm.id(), role, after)?,
+        PredictionStore::Legacy(table) => storage.cached_review_predictions(table, role, after)?,
+    };
     Ok(CachedPredictions {
         role: (*role).to_string(),
-        by_review: storage
-            .cached_review_predictions(table, role, after)?
-            .into_iter()
-            .collect(),
+        by_review: rows.into_iter().collect(),
     })
 }
