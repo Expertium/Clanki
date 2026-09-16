@@ -738,6 +738,20 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             .collect()
     }
 
+    /// The id and note id of every card, or of the searched ones: all the
+    /// Retrievability graph reads under RWKV, and far cheaper than the cards.
+    pub(crate) fn card_note_ids(&self, searched: bool) -> Result<Vec<(CardId, NoteId)>> {
+        let sql = if searched {
+            "select id, nid from cards where id in (select cid from search_cids)"
+        } else {
+            "select id, nid from cards"
+        };
+        self.db
+            .prepare_cached(sql)?
+            .query_and_then([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
     pub(crate) fn all_searched_cards(&self) -> Result<Vec<Card>> {
         self.db
             .prepare_cached(concat!(

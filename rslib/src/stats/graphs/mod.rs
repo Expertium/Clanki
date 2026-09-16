@@ -39,6 +39,10 @@ struct GraphsContext {
     /// RWKV-Instant's R); None under FSRS-7 and while RWKV has not scored
     /// the search yet (spec ui.stats-one-algorithm).
     rwkv_retrievability_scores: Option<HashMap<CardId, f32>>,
+    /// The card and note id of every card the Retrievability graph draws
+    /// under RWKV, where `cards` is not read. None under FSRS-7 and when the
+    /// graph is not wanted.
+    rwkv_retrievability_notes: Option<Vec<(CardId, NoteId)>>,
     algorithm: SchedulingAlgorithm,
     next_day_start: TimestampSecs,
     days_elapsed: u32,
@@ -147,6 +151,12 @@ impl Collection {
                     searched_cards * 2 >= collection_cards as usize,
                 )?
         };
+        let algorithm = self.effective_scheduling_algorithm()?;
+        let retrievability = wanted.has(Graph::Retrievability);
+        // under RWKV the Retrievability graph draws RWKV's score per card and
+        // computes nothing from the card itself, so it needs only the card's
+        // id and the id of its note (spec ui.stats-one-algorithm)
+        let retrievability_needs_cards = retrievability && algorithm == SchedulingAlgorithm::Fsrs7;
         let load_cards = wanted.any(&[
             Graph::Added,
             Graph::FutureDue,
@@ -154,8 +164,7 @@ impl Collection {
             Graph::Stability,
             Graph::Eases,
             Graph::Difficulty,
-            Graph::Retrievability,
-        ]);
+        ]) || retrievability_needs_cards;
         let cards = if !load_cards {
             vec![]
         } else if all {
@@ -163,14 +172,17 @@ impl Collection {
         } else {
             self.storage.all_searched_cards()?
         };
+        let rwkv_retrievability_notes = if retrievability && !retrievability_needs_cards {
+            Some(self.storage.card_note_ids(!all)?)
+        } else {
+            None
+        };
         // without the cards (the Simple view), Card Counts counts in SQL
         let card_count_groups = if wanted.has(Graph::CardCounts) && !load_cards {
             Some(self.storage.card_count_groups(!all)?)
         } else {
             None
         };
-        let algorithm = self.effective_scheduling_algorithm()?;
-        let retrievability = wanted.has(Graph::Retrievability);
         let rwkv_retrievability_scores = match algorithm {
             _ if !retrievability => None,
             SchedulingAlgorithm::Fsrs7 => None,
@@ -235,6 +247,7 @@ impl Collection {
             fsrs_curve_by_preset,
             fsrs_preset_by_card,
             rwkv_retrievability_scores,
+            rwkv_retrievability_notes,
             algorithm,
             next_day_start: timing.next_day_at,
             local_offset_secs,
