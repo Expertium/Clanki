@@ -14,6 +14,7 @@ import { expect, test } from "vitest";
 import {
     chanceLabel,
     curveLabel,
+    dataNotes,
     overlayText,
     renderRoc,
     rocBounds,
@@ -22,7 +23,7 @@ import {
     unavailableNotes,
 } from "./roc";
 
-function curve(algorithm: SchedulingAlgorithm, auc: number) {
+function curve(algorithm: SchedulingAlgorithm, auc: number, sampleRole = "validation_fold") {
     return {
         algorithm,
         unavailable: Unavailable.AVAILABLE,
@@ -30,6 +31,7 @@ function curve(algorithm: SchedulingAlgorithm, auc: number) {
         falsePositiveRate: [0, 0, 1],
         truePositiveRate: [0, 1, 1],
         auc,
+        sampleRole,
     };
 }
 
@@ -41,6 +43,7 @@ function missing(algorithm: SchedulingAlgorithm, unavailable: Unavailable) {
         falsePositiveRate: [],
         truePositiveRate: [],
         auc: 0,
+        sampleRole: "",
     };
 }
 
@@ -155,4 +158,49 @@ test("the diagonal of random chance is drawn dashed", () => {
     expect(paths).toHaveLength(2);
     expect(paths[0].getAttribute("stroke-dasharray")).toBe("6 4");
     expect(paths[1].getAttribute("stroke-dasharray")).toBeNull();
+});
+
+// Pins spec/ui.md#ui.stats-model-metrics
+test("the graph says what it scored, what it left out and how fresh it is", () => {
+    const progress = new ReviewMetricsProgress({
+        state: JobState.DONE,
+        series: [
+            curve(SchedulingAlgorithm.FSRS7, 0.7, "validation_fold"),
+            missing(SchedulingAlgorithm.RWKV_CURVE, Unavailable.UNSUPPORTED),
+            curve(SchedulingAlgorithm.RWKV_INSTANT, 0.8, "final_fit"),
+        ],
+        scored: 4000,
+        fsrsOnly: 10,
+        rwkvOnly: 20,
+        unscored: 30,
+        newestScoredSecs: 1700000000n,
+        newerReviews: 5,
+    });
+
+    const notes = dataNotes(progress);
+
+    // the shared count, what was left out, one role line per drawn
+    // algorithm, and the staleness line
+    expect(notes).toHaveLength(5);
+    expect(notes[2]).toBe(
+        tr.statisticsModelMetricsRole({
+            algorithm: tr.deckConfigSchedulerChoiceFsrs(),
+            role: "validation_fold",
+        }),
+    );
+    expect(notes[3]).toBe(
+        tr.statisticsModelMetricsRole({
+            algorithm: tr.deckConfigSchedulerChoiceRwkvInstant(),
+            role: "final_fit",
+        }),
+    );
+    // nothing is said about an algorithm that has no curve
+    expect(notes.join(" ")).not.toContain("undefined");
+    // and a graph with nothing left out says nothing about it
+    const clean = new ReviewMetricsProgress({
+        state: JobState.DONE,
+        series: [curve(SchedulingAlgorithm.FSRS7, 0.7)],
+        scored: 10,
+    });
+    expect(dataNotes(clean)).toHaveLength(2);
 });

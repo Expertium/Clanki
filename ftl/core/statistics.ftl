@@ -209,6 +209,14 @@ statistics-roc-description-curve = Each curve plots the true positive rate again
 statistics-roc-description-auc = A higher AUC is better: 1.0 puts every remembered review above every forgotten one, and 0.5 is random chance.
 # Shown under every model-quality graph; it says which reviews the graph counts.
 statistics-model-metrics-description-reviews = It counts every rating that follows an earlier rating of the same card: Hard, Good and Easy count as remembered, Again counts as forgotten.
+# Shown under the graph; $reviews is how many ratings every drawn algorithm scored.
+statistics-model-metrics-scored = Every algorithm here is scored on the same { $reviews } reviews.
+# Shown under the graph when some ratings are left out.
+statistics-model-metrics-left-out = Left out: { $fsrs } that only FSRS-7 scored, { $rwkv } that only RWKV scored, { $none } that neither scored.
+# Shown under the graph; $role is a stored sample role, such as "validation_fold".
+statistics-model-metrics-role = { $algorithm } uses its "{ $role }" predictions, made before the algorithm had seen these reviews.
+# Shown under the graph when the newest reviews have no prediction yet.
+statistics-model-metrics-stale = Predictions up to { $date }; { $reviews } newer reviews are not scored yet.
 # Shown under the graph when an algorithm has no curve; $algorithm is its name.
 statistics-model-metrics-no-model = { $algorithm } is not shown: no RWKV model was found.
 statistics-model-metrics-no-params = { $algorithm } is not shown: no preset of these cards has FSRS-7 parameters.

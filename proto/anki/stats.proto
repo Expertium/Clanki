@@ -182,10 +182,10 @@ message TotalKnowledgeRwkvProgress {
   string error = 5;
 }
 
-// The model-quality graphs' FSRS-7 predictions (spec ui.stats-model-metrics):
-// for every rating of the search's cards in the page's period that follows an
-// earlier rating of the same card, the probability of recall FSRS-7 predicted
-// before that answer, with the answer itself.
+// The model-quality graphs' data (spec ui.stats-model-metrics): for every
+// rating of the search's cards in the page's period that both models
+// predicted without having been fitted on it, each model's predicted
+// probability of recall before that answer, with the answer itself.
 message ReviewPredictionsRequest {
   string search = 1;
   // The page's period in days; 0 = the whole history.
@@ -193,16 +193,30 @@ message ReviewPredictionsRequest {
 }
 
 message ReviewPredictionsResponse {
-  // One entry per predicted rating, in review order. The three lists have
-  // the same length.
+  // One entry per scored rating, oldest first. The four lists have the same
+  // length: the models are scored on the same reviews, never on two
+  // different sets.
   repeated int64 revlog_ids = 1;
   repeated int64 card_ids = 2;
-  repeated float predictions = 3;
   // The answers: true = Hard, Good or Easy, false = Again.
-  repeated bool remembered = 4;
-  // No preset of the searched cards has usable FSRS-7 parameters, so the
-  // FSRS-7 series is unavailable (spec ui.stats-model-metrics).
-  bool no_params = 5;
+  repeated bool remembered = 3;
+  repeated float fsrs_predictions = 4;
+  // RWKV-Instant's head; RWKV-Curve has no stored per-review value yet.
+  repeated float rwkv_predictions = 5;
+  // The sample role each model's rows came from, such as "validation_fold";
+  // empty when that model has no usable row. Roles are never mixed.
+  string fsrs_role = 6;
+  string rwkv_role = 7;
+  // Ratings one model could score and the other could not, and ratings
+  // neither could: the graph says how many it left out.
+  uint32 fsrs_only = 8;
+  uint32 rwkv_only = 9;
+  uint32 unscored = 10;
+  // The newest scored review, as a Unix timestamp in seconds, and the
+  // number of later ratings of the search that no model has scored; the
+  // graph says "predictions up to <date>; N newer reviews not scored".
+  int64 newest_scored_secs = 11;
+  uint32 newer_reviews = 12;
 }
 
 // Starts (or joins) the model-quality graphs' computation: FSRS-7's
@@ -249,14 +263,25 @@ message ReviewMetricsProgress {
     repeated float false_positive_rate = 4;
     repeated float true_positive_rate = 5;
     double auc = 6;
+    // The sample role the predictions came from, such as
+    // "validation_fold"; the graph names it, and roles are never mixed.
+    string sample_role = 7;
   }
   State state = 1;
   uint32 job_id = 2;
   // One entry per algorithm, always all three, in menu order.
   repeated Series series = 3;
   string error = 4;
-  // The share of the RWKV replay that is done, 0-1.
-  float rwkv_done = 5;
+  // The ratings both algorithms scored, and the ones left out: scored by
+  // one algorithm only, or by neither.
+  uint32 scored = 5;
+  uint32 fsrs_only = 6;
+  uint32 rwkv_only = 7;
+  uint32 unscored = 8;
+  // The newest scored review, as a Unix timestamp in seconds (0 = none),
+  // and the ratings of the search after it that nothing has scored.
+  int64 newest_scored_secs = 9;
+  uint32 newer_reviews = 10;
 }
 
 message GraphsResponse {

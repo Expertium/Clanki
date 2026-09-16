@@ -16,7 +16,7 @@ import {
     ReviewMetricsProgress_Unavailable as Unavailable,
 } from "@generated/anki/stats_pb";
 import * as tr from "@generated/ftl";
-import { localizedNumber } from "@tslib/i18n";
+import { localizedDate, localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, line, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
@@ -120,6 +120,53 @@ export function unavailableNotes(progress: ReviewMetricsProgress | null): string
     return progress.series
         .map(unavailableText)
         .filter((text): text is string => text !== null);
+}
+
+/**
+ * What the graph says about its own data (spec ui.stats-model-metrics): how
+ * many reviews every drawn algorithm shares, what was left out, which stored
+ * predictions each algorithm used, and how fresh they are.
+ */
+export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
+    if (!progress) {
+        return [];
+    }
+    const notes: string[] = [];
+    if (progress.scored > 0) {
+        notes.push(
+            tr.statisticsModelMetricsScored({ reviews: progress.scored }),
+        );
+    }
+    if (progress.fsrsOnly + progress.rwkvOnly + progress.unscored > 0) {
+        notes.push(
+            tr.statisticsModelMetricsLeftOut({
+                fsrs: localizedNumber(progress.fsrsOnly, 0),
+                rwkv: localizedNumber(progress.rwkvOnly, 0),
+                none: localizedNumber(progress.unscored, 0),
+            }),
+        );
+    }
+    for (const series of progress.series) {
+        if (hasCurve(series) && series.sampleRole) {
+            notes.push(
+                tr.statisticsModelMetricsRole({
+                    algorithm: algorithmName(series.algorithm),
+                    role: series.sampleRole,
+                }),
+            );
+        }
+    }
+    if (progress.newerReviews > 0) {
+        notes.push(
+            tr.statisticsModelMetricsStale({
+                date: progress.newestScoredSecs > 0n
+                    ? localizedDate(new Date(Number(progress.newestScoredSecs) * 1000))
+                    : "-",
+                reviews: progress.newerReviews,
+            }),
+        );
+    }
+    return notes;
 }
 
 /** The text shown instead of a graph while there is nothing to draw. */

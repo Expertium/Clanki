@@ -575,8 +575,31 @@ card starts at its latest learning start, as RWKV's scheduling does.
 | Algorithm    | Its prediction of a rating                                        |
 | ------------ | ----------------------------------------------------------------- |
 | FSRS-7       | FSRS-7's forgetting curve at the memory state after the card's previous rating, at the days since it, with the card's preset parameters |
-| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous rating, at the time since it |
+| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous answered review, at the time since it |
 | RWKV-Instant | RWKV-Instant's prediction of the card at that moment, from its state before the answer |
+
+The predictions are not computed for the graph. Each algorithm writes them
+per review while it runs, and the graph reads those rows: FSRS-7's when its
+parameters are optimized, RWKV's when its state cache is built. A row counts
+only when nothing that produced it was fitted on that very review:
+
+| Algorithm | Rows that count                                                                |
+| --------- | ------------------------------------------------------------------------------ |
+| FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
+| RWKV      | any role, because the weights are frozen and were trained on other collections  |
+
+Each algorithm uses one role only, the first of its list that has any row
+for the search, and the graph names the role it used. The two algorithms are
+scored on the same ratings: a rating only one of them has a row for is left
+out, and the graph says how many were left out for each reason. A rating
+with no usable row for an algorithm is never filled in from a fresh
+computation with today's parameters, because those parameters have seen the
+rating.
+
+Reading the rows does not start any computation. Ratings newer than the
+newest stored prediction are left out, and the graph says "Predictions up to
+&lt;date&gt;; N newer reviews are not scored yet", so it never silently drops
+the newest reviews.
 
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
@@ -590,16 +613,11 @@ remembered, or all forgotten, has no curve. Each curve uses the ratings its
 own algorithm predicts, so a curve appears as soon as its data is ready and
 does not wait for the others.
 
-FSRS-7's predictions come from the backend, which reads the collection under
-its lock and replays with the lock free. RWKV's come from a background job
-that replays the collection's whole review history through a separate RWKV
-runtime: the replay predicts every review before it applies it, which is
-RWKV-Instant's number, and RWKV-Curve's comes from a curve prediction of the
-same reviews. The page stays usable while the job runs and reads
-"Calculating…". A second request for the same cards, period and collection
-state joins the running job, a finished result is kept for the session, and
-a Simple/Advanced switch or a second visit does not start it again. Leaving
-the page or closing the window stops the job.
+The reading runs in a background job, so the page never waits for it and
+reads "Calculating…" meanwhile. A second request for the same cards, period
+and collection state joins the running job, a finished result is kept for
+the session, and a Simple/Advanced switch or a second visit does not start
+it again. Leaving the page or closing the window stops the job.
 
 **Why:** Andrew, 2026-09-16: add the Search Stats Extended fork's
 model-quality graphs, so that the algorithms can be compared on his own
@@ -608,11 +626,19 @@ because a comparison of one algorithm with itself says nothing; the honesty
 rules (a name on every series, no fallback, an absent series with a reason)
 are what keep the relaxation safe. All three curves at once on the AUC-ROC
 graph, and the square drawing area with the labelled diagonal, are his
-words.
+words. The rules about which stored rows count, and about scoring both
+algorithms on the same ratings, are the RWKV session's: a prediction from a
+model fitted on the very review it predicts flatters that model, and two
+scores over two different sets of reviews cannot be compared. Reading the
+stored rows rather than replaying is what the Search Stats Extended fork
+does, and it is why a panel of hundreds of thousands of reviews opens at
+once; a replay of the whole history costs minutes and now belongs to the
+user's own rebuild, never to opening a page.
 
-**Pinned by:** `fsrs7_predictions_follow_an_earlier_rating`,
-`a_cards_first_rating_has_no_prediction`,
-`the_period_selects_the_ratings_not_the_history`
+**Pinned by:** `only_rows_the_algorithm_had_not_seen_are_used`,
+`both_algorithms_are_scored_on_the_same_ratings`,
+`the_period_selects_the_ratings`,
+`newer_ratings_than_the_stored_predictions_are_reported`
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`.
 

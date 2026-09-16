@@ -5,25 +5,22 @@
 
 Every graph needs the same thing: for each rating of the searched cards in
 the page's period, the probability of recall an algorithm predicted before
-that answer, and the answer itself. FSRS-7's predictions come from the
-backend. RWKV's come from a background replay of the whole review history:
-the warm-up already predicts every review as it applies it, which gives
-RWKV-Instant its number, and RWKV-Curve's comes from a curve prediction of
-the same reviews before they are applied.
+that answer, and the answer itself. Both algorithms write those predictions
+per review while they run, so the backend reads them instead of computing
+them again, and only rows that nothing fitted on the review produced are
+used. The two algorithms are scored on the same reviews.
 
-The page starts the job, polls it, and cancels it when it closes. A series
-appears as soon as its own data is ready, so FSRS-7 is drawn while RWKV is
-still replaying. An algorithm that cannot be computed stays absent with a
-reason; it is never replaced by another algorithm's values.
+The page starts the job, polls it and cancels it when it closes. The reading
+is quick, but it is still a background job: the window never waits for it,
+and a finished result is kept for the session.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field, replace
-from types import SimpleNamespace
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from anki.deck_config_pb2 import DeckConfigsForUpdate
@@ -43,9 +40,6 @@ RWKV_INSTANT = Algorithm.RWKV_INSTANT
 # menu order, and the order of the series in the progress message
 ALGORITHMS = (FSRS_7, RWKV_CURVE, RWKV_INSTANT)
 
-# the reviews of one replay step; each card appears at most once in a step,
-# so a card's own earlier answer is always applied before it is predicted
-_MAX_STEP = 4096
 # points of a drawn ROC curve; the AUC uses every point
 _CURVE_POINTS = 512
 _MAX_CACHED_RESULTS = 4
@@ -59,7 +53,12 @@ class _Job:
     lock: threading.Lock = field(default_factory=threading.Lock)
     state: State.ValueType = State.COMPUTING
     series: dict[Algorithm.ValueType, Series] = field(default_factory=dict)
-    rwkv_done: float = 0.0
+    scored: int = 0
+    fsrs_only: int = 0
+    rwkv_only: int = 0
+    unscored: int = 0
+    newest_scored_secs: int = 0
+    newer_reviews: int = 0
     error: str = ""
 
     def progress(self) -> Progress:
@@ -74,7 +73,12 @@ class _Job:
                     )
                     for algorithm in ALGORITHMS
                 ],
-                rwkv_done=self.rwkv_done,
+                scored=self.scored,
+                fsrs_only=self.fsrs_only,
+                rwkv_only=self.rwkv_only,
+                unscored=self.unscored,
+                newest_scored_secs=self.newest_scored_secs,
+                newer_reviews=self.newer_reviews,
                 error=self.error,
             )
 
@@ -94,8 +98,8 @@ class _Job:
 _lock = threading.Lock()
 _job: _Job | None = None
 _next_job_id = 1
-# key -> the finished series, so a mode switch or a second visit is free
-_results: dict[tuple[object, ...], list[Series]] = {}
+# key -> the finished progress, so a mode switch or a second visit is free
+_results: dict[tuple[object, ...], Progress] = {}
 
 
 def start(mw: Any, search: str, days: int) -> Progress:
@@ -109,7 +113,7 @@ def start(mw: Any, search: str, days: int) -> Progress:
     key = (card_ids, days, col.mod, col.sched.today)
     with _lock:
         if (cached := _results.get(key)) is not None:
-            return Progress(state=State.DONE, series=list(cached))
+            return cached
         current = _job
         if (
             current is not None
@@ -127,7 +131,7 @@ def start(mw: Any, search: str, days: int) -> Progress:
         _job = job
     threading.Thread(
         target=_run,
-        args=(mw, job, search, days, frozenset(card_ids)),
+        args=(mw, job, search, days),
         name="stats-metrics",
         daemon=True,
     ).start()
@@ -150,9 +154,9 @@ def cancel(job_id: int | None = None) -> None:
         job.cancel_event.set()
 
 
-def _run(mw: Any, job: _Job, search: str, days: int, card_ids: frozenset[int]) -> None:
+def _run(mw: Any, job: _Job, search: str, days: int) -> None:
     try:
-        _compute(mw, job, search, days, card_ids)
+        _compute(mw, job, search, days)
     except InterruptedError:
         with job.lock:
             job.state = State.CANCELLED
@@ -164,188 +168,53 @@ def _run(mw: Any, job: _Job, search: str, days: int, card_ids: frozenset[int]) -
     else:
         with job.lock:
             job.state = State.DONE
-            result = [job.series[algorithm] for algorithm in ALGORITHMS]
+        finished = job.progress()
         with _lock:
-            _results[job.key] = result
+            _results[job.key] = finished
             while len(_results) > _MAX_CACHED_RESULTS:
                 del _results[next(iter(_results))]
 
 
-def _compute(
-    mw: Any, job: _Job, search: str, days: int, card_ids: frozenset[int]
-) -> None:
-    _fsrs7_series(mw, job, search, days)
+def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
+    data = mw.col._backend.review_predictions(search=search, days=days)
     if job.cancel_event.is_set():
         raise InterruptedError()
-    _rwkv_series(mw, job, days, card_ids)
+    with job.lock:
+        job.scored = len(data.revlog_ids)
+        job.fsrs_only = data.fsrs_only
+        job.rwkv_only = data.rwkv_only
+        job.unscored = data.unscored
+        job.newest_scored_secs = data.newest_scored_secs
+        job.newer_reviews = data.newer_reviews
 
-
-def _fsrs7_series(mw: Any, job: _Job, search: str, days: int) -> None:
-    predictions = mw.col._backend.review_predictions(search=search, days=days)
-    if predictions.no_params:
-        job.set_unavailable([FSRS_7], Unavailable.NO_PARAMS)
-        return
-    job.set_series(_series(FSRS_7, predictions.predictions, predictions.remembered))
-
-
-def _rwkv_series(mw: Any, job: _Job, days: int, card_ids: frozenset[int]) -> None:
-    """Replays the whole review history through a separate RWKV runtime and
-    keeps every prediction of a rating the graphs use."""
-
-    import aqt.rwkv_scheduler as rwkv
-
-    if not rwkv.rwkv_model_available():
-        job.set_unavailable([RWKV_CURVE, RWKV_INSTANT], Unavailable.NO_MODEL)
-        return
-
-    reviewer = SimpleNamespace(mw=mw)
-    timing = rwkv._timing_today(reviewer)
-    today = getattr(timing, "days_elapsed", None)
-    if not isinstance(today, int):
-        raise ValueError("scheduler timing is unavailable")
-    first_day = today - days + 1 if days else None
-
-    history = rwkv._historical_rwkv_review_inputs(reviewer)
-    reviews = list(zip(history.review_ids, history.reviews, strict=True))
-    if not reviews:
-        job.set_unavailable([RWKV_CURVE, RWKV_INSTANT], Unavailable.NO_REVIEWS)
-        return
-
-    runtime = new_runtime()
-    curve_predict = getattr(
-        runtime, "predict_curve_retrievability_many_from_warm_up", None
+    job.set_series(
+        _series(FSRS_7, data.fsrs_predictions, data.remembered, data.fsrs_role)
     )
-    if not callable(curve_predict):
-        # this build's RWKV cannot predict the stored curve of one review
-        job.set_unavailable([RWKV_CURVE], Unavailable.UNSUPPORTED)
-        curve_predict = None
-
-    # a card's first review in RWKV's history has no earlier rating, so no
-    # algorithm predicts it (spec ui.stats-model-metrics)
-    seen: set[int] = set()
-    wanted: dict[int, bool] = {}
-    instant: dict[int, float] = {}
-    curve: dict[int, float] = {}
-    outcomes: dict[int, bool] = {}
-
-    def record(review_id: int, retrievability: float) -> None:
-        if wanted.get(review_id):
-            instant[review_id] = retrievability
-
-    done = 0
-    for step in _steps(reviews):
-        if job.cancel_event.is_set():
-            raise InterruptedError()
-        wanted.clear()
-        for review_id, review in step:
-            card_id = review.identity.card_id
-            first = card_id not in seen
-            seen.add(card_id)
-            day = review.day_offset
-            keep = (
-                not first
-                and card_id in card_ids
-                and review.ease is not None
-                and isinstance(day, int)
-                and (first_day is None or day >= first_day)
-            )
-            wanted[review_id] = keep
-            if keep:
-                outcomes[review_id] = int(review.ease) > 1
-        if curve_predict is not None:
-            queries = [
-                _query_input(review)
-                for review_id, review in step
-                if wanted.get(review_id)
-            ]
-            ids = [review_id for review_id, _ in step if wanted.get(review_id)]
-            if queries:
-                for review_id, value in zip(ids, curve_predict(queries), strict=True):
-                    if value is not None:
-                        curve[review_id] = float(value)
-        runtime.warm_up_reviews(
-            [review for _, review in step],
-            review_ids=[review_id for review_id, _ in step],
-            prediction_recorder=record,
-            return_snapshot=False,
-        )
-        done += len(step)
-        with job.lock:
-            job.rwkv_done = done / len(reviews)
-
-    job.set_series(_series_from_map(RWKV_INSTANT, instant, outcomes))
-    if curve_predict is not None:
-        job.set_series(_series_from_map(RWKV_CURVE, curve, outcomes))
-
-
-def _steps(
-    reviews: Sequence[tuple[int, Any]],
-) -> Iterable[list[tuple[int, Any]]]:
-    """Splits the history into steps in which no card appears twice, so a
-    review is always predicted before the card's own answer is applied."""
-    step: list[tuple[int, Any]] = []
-    cards: set[int] = set()
-    for review_id, review in reviews:
-        card_id = review.identity.card_id
-        if card_id in cards or len(step) >= _MAX_STEP:
-            yield step
-            step = []
-            cards = set()
-        step.append((review_id, review))
-        cards.add(card_id)
-    if step:
-        yield step
-
-
-def _query_input(review: Any) -> Any:
-    """The review as RWKV's question of it: what the model predicted before
-    the answer."""
-    return replace(review, is_query=True, ease=None, duration_millis=None)
-
-
-def _new_runtime() -> Any:
-    import aqt.rwkv_scheduler
-    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
-
-    model_path = aqt.rwkv_scheduler._current_embedded_rwkv_model_path()
-    if model_path is None:
-        raise ValueError("no RWKV model")
-    return _RustRwkvRuntime(
-        model_path=model_path,
-        target_retention=aqt.rwkv_scheduler._RWKV_DEFAULT_TARGET_RETENTION,
-        max_interval_days=36_500,
+    job.set_series(
+        _series(RWKV_INSTANT, data.rwkv_predictions, data.remembered, data.rwkv_role)
     )
-
-
-# replaced in tests
-new_runtime: Callable[[], Any] = _new_runtime
-
-
-def _series_from_map(
-    algorithm: Algorithm.ValueType,
-    predictions: dict[int, float],
-    outcomes: dict[int, bool],
-) -> Series:
-    ids = sorted(predictions)
-    return _series(
-        algorithm,
-        [predictions[review_id] for review_id in ids],
-        [outcomes[review_id] for review_id in ids],
-    )
+    # RWKV-Curve's prediction of a past review is the curve stored at the
+    # card's previous answered review. Nothing stores that per review yet,
+    # so the algorithm is absent, never replaced by another's values.
+    job.set_unavailable([RWKV_CURVE], Unavailable.UNSUPPORTED)
 
 
 def _series(
     algorithm: Algorithm.ValueType,
     predictions: Sequence[float],
     remembered: Sequence[bool],
+    role: str = "",
 ) -> Series:
     """One algorithm's ROC curve and its AUC."""
+    if not role or not predictions:
+        return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
     points, auc = roc_curve(predictions, remembered)
     if not points:
         return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
     return Series(
         algorithm=algorithm,
         reviews=len(predictions),
+        sample_role=role,
         false_positive_rate=[point[0] for point in points],
         true_positive_rate=[point[1] for point in points],
         auc=auc,

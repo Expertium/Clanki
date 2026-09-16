@@ -18,6 +18,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import {
         chanceLabel,
+        dataNotes,
         overlayText,
         renderRoc,
         rocBounds,
@@ -41,7 +42,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: load($search, $days);
     $: curves = rocCurves(progress);
-    $: notes = unavailableNotes(progress);
+    $: notes = [...dataNotes(progress), ...unavailableNotes(progress)];
     $: if (svg) {
         renderRoc(svg, bounds, curves);
     }

@@ -2,289 +2,151 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 //! The Stats page's model-quality graphs (spec ui.stats-model-metrics):
-//! FSRS-7's predicted probability of recall before every answer, with the
-//! answer itself. The RWKV predictions of the same answers come from the
-//! RWKV job in Python; the graphs themselves are drawn from both.
+//! each algorithm's predicted probability of recall before every rating of
+//! the search, with the answer itself.
+//!
+//! The predictions are not computed here. Both models write them per review
+//! while they run - FSRS-7 when its parameters are optimized, RWKV when its
+//! state cache is built - and this reads those rows. A row counts only when
+//! nothing that produced it was fitted on that very review, and both models
+//! are scored on the same reviews, so their numbers can be compared.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use anki_proto::stats::ReviewPredictionsResponse;
-use fsrs::FSRSItem;
-use fsrs::MemoryState;
-use fsrs::FSRS;
-use itertools::Itertools;
-use rayon::prelude::*;
 
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
-use crate::scheduler::fsrs::curve::Fsrs7Curve;
-use crate::scheduler::fsrs::params::fsrs_prediction_source_from_filtered_revlogs;
-use crate::scheduler::fsrs::params::reviews_for_fsrs;
-use crate::scheduler::fsrs::params::FsrsReviewPredictionSource;
-use crate::scheduler::fsrs::preset::FsrsPreset;
-use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::search::SortMode;
+use crate::storage::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE;
+use crate::storage::RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE;
 
-/// Cards per FSRS-7 replay batch; a batch holds one preset's cards of
-/// similar history length, and batches run in parallel.
-const FSRS_BATCH_SIZE: usize = 256;
-/// A search with more than 1/N of the collection's cards reads the whole
-/// review log in one pass; a smaller one reads its cards' entries by index.
-const SCAN_REVLOG_ABOVE_SHARE_OF_CARDS: usize = 5;
+/// FSRS-7's parameters are fitted on this collection, so only the rows of a
+/// model that had not seen the review count: a validation fold, or a run
+/// after the optimization that produced the parameters. `final_fit` rows
+/// are never used, not even labelled.
+const FSRS_ROLES: &[&str] = &["validation_fold", "post_optimization"];
+/// RWKV's weights are frozen and were trained on other people's reviews,
+/// and a replayed prediction is built from the reviews before it, so its
+/// raw output cannot have seen the review whatever role the row carries.
+const RWKV_ROLES: &[&str] = &["test_fold", "post_optimization", "final_fit"];
 
-/// What the computation needs, read while the collection is locked; the
-/// computation itself runs without the lock.
-pub(crate) struct ReviewPredictionsInput {
-    /// Ratings before this timestamp are not predicted; 0 = the whole
-    /// history.
-    cutoff: TimestampSecs,
-    /// The searched cards' review logs, card by card, oldest first.
-    revlog: Vec<RevlogEntry>,
-    /// The presets of the reviewed cards, and each card's.
-    presets: Vec<FsrsPreset>,
-    preset_of_card: HashMap<CardId, usize>,
+/// One model's cached predictions for the searched ratings, and the role
+/// they came from.
+struct CachedPredictions {
+    role: String,
+    by_review: HashMap<RevlogId, f32>,
+}
+
+impl CachedPredictions {
+    fn none() -> Self {
+        Self {
+            role: String::new(),
+            by_review: HashMap::new(),
+        }
+    }
 }
 
 impl Collection {
-    pub(crate) fn review_predictions_input(
+    /// Reads both models' cached predictions of the search's ratings.
+    pub(crate) fn review_predictions(
         &mut self,
         search: &str,
         days: u32,
-    ) -> Result<ReviewPredictionsInput> {
+    ) -> Result<ReviewPredictionsResponse> {
         let timing = self.timing_today()?;
         let cutoff = if days == 0 {
-            TimestampSecs(0)
+            TimestampMillis(0)
         } else {
-            TimestampSecs(timing.next_day_at.0 - (days as i64) * 86_400)
+            TimestampMillis((timing.next_day_at.0 - (days as i64) * 86_400) * 1000)
         };
         let guard = self.search_cards_into_table_with_stats_search(
             search,
             SortMode::NoOrder,
             Some(search),
         )?;
-        let decks: HashMap<CardId, (DeckId, DeckId)> = guard
-            .col
-            .storage
-            .db
-            .prepare("select id, did, odid from cards where id in (select cid from search_cids)")?
-            .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
-            .collect::<rusqlite::Result<_>>()?;
-        // the whole history of each card, whatever the page's period: the
-        // memory state before a rating comes from every earlier rating
         let storage = &guard.col.storage;
-        let all_cards: usize = storage
-            .db
-            .query_row("select count() from cards", [], |row| row.get(0))?;
-        let revlog = if decks.len() * SCAN_REVLOG_ABOVE_SHARE_OF_CARDS < all_cards {
-            storage.get_revlog_entries_for_searched_cards_in_card_order()?
-        } else {
-            let mut revlog =
-                storage.get_revlog_entries_of_cards_by_scan(&decks.keys().copied().collect())?;
-            // stable: each card's entries stay oldest first
-            revlog.sort_by_key(|entry| entry.cid);
-            revlog
-        };
-
-        let cards: Vec<Card> = revlog
-            .iter()
-            .map(|entry| entry.cid)
-            .dedup()
-            .map(|id| {
-                let (deck_id, original_deck_id) = decks[&id];
-                Card {
-                    id,
-                    deck_id,
-                    original_deck_id,
-                    ..Default::default()
-                }
-            })
+        let ratings: Vec<RevlogEntry> = storage
+            .get_revlog_entries_for_searched_cards()?
+            .into_iter()
+            .filter(|entry| entry.has_rating_and_affects_scheduling() && entry.id.0 > cutoff.0)
             .collect();
-        let mut presets = vec![];
-        let mut preset_of_card = HashMap::new();
-        let mut index_of: HashMap<FsrsPresetId, usize> = HashMap::new();
-        for (card, preset) in guard.col.fsrs_presets_for_cards(&cards)? {
-            let index = match index_of.get(&preset.id) {
-                Some(&index) => index,
-                None => {
-                    index_of.insert(preset.id.clone(), presets.len());
-                    presets.push(preset);
-                    presets.len() - 1
-                }
-            };
-            preset_of_card.insert(card, index);
-        }
-        Ok(ReviewPredictionsInput {
+        let fsrs = read_predictions(
+            storage,
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            FSRS_ROLES,
             cutoff,
-            revlog,
-            presets,
-            preset_of_card,
-        })
-    }
+        )?;
+        let rwkv = read_predictions(
+            storage,
+            RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            RWKV_ROLES,
+            cutoff,
+        )?;
 
-    #[cfg(test)]
-    pub(crate) fn review_predictions(
-        &mut self,
-        search: &str,
-        days: u32,
-    ) -> Result<ReviewPredictionsResponse> {
-        self.review_predictions_input(search, days)?.compute()
-    }
-}
-
-/// One card's FSRS-7 replay: the item to run, and which ratings it predicts.
-struct CardSource {
-    card: CardId,
-    preset: usize,
-    source: FsrsReviewPredictionSource,
-    /// Whether each target's answer was Hard, Good or Easy.
-    remembered: Vec<bool>,
-    /// The seconds of each target's answer.
-    answered_at: Vec<TimestampSecs>,
-}
-
-impl ReviewPredictionsInput {
-    pub(crate) fn compute(self) -> Result<ReviewPredictionsResponse> {
-        let cards: Vec<&[RevlogEntry]> = self.revlog.chunk_by(|a, b| a.cid == b.cid).collect();
-        let sources: Vec<CardSource> = cards
-            .par_iter()
-            .filter_map(|entries| self.card_source(entries))
-            .collect();
-        if self.presets.iter().all(|preset| preset.fsrs().is_err()) && !sources.is_empty() {
-            return Ok(ReviewPredictionsResponse {
-                no_params: true,
-                ..Default::default()
-            });
-        }
-
-        // one batch per preset and history length, run in parallel
-        let mut order: Vec<usize> = (0..sources.len()).collect();
-        order.sort_unstable_by_key(|&index| {
-            (sources[index].preset, sources[index].source.reviews().len())
-        });
-        let batches: Vec<&[usize]> = order
-            .chunk_by(|&a, &b| sources[a].preset == sources[b].preset)
-            .flat_map(|batch| batch.chunks(FSRS_BATCH_SIZE))
-            .collect();
-        let computed: Vec<Vec<Vec<MemoryState>>> = batches
-            .par_iter()
-            .map_init(FsrsCache::default, |cache, batch| {
-                let preset = sources[batch[0]].preset;
-                let Some(fsrs) = cache.get(preset, &self.presets[preset]) else {
-                    // a preset without usable FSRS-7 parameters predicts
-                    // nothing; it is never replaced by another preset's
-                    return Ok(vec![vec![]; batch.len()]);
-                };
-                Ok(fsrs.historical_memory_state_batch(
-                    batch
-                        .iter()
-                        .map(|&index| FSRSItem {
-                            reviews: sources[index].source.reviews().to_vec(),
-                        })
-                        .collect(),
-                    None,
-                )?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let curves: Vec<Option<Fsrs7Curve>> = self
-            .presets
-            .iter()
-            .map(|preset| Fsrs7Curve::new(&preset.params))
-            .collect();
-        let mut rows: Vec<(RevlogId, CardId, f32, bool)> = vec![];
-        for (batch, computed) in batches.iter().zip_eq(computed) {
-            for (&index, states) in batch.iter().zip_eq(computed) {
-                let source = &sources[index];
-                let Some(curve) = &curves[source.preset] else {
-                    continue;
-                };
-                for (position, &(revlog_id, review)) in source.source.targets().iter().enumerate() {
-                    if source.answered_at[position] < self.cutoff {
-                        continue;
-                    }
-                    let Some(state) = review.checked_sub(1).and_then(|index| states.get(index))
-                    else {
-                        continue;
-                    };
-                    let delta_t = source.source.reviews()[review].delta_t;
-                    let Some(prediction) = curve.retrievability(*state, delta_t) else {
-                        continue;
-                    };
-                    if !prediction.is_finite() || !(0.0..=1.0).contains(&prediction) {
-                        continue;
-                    }
-                    rows.push((
-                        revlog_id,
-                        source.card,
-                        prediction,
-                        source.remembered[position],
-                    ));
+        let mut response = ReviewPredictionsResponse {
+            fsrs_role: fsrs.role.clone(),
+            rwkv_role: rwkv.role.clone(),
+            ..Default::default()
+        };
+        let mut ratings = ratings;
+        ratings.sort_unstable_by_key(|entry| entry.id);
+        for entry in &ratings {
+            match (fsrs.by_review.get(&entry.id), rwkv.by_review.get(&entry.id)) {
+                (Some(&fsrs_value), Some(&rwkv_value)) => {
+                    response.revlog_ids.push(entry.id.0);
+                    response.card_ids.push(entry.cid.0);
+                    response.remembered.push(entry.button_chosen > 1);
+                    response.fsrs_predictions.push(fsrs_value);
+                    response.rwkv_predictions.push(rwkv_value);
                 }
+                (Some(_), None) => response.fsrs_only += 1,
+                (None, Some(_)) => response.rwkv_only += 1,
+                (None, None) => response.unscored += 1,
             }
         }
-        rows.sort_unstable_by_key(|row| row.0);
 
-        let mut response = ReviewPredictionsResponse::default();
-        for (revlog_id, card_id, prediction, remembered) in rows {
-            response.revlog_ids.push(revlog_id.0);
-            response.card_ids.push(card_id.0);
-            response.predictions.push(prediction);
-            response.remembered.push(remembered);
+        // how fresh the predictions are: the newest rating either model has
+        // scored, and the ratings of the search after it
+        let newest = [
+            storage.newest_cached_review_prediction(
+                FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                &fsrs.role,
+            )?,
+            storage.newest_cached_review_prediction(
+                RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                &rwkv.role,
+            )?,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        if let Some(newest) = newest {
+            response.newest_scored_secs = newest.as_secs().0;
+            response.newer_reviews = ratings
+                .iter()
+                .filter(|entry| entry.id > newest)
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
+        } else {
+            response.newer_reviews = ratings.len().try_into().unwrap_or(u32::MAX);
         }
         Ok(response)
-    }
-
-    /// One card's replay, or None when FSRS-7 predicts none of its ratings.
-    fn card_source(&self, entries: &[RevlogEntry]) -> Option<CardSource> {
-        let card = entries[0].cid;
-        let preset = *self.preset_of_card.get(&card)?;
-        let reviews = reviews_for_fsrs(entries.to_vec(), true, TimestampMillis(0))?;
-        let source = fsrs_prediction_source_from_filtered_revlogs(&reviews.filtered_revlogs)?;
-        let mut remembered = vec![];
-        let mut answered_at = vec![];
-        for &(_, review) in source.targets() {
-            let entry = reviews.filtered_revlogs.get(review)?;
-            remembered.push(entry.button_chosen > 1);
-            answered_at.push(entry.id.as_secs());
-        }
-        Some(CardSource {
-            card,
-            preset,
-            source,
-            remembered,
-            answered_at,
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use fsrs::DEFAULT_PARAMETERS;
-
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
-    use crate::deckconfig::algorithm::SchedulingAlgorithm;
-    use crate::deckconfig::FsrsVersion;
-    use crate::revlog::RevlogId;
     use crate::revlog::RevlogReviewKind;
+    use crate::storage::FsrsReviewRetrievabilityCacheRow;
+    use crate::storage::FsrsReviewRetrievabilitySampleRole;
+    use crate::storage::RwkvReviewRetrievabilityCacheRow;
+    use crate::storage::RwkvReviewRetrievabilitySampleRole;
     use crate::tests::NoteAdder;
-
-    fn fsrs7_collection() -> Collection {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.fsrs_version = FsrsVersion::Seven as i32;
-            config.fsrs_params_7 = DEFAULT_PARAMETERS.to_vec();
-            SchedulingAlgorithm::Fsrs7.apply_to(config);
-        });
-        col.set_config(
-            crate::config::ConfigKey::SchedulingAlgorithm,
-            &SchedulingAlgorithm::Fsrs7,
-        )
-        .unwrap();
-        col
-    }
 
     fn add_card(col: &mut Collection) -> CardId {
         let note = NoteAdder::basic(col).add(col);
@@ -295,103 +157,190 @@ mod tests {
         card.id
     }
 
-    /// Adds a rating on the day `day` (0 = today), at noon of that day.
-    fn rate(
-        col: &mut Collection,
-        card: CardId,
-        day: i32,
-        kind: RevlogReviewKind,
-        button: u8,
-    ) -> RevlogId {
+    /// A rating on the day `day` (0 = today), at noon of that day.
+    fn rate(col: &mut Collection, card: CardId, day: i32, button: u8) -> RevlogId {
         let next_day_at = col.timing_today().unwrap().next_day_at;
         let entry = RevlogEntry {
             id: RevlogId((next_day_at.0 + day as i64 * 86_400 - 43_200) * 1000),
             cid: card,
             button_chosen: button,
-            interval: if kind == RevlogReviewKind::Learning {
-                -600
-            } else {
-                3
-            },
+            interval: 3,
             ease_factor: 2500,
-            review_kind: kind,
+            review_kind: RevlogReviewKind::Review,
             ..Default::default()
         };
         col.storage.add_revlog_entry(&entry, false).unwrap();
         entry.id
     }
 
+    fn store_fsrs(
+        col: &Collection,
+        review: RevlogId,
+        prediction: f32,
+        role: FsrsReviewRetrievabilitySampleRole,
+    ) {
+        col.storage
+            .set_fsrs_review_retrievability_predictions(
+                &[FsrsReviewRetrievabilityCacheRow {
+                    revlog_id: review,
+                    prediction,
+                    sample_role: role,
+                    fold_index: -1,
+                }],
+                "test",
+            )
+            .unwrap();
+    }
+
+    fn store_rwkv(col: &Collection, review: RevlogId, prediction: f32) {
+        col.storage
+            .set_rwkv_review_retrievability_predictions(
+                &[RwkvReviewRetrievabilityCacheRow {
+                    revlog_id: review,
+                    prediction,
+                    sample_role: RwkvReviewRetrievabilitySampleRole::FinalFit,
+                    fold_index: -1,
+                }],
+                "test",
+            )
+            .unwrap();
+    }
+
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn fsrs7_predictions_follow_an_earlier_rating() -> Result<()> {
-        let mut col = fsrs7_collection();
+    fn only_rows_the_algorithm_had_not_seen_are_used() -> Result<()> {
+        let mut col = Collection::new();
         let card = add_card(&mut col);
-        let first = rate(&mut col, card, -40, RevlogReviewKind::Learning, 3);
-        let second = rate(&mut col, card, -37, RevlogReviewKind::Review, 1);
-        let third = rate(&mut col, card, -36, RevlogReviewKind::Relearning, 3);
-        let fourth = rate(&mut col, card, -10, RevlogReviewKind::Review, 4);
+        let fitted = rate(&mut col, card, -20, 3);
+        let honest = rate(&mut col, card, -10, 1);
+        // the final fit has seen the review it predicts, so it never counts
+        store_fsrs(
+            &col,
+            fitted,
+            0.9,
+            FsrsReviewRetrievabilitySampleRole::FinalFit,
+        );
+        store_fsrs(
+            &col,
+            honest,
+            0.4,
+            FsrsReviewRetrievabilitySampleRole::ValidationFold,
+        );
+        store_rwkv(&col, fitted, 0.8);
+        store_rwkv(&col, honest, 0.3);
 
         let response = col.review_predictions("", 0)?;
-        // the first rating has no prediction; the others do, in order
-        assert_eq!(response.revlog_ids, vec![second.0, third.0, fourth.0]);
-        assert_eq!(response.card_ids, vec![card.0; 3]);
-        // Again = forgotten, Good and Easy = remembered
-        assert_eq!(response.remembered, vec![false, true, true]);
-        assert!(!response.no_params);
-        for prediction in &response.predictions {
-            assert!((0.0..=1.0).contains(prediction), "{prediction}");
+        assert_eq!(response.revlog_ids, vec![honest.0]);
+        assert_eq!(response.fsrs_predictions, vec![0.4]);
+        assert_eq!(response.rwkv_predictions, vec![0.3]);
+        assert_eq!(response.remembered, vec![false]);
+        assert_eq!(response.fsrs_role, "validation_fold");
+        // RWKV's weights saw no review of this collection, so any role counts
+        assert_eq!(response.rwkv_role, "final_fit");
+        // the rating only RWKV could score is left out, and counted
+        assert_eq!(response.rwkv_only, 1);
+        assert_eq!(response.fsrs_only, 0);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn both_algorithms_are_scored_on_the_same_ratings() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        let shared = rate(&mut col, card, -30, 3);
+        let fsrs_alone = rate(&mut col, card, -20, 3);
+        let rwkv_alone = rate(&mut col, card, -15, 3);
+        let neither = rate(&mut col, card, -5, 3);
+        for review in [shared, fsrs_alone] {
+            store_fsrs(
+                &col,
+                review,
+                0.5,
+                FsrsReviewRetrievabilitySampleRole::PostOptimization,
+            );
         }
-        // a longer wait predicts less recall than a shorter one
-        assert!(response.predictions[2] < response.predictions[1]);
-        assert_ne!(first.0, second.0);
+        for review in [shared, rwkv_alone] {
+            store_rwkv(&col, review, 0.6);
+        }
+
+        let response = col.review_predictions("", 0)?;
+        assert_eq!(response.revlog_ids, vec![shared.0]);
+        assert_eq!(response.fsrs_only, 1);
+        assert_eq!(response.rwkv_only, 1);
+        assert_eq!(response.unscored, 1);
+        assert_eq!(response.fsrs_role, "post_optimization");
+        let _ = neither;
         Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn a_cards_first_rating_has_no_prediction() -> Result<()> {
-        let mut col = fsrs7_collection();
+    fn the_period_selects_the_ratings() -> Result<()> {
+        let mut col = Collection::new();
         let card = add_card(&mut col);
-        rate(&mut col, card, -5, RevlogReviewKind::Learning, 3);
-        // cards never rated are in no series either
-        add_card(&mut col);
+        let old = rate(&mut col, card, -400, 3);
+        let recent = rate(&mut col, card, -10, 3);
+        for review in [old, recent] {
+            store_fsrs(
+                &col,
+                review,
+                0.5,
+                FsrsReviewRetrievabilitySampleRole::ValidationFold,
+            );
+            store_rwkv(&col, review, 0.6);
+        }
 
-        assert!(col.review_predictions("", 0)?.revlog_ids.is_empty());
+        assert_eq!(
+            col.review_predictions("", 0)?.revlog_ids,
+            vec![old.0, recent.0]
+        );
+        assert_eq!(col.review_predictions("", 365)?.revlog_ids, vec![recent.0]);
         Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn the_period_selects_the_ratings_not_the_history() -> Result<()> {
-        let mut col = fsrs7_collection();
+    fn newer_ratings_than_the_stored_predictions_are_reported() -> Result<()> {
+        let mut col = Collection::new();
         let card = add_card(&mut col);
-        rate(&mut col, card, -400, RevlogReviewKind::Learning, 3);
-        let old = rate(&mut col, card, -390, RevlogReviewKind::Review, 3);
-        let recent = rate(&mut col, card, -10, RevlogReviewKind::Review, 3);
+        let scored = rate(&mut col, card, -20, 3);
+        rate(&mut col, card, -2, 3);
+        rate(&mut col, card, -1, 3);
+        store_fsrs(
+            &col,
+            scored,
+            0.5,
+            FsrsReviewRetrievabilitySampleRole::ValidationFold,
+        );
+        store_rwkv(&col, scored, 0.6);
 
-        let whole = col.review_predictions("", 0)?;
-        assert_eq!(whole.revlog_ids, vec![old.0, recent.0]);
-
-        // a year's period keeps the recent rating only, and its prediction
-        // still comes from the whole history before it
-        let year = col.review_predictions("", 365)?;
-        assert_eq!(year.revlog_ids, vec![recent.0]);
-        assert_eq!(year.predictions, vec![whole.predictions[1]]);
+        let response = col.review_predictions("", 0)?;
+        assert_eq!(response.revlog_ids, vec![scored.0]);
+        assert_eq!(response.newest_scored_secs, scored.as_secs().0);
+        // the two ratings after it are named, never silently dropped
+        assert_eq!(response.newer_reviews, 2);
+        assert_eq!(response.unscored, 2);
         Ok(())
     }
 }
 
-/// A worker's FSRS-7 models, one per preset, built when first needed; a
-/// preset without usable FSRS-7 parameters has none.
-#[derive(Default)]
-struct FsrsCache(HashMap<usize, Option<FSRS>>);
-
-impl FsrsCache {
-    fn get(&mut self, index: usize, preset: &FsrsPreset) -> Option<&FSRS> {
-        match self.0.entry(index) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(preset.fsrs().ok()),
+/// The first role of `roles` that has any prediction for the searched
+/// ratings, and its rows; roles are never mixed.
+fn read_predictions(
+    storage: &crate::storage::SqliteStorage,
+    table: &str,
+    roles: &[&str],
+    after: TimestampMillis,
+) -> Result<CachedPredictions> {
+    for role in roles {
+        let rows = storage.cached_review_predictions(table, role, after)?;
+        if !rows.is_empty() {
+            return Ok(CachedPredictions {
+                role: (*role).to_string(),
+                by_review: rows.into_iter().collect(),
+            });
         }
-        .as_ref()
     }
+    Ok(CachedPredictions::none())
 }

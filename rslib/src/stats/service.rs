@@ -59,21 +59,20 @@ impl crate::services::BackendStatsService for Backend {
         Ok(response)
     }
 
-    /// Reads the collection under its lock, then replays FSRS-7 with the
-    /// collection free (spec ui.stats-model-metrics).
+    /// Reads both models' cached per-review predictions (spec
+    /// ui.stats-model-metrics).
     fn review_predictions(
         &self,
         input: anki_proto::stats::ReviewPredictionsRequest,
     ) -> error::Result<anki_proto::stats::ReviewPredictionsResponse> {
         let start = std::time::Instant::now();
-        let data = self.with_col(|col| col.review_predictions_input(&input.search, input.days))?;
-        let read_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let response = data.compute()?;
+        let response = self.with_col(|col| col.review_predictions(&input.search, input.days))?;
         tracing::debug!(
-            reviews = response.predictions.len(),
-            read_ms,
+            reviews = response.revlog_ids.len(),
+            fsrs_role = response.fsrs_role,
+            rwkv_role = response.rwkv_role,
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
-            "computed FSRS-7 review predictions"
+            "read the model-quality graphs' predictions"
         );
         Ok(response)
     }
