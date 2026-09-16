@@ -81,6 +81,11 @@ qt-misc-rwkv-filtered-deck-preparation-failed-simple = RWKV probability of recal
 qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
 # RWKV cannot run because its model file is missing or does not load.
 qt-misc-rwkv-model-not-found = RWKV model not found
+# The progress window while Clanki loads the saved RWKV state at start-up.
+# It says what the user waits for, not which file is read (Andrew,
+# 2026-09-16).
+qt-misc-rwkv-startup-title = Starting
+qt-misc-rwkv-startup-label = Starting…
 # RWKV-Instant has not scored the deck yet, so its reviews are not shown.
 qt-misc-rwkv-instant-scores-pending = Waiting for RWKV-Instant…
 # Grade Now left these cards unanswered: RWKV-Curve gave no intervals for them.

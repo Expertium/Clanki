@@ -758,6 +758,20 @@ two 30,000-day cards showed about 5,144 days (a debug build crashed).
 **Pinned by:** `interval_cell_averages_long_intervals_without_overflow`
 (`rslib/src/browser_table.rs`).
 
+## ui.background-change-dim
+
+When an operation changes the collection while the Clanki window is in the
+background, the screen behind it dims to 30% opacity. When the window receives
+focus again, the screen returns to full opacity, on the deck list, the overview
+and the reviewer alike.
+**Why:** the dim marks a screen whose numbers may be stale. Before this entry
+only the reviewer restored it, so the deck list stayed dim until an unrelated
+redraw (Andrew, 2026-09-16: "Sometimes after loading RWKV cache on app start I
+get this weird bug where the main menu is kinda grayed out ... going back to
+main menu after that fixes it").
+**Pinned by:** `test_focus_undims_the_deck_list_and_the_overview`
+(`qt/tests/test_main.py`)
+
 ## ui.deck-list-refresh-scroll
 
 Given the deck list on screen and a refresh of it that only reads the

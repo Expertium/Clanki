@@ -682,3 +682,27 @@ def test_start_up_garbage_is_not_frozen_with_the_rest() -> None:
         assert watcher() is None
     finally:
         gc.unfreeze()
+
+
+# Pins spec/ui.md#ui.background-change-dim: a screen dimmed by a background
+# change returns to full opacity when the window gets focus again.
+def test_focus_undims_the_deck_list_and_the_overview() -> None:
+    from types import SimpleNamespace
+
+    for state in ("deckBrowser", "overview"):
+        mw = AnkiQt.__new__(AnkiQt)
+        mw.state = state
+        refreshed: list[str] = []
+        faded: list[str] = []
+        screen = SimpleNamespace(
+            refresh_if_needed=lambda state=state: refreshed.append(state)
+        )
+        mw.deckBrowser = screen
+        mw.overview = screen
+        mw.fade_in_webview = lambda: faded.append("in")  # type: ignore[method-assign]
+
+        window = SimpleNamespace(window=lambda: mw)
+        AnkiQt.on_focus_did_change(mw, window, None)  # type: ignore[arg-type]
+
+        assert refreshed == [state]
+        assert faded == ["in"]

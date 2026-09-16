@@ -9225,10 +9225,10 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
     rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
 
     assert taskman.with_progress_kwargs is not None
-    assert taskman.with_progress_kwargs["label"] == "Loading RWKV state cache..."
+    assert taskman.with_progress_kwargs["label"] == "Starting…"
     assert taskman.with_progress_kwargs["immediate"] is True
     assert taskman.with_progress_kwargs["uses_collection"] is True
-    assert taskman.with_progress_kwargs["title"] == "RWKV State Cache"
+    assert taskman.with_progress_kwargs["title"] == "Starting"
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     assert restored_runtime.reviewed == []
     assert prewarm_calls == [
@@ -19403,3 +19403,20 @@ def test_stats_scoring_after_a_cancel_runs_to_the_end(
 
     assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
     assert backend.predicted_card_ids == [1]
+
+
+# Pins spec/scheduling.md#sched.rwkv-startup-progress-text: the start-up
+# progress window says what the user waits for, not which file is read.
+def test_the_startup_progress_text_names_no_internals() -> None:
+    from pathlib import Path
+
+    ftl = Path(__file__).parents[2] / "ftl" / "qt" / "qt-misc.ftl"
+    lines = ftl.read_text(encoding="utf-8").splitlines()
+
+    assert "qt-misc-rwkv-startup-title = Starting" in lines
+    assert "qt-misc-rwkv-startup-label = Starting…" in lines
+
+    source = (Path(__file__).parents[1] / "aqt" / "rwkv_scheduler.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Loading RWKV state cache" not in source
