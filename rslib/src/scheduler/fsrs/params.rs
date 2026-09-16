@@ -30,12 +30,14 @@ use fsrs::ModelEvaluation;
 use fsrs::FSRS;
 use itertools::Itertools;
 use prost::Message;
+use rayon::prelude::*;
 
 use crate::deckconfig::effective_fsrs7_params;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
+use crate::scheduler::fsrs::curve::Fsrs7Curve;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
@@ -885,43 +887,66 @@ fn fsrs_review_retrievability_predictions_for_targets(
 
     // FSRS-7 only (spec sched.fsrs7-only): the fsrs crate runs FSRS-6 for 0,
     // 17, 19 or 21 values
-    let fsrs = FSRS::new(effective_fsrs7_params(params))?;
-    let mut predictions = Vec::new();
-    for source in sources {
-        if let Some(target_revlog_ids) = target_revlog_ids {
-            if !source
-                .targets
-                .iter()
-                .any(|(revlog_id, _)| target_revlog_ids.contains(revlog_id))
-            {
-                continue;
-            }
-        }
-        let item = FSRSItem {
-            reviews: source.reviews.clone(),
-        };
-        let memory_states = fsrs.historical_memory_states(item, None)?;
-        for &(revlog_id, review_index) in &source.targets {
-            if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
-                continue;
-            }
-            let Some(previous_state) = review_index
-                .checked_sub(1)
-                .and_then(|index| memory_states.get(index))
-            else {
-                continue;
-            };
-            let Some(review) = source.reviews.get(review_index) else {
-                continue;
-            };
-            let prediction = fsrs.current_retrievability(*previous_state, review.delta_t);
-            if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
-                predictions.push((revlog_id, prediction));
-            }
-        }
-    }
+    let params = effective_fsrs7_params(params);
+    // The scalar copy of the forgetting curve gives the same bits as
+    // `FSRS::current_retrievability` at a fraction of its cost, because the
+    // tensor path allocates about thirty one-element tensors for every
+    // review (see `Fsrs7Curve`). It covers FSRS-7 parameters only; anything
+    // else falls back to the tensor path.
+    let curve = Fsrs7Curve::new(params);
+    // Cards are independent, so the replays run in parallel; each worker
+    // builds its own model, as the Total Knowledge replay does.
+    let per_source: Vec<Vec<(RevlogId, f32)>> = sources
+        .par_iter()
+        .map_init(
+            || FSRS::new(params).ok(),
+            |fsrs, source| {
+                let Some(fsrs) = fsrs.as_ref() else {
+                    return Ok(Vec::new());
+                };
+                if let Some(target_revlog_ids) = target_revlog_ids {
+                    if !source
+                        .targets
+                        .iter()
+                        .any(|(revlog_id, _)| target_revlog_ids.contains(revlog_id))
+                    {
+                        return Ok(Vec::new());
+                    }
+                }
+                let item = FSRSItem {
+                    reviews: source.reviews.clone(),
+                };
+                let memory_states = fsrs.historical_memory_states(item, None)?;
+                let mut predictions = Vec::new();
+                for &(revlog_id, review_index) in &source.targets {
+                    if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
+                        continue;
+                    }
+                    let Some(previous_state) = review_index
+                        .checked_sub(1)
+                        .and_then(|index| memory_states.get(index))
+                    else {
+                        continue;
+                    };
+                    let Some(review) = source.reviews.get(review_index) else {
+                        continue;
+                    };
+                    let prediction = curve
+                        .as_ref()
+                        .and_then(|curve| curve.retrievability(*previous_state, review.delta_t))
+                        .unwrap_or_else(|| {
+                            fsrs.current_retrievability(*previous_state, review.delta_t)
+                        });
+                    if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
+                        predictions.push((revlog_id, prediction));
+                    }
+                }
+                Ok(predictions)
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
 
-    Ok(predictions)
+    Ok(per_source.into_iter().flatten().collect())
 }
 
 fn fsrs_review_retrievability_progress_wants_abort(
