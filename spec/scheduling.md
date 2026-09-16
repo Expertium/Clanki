@@ -724,7 +724,6 @@ enabled; only Easy Days is the user's choice.
 (`rslib/src/scheduler/states/fuzz.rs`), `load_balancer_is_always_on`
 (`rslib/src/config/bool.rs`).
 
-
 ## sched.same-day-steps-always-on
 
 Given any collection, same-day reviews for (re)learning steps are always

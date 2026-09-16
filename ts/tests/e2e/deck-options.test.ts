@@ -59,7 +59,7 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     expect(await visibleCount(page, "Algorithm")).toBe(0);
     expect(await visibleCount(page, "Algorithm (global)")).toBe(0);
     await expect(
-        page.locator('[role="button"][aria-label="FSRS Parameters"]'),
+        page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]"),
     ).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Optimize Current Preset" })).toHaveCount(0);
     // Maximum reviews/day and the preset / deck / today tabs are Advanced-only
@@ -127,7 +127,7 @@ test("collection-wide settings are not on the deck-options page", async ({ page 
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {
     const advanced = page.locator("details.fsrs-advanced");
-    const parameters = page.locator('[role="button"][aria-label="FSRS Parameters"]');
+    const parameters = page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]");
     const input = parameters.locator("textarea");
 
     async function setTimeoutMs(ms: number): Promise<void> {

@@ -397,4 +397,3 @@ test("optimize_all_presets_clears_the_parameters_it_cannot_use", () => {
     expect(configs[1].config.config.fsrsParams7).toStrictEqual([]);
     expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([]);
 });
-

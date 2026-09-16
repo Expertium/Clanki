@@ -83,12 +83,12 @@ of recalling a card now "retrievability"; it is called "Probability of
 recall" instead. Advanced mode keeps the technical word. The places that show
 the word in both modes are:
 
-| Where                                            | Simple mode                                           | Advanced mode             |
-| ------------------------------------------------ | ----------------------------------------------------- | ------------------------- |
-| Browser column (name and notes tooltip)           | Probability of recall                                 | Retrievability            |
-| Card info, the forgetting-curve tooltip           | Probability of recall                                 | Retrievability            |
-| Filtered deck, the "Cards selected by" orders     | Ascending / Descending probability of recall          | Ascending / Descending retrievability |
-| Filtered-deck rebuild failure (RWKV)              | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt. | RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt. |
+| Where                                         | Simple mode                                                                                    | Advanced mode                                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Browser column (name and notes tooltip)       | Probability of recall                                                                          | Retrievability                                                                          |
+| Card info, the forgetting-curve tooltip       | Probability of recall                                                                          | Retrievability                                                                          |
+| Filtered deck, the "Cards selected by" orders | Ascending / Descending probability of recall                                                   | Ascending / Descending retrievability                                                   |
+| Filtered-deck rebuild failure (RWKV)          | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt. | RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt. |
 
 The Browser reads the mode when it builds its column list and the
 filtered-deck dialog when it opens, so a mode switch reaches those names the
@@ -306,11 +306,11 @@ card info) for a card with an FSRS memory state, in Advanced mode it shows
 only the values of the collection's algorithm (`sched.one-global-algorithm`)
 and one retrievability, labelled "Retrievability":
 
-| Algorithm    | Stability               | Difficulty | Retrievability             | Forgetting curve |
-| ------------ | ----------------------- | ---------- | -------------------------- | ---------------- |
-| FSRS-7       | FSRS-7's S90            | FSRS-7's   | FSRS-7's                   | FSRS-7's         |
-| RWKV-Curve   | the curve's S90         | none       | the curve's recall now     | RWKV-Curve's     |
-| RWKV-Instant | none                    | none       | RWKV's prediction          | none             |
+| Algorithm    | Stability       | Difficulty | Retrievability         | Forgetting curve |
+| ------------ | --------------- | ---------- | ---------------------- | ---------------- |
+| FSRS-7       | FSRS-7's S90    | FSRS-7's   | FSRS-7's               | FSRS-7's         |
+| RWKV-Curve   | the curve's S90 | none       | the curve's recall now | RWKV-Curve's     |
+| RWKV-Instant | none            | none       | RWKV's prediction      | none             |
 
 RWKV-Curve's recall now is its stored curve (`ui.card-info-rwkv-curve`) at
 the time since the card's latest answered review. While RWKV has no value
@@ -341,11 +341,11 @@ forgetting curve" (`ts/routes/card-info/lib.test.ts`).
 Given the Stats page, its graphs draw only the collection's algorithm
 (`sched.one-global-algorithm`):
 
-| Algorithm    | Retrievability graph      | Difficulty graph | Stability graph |
-| ------------ | ------------------------- | ---------------- | --------------- |
-| FSRS-7       | FSRS-7's R                | shown            | shown           |
-| RWKV-Curve   | the RWKV-Curve head's R   | none             | shown (S90)     |
-| RWKV-Instant | RWKV-Instant's R          | none             | none            |
+| Algorithm    | Retrievability graph    | Difficulty graph | Stability graph |
+| ------------ | ----------------------- | ---------------- | --------------- |
+| FSRS-7       | FSRS-7's R              | shown            | shown           |
+| RWKV-Curve   | the RWKV-Curve head's R | none             | shown (S90)     |
+| RWKV-Instant | RWKV-Instant's R        | none             | none            |
 
 Under RWKV there is no FSRS-7 series beside RWKV's and no FSRS-7 value for
 a card RWKV has not scored. While RWKV has not scored the page's search yet
@@ -453,11 +453,11 @@ it; a reset (Forget) gives 0 until the card's next rating (the card stays in
 the bound). Ratings are answers that affect scheduling: manual reschedules,
 resets and cram answers are not ratings.
 
-| Algorithm    | R after a rating                                                      | Drawn                              |
-| ------------ | --------------------------------------------------------------------- | ---------------------------------- |
-| FSRS-7       | FSRS-7's forgetting curve at the memory state after that rating       | at once                            |
-| RWKV-Curve   | the curve RWKV stores at that rating, at the whole days since it      | day by day, oldest first           |
-| RWKV-Instant | RWKV-Instant's prediction for the card on that day                    | day by day, oldest first           |
+| Algorithm    | R after a rating                                                 | Drawn                    |
+| ------------ | ---------------------------------------------------------------- | ------------------------ |
+| FSRS-7       | FSRS-7's forgetting curve at the memory state after that rating  | at once                  |
+| RWKV-Curve   | the curve RWKV stores at that rating, at the whole days since it | day by day, oldest first |
+| RWKV-Instant | RWKV-Instant's prediction for the card on that day               | day by day, oldest first |
 
 FSRS-7 replays each card's whole history with its preset's FSRS-7
 parameters: every part of the history starts as the card's own memory state

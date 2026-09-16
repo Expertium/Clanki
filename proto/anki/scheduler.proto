@@ -50,8 +50,7 @@ service SchedulerService {
       returns (AdvancePostponePreview);
   // Moves every card the preview lists for the request, as one undoable
   // step; writes no review-log rows.
-  rpc AdvancePostpone(AdvancePostponeRequest)
-      returns (AdvancePostponeResponse);
+  rpc AdvancePostpone(AdvancePostponeRequest) returns (AdvancePostponeResponse);
   rpc GradeNow(GradeNowRequest) returns (collection.OpChanges);
   rpc SortCards(SortCardsRequest) returns (collection.OpChangesWithCount);
   rpc SortDeck(SortDeckRequest) returns (collection.OpChangesWithCount);
