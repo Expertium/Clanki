@@ -54,6 +54,7 @@ import RocGraph from "./RocGraph.svelte";
 import ReviewsGraph from "./ReviewsGraph.svelte";
 import StabilityGraph from "./StabilityGraph.svelte";
 import TodayStats from "./TodayStats.svelte";
+import UmPlusGraph from "./UmPlusGraph.svelte";
 import TotalKnowledgeGraph from "./TotalKnowledgeGraph.svelte";
 
 export const graphComponents = {
@@ -70,6 +71,7 @@ export const graphComponents = {
     TotalKnowledgeGraph,
     RocGraph,
     CalibrationGraph,
+    UmPlusGraph,
     HourGraph,
     ButtonsGraph,
     AddedGraph,

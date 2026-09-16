@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 
+use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use anki_proto::stats::ReviewPredictionsResponse;
+use rayon::prelude::*;
 
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
@@ -160,6 +162,17 @@ impl Collection {
             &response.remembered,
             &response.card_ids,
         );
+        // one entry per pair of algorithms that share ratings; today only
+        // FSRS-7 and RWKV-Instant have stored predictions
+        if let Some(pair) = um_plus_pair(
+            SchedulingAlgorithmProto::Fsrs7,
+            &response.fsrs_predictions,
+            SchedulingAlgorithmProto::RwkvInstant,
+            &response.rwkv_predictions,
+            &response.remembered,
+        ) {
+            response.um_plus.push(pair);
+        }
         Ok(response)
     }
 }
@@ -470,6 +483,166 @@ mod tests {
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
+    fn um_plus_groups_the_ratings_by_how_far_the_algorithms_differ() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        // four ratings, two remembered; the two algorithms differ by 0.2
+        // on every one of them, so they all fall in one group
+        for index in 0..4 {
+            let review = rate(&mut col, card, -40 + index, if index < 2 { 3 } else { 1 });
+            store_fsrs(
+                &col,
+                review,
+                0.9,
+                FsrsReviewRetrievabilitySampleRole::ValidationFold,
+            );
+            store_rwkv(&col, review, 0.7);
+        }
+
+        let response = col.review_predictions("", 0)?;
+        let pair = &response.um_plus[0];
+        assert_eq!(pair.reviews, 4);
+        assert_eq!(pair.bins.len(), 1);
+        let bin = &pair.bins[0];
+        assert_eq!(bin.index, um_bin_of(0.2) as u32);
+        assert!((bin.sum_difference - 0.8).abs() < 1e-5);
+        // FSRS-7 predicted 0.9 where the mean answer was 0.5, RWKV 0.7
+        assert!((pair.um_a - 0.4).abs() < 1e-5, "{}", pair.um_a);
+        assert!((pair.um_b - 0.2).abs() < 1e-5, "{}", pair.um_b);
+        // closer to zero is better, so RWKV wins this pair
+        assert!(pair.um_b < pair.um_a);
+        // one group gives no slope
+        assert_eq!(pair.slope_a, 0.0);
+        Ok(())
+    }
+
+    /// The bootstrap as it ran before the rounds went parallel: one
+    /// stream, one thread, the cards in the order given.
+    fn one_thread_intervals(cards: &[Vec<BinTally>]) -> Vec<(f64, f64)> {
+        let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
+        if cards.is_empty() {
+            return vec![(0.0, 0.0); BIN_COUNT];
+        }
+        let mut state = BOOTSTRAP_SEED;
+        let mut next = || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        for _ in 0..BOOTSTRAP_ROUNDS {
+            let mut remembered = [0.0f64; BIN_COUNT];
+            let mut counts = [0.0f64; BIN_COUNT];
+            for _ in 0..cards.len() {
+                for tally in &cards[(next() % cards.len() as u64) as usize] {
+                    remembered[tally.bin] += tally.remembered;
+                    counts[tally.bin] += tally.count;
+                }
+            }
+            for bin in 0..BIN_COUNT {
+                if counts[bin] > 0.0 {
+                    shares[bin].push(remembered[bin] / counts[bin]);
+                }
+            }
+        }
+        shares
+            .into_iter()
+            .map(|mut values| {
+                if values.is_empty() {
+                    return (0.0, 0.0);
+                }
+                values.sort_by(|a, b| a.total_cmp(b));
+                (
+                    percentile(&values, LOW_PERCENTILE),
+                    percentile(&values, HIGH_PERCENTILE),
+                )
+            })
+            .collect()
+    }
+
+    /// Cards with tallies spread over many bins, so a changed draw changes
+    /// a number. One card cannot catch that: every resample of one card is
+    /// the same card, and its interval is degenerate whatever the draws.
+    fn spread_cards() -> Vec<Vec<BinTally>> {
+        (0..40)
+            .map(|card| {
+                // every card touches the same few bins, with its own
+                // answers, so resampling the cards moves each bin's share
+                (0..5)
+                    .map(|step| BinTally {
+                        bin: step * 3,
+                        remembered: f64::from((card + step) % 3 != 0)
+                            * f64::from(1 + card as u32 % 2),
+                        count: f64::from(1 + card as u32 % 2),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn the_parallel_bootstrap_draws_what_one_thread_drew() -> Result<()> {
+        let cards = spread_cards();
+        let expected = one_thread_intervals(&cards);
+        let actual = bootstrap_intervals(&cards);
+
+        assert_eq!(actual.len(), expected.len());
+        let mut moving = 0;
+        for (bin, (&(low, high), &(want_low, want_high))) in
+            actual.iter().zip(&expected).enumerate()
+        {
+            assert_eq!(
+                (low, high),
+                (want_low, want_high),
+                "bin {bin} moved when the rounds went parallel"
+            );
+            if want_low != want_high {
+                moving += 1;
+            }
+        }
+        // the fixture must actually exercise the draws, or the test could
+        // not fail: several bins need an interval with width
+        assert!(moving >= 5, "only {moving} bins have a real interval");
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn the_same_reviews_always_give_the_same_interval() -> Result<()> {
+        // the cards are resampled by position, so their order must not
+        // depend on a hash map's iteration order
+        let mut col = Collection::new();
+        let mut day = -300;
+        for index in 0..12 {
+            let card = add_card(&mut col);
+            for step in 0..8 {
+                let review = rate(
+                    &mut col,
+                    card,
+                    day,
+                    if (index + step) % 3 == 0 { 1 } else { 3 },
+                );
+                store_rwkv(
+                    &col,
+                    review,
+                    (0.30 + ((index * 8 + step) % 13) as f32 * 0.05).min(0.99),
+                );
+                day += 1;
+            }
+        }
+
+        let first = col.review_predictions("", 0)?.rwkv_bins;
+        let second = col.review_predictions("", 0)?.rwkv_bins;
+        assert!(first.len() >= 8, "the fixture must fill several bins");
+        for (a, b) in first.iter().zip(&second) {
+            assert_eq!((a.index, a.low, a.high), (b.index, b.low, b.high));
+        }
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
     fn the_period_selects_the_ratings() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
@@ -519,13 +692,19 @@ mod tests {
     }
 }
 
+/// Bins per unit of difference in the UM+ comparison, as in
+/// `UM_plus_plot.py`: 20 each side of "the algorithms agree", 41 in all.
+const UM_BINS_PER_UNIT: i32 = 20;
+const UM_BIN_COUNT: usize = (2 * UM_BINS_PER_UNIT + 1) as usize;
+
 /// Bins of the calibration graph, over the predicted probability.
 const BIN_COUNT: usize = 20;
 /// Resamples of the cards for a bin's confidence interval.
 const BOOTSTRAP_ROUNDS: usize = 500;
 const LOW_PERCENTILE: f64 = 0.025;
 const HIGH_PERCENTILE: f64 = 0.975;
-/// A fixed seed, so the same reviews always give the same interval.
+/// A fixed seed which, with the fixed card order above, makes the same
+/// reviews always give the same interval.
 const BOOTSTRAP_SEED: u64 = 0x5f37_59df;
 
 /// The bin of a predicted probability: the bins are log-spaced, so the
@@ -538,9 +717,12 @@ fn bin_of(prediction: f32) -> usize {
         .min(BIN_COUNT - 1)
 }
 
-/// One card's answers in one bin, for the bootstrap.
-#[derive(Default, Clone, Copy)]
+/// One card's answers in ONE bin, for the bootstrap. A card is reviewed a
+/// handful of times, so it touches a handful of bins; keeping only those
+/// makes a resampling round read a few entries per card instead of twenty.
+#[derive(Clone, Copy)]
 struct BinTally {
+    bin: usize,
     remembered: f64,
     count: f64,
 }
@@ -555,7 +737,7 @@ fn calibration_bins(
     remembered: &[bool],
     card_ids: &[i64],
 ) -> Vec<anki_proto::stats::CalibrationBin> {
-    let mut sums = vec![BinTally::default(); BIN_COUNT];
+    let mut sums = vec![(0.0f64, 0.0f64); BIN_COUNT];
     let mut predicted = [0.0f64; BIN_COUNT];
     let mut by_card: HashMap<i64, Vec<BinTally>> = HashMap::new();
     for ((&prediction, &remembered), &card_id) in predictions.iter().zip(remembered).zip(card_ids) {
@@ -565,23 +747,37 @@ fn calibration_bins(
         let bin = bin_of(prediction);
         let answer = f64::from(remembered);
         predicted[bin] += prediction as f64;
-        sums[bin].remembered += answer;
-        sums[bin].count += 1.0;
-        let card = by_card
-            .entry(card_id)
-            .or_insert_with(|| vec![BinTally::default(); BIN_COUNT]);
-        card[bin].remembered += answer;
-        card[bin].count += 1.0;
+        sums[bin].0 += answer;
+        sums[bin].1 += 1.0;
+        let card = by_card.entry(card_id).or_default();
+        match card.iter_mut().find(|tally| tally.bin == bin) {
+            Some(tally) => {
+                tally.remembered += answer;
+                tally.count += 1.0;
+            }
+            None => card.push(BinTally {
+                bin,
+                remembered: answer,
+                count: 1.0,
+            }),
+        }
     }
 
-    let intervals = bootstrap_intervals(&by_card.into_values().collect::<Vec<_>>());
+    // The cards are resampled in a fixed order. A HashMap hands out its
+    // values in an order that differs between runs, and the bootstrap draws
+    // cards by position, so without this the same reviews gave a different
+    // interval every time the page was opened (spec ui.stats-model-metrics).
+    let mut by_card: Vec<(i64, Vec<BinTally>)> = by_card.into_iter().collect();
+    by_card.sort_unstable_by_key(|(card_id, _)| *card_id);
+    let cards: Vec<Vec<BinTally>> = by_card.into_iter().map(|(_, tallies)| tallies).collect();
+    let intervals = bootstrap_intervals(&cards);
     (0..BIN_COUNT)
-        .filter(|&bin| sums[bin].count > 0.0)
+        .filter(|&bin| sums[bin].1 > 0.0)
         .map(|bin| anki_proto::stats::CalibrationBin {
             index: bin as u32,
             sum_predicted: predicted[bin],
-            sum_remembered: sums[bin].remembered,
-            count: sums[bin].count as u32,
+            sum_remembered: sums[bin].0,
+            count: sums[bin].1 as u32,
             low: intervals[bin].0,
             high: intervals[bin].1,
         })
@@ -591,31 +787,55 @@ fn calibration_bins(
 /// For each bin, the 2.5 and 97.5 percentiles of its share of remembered
 /// answers over resamples of the cards; (0, 0) for a bin no resample fills.
 fn bootstrap_intervals(cards: &[Vec<BinTally>]) -> Vec<(f64, f64)> {
-    let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
     if cards.is_empty() {
         return vec![(0.0, 0.0); BIN_COUNT];
     }
-    let mut state = BOOTSTRAP_SEED;
-    let mut next = || {
-        // xorshift64*, so the interval is the same on every machine
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
+    // The draws are one stream, exactly as they were when the rounds ran one
+    // after another, so every round sees the cards it saw before and the
+    // intervals do not move. Only the state each round STARTS from is walked
+    // here; the rounds themselves then run in parallel from it, so the result
+    // does not depend on the machine or on how the work is shared out.
+    // xorshift64*, so the interval is the same on every machine
+    fn advance(state: &mut u64) -> u64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
         state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    };
+    }
+    let mut state = BOOTSTRAP_SEED;
+    let mut round_seeds = Vec::with_capacity(BOOTSTRAP_ROUNDS);
     for _ in 0..BOOTSTRAP_ROUNDS {
-        let mut remembered = [0.0f64; BIN_COUNT];
-        let mut counts = [0.0f64; BIN_COUNT];
+        round_seeds.push(state);
         for _ in 0..cards.len() {
-            let card = &cards[(next() % cards.len() as u64) as usize];
-            for bin in 0..BIN_COUNT {
-                remembered[bin] += card[bin].remembered;
-                counts[bin] += card[bin].count;
-            }
+            advance(&mut state);
         }
-        for bin in 0..BIN_COUNT {
-            if counts[bin] > 0.0 {
-                shares[bin].push(remembered[bin] / counts[bin]);
+    }
+
+    let rounds: Vec<Vec<Option<f64>>> = round_seeds
+        .into_par_iter()
+        .map(|seed| {
+            let mut state = seed;
+            let mut remembered = [0.0f64; BIN_COUNT];
+            let mut counts = [0.0f64; BIN_COUNT];
+            for _ in 0..cards.len() {
+                let draw = advance(&mut state);
+                // a card holds only the bins it has answers in
+                for tally in &cards[(draw % cards.len() as u64) as usize] {
+                    remembered[tally.bin] += tally.remembered;
+                    counts[tally.bin] += tally.count;
+                }
+            }
+            (0..BIN_COUNT)
+                .map(|bin| (counts[bin] > 0.0).then(|| remembered[bin] / counts[bin]))
+                .collect()
+        })
+        .collect();
+
+    let mut shares: Vec<Vec<f64>> = vec![vec![]; BIN_COUNT];
+    for round in rounds {
+        for (bin, share) in round.into_iter().enumerate() {
+            if let Some(share) = share {
+                shares[bin].push(share);
             }
         }
     }
@@ -641,6 +861,125 @@ fn percentile(values: &[f64], percentile: f64) -> f64 {
     let upper = position.ceil() as usize;
     let weight = position - lower as f64;
     values[lower] * (1.0 - weight) + values[upper] * weight
+}
+
+/// The bin of a difference between two predictions: rounded to the nearest
+/// twentieth, with agreement in the middle (`UM_plus_plot.py`'s binning).
+fn um_bin_of(difference: f64) -> usize {
+    ((difference * UM_BINS_PER_UNIT as f64).round() as i32 + UM_BINS_PER_UNIT)
+        .clamp(0, UM_BIN_COUNT as i32 - 1) as usize
+}
+
+/// One pair of algorithms as the UM+ comparison sees them (spec
+/// ui.stats-model-metrics): the ratings are grouped by how far the two
+/// predictions differ, and each algorithm is scored by how far its mean
+/// prediction sits from the mean answer inside those groups. A rating only
+/// one of them predicted is in no group.
+fn um_plus_pair(
+    algorithm_a: SchedulingAlgorithmProto,
+    predictions_a: &[f32],
+    algorithm_b: SchedulingAlgorithmProto,
+    predictions_b: &[f32],
+    remembered: &[bool],
+) -> Option<anki_proto::stats::UmPlusPair> {
+    let mut difference = vec![0.0f64; UM_BIN_COUNT];
+    let mut error_a = vec![0.0f64; UM_BIN_COUNT];
+    let mut error_b = vec![0.0f64; UM_BIN_COUNT];
+    let mut counts = vec![0u32; UM_BIN_COUNT];
+    let mut reviews = 0u32;
+    for ((&a, &b), &remembered) in predictions_a.iter().zip(predictions_b).zip(remembered) {
+        if !a.is_finite() || !b.is_finite() {
+            continue;
+        }
+        let (a, b, answer) = (a as f64, b as f64, f64::from(remembered));
+        let bin = um_bin_of(a - b);
+        difference[bin] += a - b;
+        error_a[bin] += a - answer;
+        error_b[bin] += b - answer;
+        counts[bin] += 1;
+        reviews += 1;
+    }
+    if reviews == 0 {
+        return None;
+    }
+
+    let bins: Vec<anki_proto::stats::UmPlusBin> = (0..UM_BIN_COUNT)
+        .filter(|&bin| counts[bin] > 0)
+        .map(|bin| anki_proto::stats::UmPlusBin {
+            index: bin as u32,
+            sum_difference: difference[bin],
+            sum_error_a: error_a[bin],
+            sum_error_b: error_b[bin],
+            count: counts[bin],
+        })
+        .collect();
+    Some(anki_proto::stats::UmPlusPair {
+        algorithm_a: algorithm_a as i32,
+        algorithm_b: algorithm_b as i32,
+        um_a: weighted_rms(&bins, |bin| bin.sum_error_a / bin.count as f64),
+        um_b: weighted_rms(&bins, |bin| bin.sum_error_b / bin.count as f64),
+        slope_a: weighted_slope(&bins, |bin| bin.sum_error_a / bin.count as f64),
+        slope_b: weighted_slope(&bins, |bin| bin.sum_error_b / bin.count as f64),
+        reviews,
+        bins,
+    })
+}
+
+/// The root mean square of the bins' values, weighted by their counts: the
+/// Universal Metric Plus itself.
+fn weighted_rms(
+    bins: &[anki_proto::stats::UmPlusBin],
+    value: impl Fn(&anki_proto::stats::UmPlusBin) -> f64,
+) -> f64 {
+    let total: f64 = bins.iter().map(|bin| bin.count as f64).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    (bins
+        .iter()
+        .map(|bin| bin.count as f64 * value(bin).powi(2))
+        .sum::<f64>()
+        / total)
+        .sqrt()
+}
+
+/// The slope of a value against the difference over the bins, weighted by
+/// their counts; 0 when the differences are all alike.
+fn weighted_slope(
+    bins: &[anki_proto::stats::UmPlusBin],
+    value: impl Fn(&anki_proto::stats::UmPlusBin) -> f64,
+) -> f64 {
+    let total: f64 = bins.iter().map(|bin| bin.count as f64).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    let mean_x: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * (bin.sum_difference / bin.count as f64))
+        .sum::<f64>()
+        / total;
+    let mean_y: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * value(bin))
+        .sum::<f64>()
+        / total;
+    let covariance: f64 = bins
+        .iter()
+        .map(|bin| {
+            bin.count as f64
+                * (bin.sum_difference / bin.count as f64 - mean_x)
+                * (value(bin) - mean_y)
+        })
+        .sum();
+    let variance: f64 = bins
+        .iter()
+        .map(|bin| bin.count as f64 * (bin.sum_difference / bin.count as f64 - mean_x).powi(2))
+        .sum();
+    if variance > 1e-12 {
+        covariance / variance
+    } else {
+        0.0
+    }
 }
 
 /// One model's rows, from a single sample role: the first role of `roles`

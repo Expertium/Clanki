@@ -698,10 +698,35 @@ each bin's ratings that were remembered. A dashed diagonal is a perfect
 algorithm: a point above it means the algorithm predicted too little, below
 it too much. Each point carries a vertical line through the 2.5 and 97.5
 percentiles of its share, from 500 resamples of the CARDS (not of the
-ratings, because a card's own ratings are not independent). The ratings of
+ratings, because a card's own ratings are not independent). The same
+reviews always give the same line: the cards are resampled in a fixed
+order, from a fixed seed, so opening the page twice does not move the error
+bars. The ratings of
 each bin are drawn as grey bars behind the line, on their own axis at the
 right. Three tiles above the graph give the average predicted probability,
 the actual recall, and the number of ratings.
+
+The UM+ comparison draws a PAIR of algorithms, picked from a menu of the
+pairs that share ratings. Three algorithms make three pairs. A pair is
+offered only when at least 200 ratings have a prediction from both of its
+algorithms; a pair with fewer is not in the menu and is not drawn, and is
+named under the graph with the ratings it has, the ratings it needs, and
+what would fill it. UM+ spreads a pair's ratings over 41 groups, so under
+200 the middle groups hold a handful of ratings each and one card's run of
+answers moves a bubble visibly: such a graph misleads worse than an absent
+one. Its shape is wide, not square. Each point is a
+group of ratings whose two predictions differ by about the same amount: the
+x axis is that difference (the first algorithm's prediction minus the
+second's, in 41 groups, one for each twentieth from -1 to 1), and the height
+of a point is that algorithm's mean prediction minus the mean answer in the
+group. A bubble's area is the group's share of the ratings. A switch adds
+the groups of fewer than 200 ratings, which are hidden by default; the graph
+says how many it hides. The legend gives each algorithm its UM+ - the root
+mean square of its groups' mean errors, weighted by the groups' sizes, where
+closer to zero is better - and the slope of its errors against the
+difference, weighted the same way. The binning and the weighting are
+`UM_plus_plot.py`'s, so the numbers can be compared with the ones from the
+benchmark.
 
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
@@ -736,8 +761,10 @@ because a comparison of one algorithm with itself says nothing; the honesty
 rules (a name on every series, no fallback, an absent series with a reason)
 are what keep the relaxation safe. All three curves at once on the AUC-ROC
 graph, and the square drawing area with the labelled diagonal, are his
-words. The rules about which stored rows count, and about scoring both
-algorithms on the same ratings, are the RWKV session's: a prediction from a
+words, as is the UM+ comparison of a pair, which he asked for from the
+Search Stats Extended fork together with the `UM_plus_plot.py` binning of
+the srs-benchmark. The rules about which stored rows count, and about
+scoring both algorithms on the same ratings, are the RWKV session's: a prediction from a
 model fitted on the very review it predicts flatters that model, and two
 scores over two different sets of reviews cannot be compared, which the page
 now states as a number rather than by discarding reviews. Reading the
@@ -753,9 +780,13 @@ user's own rebuild, never to opening a page.
 `rwkv_takes_the_role_with_the_most_rows`,
 `the_period_selects_the_ratings`,
 `newer_ratings_than_the_stored_predictions_are_reported`,
-`calibration_bins_and_their_intervals`
+`calibration_bins_and_their_intervals`,
+`um_plus_groups_the_ratings_by_how_far_the_algorithms_differ`,
+`the_same_reviews_always_give_the_same_interval`,
+`the_parallel_bootstrap_draws_what_one_thread_drew`
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
-`ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`.
+`ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`;
+`ts/routes/graphs/um-plus.test.ts`.
 
 ## ui.stats-graph-colours
 

@@ -64,6 +64,7 @@ class _Job:
     newest_scored_secs: int = 0
     newer_reviews: int = 0
     shared_ratings: bool = False
+    um_plus: list[Any] = field(default_factory=list)
     error: str = ""
 
     def progress(self) -> Progress:
@@ -86,6 +87,7 @@ class _Job:
                 newest_scored_secs=self.newest_scored_secs,
                 newer_reviews=self.newer_reviews,
                 shared_ratings=self.shared_ratings,
+                um_plus=self.um_plus,
                 error=self.error,
             )
 
@@ -195,6 +197,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         job.newest_scored_secs = data.newest_scored_secs
         job.newer_reviews = data.newer_reviews
         job.shared_ratings = data.shared_ratings
+        job.um_plus = list(data.um_plus)
 
     fsrs = _series(
         FSRS_7,
