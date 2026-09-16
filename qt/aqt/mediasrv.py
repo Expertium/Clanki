@@ -32,6 +32,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
+import aqt.stats_prefetch
 import aqt.total_knowledge
 from anki import (
     decks_pb2,
@@ -49,11 +50,13 @@ from anki.collection import (
     Progress,
     SearchNode,
 )
+from anki.config import Config
 from anki.decks import UpdateDeckConfigs, UpdateDeckConfigsMode
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
 from anki.stats_pb2 import (
     CardStatsResponse,
     GraphsRequest,
+    GraphsResponse,
     TotalKnowledgeRwkvJob,
     TotalKnowledgeRwkvRequest,
 )
@@ -1495,10 +1498,9 @@ def _graphs_without_retrievability(request_proto: GraphsRequest) -> bytes:
     return request_proto.SerializeToString()
 
 
-def graphs() -> Response:
-    start = time.monotonic()
-    request_proto = GraphsRequest()
-    request_proto.ParseFromString(request.data)
+def _graph_data(request_proto: GraphsRequest) -> tuple[bytes, dict[str, str]]:
+    """The graphs response for a request, and its extra headers."""
+    headers: dict[str, str] = {}
     reviewer = getattr(aqt.mw, "reviewer", None) or SimpleNamespace(mw=aqt.mw)
     prepare_start = time.monotonic()
     retrievability_later = False
@@ -1527,30 +1529,86 @@ def graphs() -> Response:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()
-    if retrievability_later:
-        output = aqt.mw.col._backend.graphs_raw(
-            _graphs_without_retrievability(request_proto)
-        )
-    else:
-        output = raw_backend_request("graphs")()
+    backend_request = (
+        _graphs_without_retrievability(request_proto)
+        if retrievability_later
+        else request_proto.SerializeToString()
+    )
+    output = aqt.mw.col._backend.graphs_raw(backend_request)
     backend_elapsed_ms = (time.monotonic() - backend_start) * 1000
-    response = flask.make_response(output)
-    response.headers["Content-Type"] = "application/binary"
     if prepare_status == aqt.rwkv_scheduler.RwkvStatsPreparationStatus.PENDING:
-        response.headers[RWKV_STATS_PENDING_HEADER] = "1"
+        headers[RWKV_STATS_PENDING_HEADER] = "1"
     if retrievability_later:
-        response.headers[RWKV_RETRIEVABILITY_LATER_HEADER] = "1"
+        headers[RWKV_RETRIEVABILITY_LATER_HEADER] = "1"
     logger.debug(
-        "graphs served: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
-        "backend_elapsed_ms=%.1f response_bytes=%s elapsed_ms=%.1f",
+        "graphs computed: search=%r days=%s rwkv_prepare_status=%s prepare_elapsed_ms=%.1f "
+        "backend_elapsed_ms=%.1f response_bytes=%s",
         request_proto.search,
         request_proto.days,
         prepare_status.value,
         prepare_elapsed_ms,
         backend_elapsed_ms,
         len(output),
+    )
+    return output, headers
+
+
+def _collection_state() -> tuple[int, int]:
+    col = aqt.mw.col
+    return col.mod, col.sched.today
+
+
+def _graphs_with_current_ui_mode(output: bytes) -> bytes:
+    """A prefetched graphs response, with the UI mode of this moment.
+
+    The prefetch runs while the page is in Simple mode, so its response
+    reports that mode; the page's switch writes the new one as it asks for
+    the graphs. No graph draws the flag, so only the field is put right.
+    """
+    advanced = aqt.mw.col.get_config_bool(Config.Bool.ADVANCED_UI)
+    response = GraphsResponse()
+    response.ParseFromString(output)
+    if response.advanced_ui == advanced:
+        return output
+    response.advanced_ui = advanced
+    return response.SerializeToString()
+
+
+def _prefetch_advanced_stats_graphs(served: GraphsRequest) -> None:
+    """After a Simple-mode graphs request, compute the Advanced one the
+    page's Simple | Advanced switch will send (aqt.stats_prefetch)."""
+    mw = aqt.mw
+    if mw is None or getattr(mw, "col", None) is None:
+        return
+    advanced = aqt.stats_prefetch.advanced_request(served)
+    if advanced is None:
+        return
+    aqt.stats_prefetch.start(
+        advanced, _collection_state(), _graph_data, mw.taskman.run_in_background
+    )
+
+
+def graphs() -> Response:
+    start = time.monotonic()
+    request_proto = GraphsRequest()
+    request_proto.ParseFromString(request.data)
+    prefetched = aqt.stats_prefetch.take(request_proto, _collection_state)
+    output, headers = prefetched or _graph_data(request_proto)
+    if prefetched is not None:
+        output = _graphs_with_current_ui_mode(output)
+    response = flask.make_response(output)
+    response.headers["Content-Type"] = "application/binary"
+    for name, value in headers.items():
+        response.headers[name] = value
+    logger.debug(
+        "graphs served: search=%r days=%s prefetched=%s response_bytes=%s elapsed_ms=%.1f",
+        request_proto.search,
+        request_proto.days,
+        prefetched is not None,
+        len(output),
         (time.monotonic() - start) * 1000,
     )
+    _prefetch_advanced_stats_graphs(request_proto)
     return response
 
 

@@ -10,6 +10,7 @@ from typing import Any
 import aqt
 import aqt.forms
 import aqt.main
+import aqt.stats_prefetch
 import aqt.total_knowledge
 from anki.decks import DeckId
 from anki.utils import is_mac
@@ -80,6 +81,8 @@ class NewDeckStats(QDialog):
     def reject(self) -> None:
         # the page's Total Knowledge RWKV job stops with it
         aqt.total_knowledge.cancel_rwkv()
+        # and so does the Advanced graphs kept for its Simple | Advanced switch
+        aqt.stats_prefetch.clear()
         self.deck_chooser.cleanup()
         self.form.web.cleanup()
         self.form.web = None  # type: ignore
