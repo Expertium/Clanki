@@ -112,9 +112,11 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     answer_action: AnswerAction::BuryCard as i32,
     wait_for_audio: true,
     skip_question_when_replaying_answer: false,
-    bury_new: false,
-    bury_reviews: false,
-    bury_interday_learning: false,
+    // siblings are buried by default: seeing a card's sibling on the same day
+    // gives the answer away (Andrew, 2026-09-16)
+    bury_new: true,
+    bury_reviews: true,
+    bury_interday_learning: true,
     fsrs_params_4: vec![],
     fsrs_params_5: vec![],
     fsrs_params_6: vec![],
@@ -520,6 +522,9 @@ mod tests {
         assert!(!config.inner.rwkv_review_instant_order_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
         assert_eq!(config.inner.reviews_per_day, 9999);
+        assert!(config.inner.bury_new);
+        assert!(config.inner.bury_reviews);
+        assert!(config.inner.bury_interday_learning);
         assert_eq!(
             config.inner.review_order,
             ReviewCardOrder::RetrievabilityDescending as i32
@@ -529,6 +534,9 @@ mod tests {
         let legacy = DeckConfig::from(DeckConfSchema11::default());
         assert_eq!(legacy.inner.leech_action, LeechAction::TagOnly as i32);
         assert_eq!(legacy.inner.reviews_per_day, 9999);
+        assert!(legacy.inner.bury_new);
+        assert!(legacy.inner.bury_reviews);
+        assert!(legacy.inner.bury_interday_learning);
         assert_eq!(
             legacy.inner.review_order,
             ReviewCardOrder::RetrievabilityDescending as i32
@@ -546,6 +554,9 @@ mod tests {
         assert!(config.inner.rwkv_review_enabled);
         assert_eq!(config.inner.leech_action, LeechAction::TagOnly as i32);
         assert_eq!(config.inner.reviews_per_day, 9999);
+        assert!(config.inner.bury_new);
+        assert!(config.inner.bury_reviews);
+        assert!(config.inner.bury_interday_learning);
         assert_eq!(
             config.inner.review_order,
             ReviewCardOrder::RetrievabilityDescending as i32

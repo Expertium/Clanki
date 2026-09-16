@@ -48,9 +48,9 @@ pub(crate) fn open_test_collection_with_relearning_card() -> Collection {
 impl Collection {
     /// A test collection whose default preset carries the upstream SM-2
     /// defaults (learning steps 1m 10m, relearning step 10m, FSRS-7 with no
-    /// RWKV, 200 reviews/day sorted by due date). A fresh collection now
-    /// starts with no steps, RWKV-Curve, 9999 reviews/day and ascending
-    /// retrievability
+    /// RWKV, 200 reviews/day sorted by due date, siblings not buried). A
+    /// fresh collection now starts with no steps, RWKV-Curve, 9999
+    /// reviews/day, buried siblings and ascending retrievability
     /// (spec deck-options.new-preset-defaults); the tests built on this helper
     /// were written against the upstream values, so they are restated here.
     /// `fresh_collection_starts_with_new_preset_defaults` covers the real
@@ -66,6 +66,9 @@ impl Collection {
         config.inner.relearn_steps = vec![10.0];
         config.inner.rwkv_review_enabled = false;
         config.inner.reviews_per_day = 200;
+        config.inner.bury_new = false;
+        config.inner.bury_reviews = false;
+        config.inner.bury_interday_learning = false;
         config.inner.review_order = crate::deckconfig::ReviewCardOrder::Day as i32;
         col.storage.update_deck_conf(&config).unwrap();
         col
