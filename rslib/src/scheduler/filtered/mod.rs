@@ -17,6 +17,7 @@ use crate::decks::FilteredSearchOrder;
 use crate::decks::FilteredSearchTerm;
 use crate::error::FilteredDeckError;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::FsrsCardCurves;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::writer::deck_search;
 use crate::search::writer::normalize_search;
@@ -165,8 +166,9 @@ impl Collection {
         order: ExactFsrsSearchOrder,
     ) -> Result<i32> {
         let mut cards_with_keys = Vec::new();
+        let mut curves = FsrsCardCurves::default();
         for card in self.all_cards_for_search(search)? {
-            let key = exact_fsrs_search_key_for_card(self, &card, ctx.timing, order)?;
+            let key = exact_fsrs_search_key_for_card(self, &card, ctx.timing, order, &mut curves)?;
             let hash = fnvhash_card_and_mod(&card);
             cards_with_keys.push((card, key, hash));
         }
@@ -355,6 +357,7 @@ fn exact_retrievability_key_for_card(
     col: &mut Collection,
     card: &Card,
     timing: SchedTimingToday,
+    curves: &mut FsrsCardCurves,
 ) -> Result<f32> {
     if let Some(r) = col.rwkv_retrievability_score_for_day(card.id, timing.days_elapsed) {
         return Ok(r);
@@ -362,27 +365,30 @@ fn exact_retrievability_key_for_card(
 
     if let Some(state) = card.memory_state {
         let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        col.fsrs_current_retrievability_for_card_state(card.id, state, elapsed_days)
+        curves.current_retrievability(col, card, state, elapsed_days)
     } else {
         Ok(sm2_relative_overdueness_key(card, timing))
     }
 }
 
+/// The card's key in an FSRS retrievability order; `curves` keeps the
+/// presets and models of the cards seen before.
 fn exact_fsrs_search_key_for_card(
     col: &mut Collection,
     card: &Card,
     timing: SchedTimingToday,
     order: ExactFsrsSearchOrder,
+    curves: &mut FsrsCardCurves,
 ) -> Result<f32> {
     match order {
         ExactFsrsSearchOrder::Retrievability { .. } => {
-            exact_retrievability_key_for_card(col, card, timing)
+            exact_retrievability_key_for_card(col, card, timing, curves)
         }
         ExactFsrsSearchOrder::RelativeOverdueness => {
             if let Some(state) = card.memory_state {
                 let elapsed_days =
                     elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-                col.fsrs_relative_overdueness_for_card_state(card, state, elapsed_days)
+                curves.relative_overdueness(col, card, state, elapsed_days)
             } else {
                 Ok(sm2_relative_overdueness_key(card, timing))
             }
@@ -441,6 +447,77 @@ mod test {
         Ok(())
     }
 
+    /// One cache for all the cards of a build gives each card the key of the
+    /// fsrs crate's tensor model, bit for bit, whatever its preset.
+    #[test]
+    fn kept_curves_give_the_tensor_path_keys() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut cards = Vec::new();
+        for index in 0..3u8 {
+            let mut deck = col.get_or_create_normal_deck(&format!("D{index}"))?;
+            let mut config = DeckConfig::default();
+            config.inner.fsrs_params_7 = fsrs::DEFAULT_PARAMETERS
+                .iter()
+                .map(|w| w * (0.9 + 0.1 * index as f32))
+                .collect();
+            config.inner.desired_retention = 0.8 + 0.05 * index as f32;
+            col.add_or_update_deck_config(&mut config)?;
+            deck.normal_mut()?.config_id = config.id.0;
+            col.add_or_update_deck(&mut deck)?;
+            for n in 0..4u8 {
+                let mut note = nt.new_note();
+                col.add_note(&mut note, deck.id)?;
+                let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+                card.ctype = CardType::Review;
+                card.queue = CardQueue::Review;
+                card.interval = 10;
+                card.memory_state = Some(FsrsMemoryState {
+                    stability: 3.0 * (n + 1) as f32,
+                    stability_internal: 2.0 * (n + 1) as f32,
+                    stability_fast: (n % 2 == 0).then_some(n as f32 + 0.5),
+                    difficulty: 2.0 + 2.0 * n as f32,
+                });
+                card.desired_retention = (n == 3).then_some(0.93);
+                card.last_review_time =
+                    Some(timing.now.adding_secs(-((n + index) as i64 + 1) * 86_400));
+                col.storage.update_card(&card)?;
+                cards.push(card);
+            }
+        }
+        for order in [
+            ExactFsrsSearchOrder::Retrievability { reverse: false },
+            ExactFsrsSearchOrder::RelativeOverdueness,
+        ] {
+            let mut curves = FsrsCardCurves::default();
+            for card in &cards {
+                let key =
+                    exact_fsrs_search_key_for_card(&mut col, card, timing, order, &mut curves)?;
+                let preset = col.fsrs_preset_for_card(card)?;
+                let fsrs = fsrs::FSRS::new(&preset.params)?;
+                let state = card.memory_state.unwrap().into();
+                let elapsed = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                let expected = match order {
+                    ExactFsrsSearchOrder::Retrievability { .. } => {
+                        fsrs.current_retrievability(state, elapsed.max(0.0))
+                    }
+                    ExactFsrsSearchOrder::RelativeOverdueness => {
+                        let target = card
+                            .desired_retention
+                            .unwrap_or(preset.desired_retention)
+                            .clamp(0.0001, 0.9999);
+                        -elapsed.max(0.0)
+                            / fsrs.interval_at_retrievability(state, target).max(0.0001)
+                    }
+                };
+                assert_eq!(key.to_bits(), expected.to_bits(), "{card:?}");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn filtered_deck_retrievability_order_uses_exact_model() -> Result<()> {
         let mut col = Collection::new();
@@ -490,8 +567,18 @@ mod test {
         card2.decay = Some(2.0);
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
-        let key1 = exact_retrievability_key_for_card(&mut col, &card1, timing)?;
-        let key2 = exact_retrievability_key_for_card(&mut col, &card2, timing)?;
+        let key1 = exact_retrievability_key_for_card(
+            &mut col,
+            &card1,
+            timing,
+            &mut FsrsCardCurves::default(),
+        )?;
+        let key2 = exact_retrievability_key_for_card(
+            &mut col,
+            &card2,
+            timing,
+            &mut FsrsCardCurves::default(),
+        )?;
         assert_ne!(key1, key2);
 
         let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;
@@ -548,12 +635,15 @@ mod test {
         });
         card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
 
+        // one cache for both: the card's own desired retention is not kept
+        let mut curves = FsrsCardCurves::default();
         card.desired_retention = Some(0.8);
         let first = exact_fsrs_search_key_for_card(
             &mut col,
             &card,
             timing,
             ExactFsrsSearchOrder::RelativeOverdueness,
+            &mut curves,
         )?;
         card.desired_retention = Some(0.95);
         let second = exact_fsrs_search_key_for_card(
@@ -561,6 +651,7 @@ mod test {
             &card,
             timing,
             ExactFsrsSearchOrder::RelativeOverdueness,
+            &mut curves,
         )?;
 
         assert_ne!(first, second);
@@ -589,7 +680,12 @@ mod test {
         col.set_rwkv_deck_count_scores(DeckId(1), HashMap::from([(card.id, 0.42)]))?;
 
         assert_eq!(
-            exact_retrievability_key_for_card(&mut col, &card, timing)?,
+            exact_retrievability_key_for_card(
+                &mut col,
+                &card,
+                timing,
+                &mut FsrsCardCurves::default()
+            )?,
             0.42
         );
         Ok(())

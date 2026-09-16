@@ -145,6 +145,160 @@ impl Fsrs7Curve {
         let retention = (weight1 * r1 + weight2 * r2) / (weight1 + weight2);
         Some(retention * lit(1.0 - 2e-5) + lit(1e-5))
     }
+
+    /// Bit-identical to `FSRS::new(params)?.interval_at_retrievability(state,
+    /// target_retrievability)`. The crate already solves this in plain
+    /// `f32`, but reads its parameters back out of the model's tensor on
+    /// every call; the functions below are its solver, unchanged.
+    pub(crate) fn interval_at_retrievability(
+        &self,
+        state: MemoryState,
+        target_retrievability: f32,
+    ) -> f32 {
+        solver::next_interval_for_state(&self.w, state, target_retrievability.clamp(DR_MIN, DR_MAX))
+    }
+}
+
+// fsrs::model::model_v7's solver constants
+const DR_MIN: f32 = 0.0001;
+const DR_MAX: f32 = 0.9999;
+
+/// The fsrs crate's FSRS-7 interval solver
+/// (`model_v7::fsrs7_next_interval_scalar_for_state` and the functions it
+/// calls), copied operation for operation. Its curve is the crate's own
+/// plain-`f32` one, which orders some operations differently from the
+/// tensor path (and fuses its last step), so it is not
+/// [`Fsrs7Curve::retrievability`].
+mod solver {
+    use fsrs::MemoryState;
+
+    use super::DR_MAX;
+    use super::DR_MIN;
+    use super::D_MAX;
+    use super::D_MIN;
+    use super::PARAM_LEN;
+    use super::S_MAX;
+    use super::S_MIN;
+
+    const INTERVAL_NEWTON_ITERS: usize = 7;
+    const BISECTION_ITERS: usize = 50;
+    const MIN_T: f32 = 1.0 / 86_400.0;
+
+    /// `fsrs7_forgetting_curve_scalar_for_state`
+    fn curve(w: &[f32; PARAM_LEN], t: f32, state: MemoryState) -> f32 {
+        let t = t.max(0.0);
+        let s = state.stability.max(S_MIN);
+        let s_fast = state.stability_fast.max(S_MIN);
+        let d = state.difficulty.clamp(D_MIN, D_MAX);
+
+        let decay1_mag = (w[23] * s_fast.powf(w[33] - 0.3)).clamp(0.01, 0.95);
+        let decay1 = -decay1_mag;
+        let factor1 = ((w[25].ln() / decay1).min(60.0)).exp() - 1.0;
+        let r1 = (1.0 + factor1 * (t / s_fast)).powf(decay1);
+
+        let decay2 = -w[24].clamp(0.01, 0.95);
+        let factor2 = w[26].powf(1.0 / decay2) - 1.0;
+        let d_timescale = ((d - 5.0) * (w[32] - 0.3)).exp();
+        let r2 = (1.0 + factor2 * d_timescale * (t / s)).powf(decay2);
+
+        let weight1 = w[27] * s_fast.powf(-w[29]);
+        let weight2 = w[28] * s.powf(w[30]) * ((d - 5.0) * (w[31] - 0.5)).exp();
+        let retention = (weight1 * r1 + weight2 * r2) / (weight1 + weight2);
+        retention.mul_add(1.0 - 2e-5, 1e-5)
+    }
+
+    /// `fsrs7_forgetting_curve_and_derivative_scalar`
+    fn curve_and_derivative(w: &[f32; PARAM_LEN], t: f32, state: MemoryState) -> (f32, f32) {
+        let t = t.max(0.0);
+        let s = state.stability.max(S_MIN);
+        let s_fast = state.stability_fast.max(S_MIN);
+        let d = state.difficulty.clamp(D_MIN, D_MAX);
+
+        let decay1_mag = (w[23] * s_fast.powf(w[33] - 0.3)).clamp(0.01, 0.95);
+        let decay1 = -decay1_mag;
+        let factor1 = ((w[25].ln() / decay1).min(60.0)).exp() - 1.0;
+        let b1 = 1.0 + factor1 * (t / s_fast);
+        let r1 = b1.powf(decay1);
+        let dr1_dt = decay1 * b1.powf(decay1 - 1.0) * factor1 / s_fast;
+
+        let decay2 = -w[24].clamp(0.01, 0.95);
+        let factor2 = w[26].powf(1.0 / decay2) - 1.0;
+        let d_timescale = ((d - 5.0) * (w[32] - 0.3)).exp();
+        let b2 = 1.0 + factor2 * d_timescale * (t / s);
+        let r2 = b2.powf(decay2);
+        let dr2_dt = decay2 * b2.powf(decay2 - 1.0) * factor2 * d_timescale / s;
+
+        let weight1 = w[27] * s_fast.powf(-w[29]);
+        let weight2 = w[28] * s.powf(w[30]) * ((d - 5.0) * (w[31] - 0.5)).exp();
+        let weight_sum = (weight1 + weight2).max(1e-9);
+        let retention = (weight1 * r1 + weight2 * r2) / weight_sum;
+        let derivative = (weight1 * dr1_dt + weight2 * dr2_dt) / weight_sum;
+        (
+            retention.mul_add(1.0 - 2e-5, 1e-5),
+            derivative * (1.0 - 2e-5),
+        )
+    }
+
+    /// `fsrs7_next_interval_bisection_scalar_for_state`
+    fn bisection(w: &[f32; PARAM_LEN], state: MemoryState, desired_retention: f32) -> f32 {
+        let desired_retention = desired_retention.clamp(DR_MIN, DR_MAX);
+        if desired_retention >= DR_MAX {
+            return 0.0;
+        }
+        let mut low = 0.0;
+        let mut high = state.stability.max(state.stability_fast).max(1.0);
+        while curve(w, high, state) > desired_retention && high < S_MAX {
+            high = (high * 2.0).min(S_MAX);
+        }
+        for _ in 0..BISECTION_ITERS {
+            let mid = (low + high) * 0.5;
+            if curve(w, mid, state) > desired_retention {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        ((low + high) * 0.5).clamp(0.0, S_MAX)
+    }
+
+    /// `fsrs7_next_interval_scalar_for_state`
+    pub(super) fn next_interval_for_state(
+        w: &[f32; PARAM_LEN],
+        state: MemoryState,
+        desired_retention: f32,
+    ) -> f32 {
+        let desired_retention = desired_retention.clamp(DR_MIN, DR_MAX);
+        if desired_retention >= DR_MAX {
+            return 0.0;
+        }
+
+        let state = MemoryState {
+            stability: state.stability.clamp(S_MIN, S_MAX),
+            difficulty: state.difficulty.clamp(D_MIN, D_MAX),
+            stability_fast: state.stability_fast.clamp(S_MIN, S_MAX),
+        };
+        let min_log_t = MIN_T.ln();
+        let max_log_t = S_MAX.ln();
+        let mut log_t = state.stability.max(state.stability_fast).max(MIN_T).ln();
+        for _ in 0..INTERVAL_NEWTON_ITERS {
+            log_t = log_t.clamp(min_log_t, max_log_t);
+            let t = log_t.exp().clamp(MIN_T, S_MAX);
+            let (retrievability, derivative) = curve_and_derivative(w, t, state);
+            let df_du = (derivative * t).min(-1e-12);
+            let step = ((retrievability - desired_retention) / df_du).clamp(-4.0, 4.0);
+            log_t -= step;
+            if !log_t.is_finite() {
+                return bisection(w, state, desired_retention);
+            }
+        }
+        let interval = log_t.exp().clamp(0.0, S_MAX);
+        let retrievability = curve(w, interval, state);
+        if retrievability.is_finite() && (retrievability - desired_retention).abs() <= 1e-3 {
+            interval
+        } else {
+            bisection(w, state, desired_retention)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -224,9 +378,88 @@ mod test {
         }
     }
 
+    fn random_target(rng: &mut StdRng) -> f32 {
+        match rng.random_range(0..8) {
+            // outside the solver's range, and its bounds
+            0 => rng.random_range(-1.0..2.0),
+            1 => [0.0, 0.0001, 0.9999, 1.0][rng.random_range(0..4)],
+            2 => rng.random_range(0.0..1.0),
+            _ => rng.random_range(0.7..0.99),
+        }
+    }
+
+    fn assert_interval_matches_the_crate(cases: usize, seed: u64) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut compared = 0;
+        while compared < cases {
+            let params = random_params(&mut rng);
+            let fsrs = FSRS::new(&params).unwrap();
+            let curve = Fsrs7Curve::new(&params).unwrap();
+            for _ in 0..50 {
+                let state = random_state(&mut rng);
+                let target = random_target(&mut rng);
+                let expected = fsrs.interval_at_retrievability(state, target);
+                let actual = curve.interval_at_retrievability(state, target);
+                assert!(
+                    same(actual, expected),
+                    "params {params:?} state {state:?} target {target}: {actual} != {expected}"
+                );
+                compared += 1;
+            }
+        }
+    }
+
     #[test]
     fn scalar_curve_is_bit_identical_to_the_tensor_path() {
         assert_matches_tensor_path(20_000, 7);
+    }
+
+    #[test]
+    fn interval_at_retrievability_is_bit_identical_to_the_crate() {
+        assert_interval_matches_the_crate(20_000, 5);
+    }
+
+    /// Stabilities and difficulties at, inside and past every clamp, elapsed
+    /// times from 0 to far past S_MAX, and targets at the solver's bounds.
+    #[test]
+    fn both_are_bit_identical_at_the_edges() {
+        let stabilities = [0.0, 1e-30, 1e-6, S_MIN, 0.3, 1.0, S_MAX, 1e7, f32::MAX];
+        let difficulties = [-1.0, 0.0, D_MIN, 5.0, D_MAX, 11.0, 1e9];
+        let days = [0.0, 1e-9, 1.0 / 86_400.0, 1.0, 400.0, S_MAX, 1e9, f32::MAX];
+        let targets = [0.0, 0.0001, 0.5, 0.9, 0.9999, 1.0];
+        for params in [DEFAULT_PARAMETERS.to_vec(), vec![0.0; PARAM_LEN]] {
+            let fsrs = FSRS::new(&params).unwrap();
+            let curve = Fsrs7Curve::new(&params).unwrap();
+            for stability in stabilities {
+                for stability_fast in stabilities {
+                    for difficulty in difficulties {
+                        let state = MemoryState {
+                            stability,
+                            stability_fast,
+                            difficulty,
+                        };
+                        for days in days {
+                            let expected = fsrs.current_retrievability(state, days);
+                            let actual = curve.retrievability(state, days).unwrap();
+                            assert!(same(actual, expected), "{state:?} {days}");
+                        }
+                        for target in targets {
+                            let expected = fsrs.interval_at_retrievability(state, target);
+                            let actual = curve.interval_at_retrievability(state, target);
+                            assert!(same(actual, expected), "{state:?} {target}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The 1M-case run for the interval (release: `cargo test --release -p
+    /// anki --lib curve -- --ignored`).
+    #[test]
+    #[ignore]
+    fn interval_at_retrievability_is_bit_identical_to_the_crate_1m() {
+        assert_interval_matches_the_crate(1_000_000, 13);
     }
 
     /// The 1M-case run of the speed protocol's equality check (release:
