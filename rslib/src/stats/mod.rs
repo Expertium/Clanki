@@ -3,6 +3,7 @@
 
 mod card;
 mod graphs;
+mod review_metrics;
 mod service;
 mod today;
 mod total_knowledge;

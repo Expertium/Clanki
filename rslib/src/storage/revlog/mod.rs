@@ -466,6 +466,59 @@ impl SqliteStorage {
         .map(|_| ())
     }
 
+    /// The cached per-review predictions of one model and one sample role,
+    /// for the ratings of the cards in `search_cids` from `after` on: the
+    /// newest row of each review (spec ui.stats-model-metrics). The caller
+    /// picks the role; rows of other roles are never mixed in.
+    pub(crate) fn cached_review_predictions(
+        &self,
+        table: &str,
+        sample_role: &str,
+        after: TimestampMillis,
+    ) -> Result<Vec<(RevlogId, f32)>> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        self.db
+            .prepare_cached(&format!(
+                "select revlog_id, prediction from (
+                     select revlog_id, prediction, row_number() over (
+                         partition by revlog_id
+                         order by updated_at desc, fold_index desc, source
+                     ) as rank
+                     from {table}
+                     where sample_role = ?1
+                       and revlog_id > ?2
+                       and revlog_id in (
+                           select id from revlog
+                           where cid in (select cid from search_cids)
+                       )
+                 )
+                 where rank = 1"
+            ))?
+            .query_and_then((sample_role, after.0), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
+    /// The newest review of the searched cards that the given model and
+    /// role have a prediction for, and how many later ratings have none.
+    pub(crate) fn newest_cached_review_prediction(
+        &self,
+        table: &str,
+        sample_role: &str,
+    ) -> Result<Option<RevlogId>> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        self.db
+            .prepare_cached(&format!(
+                "select max(revlog_id) from {table}
+                 where sample_role = ?1
+                   and revlog_id in (
+                       select id from revlog
+                       where cid in (select cid from search_cids)
+                   )"
+            ))?
+            .query_row((sample_role,), |row| row.get::<_, Option<RevlogId>>(0))
+            .map_err(Into::into)
+    }
+
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {
         self.db
             .prepare(include_str!("fix_props.sql"))?
