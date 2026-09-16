@@ -7,7 +7,8 @@
  * bound) and the sum of their retrievability under the collection's
  * algorithm. FSRS-7's sum comes with the bound; RWKV's arrives day by day
  * from its job, and the days it has not reached yet are drawn blurred,
- * behind a sweep line.
+ * behind a sweep line. Simple mode draws the sum only; Advanced mode has a
+ * checkbox for the bound.
  */
 
 import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
@@ -44,6 +45,37 @@ export interface TotalKnowledgeData {
 
 export function isRwkv(algorithm: SchedulingAlgorithm): boolean {
     return algorithm !== SchedulingAlgorithm.FSRS7;
+}
+
+/** The collection's algorithm, named as the deck-options list names it. */
+export function algorithmName(algorithm: SchedulingAlgorithm): string {
+    switch (algorithm) {
+        case SchedulingAlgorithm.RWKV_CURVE:
+            return tr.deckConfigSchedulerChoiceRwkvCurve();
+        case SchedulingAlgorithm.RWKV_INSTANT:
+            return tr.deckConfigSchedulerChoiceRwkvInstant();
+        default:
+            return tr.deckConfigSchedulerChoiceFsrs();
+    }
+}
+
+/**
+ * The line under the title. Simple mode says the same thing without the
+ * word "retrievability" (spec ui.stats-total-knowledge).
+ */
+export function subtitleText(advanced: boolean): string {
+    return advanced
+        ? tr.statisticsTotalKnowledgeSubtitle()
+        : tr.statisticsTotalKnowledgeSubtitleSimple();
+}
+
+/**
+ * Whether the "Reviewed" bound is drawn (spec ui.stats-total-knowledge):
+ * never in Simple mode, and in Advanced mode as the graph's own checkbox
+ * says. The checkbox starts on, so Advanced mode draws it by default.
+ */
+export function showsReviewed(advanced: boolean, checked: boolean): boolean {
+    return advanced && checked;
 }
 
 /** RWKV's sum on `day`, or null while its job has not reached it. */
@@ -126,6 +158,8 @@ export function renderTotalKnowledge(
     svgElem: SVGElement,
     bounds: GraphBounds,
     data: TotalKnowledgeData | null,
+    /** Draw the "Reviewed" bound as well as "Known" (`showsReviewed`). */
+    reviewed = true,
     now: number = Date.now(),
 ): void {
     const svg = select(svgElem);
@@ -142,6 +176,9 @@ export function renderTotalKnowledge(
     const x = scaleTime()
         .domain([date(points[0].day), date(points[points.length - 1].day)])
         .range([bounds.marginLeft, bounds.width - bounds.marginRight]);
+    // always the bound's maximum, so hiding the "Reviewed" line keeps the
+    // scale it has in Advanced mode (and RWKV's day-by-day sums, which only
+    // grow, never rescale the axis under the user)
     const y = scaleLinear()
         .domain([0, Math.max(1, max(points, (p) => p.reviewed) ?? 1)])
         .nice()
@@ -208,25 +245,28 @@ export function renderTotalKnowledge(
         .attr("fill", "none")
         .attr("stroke", KNOWN_COLOUR)
         .attr("stroke-width", 1.5);
-    done.append("path")
-        .attr("d", reviewedLine(points))
-        .attr("fill", "none")
-        .attr("stroke", REVIEWED_COLOUR)
-        .attr("stroke-width", 1.5)
-        .attr("stroke-dasharray", "4,3");
-
-    if (computedThroughDay !== null) {
-        const pending = drawing
-            .append("g")
-            .attr("clip-path", "url(#total-knowledge-pending)")
-            .append("g")
-            .attr("filter", "url(#total-knowledge-blur)");
-        pending
-            .append("path")
+    if (reviewed) {
+        done.append("path")
             .attr("d", reviewedLine(points))
             .attr("fill", "none")
             .attr("stroke", REVIEWED_COLOUR)
-            .attr("stroke-width", 3);
+            .attr("stroke-width", 1.5)
+            .attr("stroke-dasharray", "4,3");
+    }
+
+    if (computedThroughDay !== null) {
+        if (reviewed) {
+            drawing
+                .append("g")
+                .attr("clip-path", "url(#total-knowledge-pending)")
+                .append("g")
+                .attr("filter", "url(#total-knowledge-blur)")
+                .append("path")
+                .attr("d", reviewedLine(points))
+                .attr("fill", "none")
+                .attr("stroke", REVIEWED_COLOUR)
+                .attr("stroke-width", 3);
+        }
         drawing
             .append("line")
             .attr("class", "total-knowledge-sweep")
@@ -259,7 +299,11 @@ export function renderTotalKnowledge(
             const point = points[byDate(points, x.invert(mouseX).getTime())];
             const pointX = x(date(point.day));
             focus.attr("x1", pointX).attr("x2", pointX).style("display", null);
-            showTooltip(tooltipText(point, date(point.day)), event.pageX, event.pageY);
+            showTooltip(
+                tooltipText(point, date(point.day), reviewed),
+                event.pageX,
+                event.pageY,
+            );
         })
         .on("mouseout", () => {
             focus.style("display", "none");
@@ -269,15 +313,33 @@ export function renderTotalKnowledge(
     setDataAvailable(svg, true);
 }
 
-export function tooltipText(point: TotalKnowledgePoint, date: Date): string {
+/**
+ * The "Known" value the tooltip shows: a whole number of cards. The rounding
+ * is for display only; the sum itself keeps every decimal.
+ */
+export function knownCardsShown(known: number): number {
+    return Math.round(known);
+}
+
+export function tooltipText(
+    point: TotalKnowledgePoint,
+    date: Date,
+    /** The graph draws the "Reviewed" bound, so the tooltip names it too. */
+    reviewed = true,
+): string {
     const known = point.known === null
         ? `${tr.statisticsTotalKnowledgeKnown()}: ${tr.cardStatsCalculating()}`
-        : tr.statisticsTotalKnowledgeKnownCards({ cards: Math.round(point.known * 10) / 10 });
-    return [
+        : tr.statisticsTotalKnowledgeKnownCards({ cards: knownCardsShown(point.known) });
+    const lines = [
         localizedDate(date),
         `<span style="color:${KNOWN_COLOUR}">■</span> ${known}`,
-        `<span style="color:${REVIEWED_COLOUR}">■</span> ${
-            tr.statisticsTotalKnowledgeReviewedCards({ cards: point.reviewed })
-        }`,
-    ].join("<br>");
+    ];
+    if (reviewed) {
+        lines.push(
+            `<span style="color:${REVIEWED_COLOUR}">■</span> ${
+                tr.statisticsTotalKnowledgeReviewedCards({ cards: point.reviewed })
+            }`,
+        );
+    }
+    return lines.join("<br>");
 }

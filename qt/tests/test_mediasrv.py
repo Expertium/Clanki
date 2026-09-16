@@ -265,6 +265,78 @@ class TestGraphs:
             "1" if prepared else None
         )
 
+    @pytest.mark.parametrize("rwkv", [True, False])
+    def test_graphs_leave_rwkv_retrievability_for_later_when_asked(
+        self, monkeypatch: pytest.MonkeyPatch, rwkv: bool
+    ) -> None:
+        # Pins spec/ui.md#ui.stats-one-algorithm: under RWKV the other graphs
+        # do not wait for RWKV to score the search
+        import aqt
+        from anki.stats_pb2 import GraphsRequest
+        from aqt.mediasrv import (
+            RWKV_RETRIEVABILITY_LATER_HEADER,
+            RWKV_STATS_PENDING_HEADER,
+            app,
+        )
+        from aqt.mediasrv import graphs as graphs_handler
+        from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
+
+        prepared: list[str] = []
+        backend_requests: list[GraphsRequest] = []
+
+        def prepare(
+            reviewer: object, search: str, **kwargs: object
+        ) -> RwkvStatsPreparationStatus:
+            prepared.append(search)
+            return RwkvStatsPreparationStatus.PENDING
+
+        def graphs_raw(data: bytes) -> bytes:
+            backend_request = GraphsRequest()
+            backend_request.ParseFromString(data)
+            backend_requests.append(backend_request)
+            return b"other-graphs"
+
+        backend = SimpleNamespace(graphs_raw=graphs_raw)
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            SimpleNamespace(col=SimpleNamespace(_backend=backend)),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.prepare_stats_retrievability_scores", prepare
+        )
+        monkeypatch.setattr(
+            "aqt.rwkv_scheduler.rwkv_collection_active", lambda reviewer: rwkv
+        )
+        monkeypatch.setattr(
+            "aqt.mediasrv.raw_backend_request",
+            lambda endpoint: lambda: b"graph-data",
+        )
+
+        data = GraphsRequest(
+            search="deck:current", days=365, rwkv_retrievability_later=True
+        ).SerializeToString()
+        with app.test_request_context(data=data):
+            response = graphs_handler()
+
+        if rwkv:
+            # every graph but Retrievability, and no RWKV scoring yet
+            assert prepared == []
+            assert response.get_data() == b"other-graphs"
+            assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) == "1"
+            assert response.headers.get(RWKV_STATS_PENDING_HEADER) is None
+            (backend_request,) = backend_requests
+            assert set(backend_request.graphs) == set(GraphsRequest.Graph.values()) - {
+                GraphsRequest.RETRIEVABILITY
+            }
+        else:
+            # FSRS-7: one response with every graph, as before
+            assert prepared == ["deck:current"]
+            assert response.get_data() == b"graph-data"
+            assert response.headers.get(RWKV_RETRIEVABILITY_LATER_HEADER) is None
+            assert backend_requests == []
+
 
 def _make_media_file(tmpdir: str, filename: str, content: bytes = b"test") -> str:
     path = os.path.join(tmpdir, filename)
@@ -470,10 +542,10 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         reviewer: object, card: object, *, elapsed_days: float | None = None
     ) -> object:
         elapsed.append(elapsed_days)
-        return curve if has_curve else None
+        return rwkv.RwkvCardCurveResult(curve=curve if has_curve else None)
 
     monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
-    monkeypatch.setattr(rwkv, "rwkv_card_info_curve", card_info_curve)
+    monkeypatch.setattr(rwkv, "rwkv_card_info_curve_result", card_info_curve)
     monkeypatch.setattr("aqt.mediasrv.time.time", lambda: 200 + 2 * 86_400)
     response = _card_stats_with_two_reviews()
 
@@ -496,11 +568,39 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         assert not response.rwkv_curve.HasField("current_recall")
         # no FSRS-7 value stands in for the missing curve
         assert not response.revlog[1].HasField("memory_state")
+    # RWKV answered, so card info does not ask again
+    assert not response.rwkv_curve.pending
     # older reviews keep no FSRS-7 memory state; the newer manual entry and
     # the card's own state stay (card info decides which rows to show)
     assert not response.revlog[2].HasField("memory_state")
     assert response.revlog[0].memory_state.stability == 30.0
     assert response.memory_state.stability == 30.0
+
+
+def test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-curve-messages"""
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(
+        rwkv,
+        "rwkv_card_info_curve_result",
+        lambda reviewer, card, *, elapsed_days=None: rwkv.RwkvCardCurveResult(
+            curve=None, pending=True
+        ),
+    )
+    response = _card_stats_with_two_reviews()
+
+    _add_rwkv_curve(response, object(), object())
+
+    assert response.HasField("rwkv_curve")
+    assert response.rwkv_curve.pending
+    assert not response.rwkv_curve.elapsed_days
+    # still no FSRS-7 value while RWKV is not ready
+    assert not response.revlog[1].HasField("memory_state")
 
 
 def test_card_info_has_no_rwkv_curve_for_other_algorithms(

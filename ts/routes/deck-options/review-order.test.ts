@@ -4,11 +4,7 @@
 import { DeckConfig_Config_ReviewCardOrder as ReviewCardOrder } from "@generated/anki/deck_config_pb";
 import { expect, test } from "vitest";
 
-import {
-    DEFAULT_REVIEW_ORDER,
-    reviewOrderForAlgorithm,
-    withoutDifficultyOrdersUnderRwkv,
-} from "./review-order";
+import { DEFAULT_REVIEW_ORDER, reviewOrderForAlgorithm, withoutDifficultyOrdersUnderRwkv } from "./review-order";
 
 // Pins spec/deck-options.md#deck-options.no-difficulty-order-under-rwkv
 

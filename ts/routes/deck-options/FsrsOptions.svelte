@@ -652,26 +652,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function computeAllParams(): Promise<void> {
         await commitEditing();
-        const incompatiblePresetNames = state.incompatibleFsrsParamPresetNames();
-        if (incompatiblePresetNames.length) {
-            const shownPresets = incompatiblePresetNames
-                .slice(0, 8)
-                .map((name) => `- ${name}`)
-                .join("\n");
-            const remaining = incompatiblePresetNames.length - 8;
-            const remainingText = remaining > 0 ? `\n- ...and ${remaining} more` : "";
-            const shouldClear = confirm(
-                [
-                    "Some presets have incompatible FSRS parameters. Optimize All Presets needs to clear those fields first so the default parameters can be used.",
-                    `Affected presets:\n${shownPresets}${remainingText}`,
-                    "Clear the incompatible FSRS parameters and continue?",
-                ].join("\n\n"),
-            );
-            if (!shouldClear) {
-                return;
-            }
-            state.clearIncompatibleFsrsParams();
-        }
+        // A preset whose parameters the optimizer cannot use gets the
+        // default parameters, with no question (Andrew, 2026-09-16).
+        state.prepareComputeAllParams();
         state.save(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS);
     }
 

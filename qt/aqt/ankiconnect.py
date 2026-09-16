@@ -56,6 +56,7 @@ from aqt.ankiconnect_server import (
 
 if TYPE_CHECKING:
     from aqt.main import AnkiQt
+    from aqt.operations.scheduling import GradeNowResult
 
 _T = TypeVar("_T")
 
@@ -2304,49 +2305,41 @@ class AnkiConnect:
             "update cards set type=3, queue=1 where id in " + scids
         )
 
-    def _refuse_rwkv_curve_answers(self, action: str, card_ids: Sequence[int]) -> None:
-        for cid in card_ids:
-            try:
-                card = self.getCard(cid)
-            except NotFoundError:
-                continue
-            if self._card_algorithm(card) == "rwkvCurve":
-                raise Exception(
-                    f"{action}: card {cid} is scheduled by RWKV-Curve, whose "
-                    "intervals come from the prediction the reviewer makes when "
-                    "the card is shown; answer it in the reviewer (guiAnswerCard)"
-                )
+    def _grade_now(self, cards: Sequence[int], ease: int) -> GradeNowResult:
+        """The Browser's Grade Now, without the GUI: every algorithm's cards
+        are answered the way the reviewer answers them (spec
+        sched.grade-now-rwkv-curve). Blocks while RWKV-Curve predicts, which
+        is why no action that calls it runs on the main thread."""
+        from aqt.operations.scheduling import grade_cards_now
+
+        return grade_cards_now(
+            self.collection(), cards, ease, reviewer=self._algorithm_reviewer()
+        )
 
     @api(changes=_CARDS)
     def gradeNow(self, cards: list[int], ease: int) -> bool:
-        from anki.scheduler_pb2 import CardAnswer
-        from aqt import rwkv_scheduler
-
+        """As the fork, for every algorithm: each card is answered as the
+        reviewer answers it. A card RWKV-Curve has no intervals for is not
+        graded, and the action fails naming it (spec
+        ankiconnect.one-algorithm)."""
         if ease < 1 or ease > 4:
             raise Exception("ease must be between 1 and 4")
 
-        rating = {
-            1: CardAnswer.AGAIN,
-            2: CardAnswer.HARD,
-            3: CardAnswer.GOOD,
-            4: CardAnswer.EASY,
-        }[ease]
-
-        self._refuse_rwkv_curve_answers("gradeNow", cards)
-        # as the Browser's Grade Now does it
-        reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(
-            self._algorithm_reviewer(), cards
-        )
-        self.collection()._backend.grade_now(
-            card_ids=cards, rating=rating, card_options=[]
-        )
-        rwkv_scheduler.record_grade_now_answers(reconciliation)
+        result = self._grade_now(cards, ease)
+        if result.unanswered_card_ids:
+            ids = ", ".join(str(cid) for cid in result.unanswered_card_ids)
+            raise Exception(
+                f"gradeNow: RWKV-Curve has no intervals yet for card(s) {ids}, "
+                "so they were not graded; the other cards were graded"
+            )
         return True
 
     @api(changes=_CARDS)
     def answerCards(self, answers: list[dict[str, Any]]) -> list[bool]:
-        """As the add-on; a card scheduled by RWKV-Curve is not answered and
-        gives false (spec ankiconnect.one-algorithm)."""
+        """As the add-on. A card RWKV-Curve schedules is answered with
+        RWKV-Curve's intervals, as the reviewer answers it, and gives false
+        while RWKV-Curve has no intervals for it (spec
+        ankiconnect.one-algorithm)."""
         from aqt import rwkv_scheduler
 
         scheduler = self.scheduler()
@@ -2354,7 +2347,11 @@ class AnkiConnect:
         reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(
             self._algorithm_reviewer(), card_ids
         )
-        success = []
+        success: list[bool] = []
+        # RWKV-Curve's cards wait until this reconciliation is recorded: Grade
+        # Now makes one of its own, and two over the same new review-log rows
+        # would force a full RWKV state rebuild. {ease: [(index, card id)]}
+        curve_cards: dict[int, list[tuple[int, int]]] = {}
         try:
             for answer in answers:
                 try:
@@ -2362,6 +2359,9 @@ class AnkiConnect:
                     ease = answer["ease"]
                     card = self.getCard(cid)
                     if self._card_algorithm(card) == "rwkvCurve":
+                        if ease not in (1, 2, 3, 4):
+                            raise Exception("invalid ease")
+                        curve_cards.setdefault(ease, []).append((len(success), cid))
                         success.append(False)
                         continue
                     card.start_timer()
@@ -2371,6 +2371,13 @@ class AnkiConnect:
                     success.append(False)
         finally:
             rwkv_scheduler.record_grade_now_answers(reconciliation)
+
+        for ease, graded in curve_cards.items():
+            answered = self._grade_now(
+                [cid for _, cid in graded], ease
+            ).answered_card_ids
+            for index, cid in graded:
+                success[index] = cid in answered
 
         return success
 
@@ -2890,6 +2897,8 @@ class AnkiConnect:
 
     @api(main=True)
     def guiAnswerCard(self, ease: int) -> bool:
+        from aqt import rwkv_scheduler
+
         if not self.guiReviewActive():
             return False
 
@@ -2897,6 +2906,11 @@ class AnkiConnect:
         if reviewer.state != "answer":
             return False
         if ease <= 0 or ease > self.scheduler().answerButtons(reviewer.card):
+            return False
+        # the reviewer ignores an answer while RWKV-Curve's intervals are
+        # pending (spec sched.rwkv-curve-buttons-wait), so say so instead of
+        # reporting an answer that did not happen
+        if rwkv_scheduler.answer_intervals_pending(reviewer, reviewer.card):
             return False
 
         reviewer._answerCard(ease)

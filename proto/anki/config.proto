@@ -63,7 +63,8 @@ message ConfigKey {
     // simplified view reads this collection-wide flag.
     ADVANCED_UI = 31;
     // Answer buttons: coloured borders (upstream PR 4371) and the
-    // two-button Again/Good mode; both on by default (spec review.answer-buttons).
+    // two-button Again/Good mode; both on by default (spec
+    // review.answer-buttons).
     SHOW_COLORED_BUTTONS = 32;
     TWO_BUTTON_MODE = 33;
     // on by default (spec ui.review-heatmap)

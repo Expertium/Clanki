@@ -347,6 +347,7 @@ class AnkiQt(QMainWindow):
         self.toolbar.draw()
         # add-ons are only available here after setupAddons
         gui_hooks.reviewer_did_init(self.reviewer)
+        self.freeze_startup_objects()
 
     def setupProfileAfterWebviewsLoaded(self) -> None:
         for w in (self.web, self.bottomWeb):
@@ -391,7 +392,6 @@ class AnkiQt(QMainWindow):
             self.closeFires = True
 
     def setupProfile(self) -> None:
-        self.keep_startup_objects_out_of_garbage_collection()
         if self.pm.meta["firstRun"]:
             # load the new deck user profile
             self.pm.load(self.pm.profiles()[0])
@@ -2183,13 +2183,19 @@ title="{}" {}>{}</button>""".format(
         gc.collect()
         gc.disable()
 
-    def keep_startup_objects_out_of_garbage_collection(self) -> None:
-        """Everything built before the first profile opens - the modules, the
-        add-ons, the main window - lives until Anki exits, so every later
-        collection may skip it (gc.freeze moves it to the permanent
-        generation). The collection after a dialog closes and the one every
-        15 minutes then only walk what the session has built since, which is
-        what makes them slow enough to be felt."""
+    def freeze_startup_objects(self) -> None:
+        """Keep the collections below away from what start-up created.
+
+        The modules, classes, windows and add-ons that exist once the window
+        has finished its setup live as long as the process, but every manual
+        collection still walked all of them. `gc.freeze()` moves them into the
+        permanent generation, which is never walked. The collection, its cards
+        and every dialog are created afterwards and are still collected.
+
+        The collection first: automatic collection has been off since the
+        window started, so start-up leaves cycles behind, and freezing them
+        would keep them for the rest of the session.
+        """
         gc.collect()
         gc.freeze()
 

@@ -22,6 +22,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { defaultGraphBounds } from "./graph-helpers";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import {
+        algorithmName,
         hasDrawing,
         isRwkv,
         KNOWN_COLOUR,
@@ -29,6 +30,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderTotalKnowledge,
         REVIEWED_COLOUR,
         rwkvStillComputing,
+        showsReviewed,
+        subtitleText,
         totalKnowledgeData,
     } from "./total-knowledge";
 
@@ -38,6 +41,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const search =
         getContext<Readable<string> | undefined>("graphsSearch") ??
         readable("deck:current");
+    // Simple mode drops the "Reviewed" bound and its checkbox
+    const advancedUi =
+        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
+    /** The Advanced-mode checkbox; on, so the bound shows by default. */
+    let reviewedChecked = true;
 
     let svg: SVGElement | null = null;
     let response: TotalKnowledgeResponse | null = null;
@@ -49,8 +57,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: load($search);
     $: data = response ? totalKnowledgeData(response, rwkv) : null;
+    $: reviewed = showsReviewed($advancedUi, reviewedChecked);
+    $: subtitle = subtitleText($advancedUi);
     $: if (svg) {
-        renderTotalKnowledge(svg, bounds, hasDrawing(response, rwkv) ? data : null);
+        renderTotalKnowledge(
+            svg,
+            bounds,
+            hasDrawing(response, rwkv) ? data : null,
+            reviewed,
+        );
     }
     $: overlay = loadError ?? overlayText(response, rwkv);
 
@@ -178,7 +193,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 
     const title = tr.statisticsTotalKnowledgeTitle();
-    const subtitle = tr.statisticsTotalKnowledgeSubtitle();
 </script>
 
 <Graph {title} {subtitle}>
@@ -187,10 +201,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <span class="swatch" style={`background-color: ${KNOWN_COLOUR}`}></span>
             {tr.statisticsTotalKnowledgeKnown()}
         </span>
-        <span>
-            <span class="swatch" style={`background-color: ${REVIEWED_COLOUR}`}></span>
-            {tr.statisticsTotalKnowledgeReviewed()}
-        </span>
+        {#if $advancedUi}
+            <label class="reviewed-toggle">
+                <input type="checkbox" bind:checked={reviewedChecked} />
+                <span
+                    class="swatch"
+                    style={`background-color: ${REVIEWED_COLOUR}`}
+                ></span>
+                {tr.statisticsTotalKnowledgeReviewed()}
+            </label>
+        {/if}
         {#if rwkvStillComputing(rwkv)}
             <span class="computing">{tr.cardStatsCalculating()}</span>
         {/if}
@@ -200,6 +220,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <AxisTicks {bounds} />
         <NoDataOverlay {bounds} text={overlay} />
     </svg>
+    <div class="description">
+        {#if $advancedUi}
+            {#if response}
+                <div>
+                    {tr.statisticsTotalKnowledgeAlgorithm({
+                        algorithm: algorithmName(response.algorithm),
+                    })}
+                </div>
+            {/if}
+            <div>{tr.statisticsTotalKnowledgeReviewedUpperBound()}</div>
+        {:else}
+            <div>{tr.statisticsTotalKnowledgeDescription()}</div>
+        {/if}
+    </div>
 </Graph>
 
 <style lang="scss">
@@ -212,10 +246,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         font-size: 0.9rem;
     }
 
-    .legend span {
+    .legend span,
+    .legend label {
         display: inline-flex;
         gap: 0.35rem;
         align-items: center;
+    }
+
+    .reviewed-toggle {
+        cursor: pointer;
+    }
+
+    .description {
+        margin-top: 0.5rem;
+        text-align: center;
+        font-size: 0.85rem;
+        opacity: 0.8;
     }
 
     .swatch {

@@ -25,7 +25,10 @@ struct RwkvInference {
     inner: rwkv::RwkvInference,
 }
 
-#[pyclass(module = "_rsbridge")]
+// `from_py_object` keeps the `FromPyObject` implementation that a `Clone`
+// pyclass has always had; pyo3 0.29 deprecates getting it implicitly, and the
+// Python binding surface must not change.
+#[pyclass(module = "_rsbridge", from_py_object)]
 #[derive(Clone)]
 struct RwkvInferenceState {
     inner: rwkv::RwkvInferenceState,
@@ -62,6 +65,22 @@ type RwkvPredictionTuple = (
     RwkvUnroundedIntervalTuple,
     RwkvProbabilityTuple,
     Option<f32>,
+);
+/// One `review` output: the `predict_many` values except the unrounded
+/// current interval, then the new card, note, deck, preset and global states.
+type RwkvReviewTuple = (
+    f32,
+    Option<f32>,
+    Option<u32>,
+    Option<f32>,
+    RwkvUnroundedIntervalTuple,
+    RwkvUnroundedIntervalTuple,
+    RwkvProbabilityTuple,
+    Py<PyBytes>,
+    Py<PyBytes>,
+    Py<PyBytes>,
+    Py<PyBytes>,
+    Py<PyBytes>,
 );
 type RwkvWorkloadPointTuple = (u32, f32, f32, f32, u32);
 type RwkvWorkloadOutput = (f32, f32, Vec<RwkvWorkloadPointTuple>);
@@ -189,20 +208,7 @@ impl RwkvInference {
         preset_state: Option<&Bound<'_, PyBytes>>,
         global_state: Option<&Bound<'_, PyBytes>>,
         enforce_grade_order: bool,
-    ) -> PyResult<(
-        f32,
-        Option<f32>,
-        Option<u32>,
-        Option<f32>,
-        RwkvUnroundedIntervalTuple,
-        RwkvUnroundedIntervalTuple,
-        RwkvProbabilityTuple,
-        Py<PyBytes>,
-        Py<PyBytes>,
-        Py<PyBytes>,
-        Py<PyBytes>,
-        Py<PyBytes>,
-    )> {
+    ) -> PyResult<RwkvReviewTuple> {
         let output = self
             .inner
             .review(
@@ -637,6 +643,9 @@ impl RwkvInference {
             .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    // The argument list is the Python signature of this binding, so the
+    // arguments cannot be grouped without changing the API.
+    #[allow(clippy::too_many_arguments)]
     fn simulate_workload(
         &mut self,
         py: Python<'_>,
@@ -688,9 +697,7 @@ impl RwkvInference {
             if let Some(callback) = &progress {
                 Python::attach(|py| callback.call1(py, (current, total)))
                     .map(|_| ())
-                    .map_err(|err| {
-                        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
-                    })?;
+                    .map_err(|err| std::io::Error::other(err.to_string()))?;
             }
             Ok(())
         };

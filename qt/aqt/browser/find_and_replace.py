@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from markdown import markdown
-
 import aqt
 import aqt.forms
 import aqt.operations
@@ -179,6 +177,8 @@ class FindAndReplaceDialog(QDialog):
             super(FindAndReplaceDialog, self).accept()
 
         op.success(on_success)
+        from markdown import markdown
+
         op.failure(lambda err: showWarning(markdown(str(err))))
         op.run_in_background()
 

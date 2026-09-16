@@ -266,6 +266,10 @@ deck-config-sort-order-descending-difficulty = Difficult cards first
 deck-config-sort-order-retrievability-ascending = Ascending retrievability
 # Sort the cards by retrievability percentage, in descending order (100% to 0%, most easily retrievable to least retrievable).
 deck-config-sort-order-retrievability-descending = Descending retrievability
+# The two orders above, in Simple mode's plain wording (spec ui.simple-recall-wording).
+deck-config-sort-order-recall-probability-ascending = Ascending probability of recall
+# The two orders above, in Simple mode's plain wording (spec ui.simple-recall-wording).
+deck-config-sort-order-recall-probability-descending = Descending probability of recall
 
 ## Timer section
 

@@ -201,3 +201,15 @@ def test_collapse_reloads_when_the_table_gets_a_script(browser, monkeypatch):
     browser._collapse(1)
 
     assert scripts == [] and reloads == [True]
+
+
+# Pins spec/ui.md#ui.mode-switch: the RWKV submenu of a deck's gear menu names
+# the scope of the reschedule, not the algorithm (the submenu is called RWKV).
+def test_the_rwkv_submenu_entries_name_the_scope():
+    from pathlib import Path
+
+    ftl = Path(__file__).parents[2] / "ftl" / "core" / "decks.ftl"
+    lines = ftl.read_text(encoding="utf-8").splitlines()
+
+    assert "decks-reschedule-with-rwkv-curve = Reschedule this deck" in lines
+    assert "decks-rwkv-reschedule-all-decks = Reschedule all decks" in lines

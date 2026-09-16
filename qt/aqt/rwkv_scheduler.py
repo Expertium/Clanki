@@ -264,6 +264,9 @@ _rwkv_stats_prepare_in_flight: dict[
     RwkvStatsPrepareKey,
     Future[RwkvStatsPreparationStatus],
 ] = {}
+# the key of the last preparation that published a score map
+# (spec ui.stats-rwkv-scores-kept)
+_rwkv_stats_prepare_memo: RwkvStatsPrepareKey | None = None
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_build_started = False
@@ -5993,6 +5996,16 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_curve_retrievability=prepare_curve_retrievability,
         )
         prepare_generation = state_token.state_generation
+        if prepare_key is not None and _rwkv_stats_prepare_memo_is_current(prepare_key):
+            # the map this request needs is already published: the Stats page
+            # switched mode or changed its period, and RWKV's answer does not
+            # depend on either (spec ui.stats-rwkv-scores-kept)
+            logger.debug(
+                "RWKV stats preparation reused the published scores: search=%r",
+                search,
+            )
+            prepare_status = RwkvStatsPreparationStatus.READY
+            return prepare_status
         if prepare_key is not None:
             prepare_future, owns_prepare = _begin_rwkv_stats_prepare(prepare_key)
             if not owns_prepare:
@@ -6151,6 +6164,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return RwkvStatsPreparationStatus.FAILED
     finally:
         if owns_prepare and prepare_key is not None and prepare_future is not None:
+            _record_rwkv_stats_prepare_memo(prepare_key, prepare_status)
             _finish_rwkv_stats_prepare(
                 prepare_key,
                 prepare_future,
@@ -6501,6 +6515,43 @@ def _reviewer_backend_state_generation(backend: object | None = None) -> int:
         return 0
 
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _rwkv_stats_prepare_memo_is_current(key: RwkvStatsPrepareKey) -> bool:
+    """Whether the score map published for `key` still stands (spec
+    ui.stats-rwkv-scores-kept).
+
+    The key carries everything that makes the map wrong: the backend and the
+    collection, the day, RWKV's state generation, the review-input and
+    study-queue generations, the search and the flags. It does not carry the
+    seconds since each card's last review, and no clock ends the reuse:
+    Andrew, 2026-09-16, "p(recall) doesn't fall that fast for most cards".
+    """
+
+    with _rwkv_stats_prepare_lock:
+        return _rwkv_stats_prepare_memo == key
+
+
+def _record_rwkv_stats_prepare_memo(
+    key: RwkvStatsPrepareKey | None,
+    status: RwkvStatsPreparationStatus,
+) -> None:
+    global _rwkv_stats_prepare_memo
+
+    with _rwkv_stats_prepare_lock:
+        if key is not None and status == RwkvStatsPreparationStatus.READY:
+            _rwkv_stats_prepare_memo = key
+        else:
+            _rwkv_stats_prepare_memo = None
+
+
+def forget_rwkv_stats_scores() -> None:
+    """Drop the published-score memo, so the next stats request scores again."""
+
+    global _rwkv_stats_prepare_memo
+
+    with _rwkv_stats_prepare_lock:
+        _rwkv_stats_prepare_memo = None
 
 
 def _begin_rwkv_stats_prepare(
@@ -8715,53 +8766,78 @@ class RwkvCardCurve:
     current_recall: float | None = None
 
 
-def rwkv_card_info_curve(
+@dataclass(frozen=True)
+class RwkvCardCurveResult:
+    """What `rwkv_card_info_curve_result` found: the curve, or why there is
+    none (spec ui.card-info-curve-messages)."""
+
+    curve: RwkvCardCurve | None
+    # True while RWKV could not answer yet: its state is still loading, or
+    # another thread holds it. A later request gets the curve.
+    pending: bool = False
+
+
+def rwkv_card_info_curve_result(
     reviewer: object, card: object, *, elapsed_days: float | None = None
-) -> RwkvCardCurve | None:
-    """RWKV-Curve's forgetting curve for card info: the curve RWKV stored for
-    the card at its last answered review, and that curve's S90; with
-    `elapsed_days` (the time since that review), also the curve's recall
-    then, the card's retrievability (spec ui.card-info-one-algorithm). None for a
-    card whose preset does not run RWKV-Curve, and while RWKV has no curve
-    for the card (state loading, busy, no review yet) (spec
-    ui.card-info-rwkv-curve)."""
+) -> RwkvCardCurveResult:
+    """RWKV-Curve's forgetting curve for card info, with the reason when there
+    is none: the curve RWKV stored for the card at its last answered review,
+    and that curve's S90; with `elapsed_days` (the time since that review),
+    also the curve's recall then, the card's retrievability (spec
+    ui.card-info-one-algorithm). No curve for a card whose preset does not run
+    RWKV-Curve, and while RWKV has no curve for the card (spec
+    ui.card-info-rwkv-curve). `pending` separates "RWKV is not ready" from
+    "the card has no curve": card info asks again only while it is true (spec
+    ui.card-info-curve-messages)."""
     backend = _reviewer_backend
     card_id = _card_id(card)
     if backend is None or card_id is None or not rwkv_review_enabled(reviewer, card):
-        return None
+        return RwkvCardCurveResult(curve=None)
     try:
         if not _prepare_reviewer_backend_for_card_info(reviewer):
-            return None
+            return RwkvCardCurveResult(curve=None, pending=True)
         state_token = _capture_reviewer_backend_prediction_state_token(
             reviewer,
             expected_backend=backend,
         )
         if state_token is None:
-            return None
+            return RwkvCardCurveResult(curve=None, pending=True)
         with _try_reviewer_backend_prediction_access(
             expected_state_token=state_token,
         ) as current_backend:
+            if current_backend is None:
+                # another thread holds the state; it is free again later
+                return RwkvCardCurveResult(curve=None, pending=True)
             card_curve = getattr(current_backend, "card_curve", None)
             if not callable(card_curve):
-                return None
+                return RwkvCardCurveResult(curve=None)
             days = RWKV_CARD_INFO_CURVE_DAYS
             if elapsed_days is not None:
                 days = (*days, elapsed_days)
             result = card_curve(card_id, days)
     except Exception:
         logger.exception("RWKV card info curve failed")
-        return None
+        return RwkvCardCurveResult(curve=None, pending=True)
     if result is None:
-        return None
+        return RwkvCardCurveResult(curve=None)
     recall, s90 = result
     values = tuple(float(value) for value in recall)
     grid_size = len(RWKV_CARD_INFO_CURVE_DAYS)
-    return RwkvCardCurve(
-        elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
-        recall=values[:grid_size],
-        s90=float(s90),
-        current_recall=values[grid_size] if len(values) > grid_size else None,
+    return RwkvCardCurveResult(
+        curve=RwkvCardCurve(
+            elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
+            recall=values[:grid_size],
+            s90=float(s90),
+            current_recall=values[grid_size] if len(values) > grid_size else None,
+        )
     )
+
+
+def rwkv_card_info_curve(
+    reviewer: object, card: object, *, elapsed_days: float | None = None
+) -> RwkvCardCurve | None:
+    """`rwkv_card_info_curve_result`'s curve, without the reason."""
+    return rwkv_card_info_curve_result(reviewer, card, elapsed_days=elapsed_days).curve
 
 
 def _card_info_review_candidate(reviewer: object, card: object) -> RwkvReviewCandidate:
@@ -22648,6 +22724,11 @@ def _set_rwkv_stats_graph_scores(
     )
     if not callable(set_scores):
         return
+
+    # any other publication may push the memo's map out of the collection's
+    # eight stats searches, so the memo only survives its own publication:
+    # the preparation that owns the work records it again right afterwards
+    forget_rwkv_stats_scores()
 
     target_retentions_by_card_id = target_retentions_by_card_id or {}
     intervening_reviews_by_card_id = intervening_reviews_by_card_id or {}

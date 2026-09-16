@@ -377,3 +377,23 @@ test("aux data", () => {
         },
     ]);
 });
+
+// Pins spec/deck-options.md#deck-options.optimize-all-clears-bad-params:
+// Optimize All Presets replaces the parameters the optimizer cannot use with
+// the defaults, and asks nothing.
+test("optimize_all_presets_clears_the_parameters_it_cannot_use", () => {
+    const state = startingState();
+    const configs = (state as any).configs;
+    // 3 values is not a valid FSRS-7 parameter set (34 values).
+    configs[0].config.config.fsrsParams7 = [0.1, 0.2, 0.3];
+    configs[1].config.config.fsrsParams7 = [];
+
+    expect(state.incompatibleFsrsParamPresetNames().length).toBe(1);
+
+    const cleared = state.prepareComputeAllParams();
+
+    expect(cleared).toBe(1);
+    expect(configs[0].config.config.fsrsParams7).toStrictEqual([]);
+    expect(configs[1].config.config.fsrsParams7).toStrictEqual([]);
+    expect(state.incompatibleFsrsParamPresetNames()).toStrictEqual([]);
+});

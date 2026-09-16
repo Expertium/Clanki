@@ -173,9 +173,13 @@ statistics-retrievability-tooltip =
     }
 statistics-total-knowledge-title = Total Knowledge
 statistics-total-knowledge-subtitle = The number of cards you would recall on each day (the sum of their retrievability), over your whole review history.
+# Same as statistics-total-knowledge-subtitle, in Simple mode, which avoids the
+# word "retrievability".
+statistics-total-knowledge-subtitle-simple = The number of cards you would recall on each day (each card counts as its probability of recall), over your whole review history.
 # Legend: the sum of the cards' retrievability.
 statistics-total-knowledge-known = Known
-# Legend: the cards reviewed at least once by a day, the most that can be known.
+# Label of the Advanced-mode checkbox that draws the line: the cards reviewed at
+# least once by a day, the most that can be known.
 statistics-total-knowledge-reviewed = Reviewed
 # Shown on hover; $cards is a decimal number.
 statistics-total-knowledge-known-cards = Known: { $cards } cards
@@ -185,6 +189,12 @@ statistics-total-knowledge-reviewed-cards =
        *[other] Reviewed: { $cards } cards
     }
 statistics-total-knowledge-rwkv-model-not-found = RWKV model not found
+# Shown under the graph in Simple mode.
+statistics-total-knowledge-description = This is Clanki's best estimate of how many cards you knew at each point in your review history.
+# Shown under the graph in Advanced mode; $algorithm is the collection's scheduling algorithm, such as FSRS-7.
+statistics-total-knowledge-algorithm = Algorithm: { $algorithm }
+# Shown under the graph in Advanced mode, about the Reviewed line.
+statistics-total-knowledge-reviewed-upper-bound = Reviewed is an upper bound on your knowledge: it counts every card you have ever rated, as if you never forgot one.
 statistics-future-due-title = Future Due
 statistics-future-due-subtitle = The number of reviews due in the future.
 statistics-added-title = Added

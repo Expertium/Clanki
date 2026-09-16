@@ -249,6 +249,26 @@ def test_mode_switch_swaps_the_deck_list_buttons_in_place() -> None:
     web.eval.assert_not_called()
 
 
+def test_filtered_deck_failure_avoids_retrievability_in_simple_mode() -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording."""
+    from aqt.operations.scheduling import _filtered_deck_preparation_failed_message
+
+    def col(advanced: bool) -> Any:
+        return cast(
+            Any,
+            SimpleNamespace(
+                get_config_bool=lambda key: advanced and key == Config.Bool.ADVANCED_UI
+            ),
+        )
+
+    simple = _filtered_deck_preparation_failed_message(col(False))
+    assert "retrievability" not in simple.lower()
+    assert "probability of recall" in simple.lower()
+
+    advanced = _filtered_deck_preparation_failed_message(col(True))
+    assert "retrievability" in advanced.lower()
+
+
 def test_deck_options_mode_switch_sets_the_main_window_mode(
     monkeypatch: Any,
 ) -> None:

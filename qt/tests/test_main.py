@@ -642,24 +642,43 @@ def test_collection_busy_counts_queued_and_running_collection_tasks() -> None:
     assert not taskman.collection_busy()
 
 
-def test_startup_objects_are_kept_out_of_garbage_collection() -> None:
-    # The collection after a dialog closes and the 15-minute one then walk
-    # only what the session built after the first profile opened.
+def test_start_up_objects_are_frozen_but_later_cycles_are_still_collected() -> None:
+    """The window's manual collections must not walk what start-up created."""
     import gc
 
-    mw = SimpleNamespace(
-        keep_startup_objects_out_of_garbage_collection=(
-            AnkiQt.keep_startup_objects_out_of_garbage_collection
-        )
-    )
-    before = gc.get_freeze_count()
+    mw = AnkiQt.__new__(AnkiQt)
+    frozen_before = gc.get_freeze_count()
     try:
-        AnkiQt.keep_startup_objects_out_of_garbage_collection(mw)  # type: ignore[arg-type]
-        assert gc.get_freeze_count() > before
-        # objects made afterwards are still collected
-        cycle = {}
-        cycle["self"] = cycle
-        del cycle
-        assert gc.collect() > 0
+        mw.freeze_startup_objects()
+        assert gc.get_freeze_count() > frozen_before
+        held: dict = {}
+        cycle = [held]
+        held["cycle"] = cycle
+        del held, cycle
+        assert gc.collect() >= 2
+    finally:
+        gc.unfreeze()
+
+
+def test_start_up_garbage_is_not_frozen_with_the_rest() -> None:
+    """Start-up runs with automatic collection off, so it leaves cycles
+    behind; freezing them would keep them for the rest of the session."""
+    import gc
+    import weakref
+
+    class Node:
+        def __init__(self) -> None:
+            self.other: Node | None = None
+
+    node = Node()
+    node.other = node
+    watcher = weakref.ref(node)
+    del node
+    mw = AnkiQt.__new__(AnkiQt)
+    frozen_before = gc.get_freeze_count()
+    try:
+        mw.freeze_startup_objects()
+        assert gc.get_freeze_count() > frozen_before
+        assert watcher() is None
     finally:
         gc.unfreeze()

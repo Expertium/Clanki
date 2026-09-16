@@ -12,7 +12,7 @@ vi.mock("@generated/ftl", () => ({
     deckConfigSchedulerChoiceRwkvInstantDescription: () => "instant",
 }));
 
-import { flagsFromSchedulerChoice, SchedulingAlgorithm, schedulerChoices } from "./scheduler-choice";
+import { flagsFromSchedulerChoice, schedulerChoices, SchedulingAlgorithm } from "./scheduler-choice";
 
 // Pins spec/deck-options.md#deck-options.scheduler-choice
 

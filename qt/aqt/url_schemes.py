@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from markdown import markdown
-
 from aqt.qt import QMessageBox, Qt, QUrl
 from aqt.utils import MessageBox, getText, openLink, tr
 
@@ -52,6 +50,8 @@ def open_url_if_supported_scheme(url: QUrl) -> None:
             elif idx == 1:
                 always_allow_scheme(url)
                 openLink(url)
+
+        from markdown import markdown
 
         msg = markdown(
             tr.preferences_url_scheme_warning(link=url.toString(), scheme=url.scheme())
