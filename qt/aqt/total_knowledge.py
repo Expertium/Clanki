@@ -15,8 +15,10 @@ results are kept for the session.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
+from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -71,6 +73,16 @@ _next_job_id = 1
 _results: dict[tuple[object, ...], tuple[int, list[float]]] = {}
 
 
+def _cards_digest(card_ids: Sequence[int]) -> bytes:
+    """A 16-byte digest of the search's card ids.
+
+    The key of a kept result holds this instead of the ids themselves: on a
+    159,000-card collection one such tuple of ids costs 8.5 MB, so the eight
+    kept results held 68 MB. Two searches share a key when they match the
+    same cards, as before."""
+    return hashlib.blake2b(array("q", card_ids).tobytes(), digest_size=16).digest()
+
+
 def start_rwkv(mw: Any, search: str, *, curve: bool) -> Progress:
     """Starts the job for the search's cards, or joins the running one for
     the same cards and collection state; a finished result is returned at
@@ -85,7 +97,7 @@ def start_rwkv(mw: Any, search: str, *, curve: bool) -> Progress:
         return Progress(state=Progress.NO_MODEL)
     col = mw.col
     card_ids = tuple(sorted(col.find_cards(search)))
-    key = (curve, card_ids, col.mod, col.sched.today)
+    key = (curve, _cards_digest(card_ids), col.mod, col.sched.today)
     with _lock:
         if (cached := _results.get(key)) is not None:
             return Progress(state=Progress.DONE, first_day=cached[0], sum_r=cached[1])
