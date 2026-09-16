@@ -21,6 +21,7 @@ import anki
 import anki.sound
 import aqt
 import aqt.forms
+import aqt.fsrs_predictions
 import aqt.progress
 import aqt.sound
 import aqt.stats_prefetch
@@ -795,6 +796,10 @@ class AnkiQt(QMainWindow):
             self.toolbar.draw()
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
+            # the model-quality graphs read stored predictions and never
+            # compute, so the pass that writes them runs by itself, off the
+            # main thread (spec ui.stats-fsrs-predictions-ready)
+            aqt.fsrs_predictions.ensure_ready(self)
             self._show_review_heatmap_addon_notice()
             self._show_ankiconnect_addon_notice()
         except Exception:

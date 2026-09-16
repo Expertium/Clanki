@@ -68,6 +68,11 @@ service SchedulerService {
       returns (ComputeFsrsParamsResponse);
   rpc ComputeFsrsParamsBatch(ComputeFsrsParamsBatchRequest)
       returns (ComputeFsrsParamsBatchResponse);
+  // Recomputes the stored per-review FSRS-7 predictions of every preset
+  // that has none for some of its reviews, and returns how many rows it
+  // wrote (spec ui.stats-fsrs-predictions-ready). Preset-wide and
+  // collection-wide; it never follows the Stats page's own search.
+  rpc RefreshFsrsReviewPredictions(generic.Empty) returns (generic.UInt32);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);

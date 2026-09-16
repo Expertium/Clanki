@@ -112,6 +112,8 @@ export function unavailableText(series: ReviewMetricsProgress_Series): string | 
             return tr.statisticsModelMetricsNoReviews({ algorithm });
         case Unavailable.UNSUPPORTED:
             return tr.statisticsModelMetricsUnsupported({ algorithm });
+        case Unavailable.COMPUTING_PREDICTIONS:
+            return tr.statisticsModelMetricsComputing({ algorithm });
         default:
             return null;
     }

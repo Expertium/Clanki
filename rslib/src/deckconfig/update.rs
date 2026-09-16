@@ -428,6 +428,7 @@ impl Collection {
         let usn = self.usn()?;
         let today = self.timing_today()?.days_elapsed;
         let selected_config = req.configs.last().unwrap();
+        let mut presets_with_new_fsrs_params: HashSet<DeckConfigId> = HashSet::new();
         let mut decks_needing_memory_recompute: HashMap<DeckConfigId, Vec<DeckId>> =
             Default::default();
         let fsrs_toggled = self.get_config_bool(BoolKey::Fsrs) != req.fsrs;
@@ -453,8 +454,8 @@ impl Collection {
                 let previous_dr = previous_deck_dr.or(previous_preset_dr);
                 let previous_easy_days = previous_config.map(|c| &c.inner.easy_days_percentages);
 
-                // if a selected (sub)deck, or its old config was removed, update deck to point
-                // to new config
+                // if a selected (sub)deck, or its old config was removed,
+                // update deck to point to new config
                 let (current_config_id, current_deck_dr) = if selected_deck_ids.contains(&deck.id)
                     || !configs_after_update.contains_key(&previous_config_id)
                 {
@@ -492,11 +493,28 @@ impl Collection {
                         .or_default()
                         .push(deck_id);
                 }
+                // The stored per-review predictions are FSRS-7's output for
+                // these parameters, so new parameters make every one of
+                // them wrong (spec ui.stats-fsrs-predictions-ready). Only a
+                // parameter change matters here: desired retention, easy
+                // days and fuzz move the schedule, not the prediction.
+                if fsrs_toggled || previous_params != current_params {
+                    presets_with_new_fsrs_params.insert(current_config_id);
+                }
                 if let Some(desired_retention) = current_deck_dr {
                     deck_desired_retention.insert(deck_id, desired_retention);
                 }
                 self.adjust_remaining_steps_in_deck(deck_id, previous_config, current_config, usn)?;
             }
+        }
+
+        // Drop the superseded rows inside the same transaction as the
+        // parameter change, so no graph can draw a value that the current
+        // parameters did not produce. The pass that writes the new rows
+        // runs in the background afterwards.
+        if !presets_with_new_fsrs_params.is_empty() {
+            let presets: Vec<DeckConfigId> = presets_with_new_fsrs_params.iter().copied().collect();
+            self.clear_fsrs_review_predictions_of_presets(&presets)?;
         }
 
         if !decks_needing_memory_recompute.is_empty() {
@@ -595,8 +613,8 @@ impl Collection {
     fn compute_all_params(&mut self, req: &mut UpdateDeckConfigsRequest) -> Result<()> {
         require!(req.fsrs, "FSRS must be enabled");
 
-        // frontend didn't include any unmodified deck configs, so we need to fill them
-        // in
+        // frontend didn't include any unmodified deck configs, so we need to
+        // fill them in
         let changed_configs: HashSet<_> = req.configs.iter().map(|c| c.id).collect();
         let previous_last = req.configs.pop().or_invalid("no configs provided")?;
         for config in self.storage.all_deck_config()? {
@@ -604,7 +622,8 @@ impl Collection {
                 req.configs.push(config);
             }
         }
-        // other parts of the code expect the currently-selected preset to come last
+        // other parts of the code expect the currently-selected preset to come
+        // last
         req.configs.push(previous_last);
 
         // calculate and apply params to each preset
@@ -1066,8 +1085,9 @@ mod test {
         assert!(col.update_deck_configs(input.clone())?.changes.changes.card);
         assert_ne!(card1_pos(&mut col), 0);
 
-        // removing the config will assign the selected config (default in this case),
-        // and as default has normal sort order, that will reset the order again
+        // removing the config will assign the selected config (default in this
+        // case), and as default has normal sort order, that will reset
+        // the order again
         assert!(!full_sync_required(&mut col));
         reset_card1_pos(&mut col);
         input.configs.remove(1);
@@ -1183,6 +1203,147 @@ mod test {
         assert_eq!(stored.inner.fsrs_params_7, fsrs6_shaped);
         assert_eq!(stored.inner.fsrs_params_6, vec![1.0; 21]);
         assert_eq!(stored.fsrs_params(), &DEFAULT_PARAMETERS[..]);
+        Ok(())
+    }
+
+    /// A card in `deck` with one rated review, and a stored FSRS-7
+    /// prediction of it, as a finished pass would have left behind.
+    fn card_with_stored_prediction(
+        col: &mut Collection,
+        deck: DeckId,
+        days_ago: i64,
+    ) -> Result<RevlogId> {
+        let note = NoteAdder::basic(col).deck(deck).add(col);
+        let card = col.storage.all_cards_of_note(note.id)?.pop().unwrap();
+        let review = RevlogId(TimestampMillis::now().0 - days_ago * 86_400_000);
+        col.storage.add_revlog_entry(
+            &RevlogEntry {
+                id: review,
+                cid: card.id,
+                button_chosen: 3,
+                review_kind: RevlogReviewKind::Review,
+                interval: 10,
+                ease_factor: 2500,
+                ..Default::default()
+            },
+            false,
+        )?;
+        col.storage.set_fsrs_review_retrievability_predictions(
+            &[crate::storage::FsrsReviewRetrievabilityCacheRow {
+                revlog_id: review,
+                prediction: 0.9,
+                sample_role: crate::storage::FsrsReviewRetrievabilitySampleRole::ValidationFold,
+                fold_index: 0,
+            }],
+            "test",
+        )?;
+        Ok(review)
+    }
+
+    fn stored_predictions(col: &Collection) -> usize {
+        col.storage
+            .cached_review_predictions(
+                crate::storage::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                "validation_fold",
+                0.into(),
+            )
+            .unwrap()
+            .len()
+    }
+
+    /// Turns FSRS on with one save, so that a later save in the same test
+    /// changes only what it means to change: switching the algorithm on is
+    /// itself a parameter change, and drops the stored predictions.
+    fn settle_fsrs_on(col: &mut Collection) -> Result<()> {
+        let input = save_request(col)?;
+        col.update_deck_configs(input)?;
+        Ok(())
+    }
+
+    fn save_request(col: &mut Collection) -> Result<UpdateDeckConfigsRequest> {
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        Ok(UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            fsrs: true,
+            review_fuzz_config: Default::default(),
+        })
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_parameter_change_drops_that_presets_predictions() -> Result<()> {
+        let mut col = Collection::new();
+        settle_fsrs_on(&mut col)?;
+        card_with_stored_prediction(&mut col, DeckId(1), 10)?;
+        assert_eq!(stored_predictions(&col), 1);
+
+        let mut input = save_request(&mut col)?;
+        input.configs[0].inner.fsrs_params_7 =
+            (0..34).map(|index| 0.1 + index as f32 * 0.01).collect();
+        col.update_deck_configs(input)?;
+
+        // the prediction was FSRS-7's output for the old parameters, so it
+        // is gone rather than kept and drawn
+        assert_eq!(stored_predictions(&col), 0);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn another_presets_predictions_survive_a_parameter_change() -> Result<()> {
+        let mut col = Collection::new();
+        settle_fsrs_on(&mut col)?;
+        let other_deck = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        card_with_stored_prediction(&mut col, DeckId(1), 10)?;
+        card_with_stored_prediction(&mut col, other_deck.id, 20)?;
+        assert_eq!(stored_predictions(&col), 2);
+
+        let mut input = save_request(&mut col)?;
+        // only the default preset's parameters change
+        assert_eq!(input.configs.len(), 2, "both presets are in the save");
+        // the save applies its LAST preset to the decks it targets, as the
+        // deck-options screen does, so "Other" goes last and is the one
+        // whose parameters change
+        input.target_deck_id = other_deck.id;
+        input
+            .configs
+            .sort_by_key(|config| u8::from(config.name == "Other"));
+        let target = input.configs.last_mut().unwrap();
+        assert_eq!(target.name, "Other");
+        target.inner.fsrs_params_7 = (0..34).map(|index| 0.1 + index as f32 * 0.01).collect();
+        col.update_deck_configs(input)?;
+
+        // the preset whose parameters did not change keeps its row
+        assert_eq!(stored_predictions(&col), 1);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_desired_retention_change_keeps_the_predictions() -> Result<()> {
+        let mut col = Collection::new();
+        settle_fsrs_on(&mut col)?;
+        card_with_stored_prediction(&mut col, DeckId(1), 10)?;
+
+        let mut input = save_request(&mut col)?;
+        input.configs[0].inner.desired_retention = 0.85;
+        col.update_deck_configs(input)?;
+
+        // desired retention moves the schedule, not the prediction
+        assert_eq!(stored_predictions(&col), 1);
         Ok(())
     }
 

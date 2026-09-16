@@ -737,7 +737,8 @@ fn sort_cards_repositions_new_cards_from_starting_offset() {
     let cid1 = col.storage.card_ids_of_notes(&[note1.id]).unwrap()[0];
     let cid2 = col.storage.card_ids_of_notes(&[note2.id]).unwrap()[0];
 
-    // reposition the two new cards starting at position 5, step 1, preserving order
+    // reposition the two new cards starting at position 5, step 1, preserving
+    // order
     let out = SchedulerService::sort_cards(
         &mut col,
         anki_proto::scheduler::SortCardsRequest {
@@ -847,8 +848,9 @@ fn sort_cards_with_randomize_produces_different_ordering_than_preserve() {
         .collect();
 
     // Loop until the RNG produces an ordering that differs from preserve.
-    // One different result out of 100 attempts is sufficient to confirm randomness;
-    // the probability of 100 consecutive identical shuffles is (1/N!)^100 ≈ 0.
+    // One different result out of 100 attempts is sufficient to confirm
+    // randomness; the probability of 100 consecutive identical shuffles is
+    // (1/N!)^100 ≈ 0.
     for _ in 0..100 {
         let out = SchedulerService::sort_cards(
             &mut col,

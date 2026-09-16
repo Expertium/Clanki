@@ -29,6 +29,7 @@ from flask import Response, abort, request
 from waitress.server import create_server
 
 import aqt
+import aqt.fsrs_predictions
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
@@ -735,6 +736,10 @@ def _on_update_deck_configs_success(
         aqt.rwkv_scheduler.reschedule_rwkv_curve_after_save(
             aqt.mw, rwkv_snapshot, input
         )
+    # The save dropped the stored predictions of every preset whose FSRS-7
+    # parameters changed, so write them again at once rather than waiting
+    # for tomorrow (spec ui.stats-fsrs-predictions-ready).
+    aqt.fsrs_predictions.ensure_ready(aqt.mw, force=True)
 
 
 def _update_deck_configs(*, close_on_success: bool) -> bytes:

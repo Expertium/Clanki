@@ -14,6 +14,7 @@ use rusqlite::Row;
 
 use super::ids_to_string;
 use super::sqlite::RETRIEVABILITY_CACHE_DB_SCHEMA;
+use super::write_comma_separated_ids;
 use super::SqliteStorage;
 use crate::config::ConfigEntry;
 use crate::error::Result;
@@ -492,6 +493,55 @@ impl SqliteStorage {
             ))?
             .query_and_then((sample_role, after.0), |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect()
+    }
+
+    /// The decks whose cards hold rated reviews that no `validation_fold`
+    /// row of this model covers, with how many such reviews each holds
+    /// (spec ui.stats-fsrs-predictions-ready). The caller maps the decks to
+    /// their presets; the query is collection-wide and never scoped to a
+    /// search, because a pass that filled only the deck on screen would
+    /// leave the same fault everywhere else.
+    pub(crate) fn decks_with_uncovered_fsrs_review_predictions(
+        &self,
+    ) -> Result<Vec<(DeckId, u32)>> {
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        self.db
+            .prepare_cached(&format!(
+                "select c.did, count(*) from revlog r
+                 join cards c on c.id = r.cid
+                 where r.ease > 0
+                   and not exists (
+                       select 1 from {table} t
+                       where t.revlog_id = r.id and t.sample_role = 'validation_fold'
+                   )
+                 group by c.did"
+            ))?
+            .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
+    /// Deletes every stored FSRS prediction of the cards of these decks.
+    /// Parameters are per preset, so a preset's own rows go when its
+    /// parameters change and no superseded value survives to be drawn.
+    pub(crate) fn clear_fsrs_review_predictions_for_decks(
+        &self,
+        decks: &[DeckId],
+    ) -> Result<usize> {
+        if decks.is_empty() {
+            return Ok(0);
+        }
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        let mut ids = String::new();
+        write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
+        self.db.execute_batch(&format!(
+            "delete from {table} where revlog_id in (
+                     select r.id from revlog r join cards c on c.id = r.cid
+                     where c.did in ({ids}) or c.odid in ({ids})
+                 );"
+        ))?;
+        Ok(self.db.changes() as usize)
     }
 
     /// How many predictions each sample role holds, newest first by count:

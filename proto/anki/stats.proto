@@ -281,6 +281,9 @@ message ReviewMetricsProgress {
     UNSUPPORTED = 4;
     // Still being computed.
     NOT_READY = 5;
+    // The algorithm's stored predictions are being written: none yet, or
+    // the parameters changed and the old ones were dropped.
+    COMPUTING_PREDICTIONS = 6;
   }
   message Series {
     deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm = 1;

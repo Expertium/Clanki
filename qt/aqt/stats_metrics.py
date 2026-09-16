@@ -25,6 +25,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import aqt.fsrs_predictions
 from anki.deck_config_pb2 import DeckConfigsForUpdate
 from anki.stats_pb2 import ReviewMetricsProgress
 
@@ -195,15 +196,21 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         job.newer_reviews = data.newer_reviews
         job.shared_ratings = data.shared_ratings
 
-    job.set_series(
-        _series(
-            FSRS_7,
-            data.fsrs_predictions,
-            data.remembered,
-            data.fsrs_role,
-            data.fsrs_bins,
-        )
+    fsrs = _series(
+        FSRS_7,
+        data.fsrs_predictions,
+        data.remembered,
+        data.fsrs_role,
+        data.fsrs_bins,
     )
+    # A pass is writing FSRS-7's rows: either it has never run, or the
+    # parameters changed and the backend dropped the rows they produced. Say
+    # that rather than "no review it predicts", which would be wrong, and
+    # never draw the values the old parameters made (spec
+    # ui.stats-fsrs-predictions-ready).
+    if fsrs.unavailable == Unavailable.NO_REVIEWS and aqt.fsrs_predictions.is_running():
+        fsrs = Series(algorithm=FSRS_7, unavailable=Unavailable.COMPUTING_PREDICTIONS)
+    job.set_series(fsrs)
     job.set_series(
         _series(
             RWKV_INSTANT,
