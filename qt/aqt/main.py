@@ -1082,8 +1082,15 @@ class AnkiQt(QMainWindow):
                 self.reviewer.refresh_if_needed()
             elif self.state == "overview":
                 self.overview.refresh_if_needed()
+                # `op_executed` dims the page when a change lands while the
+                # window is in the background; only the reviewer used to
+                # undim it, so the deck list and the overview stayed at 0.3
+                # until something drew the page again (spec
+                # ui.background-change-dim).
+                self.fade_in_webview()
             elif self.state == "deckBrowser":
                 self.deckBrowser.refresh_if_needed()
+                self.fade_in_webview()
 
     def fade_out_webview(self) -> None:
         self.web.eval("document.body.style.opacity = 0.3")

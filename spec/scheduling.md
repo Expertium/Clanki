@@ -255,6 +255,17 @@ built again after every answer.
 **Pinned by:** `emptying_empty_rwkv_scores_keeps_the_study_queue`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
+## sched.rwkv-startup-progress-text
+
+Given a collection whose saved RWKV state loads when the profile opens, the
+progress window reads "Starting" with the label "Starting..." (an ellipsis
+character). It does not name RWKV, the state cache, or the file it reads.
+**Why:** Andrew, 2026-09-16: "let's rename it to something more user-friendly,
+like 'Starting...' or something". The window tells the user what they wait
+for; the name of the data structure means nothing to them.
+**Pinned by:** `test_the_startup_progress_text_names_no_internals`
+(`qt/tests/test_rwkv_scheduler.py`)
+
 ## sched.rwkv-state-cache-startup-build
 
 Given a collection that runs RWKV-Curve or RWKV-Instant, a usable RWKV model,

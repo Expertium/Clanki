@@ -11259,15 +11259,17 @@ def load_rwkv_state_cache_with_progress(
                 )
             finish(loaded)
 
+        from aqt.utils import tr
+
         try:
             with_progress(
                 load,
                 done,
                 parent=parent,
-                label="Loading RWKV state cache...",
+                label=tr.qt_misc_rwkv_startup_label(),
                 immediate=True,
                 uses_collection=True,
-                title="RWKV State Cache",
+                title=tr.qt_misc_rwkv_startup_title(),
             )
         except Exception:
             finish(False)
