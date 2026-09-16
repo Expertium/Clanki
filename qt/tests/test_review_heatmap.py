@@ -83,6 +83,19 @@ def test_render_report_marks_view_and_falls_back_without_data() -> None:
     assert "/_anki/js/vendor/anki-review-heatmap.js" in html
 
 
+def test_the_settings_button_shows_the_deck_lists_gear() -> None:
+    today = 100 * DAY
+    report = compute_activity([(today, 12)], [], today, offset=4)
+    html = render_report(report, HeatmapView.deckbrowser, current_deck_only=False)
+    # the same gear the deck list draws, not the add-on's own three-bar mark
+    assert "/_anki/imgs/gears.svg" in html
+    assert "heatmap-options.svg" not in html
+    # size, place and tooltip of the button are unchanged
+    assert '<div class="hm-btn opts-btn" title="Settings' in html
+    assert ".heatmap .heatmap-controls .hm-btn {" in html
+    assert "width: 28px;" in html
+
+
 def _heatmap(enabled: bool, stored: object = None) -> ReviewHeatmap:
     col = MagicMock()
     col.get_config_bool.side_effect = lambda key: (

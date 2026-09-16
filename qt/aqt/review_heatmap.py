@@ -845,7 +845,9 @@ var rhNewFinderAPI = true;
 """
 
 # The add-on's styles size the settings button differently from the three
-# navigation buttons; all four get one width.
+# navigation buttons; all four get one width. The settings button shows the
+# deck list's own gear (`imgs/gears.svg`), which is drawn in black; the invert
+# turns it into the same grey as the three navigation icons, in both themes.
 HEATMAP_BUTTON_CSS = """
 <style>
 .heatmap .heatmap-controls .hm-btn {
@@ -858,6 +860,9 @@ HEATMAP_BUTTON_CSS = """
     height: 10px;
     width: 10px;
     object-fit: contain;
+}
+.heatmap .heatmap-controls .opts-btn > img {
+    filter: invert(62%);
 }
 </style>
 """
@@ -881,7 +886,7 @@ HTML_HEATMAP = f"""
         </div>
         <div class="alignright">
             <div class="hm-btn opts-btn" title="Settings\n(Shift-click to switch the colours)" onclick="reviewHeatmap.onHmOpts(event, this);">
-                <img src="{WEB_BASE}/imgs/heatmap-options.svg" />
+                <img src="{WEB_BASE}/imgs/gears.svg" />
             </div>
         </div>
         <div style="clear: both;">&nbsp;</div>
