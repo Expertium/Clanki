@@ -28,12 +28,12 @@ from aqt.mediasrv import (
     _legacy_editor_content_security_policy,
     _rwkv_raw_backend_mutation_note_ids,
     _should_log_request,
-    post_handler_list,
     _untrusted_sveltekit_content_security_policy,
     ensure_safe_path,
     get_sveltekit_route,
     is_localhost_origin,
     legacy_page_data,
+    post_handler_list,
 )
 
 
@@ -199,7 +199,12 @@ def _fake_main_window(
                 get_config_bool=lambda key: advanced_ui,
                 _backend=SimpleNamespace(graphs_raw=graphs_raw),
             ),
-            taskman=SimpleNamespace(run_in_background=collect),
+            taskman=SimpleNamespace(
+                run_in_background=collect,
+                # the handler hops to the main thread before it starts the
+                # prefetch (see the test at the end of this file)
+                run_on_main=lambda closure: closure(),
+            ),
         ),
         raising=False,
     )
@@ -220,7 +225,6 @@ class TestGraphs:
         status: str,
         expected_header: str | None,
     ) -> None:
-        import aqt
         from anki.stats_pb2 import GraphsRequest
         from aqt.mediasrv import RWKV_STATS_PENDING_HEADER, app, graphs
         from aqt.rwkv_scheduler import RwkvStatsPreparationStatus
@@ -262,7 +266,6 @@ class TestGraphs:
         graphs: tuple[str, ...],
         prepared: bool,
     ) -> None:
-        import aqt
         from anki.stats_pb2 import GraphsRequest
         from aqt.mediasrv import RWKV_STATS_PENDING_HEADER, app
         from aqt.mediasrv import graphs as graphs_handler
@@ -302,7 +305,6 @@ class TestGraphs:
     ) -> None:
         # Pins spec/ui.md#ui.stats-one-algorithm: under RWKV the other graphs
         # do not wait for RWKV to score the search
-        import aqt
         from anki.stats_pb2 import GraphsRequest
         from aqt.mediasrv import (
             RWKV_RETRIEVABILITY_LATER_HEADER,
@@ -1185,3 +1187,47 @@ class TestCardStats:
         assert len(output.extra_rows) == 1
         assert output.extra_rows[0].label == "Dynamic DR"
         assert output.extra_rows[0].value == "0.71"
+
+
+# Pins spec/ui.md#ui.stats-advanced-prefetch: the prefetch is started from the
+# Qt main thread. The media server runs its handlers on its own threads, and
+# `TaskManager.run_in_background` off the main thread prints a bug warning and
+# skips its pending on-main closures.
+def test_the_stats_prefetch_starts_on_the_main_thread(monkeypatch) -> None:
+    import aqt
+    import aqt.stats_prefetch
+    from anki.stats_pb2 import GraphsRequest
+    from aqt import mediasrv
+
+    on_main: list[str] = []
+    in_background: list[str] = []
+
+    class Taskman:
+        def run_on_main(self, closure):
+            on_main.append("main")
+            closure()
+
+        def run_in_background(self, task, *args, **kwargs):
+            in_background.append("background")
+
+    class Mw:
+        col = object()
+        taskman = Taskman()
+
+    launchers: list = []
+
+    def fake_start(request, state, compute, launch):
+        launchers.append(launch)
+
+    monkeypatch.setattr(aqt, "mw", Mw())
+    monkeypatch.setattr(aqt.stats_prefetch, "start", fake_start)
+    monkeypatch.setattr(mediasrv, "_collection_state", lambda: (0, 0))
+
+    request = GraphsRequest(search="deck:current", days=365)
+    request.graphs.append(GraphsRequest.REVIEWS)
+    mediasrv._prefetch_advanced_stats_graphs(request)
+
+    assert len(launchers) == 1
+    launchers[0](lambda: None)
+    assert on_main == ["main"]
+    assert in_background == ["background"]
