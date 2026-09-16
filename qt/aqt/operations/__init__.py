@@ -20,6 +20,7 @@ from anki.collection import (
     OpChangesWithId,
     Progress,
 )
+from anki.scheduler_pb2 import AdvancePostponeResponse
 from aqt.errors import show_exception
 from aqt.progress import ProgressUpdate
 from aqt.qt import QWidget
@@ -41,6 +42,7 @@ ResultWithChanges = TypeVar(
         OpChangesWithId,
         OpChangesAfterUndo,
         ImportLogWithChanges,
+        AdvancePostponeResponse,
         HasChangesProperty,
     ],
 )

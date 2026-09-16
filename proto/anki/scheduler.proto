@@ -40,6 +40,18 @@ service SchedulerService {
   rpc ScheduleCardsAsNewDefaults(ScheduleCardsAsNewDefaultsRequest)
       returns (ScheduleCardsAsNewDefaultsResponse);
   rpc SetDueDate(SetDueDateRequest) returns (collection.OpChanges);
+  // Advance and Postpone (spec sched.advance, sched.postpone): the review
+  // cards of the scope that could move, before their curves are known.
+  rpc AdvancePostponeCandidates(AdvancePostponeRequest)
+      returns (AdvancePostponeCandidatesResponse);
+  // The cards in the order the move takes them, with their retrievability
+  // before and after it.
+  rpc PreviewAdvancePostpone(AdvancePostponeRequest)
+      returns (AdvancePostponePreview);
+  // Moves every card the preview lists for the request, as one undoable
+  // step; writes no review-log rows.
+  rpc AdvancePostpone(AdvancePostponeRequest)
+      returns (AdvancePostponeResponse);
   rpc GradeNow(GradeNowRequest) returns (collection.OpChanges);
   rpc SortCards(SortCardsRequest) returns (collection.OpChangesWithCount);
   rpc SortDeck(SortDeckRequest) returns (collection.OpChangesWithCount);
@@ -345,6 +357,55 @@ message SetDueDateRequest {
   repeated int64 card_ids = 1;
   string days = 2;
   config.OptionalStringConfigKey config_key = 3;
+}
+
+message AdvancePostponeRequest {
+  enum Mode {
+    ADVANCE = 0;
+    POSTPONE = 1;
+  }
+  Mode mode = 1;
+  // The cards to consider: the given cards, else a deck and its subdecks,
+  // else (neither) the whole collection.
+  optional int64 deck_id = 2;
+  repeated int64 card_ids = 3;
+  // RWKV-Curve's stored curve of each card that has one, from the RWKV
+  // process (RwkvInference.card_curve_weights); used only while the
+  // collection runs RWKV-Curve.
+  repeated int64 rwkv_curve_card_ids = 4;
+  bytes rwkv_curves = 5;
+}
+
+message AdvancePostponeCandidatesResponse {
+  repeated int64 card_ids = 1;
+  // The collection runs RWKV-Curve: the preview and the move need the
+  // stored curves of these cards.
+  bool rwkv_curve = 2;
+}
+
+message AdvancePostponePreview {
+  // In the order the move takes them.
+  repeated int64 card_ids = 1;
+  // Each card's retrievability on the day it would be reviewed without the
+  // move, and on its new due day.
+  repeated float retrievability_before = 2;
+  repeated float retrievability_after = 3;
+  // How many of the first cards are relatively safe to move.
+  uint32 safe_count = 4;
+  // Left out: the algorithm has no forgetting curve for them yet.
+  uint32 without_curve = 5;
+  // Postpone: left out because they already reach the maximum interval.
+  uint32 at_maximum_interval = 6;
+}
+
+message AdvancePostponeResponse {
+  collection.OpChanges changes = 1;
+  uint32 count = 2;
+  // Mean retrievability of the moved cards before and after the move.
+  float retrievability_before = 3;
+  float retrievability_after = 4;
+  uint32 without_curve = 5;
+  uint32 at_maximum_interval = 6;
 }
 
 message GradeNowRequest {

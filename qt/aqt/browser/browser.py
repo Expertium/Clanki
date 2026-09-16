@@ -13,6 +13,7 @@ from typing import Any
 from markdown import markdown
 
 import aqt
+import aqt.advance_postpone
 import aqt.browser
 import aqt.editor
 import aqt.forms
@@ -365,6 +366,7 @@ class Browser(QMainWindow):
         qconnect(f.action_set_due_date.triggered, self.set_due_date)
         qconnect(f.action_grade_now.triggered, self.grade_now)
         qconnect(f.action_forget.triggered, self.forget_cards)
+        self._setup_advance_postpone_actions()
         qconnect(f.actionToggle_Suspend.triggered, self.suspend_selected_cards)
         qconnect(f.action_toggle_bury.triggered, self.bury_selected_cards)
 
@@ -725,6 +727,7 @@ class Browser(QMainWindow):
         self.form.actionChange_Deck.setEnabled(has_selection)
         self.form.action_set_due_date.setEnabled(has_selection)
         self.form.action_forget.setEnabled(has_selection)
+        self._update_advance_postpone_actions()
         self.form.actionReposition.setEnabled(has_selection)
         self.form.actionToggle_Suspend.setEnabled(has_selection)
         self.form.action_toggle_bury.setEnabled(has_selection)
@@ -1145,6 +1148,57 @@ class Browser(QMainWindow):
             config_key=Config.String.SET_DUE_BROWSER,
         ):
             op.run_in_background()
+
+    def _setup_advance_postpone_actions(self) -> None:
+        """Cards > Advance... and Postpone..., after Grade Now (spec
+        ui.advance-postpone)."""
+        menu = self.form.menu_Cards
+        self.action_advance = QAction(
+            tr.actions_with_ellipsis(action=tr.actions_advance_cards()), self
+        )
+        self.action_postpone = QAction(
+            tr.actions_with_ellipsis(action=tr.actions_postpone_cards()), self
+        )
+        for action in (self.action_advance, self.action_postpone):
+            menu.insertAction(self.form.action_forget, action)
+        qconnect(self.action_advance.triggered, self.advance_cards)
+        qconnect(self.action_postpone.triggered, self.postpone_cards)
+        qconnect(menu.aboutToShow, self._update_advance_postpone_actions)
+        self._update_advance_postpone_actions()
+
+    def _update_advance_postpone_actions(self) -> None:
+        """Advanced mode only, and never under RWKV-Instant; they act on the
+        selected cards."""
+        if not hasattr(self, "action_postpone"):
+            # the table reports its rows before the menus exist
+            return
+        visible = aqt.advance_postpone.advance_postpone_available(self.mw)
+        has_selection = bool(self.table.len_selection())
+        for action in (self.action_advance, self.action_postpone):
+            action.setVisible(visible)
+            action.setEnabled(has_selection)
+
+    @no_arg_trigger
+    @skip_if_selection_is_empty
+    @ensure_editor_saved
+    def advance_cards(self) -> None:
+        aqt.advance_postpone.advance_postpone(
+            parent=self,
+            mw=self.mw,
+            mode=aqt.advance_postpone.ADVANCE,
+            card_ids=self.selected_cards(),
+        )
+
+    @no_arg_trigger
+    @skip_if_selection_is_empty
+    @ensure_editor_saved
+    def postpone_cards(self) -> None:
+        aqt.advance_postpone.advance_postpone(
+            parent=self,
+            mw=self.mw,
+            mode=aqt.advance_postpone.POSTPONE,
+            card_ids=self.selected_cards(),
+        )
 
     @no_arg_trigger
     @skip_if_selection_is_empty
