@@ -154,7 +154,13 @@ impl Note {
 }
 
 impl Column {
-    pub fn cards_mode_label(self, tr: &I18n) -> String {
+    /// The column's name in the browser's Cards mode. In Simple mode
+    /// (`spec/ui.md`, `ui.simple-recall-wording`) the Retrievability column is
+    /// named in plain words instead; Advanced mode keeps the technical word.
+    pub fn cards_mode_label(self, tr: &I18n, advanced_ui: bool) -> String {
+        if self == Self::Retrievability && !advanced_ui {
+            return tr.card_stats_recall_probability().into();
+        }
         match self {
             Self::Answer => tr.browsing_answer(),
             Self::CardMod => tr.search_card_modified(),
@@ -180,12 +186,12 @@ impl Column {
         .into()
     }
 
-    pub fn notes_mode_label(self, tr: &I18n) -> String {
+    pub fn notes_mode_label(self, tr: &I18n, advanced_ui: bool) -> String {
         match self {
             Self::Cards => tr.editing_cards(),
             Self::Ease => tr.browsing_average_ease(),
             Self::Interval => tr.browsing_average_interval(),
-            _ => return self.cards_mode_label(tr),
+            _ => return self.cards_mode_label(tr, advanced_ui),
         }
         .into()
     }
@@ -203,10 +209,10 @@ impl Column {
         .into()
     }
 
-    pub fn notes_mode_tooltip(self, tr: &I18n) -> String {
+    pub fn notes_mode_tooltip(self, tr: &I18n, advanced_ui: bool) -> String {
         match self {
             Self::Cards => tr.browsing_tooltip_cards(),
-            _ => return self.cards_mode_label(tr),
+            _ => return self.cards_mode_label(tr, advanced_ui),
         }
         .into()
     }
@@ -267,9 +273,10 @@ impl Column {
 
 impl Collection {
     pub fn all_browser_columns(&self) -> anki_proto::search::BrowserColumns {
+        let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
         let mut columns: Vec<anki_proto::search::browser_columns::Column> = Column::iter()
             .filter(|&c| c != Column::Custom)
-            .map(|c| c.to_pb_column(&self.tr))
+            .map(|c| c.to_pb_column(&self.tr, advanced_ui))
             .collect();
         columns.sort_by(|c1, c2| c1.cards_mode_label.cmp(&c2.cards_mode_label));
         anki_proto::search::BrowserColumns { columns }
@@ -734,6 +741,29 @@ mod tests {
         input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
         input.configs[0].inner.fsrs_params_7 = params;
         col.update_deck_configs(input)?;
+        Ok(())
+    }
+
+    fn retrievability_column_label(col: &Collection) -> String {
+        col.all_browser_columns()
+            .columns
+            .into_iter()
+            .find(|c| c.key == Column::Retrievability.to_string())
+            .unwrap()
+            .cards_mode_label
+    }
+
+    /// spec/ui.md, `ui.simple-recall-wording`.
+    #[test]
+    fn simple_mode_names_the_retrievability_column_in_plain_words() -> Result<()> {
+        let mut col = Collection::new();
+
+        let simple = retrievability_column_label(&col);
+        assert_eq!(simple, "Probability of recall");
+        assert!(!simple.to_lowercase().contains("retrievability"));
+
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        assert_eq!(retrievability_column_label(&col), "Retrievability");
         Ok(())
     }
 

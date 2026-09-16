@@ -640,3 +640,21 @@ def test_collection_busy_counts_queued_and_running_collection_tasks() -> None:
     assert taskman.collection_busy()
     taskman.collection_use_finished()
     assert not taskman.collection_busy()
+
+
+def test_start_up_objects_are_frozen_but_later_cycles_are_still_collected() -> None:
+    """The window's manual collections must not walk what start-up created."""
+    import gc
+
+    mw = AnkiQt.__new__(AnkiQt)
+    frozen_before = gc.get_freeze_count()
+    try:
+        mw.freeze_startup_objects()
+        assert gc.get_freeze_count() > frozen_before
+        held: dict = {}
+        cycle = [held]
+        held["cycle"] = cycle
+        del held, cycle
+        assert gc.collect() >= 2
+    finally:
+        gc.unfreeze()

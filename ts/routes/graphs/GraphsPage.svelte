@@ -39,6 +39,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     /** The collection's UI mode: read when the page loads, then from the
      * data and the page's switch. */
     const advancedUi = writable(true);
+    // for graphs that show different controls in each mode, such as Total
+    // Knowledge (spec ui.mode-switch)
+    setContext("graphsAdvancedUi", advancedUi);
     let modeKnown = false;
     /** See UiModeFromData */
     let switchChoice: boolean | null = null;
@@ -103,8 +106,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     <div class="graphs-container">
         {#if sourceData && revlogRange}
-            <!-- the Simple graphs until the data of every graph is in -->
-            {#each graphsForMode(graphs, simpleGraphs, $advancedUi && sourceComplete) as graph}
+            <!-- the Simple graphs until the data of every graph is in;
+            keyed by the component, so a graph both modes show keeps its
+            block, and with it whatever it has loaded on its own (Total
+            Knowledge's request and its RWKV job) across a mode switch -->
+            {#each graphsForMode(graphs, simpleGraphs, $advancedUi && sourceComplete) as graph (graph)}
                 <svelte:component
                     this={graph}
                     {sourceData}
