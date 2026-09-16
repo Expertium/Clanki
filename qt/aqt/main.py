@@ -2191,7 +2191,12 @@ title="{}" {}>{}</button>""".format(
         collection still walked all of them. `gc.freeze()` moves them into the
         permanent generation, which is never walked. The collection, its cards
         and every dialog are created afterwards and are still collected.
+
+        The collection first: automatic collection has been off since the
+        window started, so start-up leaves cycles behind, and freezing them
+        would keep them for the rest of the session.
         """
+        gc.collect()
         gc.freeze()
 
     def garbage_collect_now(self) -> None:

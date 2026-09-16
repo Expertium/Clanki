@@ -658,3 +658,27 @@ def test_start_up_objects_are_frozen_but_later_cycles_are_still_collected() -> N
         assert gc.collect() >= 2
     finally:
         gc.unfreeze()
+
+
+def test_start_up_garbage_is_not_frozen_with_the_rest() -> None:
+    """Start-up runs with automatic collection off, so it leaves cycles
+    behind; freezing them would keep them for the rest of the session."""
+    import gc
+    import weakref
+
+    class Node:
+        def __init__(self) -> None:
+            self.other: Node | None = None
+
+    node = Node()
+    node.other = node
+    watcher = weakref.ref(node)
+    del node
+    mw = AnkiQt.__new__(AnkiQt)
+    frozen_before = gc.get_freeze_count()
+    try:
+        mw.freeze_startup_objects()
+        assert gc.get_freeze_count() > frozen_before
+        assert watcher() is None
+    finally:
+        gc.unfreeze()
