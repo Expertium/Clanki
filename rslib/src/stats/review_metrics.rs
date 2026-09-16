@@ -8,8 +8,9 @@
 //! The predictions are not computed here. Both models write them per review
 //! while they run - FSRS-7 when its parameters are optimized, RWKV when its
 //! state cache is built - and this reads those rows. A row counts only when
-//! nothing that produced it was fitted on that very review, and both models
-//! are scored on the same reviews, so their numbers can be compared.
+//! nothing that produced it was fitted on that very review. Each model is
+//! scored on every rating it can score, and the ratings both models scored
+//! are counted, so the graph can say which reviews the two numbers share.
 
 use std::collections::HashMap;
 
@@ -93,27 +94,23 @@ impl Collection {
             rwkv_role: rwkv.role.clone(),
             ..Default::default()
         };
-        // Two models with rows are compared, so they are scored on the
-        // ratings they share; one model alone is not a comparison, so it
-        // keeps all of its own ratings (spec ui.stats-model-metrics).
-        let shared = !fsrs.by_review.is_empty() && !rwkv.by_review.is_empty();
-        response.shared_ratings = shared;
+        // Each model is scored on every rating it has an honest row for, so
+        // a model's curve never disappears because the other model has no
+        // rows. The ratings both models scored are counted separately, and
+        // they are the ones the graph compares the two models on (spec
+        // ui.stats-model-metrics).
         let mut ratings = ratings;
         ratings.sort_unstable_by_key(|entry| entry.id);
         for entry in &ratings {
             let fsrs_value = fsrs.by_review.get(&entry.id);
             let rwkv_value = rwkv.by_review.get(&entry.id);
-            let scored = if shared {
-                fsrs_value.is_some() && rwkv_value.is_some()
-            } else {
-                fsrs_value.is_some() || rwkv_value.is_some()
-            };
-            if scored {
+            if fsrs_value.is_some() || rwkv_value.is_some() {
                 response.revlog_ids.push(entry.id.0);
                 response.card_ids.push(entry.cid.0);
                 response.remembered.push(entry.button_chosen > 1);
                 // a model without a row for this rating has no number
-                // here, and its series is absent rather than filled in
+                // here, and its series simply skips the rating rather
+                // than borrowing the other model's value
                 response
                     .fsrs_predictions
                     .push(fsrs_value.copied().unwrap_or(f32::NAN));
@@ -122,12 +119,15 @@ impl Collection {
                     .push(rwkv_value.copied().unwrap_or(f32::NAN));
             }
             match (fsrs_value, rwkv_value) {
-                (Some(_), Some(_)) => {}
+                (Some(_), Some(_)) => response.shared += 1,
                 (Some(_), None) => response.fsrs_only += 1,
                 (None, Some(_)) => response.rwkv_only += 1,
                 (None, None) => response.unscored += 1,
             }
         }
+        // a comparison needs both models to have scored something here
+        response.shared_ratings =
+            response.shared + response.fsrs_only > 0 && response.shared + response.rwkv_only > 0;
 
         // how fresh the predictions are: the newest rating either model has
         // scored, and the ratings of the search after it
@@ -277,22 +277,27 @@ mod tests {
         store_rwkv(&col, honest, 0.3);
 
         let response = col.review_predictions("", 0)?;
-        assert_eq!(response.revlog_ids, vec![honest.0]);
-        assert_eq!(response.fsrs_predictions, vec![0.4]);
-        assert_eq!(response.rwkv_predictions, vec![0.3]);
-        assert_eq!(response.remembered, vec![false]);
+        // RWKV can score both ratings, so both are listed
+        assert_eq!(response.revlog_ids, vec![fitted.0, honest.0]);
+        // FSRS-7's final-fit row is never used, so that rating has no FSRS
+        // number at all; it is not filled in from RWKV's
+        assert!(response.fsrs_predictions[0].is_nan());
+        assert_eq!(response.fsrs_predictions[1], 0.4);
+        assert_eq!(response.rwkv_predictions, vec![0.8, 0.3]);
+        assert_eq!(response.remembered, vec![true, false]);
         assert_eq!(response.fsrs_role, "validation_fold");
         // RWKV's weights saw no review of this collection, so any role counts
         assert_eq!(response.rwkv_role, "final_fit");
-        // the rating only RWKV could score is left out, and counted
+        // the rating only RWKV could score is counted as its own
         assert_eq!(response.rwkv_only, 1);
         assert_eq!(response.fsrs_only, 0);
+        assert_eq!(response.shared, 1);
         Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn both_algorithms_are_scored_on_the_same_ratings() -> Result<()> {
+    fn the_shared_ratings_are_counted_not_enforced() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
         let shared = rate(&mut col, card, -30, 3);
@@ -312,12 +317,65 @@ mod tests {
         }
 
         let response = col.review_predictions("", 0)?;
-        assert_eq!(response.revlog_ids, vec![shared.0]);
+        // every rating either model scored is kept, not only the shared one
+        assert_eq!(
+            response.revlog_ids,
+            vec![shared.0, fsrs_alone.0, rwkv_alone.0]
+        );
+        assert_eq!(response.shared, 1);
         assert_eq!(response.fsrs_only, 1);
         assert_eq!(response.rwkv_only, 1);
         assert_eq!(response.unscored, 1);
+        assert!(response.shared_ratings);
         assert_eq!(response.fsrs_role, "post_optimization");
+        // the rating a model has no row for is NaN, never the other's value
+        assert!(response.fsrs_predictions[2].is_nan());
+        assert!(response.rwkv_predictions[1].is_nan());
         let _ = neither;
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn each_algorithm_keeps_every_rating_it_can_score() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        // one model with many rows beside a model with a single row: the
+        // single row must not take the other model's ratings away
+        let mut reviews = vec![];
+        for index in 0..10 {
+            let review = rate(&mut col, card, -40 + index, 3);
+            store_rwkv(&col, review, 0.6);
+            reviews.push(review);
+        }
+        store_fsrs(
+            &col,
+            reviews[0],
+            0.5,
+            FsrsReviewRetrievabilitySampleRole::PostOptimization,
+        );
+
+        let response = col.review_predictions("", 0)?;
+        assert_eq!(response.revlog_ids.len(), 10);
+        assert_eq!(
+            response
+                .rwkv_predictions
+                .iter()
+                .filter(|value| value.is_finite())
+                .count(),
+            10
+        );
+        assert_eq!(
+            response
+                .fsrs_predictions
+                .iter()
+                .filter(|value| value.is_finite())
+                .count(),
+            1
+        );
+        assert_eq!(response.shared, 1);
+        assert_eq!(response.rwkv_only, 9);
+        assert!(response.shared_ratings);
         Ok(())
     }
 
@@ -372,6 +430,9 @@ mod tests {
         let response = col.review_predictions("", 0)?;
         assert_eq!(response.rwkv_role, "final_fit");
         assert_eq!(response.revlog_ids.len(), 4);
+        // the post-optimization row is not mixed in, and its rating is
+        // therefore scored by nothing
+        assert_eq!(response.unscored, 1);
         Ok(())
     }
 

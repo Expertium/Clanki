@@ -193,9 +193,10 @@ message ReviewPredictionsRequest {
 }
 
 message ReviewPredictionsResponse {
-  // One entry per scored rating, oldest first. The four lists have the same
-  // length: the models are scored on the same reviews, never on two
-  // different sets.
+  // One entry per scored rating, oldest first: every rating at least one
+  // model has an honest row for. The five lists have the same length; a
+  // model with no row for a rating has NaN there, never another model's
+  // value.
   repeated int64 revlog_ids = 1;
   repeated int64 card_ids = 2;
   // The answers: true = Hard, Good or Easy, false = Again.
@@ -207,8 +208,8 @@ message ReviewPredictionsResponse {
   // empty when that model has no usable row. Roles are never mixed.
   string fsrs_role = 6;
   string rwkv_role = 7;
-  // Ratings one model could score and the other could not, and ratings
-  // neither could: the graph says how many it left out.
+  // How the scored ratings split between the models: only FSRS-7 has a
+  // row, only RWKV has one, both have one, or neither has one.
   uint32 fsrs_only = 8;
   uint32 rwkv_only = 9;
   uint32 unscored = 10;
@@ -221,10 +222,13 @@ message ReviewPredictionsResponse {
   // order, empty bins left out (spec ui.stats-model-metrics).
   repeated CalibrationBin fsrs_bins = 13;
   repeated CalibrationBin rwkv_bins = 14;
-  // True when two models have rows, so the ratings are the ones they
-  // share; false when one model alone is scored, on all of its own
-  // ratings, because one curve is not a comparison.
+  // True when both models scored at least one rating of the search and
+  // period, so the two scores can be put beside each other over the
+  // ratings they share.
   bool shared_ratings = 15;
+  // The ratings both models have a row for; the graph names this number as
+  // the one the models are compared on.
+  uint32 shared = 16;
 }
 
 // One bin of the calibration graph: the ratings whose predicted probability
@@ -302,8 +306,8 @@ message ReviewMetricsProgress {
   // One entry per algorithm, always all three, in menu order.
   repeated Series series = 3;
   string error = 4;
-  // The ratings every drawn algorithm scored, and the ones left out:
-  // scored by one algorithm only, or by neither.
+  // The ratings at least one drawn algorithm scored, and how they split:
+  // only FSRS-7, only RWKV, or no algorithm at all.
   uint32 scored = 5;
   uint32 fsrs_only = 6;
   uint32 rwkv_only = 7;
@@ -312,9 +316,11 @@ message ReviewMetricsProgress {
   // and the ratings of the search after it that nothing has scored.
   int64 newest_scored_secs = 9;
   uint32 newer_reviews = 10;
-  // True when two or more algorithms are drawn, so every curve is
-  // restricted to the ratings they share.
+  // True when two or more algorithms scored a rating, so the graph names
+  // the ratings they share as the ones they are compared on.
   bool shared_ratings = 11;
+  // The ratings every drawn algorithm scored.
+  uint32 shared = 12;
 }
 
 message GraphsResponse {

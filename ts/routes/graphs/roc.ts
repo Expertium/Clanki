@@ -5,8 +5,10 @@
  * The AUC-ROC graph (spec ui.stats-model-metrics): one curve per scheduling
  * algorithm, drawn from the reviews of the search in the page's period. The
  * curves and their areas come from the job in Python; this module only draws
- * them. An algorithm that cannot be computed has no curve and is named in a
- * note under the graph; it is never replaced by another algorithm's curve.
+ * them. Each curve covers the reviews its own algorithm predicted, so it
+ * appears as soon as its own rows are ready. An algorithm that cannot be
+ * computed has no curve and is named in a note under the graph; it is never
+ * replaced by another algorithm's curve.
  */
 
 import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
@@ -124,34 +126,42 @@ export function unavailableNotes(progress: ReviewMetricsProgress | null): string
 
 /**
  * What the graph says about its own data (spec ui.stats-model-metrics): how
- * many reviews every drawn algorithm shares, what was left out, which stored
- * predictions each algorithm used, and how fresh they are.
+ * many reviews were scored at all, how many each drawn algorithm scored, how
+ * many they share, how many nothing scored, which stored predictions each
+ * algorithm used, and how fresh they are.
  */
 export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
     if (!progress) {
         return [];
     }
     const notes: string[] = [];
+    const curves = progress.series.filter(hasCurve);
     if (progress.scored > 0) {
-        // two curves are only comparable over the ratings they share; one
-        // curve is not a comparison, so it keeps all of its own
-        notes.push(
-            progress.sharedRatings
-                ? tr.statisticsModelMetricsShared({ reviews: progress.scored })
-                : tr.statisticsModelMetricsScored({ reviews: progress.scored }),
-        );
+        // every algorithm keeps all the ratings it can score, so the
+        // counts differ; the shared count is what makes two scores
+        // comparable, and it is named rather than enforced
+        notes.push(tr.statisticsModelMetricsScored({ reviews: progress.scored }));
     }
-    if (progress.fsrsOnly + progress.rwkvOnly + progress.unscored > 0) {
+    for (const series of curves) {
         notes.push(
-            tr.statisticsModelMetricsLeftOut({
-                fsrs: localizedNumber(progress.fsrsOnly, 0),
-                rwkv: localizedNumber(progress.rwkvOnly, 0),
-                none: localizedNumber(progress.unscored, 0),
+            tr.statisticsModelMetricsCoverage({
+                algorithm: algorithmName(series.algorithm),
+                reviews: series.reviews,
             }),
         );
     }
-    for (const series of progress.series) {
-        if (hasCurve(series) && series.sampleRole) {
+    if (progress.sharedRatings && curves.length > 1) {
+        notes.push(tr.statisticsModelMetricsShared({ reviews: progress.shared }));
+    }
+    if (progress.unscored > 0) {
+        notes.push(
+            tr.statisticsModelMetricsNone({
+                reviews: localizedNumber(progress.unscored, 0),
+            }),
+        );
+    }
+    for (const series of curves) {
+        if (series.sampleRole) {
             notes.push(
                 tr.statisticsModelMetricsRole({
                     algorithm: algorithmName(series.algorithm),

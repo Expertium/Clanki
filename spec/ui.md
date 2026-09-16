@@ -667,14 +667,19 @@ FSRS-7 takes the first role of its list that has any row, because that list
 is in order of honesty. RWKV's roles carry no such order, so it takes the
 role with the most rows and rests on as many ratings as it can.
 
-Two or more drawn algorithms are scored on the ratings they share: a rating
-only one of them has a row for is left out, the graph says how many were
-left out for each reason, and it says plainly that the algorithms are
-compared on the shared ratings. One drawn algorithm is not a comparison, so
-it keeps every rating it can score, and the graph says how many that is. A
-rating with no usable row for an algorithm is never filled in from a fresh
-computation with today's parameters, because those parameters have seen the
-rating.
+Each algorithm is scored on every rating of the search and period it has a
+usable row for, whatever the other algorithms have. A rating one algorithm
+cannot score is not taken away from the algorithms that can: an algorithm
+with rows for 9000 ratings draws all 9000 even when another algorithm has
+rows for four of them. Under the graph, the page gives the ratings at least
+one algorithm scored, then one line per drawn algorithm with the ratings
+that algorithm scored, then the ratings every drawn algorithm scored, and
+last the ratings no algorithm scored. Two scores may be compared directly
+only over the ratings the algorithms share, and the page says so with that
+number; it never enforces the comparison by discarding an algorithm's own
+ratings. A rating with no usable row for an algorithm is never filled in
+from another algorithm's value, and never from a fresh computation with
+today's parameters, because those parameters have seen the rating.
 
 Reading the rows does not start any computation. Ratings newer than the
 newest stored prediction are left out, and the graph says "Predictions up to
@@ -716,6 +721,14 @@ and collection state joins the running job, a finished result is kept for
 the session, and a Simple/Advanced switch or a second visit does not start
 it again. Leaving the page or closing the window stops the job.
 
+Andrew, 2026-09-16: the graphs first restricted every algorithm to the
+ratings all of them shared. On his collection that rule hid every curve.
+RWKV had rows for 9154 of the 9155 ratings of his current deck and FSRS-7
+had four, so three ratings survived the intersection, all three were
+answered Again, and an algorithm whose ratings were all forgotten has no
+curve. Comparability is a property of a number, not a reason to throw data
+away, so the page now names the shared count instead of enforcing it.
+
 **Why:** Andrew, 2026-09-16: add the Search Stats Extended fork's
 model-quality graphs, so that the algorithms can be compared on his own
 reviews. The no-mixing rule is deliberately relaxed here and nowhere else,
@@ -726,14 +739,16 @@ graph, and the square drawing area with the labelled diagonal, are his
 words. The rules about which stored rows count, and about scoring both
 algorithms on the same ratings, are the RWKV session's: a prediction from a
 model fitted on the very review it predicts flatters that model, and two
-scores over two different sets of reviews cannot be compared. Reading the
+scores over two different sets of reviews cannot be compared, which the page
+now states as a number rather than by discarding reviews. Reading the
 stored rows rather than replaying is what the Search Stats Extended fork
 does, and it is why a panel of hundreds of thousands of reviews opens at
 once; a replay of the whole history costs minutes and now belongs to the
 user's own rebuild, never to opening a page.
 
 **Pinned by:** `only_rows_the_algorithm_had_not_seen_are_used`,
-`both_algorithms_are_scored_on_the_same_ratings`,
+`each_algorithm_keeps_every_rating_it_can_score`,
+`the_shared_ratings_are_counted_not_enforced`,
 `one_algorithm_alone_keeps_all_of_its_ratings`,
 `rwkv_takes_the_role_with_the_most_rows`,
 `the_period_selects_the_ratings`,
