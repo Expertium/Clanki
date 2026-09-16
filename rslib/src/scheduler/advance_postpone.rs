@@ -405,7 +405,7 @@ impl Collection {
                 candidates.at_maximum_interval += 1;
                 continue;
             }
-            let Some(preset) = presets.get(&card.id) else {
+            let Some(preset) = presets.get(card.id) else {
                 candidates.without_curve += 1;
                 continue;
             };

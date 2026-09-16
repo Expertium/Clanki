@@ -78,7 +78,7 @@ impl Collection {
         let cards = self.all_cards_for_ids(&card_ids.iter().copied().collect::<Vec<_>>(), false)?;
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
         let stable_preset_ids_by_card = presets_by_card
-            .into_iter()
+            .iter()
             .map(|(card_id, preset)| {
                 Ok((
                     card_id,
@@ -485,7 +485,7 @@ impl Collection {
         let rows = eligible
             .into_iter()
             .filter_map(|partial| {
-                let preset = presets_by_card.get(&partial.card.id)?;
+                let preset = presets_by_card.get(partial.card.id)?;
                 Some(scheduler::rwkv_review_input_rows_for_cards_response::Row {
                     card_id: partial.card.id.0,
                     note_id: partial.card.note_id.0,
@@ -708,7 +708,7 @@ pub(crate) fn rwkv_review_order_keys(
     let mut keys = HashMap::with_capacity(cards.len());
     for card in &cards {
         let Some(target) = card_desired_retention(card)
-            .or_else(|| presets.get(&card.id).map(|preset| preset.desired_retention))
+            .or_else(|| presets.get(card.id).map(|preset| preset.desired_retention))
             .filter(|target| valid_card_desired_retention(*target))
         else {
             continue;
@@ -791,7 +791,8 @@ pub(crate) fn rwkv_review_candidate_metadata(
         }
     }
 
-    for (card_id, preset) in col.fsrs_presets_for_cards(&without_card_target)? {
+    let presets_without_card_target = col.fsrs_presets_for_cards(&without_card_target)?;
+    for (card_id, preset) in presets_without_card_target.iter() {
         if let Some(partial) = partial_by_card.remove(&card_id) {
             metadata.insert(
                 card_id,

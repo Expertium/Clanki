@@ -1073,7 +1073,7 @@ impl crate::services::SchedulerService for Collection {
         let items = cards
             .into_iter()
             .filter_map(|card| {
-                presets.get(&card.id).map(|preset| {
+                presets.get(card.id).map(|preset| {
                     scheduler::fsrs_preset_ids_for_cards_response::Item {
                         card_id: card.id.0,
                         preset_id: fsrs_preset_id_to_string(preset.id.clone()),

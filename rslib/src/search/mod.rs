@@ -285,7 +285,7 @@ impl Collection {
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
             let preset = presets_by_card
-                .get(&card.id)
+                .get(card.id)
                 .or_invalid("missing FSRS preset for card")?;
             if let Some((fsrs_r, s90)) =
                 self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
@@ -543,7 +543,7 @@ impl Collection {
         let mut with_metric = Vec::with_capacity(cards.len());
         for card in cards {
             let preset = presets_by_card
-                .get(&card.id)
+                .get(card.id)
                 .or_invalid("missing FSRS preset for card")?;
             with_metric.push((
                 card.id,
