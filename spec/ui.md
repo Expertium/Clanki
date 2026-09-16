@@ -249,14 +249,17 @@ it meets 90% recall), not the S90 stored on the card. While RWKV has no
 curve for the card (its state still loading, busy, or no answered review),
 the chart shows no data and card info has no "Stability" row. The curve
 reaches the page as recall at 0 and at 300 elapsed times evenly spaced in
-log time from one minute to 100 years, joined by straight lines.
+log time from one minute to 100 years, joined by straight lines. The chart
+starts at the card's latest answered review, whether or not FSRS-7 has a
+memory state for the card (`ui.card-info-curve-messages`).
 
 Card info for such a card shows no other FSRS-7 value either: no
 "Difficulty" row, and its one "Retrievability" row is the curve's recall
 now (`ui.card-info-one-algorithm`). The page data of the reviews before the latest answered one carries no
 memory state, so no FSRS-7 stability of those reviews reaches the page.
 Cards of FSRS-7 presets draw FSRS-7's curve with its S90 for every review;
-RWKV-Instant cards draw none (`ui.card-info-one-algorithm`).
+RWKV-Instant cards draw none (`ui.card-info-one-algorithm`). With no curve the
+box says why (`ui.card-info-curve-messages`).
 
 **Why:** Andrew, 2026-09-15: forgetting curve graphs always use the S90, for
 RWKV-Curve as for FSRS-7; the Stability row and the tooltip show the drawn
@@ -280,6 +283,40 @@ curve's points", "an RWKV-Curve card's chart starts at its last review: no
 FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
 curve and S90", "without an RWKV curve yet the chart stops at the last
 review" (`ts/routes/card-info/forgetting-curve.test.ts`).
+
+## ui.card-info-curve-messages
+
+Given card info's "Forgetting Curve" box with no curve to draw, it shows a
+short message that says why, never the words "NO DATA", and never a value of
+the other algorithm (`sched.one-global-algorithm`):
+
+| Case                                                   | Message                                                                     |
+| ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| RWKV is not ready (state loading, or another thread holds it) | "Calculating…"                                                        |
+| RWKV-Curve answered but has no curve for the card       | "RWKV-Curve has no curve for this card yet. It gets one after your next answer." |
+| the card has no answered review                         | "No curve yet. It appears after you answer this card."                      |
+| FSRS-7 after a reset, with no answer since              | "This card was reset. The curve appears after you answer it again."         |
+| FSRS-7 with no review on a later day                    | "No curve yet. This card needs a review on a later day."                    |
+
+While RWKV is not ready, the card-stats response marks its curve `pending` and
+the card-info page asks for the card again every 2 seconds, so the curve
+appears without the user closing and reopening card info.
+
+An RWKV-Curve card draws from its latest answered review even when FSRS-7 has
+no memory state for the card, a card that was reset for example: RWKV's stored
+curve needs no FSRS-7 memory state (`ui.card-info-rwkv-curve`).
+
+**Why:** Andrew, 2026-09-16: make sure no "NO DATA" appears; where no curve can
+exist, say why in plain words; never fall back to the other algorithm; and a
+card whose RWKV state is still loading gets its curve once the state arrives.
+
+**Pinned by:** `test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready`
+(`qt/tests/test_mediasrv.py`);
+`test_rwkv_card_info_curve_result_is_pending_while_rwkv_is_not_ready`,
+`test_rwkv_card_info_curve_is_none_without_a_curve`
+(`qt/tests/test_rwkv_scheduler.py`); "a reset card still draws RWKV-Curve's
+curve from its last answer", "the forgetting curve says why it has no curve,
+and never says NO DATA" (`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## ui.fsrs7-no-rwkv-values
 

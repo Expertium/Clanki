@@ -88,6 +88,10 @@ message CardStatsResponse {
     optional float s90 = 3;
     // the curve's recall now, since the card's last review
     optional float current_recall = 4;
+    // True while RWKV cannot answer yet (its state is loading, or another
+    // thread holds it). The curve arrives in a later request; card info asks
+    // again on its own (spec ui.card-info-curve-messages).
+    bool pending = 5;
   }
   optional RwkvCurve rwkv_curve = 26;
   // The collection's algorithm: card info shows only its values (spec
