@@ -390,12 +390,25 @@ Only the last Forget counts.
 
 The start row always carries the learn-start state code, whatever the row's own
 kind, because the training dataset gives the first surviving row of every card
-that code. The deck option that measures a first review's elapsed time from the
-card's creation is the one exception to the first-row treatment: it reaches a
-**real Learning start only**, never a fallback start row. A fallback start row
-is the first row the collection holds, not a review known to be the card's
-first, so the card's creation age would invent an interval that never happened.
-Such a row keeps the elapsed sentinel.
+that code.
+
+The deck option that measures a first review's elapsed time from the card's
+creation is the one exception to the first-row treatment: it reaches a **real
+Learning start only**, never a fallback start row, which keeps the elapsed
+sentinel. **Why:** the training dataset gives every start row the sentinel,
+including a relearn start after a Forget, and never a creation age, so the
+sentinel is the parity-correct value for any start row. The creation-age option
+on a real Learning start is already this fork's own deviation from training, a
+deck option Andrew chose; its scope must not widen to rows whose "first review"
+is only the first row the collection holds.
+
+**The rule has one implementation: the SQL.** The backend query
+(`rwkv_historical_review_rows`, `rslib/src/storage/revlog/mod.rs`) and the
+Python replay query (`_historical_rwkv_review_rows`,
+`qt/aqt/rwkv_scheduler.py`) each compute the start row and return an
+`is_learning_start` column; every reader takes that column. No caller
+re-derives the start row, so the reviewer's replay and Grade Now cannot drift
+apart: Grade Now reads the same query, filtered to the graded card.
 
 The Forget cut applies **only** to a card with no rated Learning row. A card
 that has a learning start keeps that start row, so a Forget after it is ignored
@@ -426,6 +439,9 @@ may cut at.
 `rwkv_replay_drops_a_card_whose_last_row_is_a_forget`
 (`rslib/src/storage/revlog/mod.rs`) and
 `test_historical_fallback_start_row_gets_the_learn_start_state`,
+`test_historical_replay_drops_the_rows_before_a_fallback_card_forget`,
+`test_historical_replay_keeps_a_learning_start_over_a_later_forget`,
+`test_grade_now_and_the_replay_agree_on_a_forgotten_fallback_card`,
 `test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start`
 (`qt/tests/test_rwkv_scheduler.py`).
 
