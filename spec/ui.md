@@ -491,6 +491,31 @@ same day, on dropping the earlier ten-minute limit: "p(recall) doesn't fall
 `test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
 (`qt/tests/test_rwkv_scheduler.py`)
 
+## ui.stats-scoring-cancelled
+
+Given the Stats window closes while a Stats graphs request is still scoring
+cards with RWKV for the Retrievability graph, the scoring stops at its next
+batch boundary. It publishes no score map, so the map the collection already
+holds is left as it is, and the remembered key of that map
+(`ui.stats-rwkv-scores-kept`) is dropped, so the next request scores again.
+The stop happens between two batches, which is outside the RWKV lock, so the
+lock is free as soon as the running batch ends. A Stats request that starts
+after the window closed is not cancelled, and the cancellation never stops the
+scoring that a Browser search or a filtered deck asks for.
+
+**Why:** the scoring takes minutes on a large collection (229 seconds of a
+230-second request on Andrew's 38,523 scorable cards). Before this, a Stats
+window that the user closed kept its scoring running to the end and kept the
+RWKV lock with it, so the main window waited for a page that was already
+gone.
+
+**Pinned by:** `test_cancelled_stats_scoring_stops_at_the_next_batch_and_frees_the_lock`,
+`test_stats_scoring_without_a_cancel_generation_is_never_cancelled`,
+`test_prepare_stats_retrievability_scores_stop_when_the_stats_window_closes`,
+`test_cancelled_stats_scoring_drops_the_kept_score_memo`,
+`test_stats_scoring_after_a_cancel_runs_to_the_end`
+(`qt/tests/test_rwkv_scheduler.py`)
+
 ## ui.stats-total-knowledge
 
 Given the Stats page, in both Simple and Advanced mode, the Total Knowledge

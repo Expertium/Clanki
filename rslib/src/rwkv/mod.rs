@@ -865,6 +865,49 @@ impl RwkvInference {
             .collect())
     }
 
+    /// Curve retrievability for each query input, straight from the resident
+    /// warm-up state.
+    ///
+    /// This is the one number the Stats Retrievability graph draws under
+    /// RWKV-Curve. `predict_many` returns the same value from the same query
+    /// heads (`current_curve_retrievability(&input, &query_heads.curve)`), but
+    /// it also runs the four simulated-answer passes and the current-interval
+    /// crossing search, and neither of those feeds this value. `None` is the
+    /// same "no curve value" that `predict_many` reports.
+    pub fn predict_curve_retrievability_many_from_warm_up(
+        &mut self,
+        inputs: Vec<ReviewInput>,
+    ) -> io::Result<Vec<Option<f32>>> {
+        for input in &inputs {
+            if !input.is_query {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RWKV batched curve retrievability prediction only supports query inputs",
+                ));
+            }
+        }
+
+        let features = inputs
+            .iter()
+            .map(|input| self.features.features_for(input))
+            .collect::<Vec<_>>();
+        let work_items = inputs
+            .iter()
+            .zip(features)
+            .map(|(input, features)| ReviewPredictionBorrowedWorkItem {
+                features,
+                state: self.warm_up_states.state_ref(input),
+            })
+            .collect::<Vec<_>>();
+
+        let heads = self.model.review_many_borrowed(&work_items);
+        Ok(inputs
+            .iter()
+            .zip(heads)
+            .map(|(input, heads)| current_curve_retrievability(input, &heads.curve))
+            .collect())
+    }
+
     /// Total Knowledge under RWKV-Curve (spec ui.stats-total-knowledge): for
     /// each span, the recall of the curve RWKV stored at the card's last
     /// answered review in the warm-up, on each day from the span's
@@ -9187,6 +9230,70 @@ order by e.id, e.cid
             with_interval += usize::from(actual.current_interval.is_some());
         }
         assert!(with_interval > 0, "fixture should produce intervals");
+    }
+
+    /// Pins the fast Stats Retrievability path: the query-only,
+    /// resident-state curve retrievability must equal, bit for bit, the
+    /// `curve_retrievability` that the full `predict_many` path returns.
+    #[test]
+    fn curve_retrievability_from_warm_up_matches_predict_many() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews = bulk_parity_reviews(120);
+        inference
+            .warm_up_reviews_sequential(reviews.clone(), false)
+            .unwrap();
+
+        // one query per card, built from that card's most recent review
+        let mut seen = std::collections::HashSet::new();
+        let queries = reviews
+            .iter()
+            .rev()
+            .filter(|review| seen.insert(review.card_id))
+            .map(|review| ReviewInput {
+                is_query: true,
+                ease: None,
+                ..review.clone()
+            })
+            .collect::<Vec<_>>();
+        assert!(queries.len() > 10, "fixture should cover many cards");
+
+        let requests = queries
+            .iter()
+            .map(|input| ReviewPredictionRequest {
+                input: input.clone(),
+                state: inference.warm_up_state(input),
+            })
+            .collect::<Vec<_>>();
+        let expected = inference.predict_many(requests).unwrap();
+        let actual = inference
+            .predict_curve_retrievability_many_from_warm_up(queries)
+            .unwrap();
+
+        assert_eq!(expected.len(), actual.len());
+        let mut with_curve = 0;
+        for (expected, curve_retrievability) in expected.iter().zip(&actual) {
+            assert_eq!(expected.curve_retrievability, *curve_retrievability);
+            with_curve += usize::from(curve_retrievability.is_some());
+        }
+        assert!(with_curve > 0, "fixture should produce curve values");
+    }
+
+    #[test]
+    fn curve_retrievability_from_warm_up_rejects_answered_inputs() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews = bulk_parity_reviews(4);
+        let error = inference
+            .predict_curve_retrievability_many_from_warm_up(reviews)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     // Pins spec/ui.md#ui.stats-total-knowledge: under RWKV-Curve, Total
