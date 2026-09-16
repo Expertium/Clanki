@@ -712,6 +712,10 @@ class AnkiQt(QMainWindow):
 
     def cleanupAndExit(self) -> None:
         self.errorHandler.unload()
+        from aqt import ankiconnect
+
+        if service := ankiconnect.instance():
+            service.shutdown()
         self.mediaServer.shutdown()
         # Rust background jobs are not awaited implicitly
         self.backend.await_backup_completion()
@@ -790,6 +794,7 @@ class AnkiQt(QMainWindow):
             self.moveToState("deckBrowser")
             self._warn_if_outdated_fsrs7_preview_params()
             self._show_review_heatmap_addon_notice()
+            self._show_ankiconnect_addon_notice()
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
@@ -813,6 +818,18 @@ class AnkiQt(QMainWindow):
         self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
         self.pm.save()
         showInfo(tr.preferences_heatmap_addon_disabled(), parent=self)
+
+    def _show_ankiconnect_addon_notice(self) -> None:
+        """Once ever: the AnkiConnect add-on was disabled at start-up."""
+
+        if not getattr(self, "_ankiconnect_addon_notice_pending", False):
+            return
+        from aqt.ankiconnect import ADDON_NOTICE_SHOWN_KEY
+
+        self._ankiconnect_addon_notice_pending = False
+        self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
+        self.pm.save()
+        showInfo(tr.preferences_ankiconnect_addon_disabled(), parent=self)
 
     def _warn_if_outdated_fsrs7_preview_params(self) -> None:
         if getattr(self, "_outdated_fsrs7_preview_warning_shown", False):
@@ -1206,11 +1223,35 @@ title="{}" {}>{}</button>""".format(
             disable_review_heatmap_addon(self.addonManager)
         ) and not self.pm.meta.get(ADDON_NOTICE_SHOWN_KEY, False)
 
+        # Clanki has AnkiConnect built in (spec ankiconnect.addon-blocked)
+        self._ankiconnect_addon_notice_pending = self._take_over_ankiconnect_addon()
+
         if args and args[0] and self._isAddon(args[0]):
             self.installAddon(args[0], startup=True)
 
         if not self.safeMode:
             self.addonManager.loadAddons()
+
+        # listens now, before a profile opens, as the add-on did
+        from aqt import ankiconnect
+
+        ankiconnect.initialize(self)
+
+    def _take_over_ankiconnect_addon(self) -> bool:
+        """The first time: the AnkiConnect add-on's settings. Every time: an
+        enabled copy of the add-on is disabled and the built-in AnkiConnect
+        turned on in its place. True when the one-time notice is due."""
+        from dataclasses import replace
+
+        from aqt import ankiconnect
+
+        settings = ankiconnect.migrate_addon_settings(self.pm, self.addonManager)
+        disabled = ankiconnect.disable_ankiconnect_addon(self.addonManager)
+        if not disabled:
+            return False
+        if not settings.enabled:
+            ankiconnect.save_settings(self.pm, replace(settings, enabled=True))
+        return not self.pm.meta.get(ankiconnect.ADDON_NOTICE_SHOWN_KEY, False)
 
     def maybe_check_for_addon_updates(
         self, on_done: Callable[[list[DownloadLogEntry]], None] | None = None
