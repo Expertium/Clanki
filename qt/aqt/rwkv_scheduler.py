@@ -16604,10 +16604,15 @@ def _historical_rwkv_review_inputs(
                     )
                     else RwkvFirstReviewElapsedSource.MISSING
                 )
+            # Only a real Learning start may measure elapsed from the card's
+            # creation. A fallback start row (`sched.rwkv-replay-start-row`) is
+            # only the first row we hold, not the card's known first review, so
+            # its creation age would invent an interval.
             elapsed_seconds = (
                 max(0, (review_id - card_id) // 1000)
                 if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
                 and historical_state == int(RwkvReviewState.LEARN_START)
+                and review_kind == 0
                 else -1
             )
             elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
@@ -17124,8 +17129,16 @@ def _benchmark_retained_historical_review_rows(
 
 def _benchmark_retained_historical_review_starts(
     rows: Sequence[Sequence[object]],
-) -> dict[int, tuple[int, bool]]:
-    retained_start_by_card: dict[int, tuple[int, bool]] = {}
+) -> dict[int, int]:
+    """The index of each card's start row.
+
+    The start row is the card's latest learning start, or its first rated row
+    when it has none. Either way the row carries the learn-start state, as
+    `sched.rwkv-replay-start-row` requires and as the training dataset does:
+    there the first surviving row of every card carries the learn-start code,
+    whatever the row's own kind.
+    """
+    retained_start_by_card: dict[int, int] = {}
     previous_kind_by_card: dict[int, int] = {}
 
     for index, row in enumerate(rows):
@@ -17135,10 +17148,10 @@ def _benchmark_retained_historical_review_starts(
         review_kind = row[6]
         if not isinstance(card_id, int) or not isinstance(review_kind, int):
             continue
-        retained_start_by_card.setdefault(card_id, (index, False))
+        retained_start_by_card.setdefault(card_id, index)
         previous_kind = previous_kind_by_card.get(card_id)
         if review_kind == 0 and previous_kind != 0:
-            retained_start_by_card[card_id] = (index, True)
+            retained_start_by_card[card_id] = index
         previous_kind_by_card[card_id] = review_kind
 
     return retained_start_by_card
@@ -17147,7 +17160,7 @@ def _benchmark_retained_historical_review_starts(
 def _benchmark_retained_historical_review_state(
     index: int,
     row: Sequence[object],
-    retained_start_by_card: Mapping[int, tuple[int, bool]],
+    retained_start_by_card: Mapping[int, int],
 ) -> int | None:
     if len(row) < 7:
         return None
@@ -17155,12 +17168,12 @@ def _benchmark_retained_historical_review_state(
     review_kind = row[6]
     if not isinstance(card_id, int) or not isinstance(review_kind, int):
         return None
-    start_index, starts_with_learning = retained_start_by_card[card_id]
+    start_index = retained_start_by_card[card_id]
     if index < start_index:
         return None
     return _historical_review_state(
         review_kind,
-        is_learning_start=starts_with_learning and index == start_index,
+        is_learning_start=index == start_index,
     )
 
 

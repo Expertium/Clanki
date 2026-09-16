@@ -3730,7 +3730,31 @@ def test_historical_learning_start_resets_and_review_only_history_is_retained() 
         (3_000, 0),
         (4_000, 1),
         (5_000, 2),
-        (6_000, 2),
+        # Card 2 has no Learning row, so its first rated row is the start row
+        # and carries the learn-start state, not REVIEW.
+        (6_000, 0),
+    ]
+
+
+def test_historical_fallback_start_row_gets_the_learn_start_state() -> None:
+    """A card with no Learning row still gets the learn-start state.
+
+    `sched.rwkv-replay-start-row`: the start row always carries the learn-start
+    code, whatever its own kind, so the model sees the same first row it saw in
+    training.
+    """
+    rows = [
+        (1_000, 1, 10, 100, 3, 100, 1, 1, 2500),
+        (2_000, 1, 10, 100, 3, 100, 2, 2, 2500),
+        (3_000, 1, 10, 100, 3, 100, 1, 3, 2500),
+    ]
+
+    retained = rwkv_scheduler._benchmark_retained_historical_review_rows(rows)
+
+    assert [(row[0], state) for row, state in retained] == [
+        (1_000, 0),
+        (2_000, int(rwkv_scheduler.RwkvReviewState.RELEARNING)),
+        (3_000, int(rwkv_scheduler.RwkvReviewState.REVIEW)),
     ]
 
 
@@ -5142,7 +5166,16 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     assert deck_config.reviews[0].current_elapsed_days == 3
 
 
-def test_historical_rwkv_inputs_do_not_use_creation_for_non_learning_start() -> None:
+def test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start() -> None:
+    """A fallback start row gets the learn-start state but not the creation age.
+
+    `sched.rwkv-replay-start-row`: a card with no Learning row starts at its
+    first rated row, and that row carries the learn-start state so the model
+    sees the first row it saw in training. The row is only the first row we
+    hold, though, not the card's known first review, so the creation-age
+    elapsed option must not reach it: the card's creation age would invent an
+    interval that never happened.
+    """
     first_review = (40 * 86_400 + 100) * 1000
     card_id = first_review - 3 * 86_400 * 1000
     reviewer = _rwkv_reviewer(
@@ -5153,7 +5186,7 @@ def test_historical_rwkv_inputs_do_not_use_creation_for_non_learning_start() -> 
 
     history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
 
-    assert history.reviews[0].card_type == int(RwkvReviewState.REVIEW)
+    assert history.reviews[0].card_type == int(RwkvReviewState.LEARN_START)
     assert history.reviews[0].current_elapsed_days == -1
     assert history.reviews[0].current_elapsed_seconds == -1
 

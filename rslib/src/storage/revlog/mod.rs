@@ -1451,8 +1451,12 @@ mod tests {
     const RATED_RELEARNING: (i64, i64, i64) = (1, 2, 2500);
     /// Reset: manual row with a zero ease factor.
     const FORGET: (i64, i64, i64) = (0, 4, 0);
-    /// Set Due Date: manual row with a non-zero ease factor.
-    const SET_DUE_DATE: (i64, i64, i64) = (0, 4, 2500);
+    /// Set Due Date, as old Anki wrote it: a Manual row with a non-zero ease
+    /// factor.
+    const SET_DUE_DATE_AS_MANUAL: (i64, i64, i64) = (0, 4, 2500);
+    /// Set Due Date, as modern Anki writes it: `RevlogReviewKind::Rescheduled`
+    /// with a zero ease.
+    const SET_DUE_DATE_AS_RESCHEDULED: (i64, i64, i64) = (0, 5, 2500);
 
     fn add_replay_card(col: &Collection, card_id: i64) -> Result<()> {
         col.storage.db.execute(
@@ -1543,14 +1547,18 @@ mod tests {
     fn rwkv_replay_set_due_date_does_not_cut_the_history() -> Result<()> {
         let (col, _tempdir, _path) = temp_collection("rwkv-replay-set-due-date")?;
         add_replay_card(&col, 400)?;
-        add_replay_revlog(&col, 1000, 400, SET_DUE_DATE)?;
+        // Both encodings: old Anki wrote a Manual row, modern Anki writes a
+        // Rescheduled row.
+        add_replay_revlog(&col, 1000, 400, SET_DUE_DATE_AS_MANUAL)?;
         add_replay_revlog(&col, 2000, 400, RATED_REVIEW)?;
-        add_replay_revlog(&col, 3000, 400, SET_DUE_DATE)?;
+        add_replay_revlog(&col, 3000, 400, SET_DUE_DATE_AS_MANUAL)?;
         add_replay_revlog(&col, 4000, 400, RATED_REVIEW)?;
+        add_replay_revlog(&col, 5000, 400, SET_DUE_DATE_AS_RESCHEDULED)?;
+        add_replay_revlog(&col, 6000, 400, RATED_REVIEW)?;
 
         assert_eq!(
             replay_start_rows(&col, 400)?,
-            vec![(2000, true), (4000, false)]
+            vec![(2000, true), (4000, false), (6000, false)]
         );
         Ok(())
     }
@@ -1570,6 +1578,45 @@ mod tests {
             replay_start_rows(&col, 500)?,
             vec![(5000, true), (6000, false)]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_learning_start_wins_over_a_later_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-learning-start-wins")?;
+        add_replay_card(&col, 600)?;
+        add_replay_revlog(&col, 1000, 600, RATED_LEARNING)?;
+        add_replay_revlog(&col, 2000, 600, RATED_REVIEW)?;
+        add_replay_revlog(&col, 3000, 600, FORGET)?;
+        // No Learning row follows the Forget, only Review rows.
+        add_replay_revlog(&col, 4000, 600, RATED_REVIEW)?;
+        add_replay_revlog(&col, 5000, 600, RATED_REVIEW)?;
+
+        // Rule 1 wins: the card keeps its learning start, so the rows from
+        // before the Forget stay and the Forget is ignored. This matches the
+        // training dataset builder, which drops manual rows before it masks, so
+        // a Forget is invisible there unless a Learning row follows it.
+        assert_eq!(
+            replay_start_rows(&col, 600)?,
+            vec![(1000, true), (2000, false), (4000, false), (5000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_drops_a_card_whose_last_row_is_a_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-trailing-forget")?;
+        add_replay_card(&col, 700)?;
+        add_replay_revlog(&col, 1000, 700, RATED_REVIEW)?;
+        add_replay_revlog(&col, 2000, 700, RATED_REVIEW)?;
+        add_replay_revlog(&col, 3000, 700, FORGET)?;
+
+        // The card has no learning start and no rated row after its Forget, so
+        // it gets no start row and leaves the replay. The Forget reset it, so
+        // there is no memory left to replay. This is asymmetric with
+        // `rwkv_replay_learning_start_wins_over_a_later_forget` on purpose: see
+        // the spec entry.
+        assert_eq!(replay_start_rows(&col, 700)?, vec![]);
         Ok(())
     }
 }

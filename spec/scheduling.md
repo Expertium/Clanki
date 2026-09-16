@@ -383,8 +383,32 @@ row are dropped, not merged, and the start row always gets the first-review
 treatment: the elapsed sentinel and no previous-interval features. Manual rows
 never enter the sequence: Forget (a manual row with a zero ease factor) only
 cuts the history, and Set Due Date (a manual row with a non-zero ease factor)
-is not a cut point, because it does not reset the card's memory. Only the last
-Forget counts.
+is not a cut point, because it does not reset the card's memory. Modern Anki
+writes Set Due Date as a Rescheduled row with a zero ease, and old Anki wrote it
+as a Manual row with a non-zero ease factor; neither is rated, so neither cuts.
+Only the last Forget counts.
+
+The start row always carries the learn-start state code, whatever the row's own
+kind, because the training dataset gives the first surviving row of every card
+that code. The deck option that measures a first review's elapsed time from the
+card's creation is the one exception to the first-row treatment: it reaches a
+**real Learning start only**, never a fallback start row. A fallback start row
+is the first row the collection holds, not a review known to be the card's
+first, so the card's creation age would invent an interval that never happened.
+Such a row keeps the elapsed sentinel.
+
+The Forget cut applies **only** to a card with no rated Learning row. A card
+that has a learning start keeps that start row, so a Forget after it is ignored
+and the rows from before it stay. A card with no learning start whose last row
+is a Forget gets no start row at all and leaves the replay, because the Forget
+reset it and no rated row follows.
+
+**This asymmetry is deliberate; do not "fix" it.** The training dataset builder
+drops manual rows before it masks, so a Forget is invisible there unless a
+Learning row follows it. Rule 1 therefore reproduces training exactly for a card
+that has a learning start. The cut exists only for the card that training never
+saw: the one with no Learning row, where the Forget is the only evidence of a
+reset.
 
 **Why:** Andrew, 2026-09-16. A review log with no Learning row comes from an
 import, from another application or from an old scheduler. Before this entry
@@ -397,8 +421,13 @@ may cut at.
 `rwkv_replay_card_without_a_learning_row_starts_at_its_first_rated_row`,
 `rwkv_replay_card_without_a_learning_row_starts_after_its_forget`,
 `rwkv_replay_set_due_date_does_not_cut_the_history`,
-`rwkv_replay_uses_only_the_last_forget`
-(`rslib/src/storage/revlog/mod.rs`).
+`rwkv_replay_uses_only_the_last_forget`,
+`rwkv_replay_learning_start_wins_over_a_later_forget`,
+`rwkv_replay_drops_a_card_whose_last_row_is_a_forget`
+(`rslib/src/storage/revlog/mod.rs`) and
+`test_historical_fallback_start_row_gets_the_learn_start_state`,
+`test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-exact-elapsed
 
