@@ -81,16 +81,23 @@ class DeckBrowser:
         self._refresh_needed = False
         self._rwkv_count_generation = 0
         self._rwkv_pending_deck_ids: set[int] = set()
+        self._pending_collapse: dict[int, bool] = {}
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
         self.web.set_bridge_command(self._linkHandler, self)
         # redraw top bar for theme change
         self.mw.toolbar.redraw()
-        self.refresh()
+        # a fresh page of a screen the user has just opened: at the top
+        self._refresh(keep_position=False)
 
     def refresh(self) -> None:
-        self._renderPage()
+        """Draw the deck list again with the counts read again. The scroll
+        position of the open page stays (spec ui.deck-list-refresh-scroll)."""
+        self._refresh(keep_position=True)
+
+    def _refresh(self, *, keep_position: bool) -> None:
+        self._renderPage(keep_position=keep_position)
         self._refresh_needed = False
 
     def refresh_if_needed(self) -> None:
@@ -202,7 +209,13 @@ class DeckBrowser:
 </center>
 """
 
-    def _renderPage(self, reuse: bool = False) -> None:
+    def _renderPage(self, reuse: bool = False, keep_position: bool = False) -> None:
+        """Draw the deck list. `reuse` draws it again from the data already
+        read; otherwise the counts are read again in the background first.
+        `keep_position` keeps the scroll position of the open page: the deck
+        table is swapped in the open page where that gives the same page (the
+        path a collapse uses), and the position is saved and put back around
+        the draw otherwise."""
         if not reuse:
             self.cancel_rwkv_count_refresh()
             generation = self._rwkv_count_generation
@@ -228,15 +241,7 @@ class DeckBrowser:
                     heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
                 return data
 
-            def success(output: RenderData) -> None:
-                if generation != self._rwkv_count_generation:
-                    return
-                self._render_data = output
-                self._rwkv_pending_deck_ids = self._deck_ids_in_rwkv_scopes(
-                    output.tree,
-                    output.rwkv_count_scope_ids,
-                )
-                self.__renderPage(None)
+            def start_rwkv_counts(output: RenderData) -> None:
                 aqt.rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
                     self.mw,
                     output.rwkv_count_scope_ids,
@@ -247,6 +252,30 @@ class DeckBrowser:
                         clear_pending=clear_pending,
                     ),
                 )
+
+            def success(output: RenderData) -> None:
+                if generation != self._rwkv_count_generation:
+                    return
+                self._apply_pending_collapse(output.tree)
+                self._render_data = output
+                self._rwkv_pending_deck_ids = self._deck_ids_in_rwkv_scopes(
+                    output.tree,
+                    output.rwkv_count_scope_ids,
+                )
+                keep = keep_position and self._page_is_drawn()
+                if keep and self._redraw_tree_in_place():
+                    # the counts changed in the open page; nothing moved
+                    start_rwkv_counts(output)
+                elif keep:
+
+                    def draw_at_offset(offset: int | None) -> None:
+                        self.__renderPage(offset)
+                        start_rwkv_counts(output)
+
+                    self.web.evalWithCallback("window.pageYOffset", draw_at_offset)
+                else:
+                    self.__renderPage(None)
+                    start_rwkv_counts(output)
 
             QueryOp(
                 parent=self.mw,
@@ -407,6 +436,37 @@ class DeckBrowser:
                 json.dumps(self._review_limit_labels(self._render_data.tree)),
             )
         )
+
+    def _page_is_drawn(self) -> bool:
+        """True when a deck list is the page on screen, so that its scroll
+        position can be read and put back. An add-on may call refresh() from
+        another screen, whose page has no deck list to keep in place."""
+        return (
+            getattr(self, "_rendered_stats", None) is not None
+            and getattr(self.mw, "state", None) == "deckBrowser"
+        )
+
+    def _apply_pending_collapse(self, tree: DeckTreeNode) -> None:
+        """Put a collapse or an expand that the user just made into data that
+        was read again. A refresh that was already reading the counts when the
+        click came would otherwise draw the deck open again, and the page would
+        move under the scroll position that is put back. An entry goes away
+        once the data that is read has it."""
+        if not self._pending_collapse:
+            return
+        remaining: dict[int, bool] = {}
+
+        def walk(node: DeckTreeNode) -> None:
+            wanted = self._pending_collapse.get(node.deck_id)
+            if wanted is not None and node.collapsed != wanted:
+                node.collapsed = wanted
+                remaining[node.deck_id] = wanted
+            for child in node.children:
+                walk(child)
+
+        for child in tree.children:
+            walk(child)
+        self._pending_collapse = remaining
 
     def _scrollToOffset(self, offset: int) -> None:
         self.web.eval("window.scrollTo(0, %d, 'instant');" % offset)
@@ -609,6 +669,7 @@ class DeckBrowser:
         node = self.mw.col.decks.find_deck_in_tree(self._render_data.tree, did)
         if node:
             node.collapsed = not node.collapsed
+            self._pending_collapse[int(did)] = node.collapsed
             set_deck_collapsed(
                 parent=self.mw,
                 deck_id=did,
