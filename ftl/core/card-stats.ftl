@@ -31,6 +31,9 @@ card-stats-fsrs-stability = Stability
 card-stats-fsrs-difficulty = Difficulty
 card-stats-fsrs-computed-r = FSRS computed R
 card-stats-fsrs-retrievability = Retrievability
+# Simple mode's plain wording for retrievability: how likely you are to recall
+# the card right now. Advanced mode keeps the technical word above.
+card-stats-recall-probability = Probability of recall
 card-stats-fsrs-forgetting-curve-title = Forgetting Curve
 card-stats-fsrs-forgetting-curve-first-week = First Week
 card-stats-fsrs-forgetting-curve-first-month = First Month

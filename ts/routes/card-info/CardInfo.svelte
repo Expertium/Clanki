@@ -40,6 +40,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {desiredRetention}
                     fsrsParams={stats.fsrsParams}
                     rwkvCurve={stats.rwkvCurve}
+                    advancedUi={stats.advancedUi}
                 />
             </Row>
         {/if}

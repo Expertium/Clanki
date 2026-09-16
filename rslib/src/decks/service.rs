@@ -4,6 +4,7 @@ use anki_proto::decks::deck::kind_container::Kind as DeckKind;
 use anki_proto::generic;
 
 use crate::collection::Collection;
+use crate::config::BoolKey;
 use crate::decks::filtered::search_order_labels;
 use crate::decks::Deck;
 use crate::decks::DeckId;
@@ -217,7 +218,8 @@ impl crate::services::DecksService for Collection {
     }
 
     fn filtered_deck_order_labels(&mut self) -> error::Result<generic::StringList> {
-        Ok(search_order_labels(&self.tr).into())
+        let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
+        Ok(search_order_labels(&self.tr, advanced_ui).into())
     }
 
     fn set_deck_collapsed(
@@ -1012,6 +1014,38 @@ mod tests {
             "labels should be unique, got {:?}",
             labels.vals
         );
+    }
+
+    /// spec/ui.md, `ui.simple-recall-wording`.
+    #[test]
+    fn simple_mode_names_the_filtered_deck_orders_in_plain_words() {
+        let mut col = Collection::new();
+
+        let simple = DecksService::filtered_deck_order_labels(&mut col).unwrap();
+        assert!(
+            !simple
+                .vals
+                .iter()
+                .any(|label| label.to_lowercase().contains("retrievability")),
+            "Simple mode should not say retrievability, got {:?}",
+            simple.vals
+        );
+        assert!(simple
+            .vals
+            .contains(&"Ascending probability of recall".to_string()));
+        assert!(simple
+            .vals
+            .contains(&"Descending probability of recall".to_string()));
+
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)
+            .unwrap();
+        let advanced = DecksService::filtered_deck_order_labels(&mut col).unwrap();
+        assert!(advanced
+            .vals
+            .contains(&"Ascending retrievability".to_string()));
+        assert!(advanced
+            .vals
+            .contains(&"Descending retrievability".to_string()));
     }
 
     #[test]
