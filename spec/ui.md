@@ -48,8 +48,10 @@ redraws as above; it does not wait for Save, and closing without saving
 keeps the new mode. The Stats page has the same control at the top right of
 its top bar, with the same effect: in Simple mode the page shows only the
 Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
-order; Advanced mode shows every graph. The page takes the mode when it
-loads and from its own switch. Hidden settings keep their stored values and
+order; Advanced mode shows every graph. The note editor has the same control
+at the right end of its toolbar row, and Simple mode there hides a part of
+the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
+mode when it loads and from its own switch. Hidden settings keep their stored values and
 keep taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
@@ -74,7 +76,44 @@ entries),
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
 once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
-graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
+graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
+"Simple mode shows only the Simple editor buttons, in toolbar order"
+(`ts/routes/editor/ui-mode.test.ts`).
+
+## ui.editor-simple-view
+
+Given the note editor (Add, Edit Current, the Browser's editing pane) in
+Simple mode (`ui.mode-switch`), its toolbar shows Fields..., Bold, Italic,
+Underline, the text colour, Remove formatting and Attach pictures/audio/video,
+and hides Cards..., the editor's own settings gear, Superscript, Subscript,
+the text highlight colour, Unordered list, Ordered list, Alignment, Record
+audio and Equations (MathJax/LaTeX). Advanced mode shows every one of them.
+The buttons an add-on adds (`editor_did_init_buttons`,
+`editor_did_init_left_buttons`) show in both modes. The field list, the
+audio play buttons inside the fields and the Tags row show in both modes.
+A hidden button stays in the page and is only hidden from sight, so its
+keyboard shortcut still runs it (Ctrl+L for Cards..., Ctrl+= and Ctrl+Shift+= for
+Superscript and Subscript, Ctrl+, and Ctrl+. for the lists, Ctrl+Shift+, and
+Ctrl+Shift+. for the indents, F5 for Record audio, the Ctrl+M and Ctrl+T
+combinations for the equations), its entry stays in the Remove formatting
+list, and the format it registers keeps reading and writing existing HTML.
+The switch sits at the right end of the toolbar row and changes the toolbar
+at once: the note is not reloaded and text the user has typed is kept.
+
+**Why:** plan item 2 — the Simplified/Advanced split, Simple by default.
+Andrew, 2026-09-16, chose this list: a beginner writes text, colours it,
+attaches media and tags the note; card templates, the block formatting and
+MathJax are power-user tools. Tags stay in both modes because tags are data,
+and Anki itself writes the leech tag. Add-on buttons stay because Clanki must
+not hide a feature the user installed on purpose. Hiding a button is a UI
+change, not a behavior change, so the shortcut and the feature keep working.
+
+**Pinned by:** "Simple mode shows only the Simple editor buttons, in toolbar
+order", "Advanced mode shows every editor button", "the Advanced-only buttons
+are the ones Simple drops" (`ts/routes/editor/ui-mode.test.ts`); "the editor
+switch changes the toolbar at once and keeps the typed text", "a hidden
+button keeps its shortcut", "add-on buttons show in both modes"
+(`ts/tests/e2e/editor-ui-mode.spec.ts`).
 
 ## ui.simple-recall-wording
 
