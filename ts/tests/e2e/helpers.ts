@@ -1,7 +1,10 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { ConfigKey_Bool, GetConfigBoolRequest } from "@generated/anki/config_pb";
+import { Bool } from "@generated/anki/generic_pb";
 import type { Locator, Page, Request, Response } from "@playwright/test";
+import { expect } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // RPC URL helpers
@@ -23,6 +26,41 @@ export function isRpc(method: string): (req: Request) => boolean {
 
 export function isRpcResponse(method: string): (resp: Response) => boolean {
     return (resp) => isRpc(method)(resp.request());
+}
+
+// ---------------------------------------------------------------------------
+// UI mode (spec/ui.md, `ui.mode-switch`)
+//
+// mediasrv answers `setAdvancedUi` (qt/aqt/mediasrv.py) for the mode; the raw
+// backend method `setConfigBool` is not in its `exposed_backend_list`, so a
+// page cannot write the flag directly. `getConfigBool` is exposed and reads it.
+// ---------------------------------------------------------------------------
+
+async function rpcPost(page: Page, method: string, body: Uint8Array): Promise<Buffer> {
+    const response = await page.request.post(rpcUrl(method), {
+        headers: { "Content-Type": "application/binary" },
+        data: Buffer.from(body),
+    });
+    expect(response.ok(), `${rpcUrl(method)} answered ${response.status()}`).toBeTruthy();
+    return response.body();
+}
+
+/** The collection's Advanced UI flag; false = Simple mode, the default. */
+export async function advancedUi(page: Page): Promise<boolean> {
+    const request = new GetConfigBoolRequest({ key: ConfigKey_Bool.ADVANCED_UI });
+    const body = await rpcPost(page, "getConfigBool", request.toBinary());
+    return Bool.fromBinary(new Uint8Array(body)).val;
+}
+
+/**
+ * Switches the collection between Simple and Advanced mode, as the main
+ * window's toolbar switch does. The mediasrv handler hands the change to the
+ * Qt main thread and answers at once, so the flag is read back until the
+ * change has landed.
+ */
+export async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
+    await rpcPost(page, "setAdvancedUi", new Bool({ val: on }).toBinary());
+    await expect.poll(() => advancedUi(page)).toBe(on);
 }
 
 // ---------------------------------------------------------------------------
