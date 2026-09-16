@@ -1435,7 +1435,9 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
     S90, and the curve's recall now as the card's retrievability. The reviews
     before it keep no FSRS-7 memory state, and neither does the latest one
     without a curve: card info never mixes two algorithms (spec
-    ui.card-info-rwkv-curve, ui.card-info-one-algorithm)."""
+    ui.card-info-rwkv-curve, ui.card-info-one-algorithm). `pending` says that
+    RWKV is not ready yet, so that card info asks again and shows
+    "Calculating..." meanwhile (spec ui.card-info-curve-messages)."""
     if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
         return
     response.rwkv_curve.SetInParent()
@@ -1449,9 +1451,11 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
         if latest is not None
         else None
     )
-    curve = aqt.rwkv_scheduler.rwkv_card_info_curve(
+    result = aqt.rwkv_scheduler.rwkv_card_info_curve_result(
         reviewer, card, elapsed_days=elapsed_days
     )
+    curve = result.curve
+    response.rwkv_curve.pending = result.pending
     if curve is not None:
         response.rwkv_curve.elapsed_days.extend(curve.elapsed_days)
         response.rwkv_curve.recall.extend(curve.recall)

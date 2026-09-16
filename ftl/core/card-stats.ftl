@@ -37,6 +37,17 @@ card-stats-fsrs-forgetting-curve-first-month = First Month
 card-stats-fsrs-forgetting-curve-first-year = First Year
 card-stats-fsrs-forgetting-curve-all-time = All Time
 card-stats-fsrs-forgetting-curve-desired-retention = Desired Retention
+# Shown in the Forgetting Curve box when the card has never been answered, so
+# no curve can exist yet.
+card-stats-forgetting-curve-no-answer-yet = No curve yet. It appears after you answer this card.
+# Shown in the Forgetting Curve box when the card was reset, so the scheduler
+# starts again from nothing.
+card-stats-forgetting-curve-card-was-reset = This card was reset. The curve appears after you answer it again.
+# Shown in the Forgetting Curve box when the card's reviews are all on one
+# day, so the scheduler has no starting point for a curve.
+card-stats-forgetting-curve-not-enough-history = No curve yet. This card needs a review on a later day.
+# Shown in the Forgetting Curve box when RWKV-Curve has no curve for this card.
+card-stats-forgetting-curve-no-rwkv-curve = RWKV-Curve has no curve for this card yet. It gets one after your next answer.
 
 ## Window Titles
 

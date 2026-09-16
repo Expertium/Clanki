@@ -3,7 +3,15 @@
 
 import { expect, test, vi } from "vitest";
 
-import { chartRevlog, prepareData, rwkvRecallAt, stabilityS90 } from "./forgetting-curve";
+import * as tr from "@generated/ftl";
+
+import {
+    chartRevlog,
+    forgettingCurveMessage,
+    prepareData,
+    rwkvRecallAt,
+    stabilityS90,
+} from "./forgetting-curve";
 
 function fsrs7Params(): number[] {
     return [
@@ -131,12 +139,26 @@ function twoReviews(): any {
     return [
         {
             time: Date.parse("2024-01-11T00:00:00Z") / 1000,
+            reviewKind: 1,
+            buttonChosen: 3,
+            ease: 2500,
             memoryState: { stability: 30, stabilityInternal: 20, difficulty: 5 },
         },
         {
             time: Date.parse("2024-01-01T00:00:00Z") / 1000,
+            reviewKind: 0,
+            buttonChosen: 3,
+            ease: 2500,
             memoryState: { stability: 12, stabilityInternal: 10, difficulty: 5 },
         },
+    ];
+}
+
+/** A reset (Forget): a manual entry with ease 0 and no answer after it. */
+function resetThenNothing(): any {
+    return [
+        { time: Date.parse("2024-01-12T00:00:00Z") / 1000, reviewKind: 4, buttonChosen: 0, ease: 0 },
+        ...twoReviews(),
     ];
 }
 
@@ -146,6 +168,36 @@ test("an RWKV-Curve card's chart starts at its last review: no FSRS-7 segments",
         twoReviews()[0].time,
     ]);
     expect(chartRevlog(twoReviews())).toHaveLength(2);
+});
+
+// Pins spec/ui.md#ui.card-info-curve-messages
+
+test("a reset card still draws RWKV-Curve's curve from its last answer", () => {
+    const rwkvCurve = { elapsedDays: [0, 10], recall: [1, 0.5], s90: 2 };
+    // FSRS-7 has no memory state after a reset, so its chart is empty...
+    expect(chartRevlog(resetThenNothing())).toHaveLength(0);
+    // ...but RWKV's stored curve needs none, so the chart draws.
+    expect(chartRevlog(resetThenNothing(), rwkvCurve).map((entry) => entry.time)).toEqual([
+        twoReviews()[0].time,
+    ]);
+});
+
+test("the forgetting curve says why it has no curve, and never says NO DATA", () => {
+    const rwkvCurve = { elapsedDays: [0, 10], recall: [1, 0.5], s90: 2 };
+    // a curve draws: no message
+    expect(forgettingCurveMessage(twoReviews())).toBeUndefined();
+    expect(forgettingCurveMessage(twoReviews(), rwkvCurve)).toBeUndefined();
+    // RWKV is not ready yet
+    expect(forgettingCurveMessage(twoReviews(), { elapsedDays: [], recall: [], pending: true }))
+        .toBe(tr.cardStatsCalculating());
+    // RWKV is ready but has no curve for the card
+    expect(forgettingCurveMessage(twoReviews(), { elapsedDays: [], recall: [] }))
+        .toBe(tr.cardStatsForgettingCurveNoRwkvCurve());
+    // the card has never been answered
+    expect(forgettingCurveMessage([])).toBe(tr.cardStatsForgettingCurveNoAnswerYet());
+    // FSRS-7 after a reset
+    expect(forgettingCurveMessage(resetThenNothing()))
+        .toBe(tr.cardStatsForgettingCurveCardWasReset());
 });
 
 test("after the last review an RWKV-Curve card follows RWKV's curve and S90", () => {

@@ -18590,3 +18590,56 @@ def test_rwkv_card_info_curve_is_none_without_a_curve(
     assert rwkv_scheduler.rwkv_card_info_curve(object(), SimpleNamespace(id=42)) is None
     # a card of another algorithm never asks RWKV
     assert bool(backend.calls) == curve_preset
+    # RWKV answered: the card simply has no curve, so card info does not ask
+    # again (spec ui.card-info-curve-messages)
+    result = rwkv_scheduler.rwkv_card_info_curve_result(
+        object(), SimpleNamespace(id=42)
+    )
+    assert result.curve is None and not result.pending
+
+
+def test_rwkv_card_info_curve_result_is_pending_while_rwkv_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-curve-messages"""
+    from contextlib import contextmanager
+
+    backend = _CardCurveBackend((tuple([1.0]), 3.25))
+    _card_curve_ready(monkeypatch, backend)
+
+    # 1. the state is still loading
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_card_info",
+        lambda reviewer: False,
+    )
+    result = rwkv_scheduler.rwkv_card_info_curve_result(
+        object(), SimpleNamespace(id=42)
+    )
+    assert result.curve is None and result.pending
+
+    # 2. the state is there but carries no token yet
+    _card_curve_ready(monkeypatch, backend)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_capture_reviewer_backend_prediction_state_token",
+        lambda reviewer, expected_backend: None,
+    )
+    result = rwkv_scheduler.rwkv_card_info_curve_result(
+        object(), SimpleNamespace(id=42)
+    )
+    assert result.curve is None and result.pending
+
+    # 3. another thread holds the state
+    _card_curve_ready(monkeypatch, backend)
+
+    @contextmanager
+    def busy(**_kwargs: Any) -> Iterator[object]:
+        yield None
+
+    monkeypatch.setattr(rwkv_scheduler, "_try_reviewer_backend_prediction_access", busy)
+    result = rwkv_scheduler.rwkv_card_info_curve_result(
+        object(), SimpleNamespace(id=42)
+    )
+    assert result.curve is None and result.pending
+    assert not backend.calls

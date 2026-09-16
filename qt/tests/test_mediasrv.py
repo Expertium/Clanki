@@ -470,10 +470,10 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         reviewer: object, card: object, *, elapsed_days: float | None = None
     ) -> object:
         elapsed.append(elapsed_days)
-        return curve if has_curve else None
+        return rwkv.RwkvCardCurveResult(curve=curve if has_curve else None)
 
     monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
-    monkeypatch.setattr(rwkv, "rwkv_card_info_curve", card_info_curve)
+    monkeypatch.setattr(rwkv, "rwkv_card_info_curve_result", card_info_curve)
     monkeypatch.setattr("aqt.mediasrv.time.time", lambda: 200 + 2 * 86_400)
     response = _card_stats_with_two_reviews()
 
@@ -496,11 +496,39 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         assert not response.rwkv_curve.HasField("current_recall")
         # no FSRS-7 value stands in for the missing curve
         assert not response.revlog[1].HasField("memory_state")
+    # RWKV answered, so card info does not ask again
+    assert not response.rwkv_curve.pending
     # older reviews keep no FSRS-7 memory state; the newer manual entry and
     # the card's own state stay (card info decides which rows to show)
     assert not response.revlog[2].HasField("memory_state")
     assert response.revlog[0].memory_state.stability == 30.0
     assert response.memory_state.stability == 30.0
+
+
+def test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-curve-messages"""
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(
+        rwkv,
+        "rwkv_card_info_curve_result",
+        lambda reviewer, card, *, elapsed_days=None: rwkv.RwkvCardCurveResult(
+            curve=None, pending=True
+        ),
+    )
+    response = _card_stats_with_two_reviews()
+
+    _add_rwkv_curve(response, object(), object())
+
+    assert response.HasField("rwkv_curve")
+    assert response.rwkv_curve.pending
+    assert not response.rwkv_curve.elapsed_days
+    # still no FSRS-7 value while RWKV is not ready
+    assert not response.revlog[1].HasField("memory_state")
 
 
 def test_card_info_has_no_rwkv_curve_for_other_algorithms(

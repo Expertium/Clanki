@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         TimeRange,
         calculateMaxDays,
         chartRevlog,
+        forgettingCurveMessage,
         type RwkvCurvePoints,
     } from "./forgetting-curve";
     import { defaultGraphBounds } from "../graphs/graph-helpers";
@@ -29,6 +30,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const title = tr.cardStatsFsrsForgettingCurveTitle();
 
     $: filteredRevlog = chartRevlog(revlog, rwkvCurve);
+    // why there is no curve, in plain words, instead of "NO DATA"
+    // (spec ui.card-info-curve-messages)
+    $: emptyMessage = forgettingCurveMessage(revlog, rwkvCurve);
     $: maxDays = calculateMaxDays(filteredRevlog, TimeRange.AllTime);
 
     let defaultTimeRange = TimeRange.Week;
@@ -102,7 +106,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <svg bind:this={svg} viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
             <AxisTicks {bounds} />
             <HoverColumns />
-            <NoDataOverlay {bounds} />
+            <NoDataOverlay {bounds} text={emptyMessage} />
         </svg>
     </Graph>
 </div>

@@ -8715,53 +8715,78 @@ class RwkvCardCurve:
     current_recall: float | None = None
 
 
-def rwkv_card_info_curve(
+@dataclass(frozen=True)
+class RwkvCardCurveResult:
+    """What `rwkv_card_info_curve_result` found: the curve, or why there is
+    none (spec ui.card-info-curve-messages)."""
+
+    curve: RwkvCardCurve | None
+    # True while RWKV could not answer yet: its state is still loading, or
+    # another thread holds it. A later request gets the curve.
+    pending: bool = False
+
+
+def rwkv_card_info_curve_result(
     reviewer: object, card: object, *, elapsed_days: float | None = None
-) -> RwkvCardCurve | None:
-    """RWKV-Curve's forgetting curve for card info: the curve RWKV stored for
-    the card at its last answered review, and that curve's S90; with
-    `elapsed_days` (the time since that review), also the curve's recall
-    then, the card's retrievability (spec ui.card-info-one-algorithm). None for a
-    card whose preset does not run RWKV-Curve, and while RWKV has no curve
-    for the card (state loading, busy, no review yet) (spec
-    ui.card-info-rwkv-curve)."""
+) -> RwkvCardCurveResult:
+    """RWKV-Curve's forgetting curve for card info, with the reason when there
+    is none: the curve RWKV stored for the card at its last answered review,
+    and that curve's S90; with `elapsed_days` (the time since that review),
+    also the curve's recall then, the card's retrievability (spec
+    ui.card-info-one-algorithm). No curve for a card whose preset does not run
+    RWKV-Curve, and while RWKV has no curve for the card (spec
+    ui.card-info-rwkv-curve). `pending` separates "RWKV is not ready" from
+    "the card has no curve": card info asks again only while it is true (spec
+    ui.card-info-curve-messages)."""
     backend = _reviewer_backend
     card_id = _card_id(card)
     if backend is None or card_id is None or not rwkv_review_enabled(reviewer, card):
-        return None
+        return RwkvCardCurveResult(curve=None)
     try:
         if not _prepare_reviewer_backend_for_card_info(reviewer):
-            return None
+            return RwkvCardCurveResult(curve=None, pending=True)
         state_token = _capture_reviewer_backend_prediction_state_token(
             reviewer,
             expected_backend=backend,
         )
         if state_token is None:
-            return None
+            return RwkvCardCurveResult(curve=None, pending=True)
         with _try_reviewer_backend_prediction_access(
             expected_state_token=state_token,
         ) as current_backend:
+            if current_backend is None:
+                # another thread holds the state; it is free again later
+                return RwkvCardCurveResult(curve=None, pending=True)
             card_curve = getattr(current_backend, "card_curve", None)
             if not callable(card_curve):
-                return None
+                return RwkvCardCurveResult(curve=None)
             days = RWKV_CARD_INFO_CURVE_DAYS
             if elapsed_days is not None:
                 days = (*days, elapsed_days)
             result = card_curve(card_id, days)
     except Exception:
         logger.exception("RWKV card info curve failed")
-        return None
+        return RwkvCardCurveResult(curve=None, pending=True)
     if result is None:
-        return None
+        return RwkvCardCurveResult(curve=None)
     recall, s90 = result
     values = tuple(float(value) for value in recall)
     grid_size = len(RWKV_CARD_INFO_CURVE_DAYS)
-    return RwkvCardCurve(
-        elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
-        recall=values[:grid_size],
-        s90=float(s90),
-        current_recall=values[grid_size] if len(values) > grid_size else None,
+    return RwkvCardCurveResult(
+        curve=RwkvCardCurve(
+            elapsed_days=RWKV_CARD_INFO_CURVE_DAYS,
+            recall=values[:grid_size],
+            s90=float(s90),
+            current_recall=values[grid_size] if len(values) > grid_size else None,
+        )
     )
+
+
+def rwkv_card_info_curve(
+    reviewer: object, card: object, *, elapsed_days: float | None = None
+) -> RwkvCardCurve | None:
+    """`rwkv_card_info_curve_result`'s curve, without the reason."""
+    return rwkv_card_info_curve_result(reviewer, card, elapsed_days=elapsed_days).curve
 
 
 def _card_info_review_candidate(reviewer: object, card: object) -> RwkvReviewCandidate:

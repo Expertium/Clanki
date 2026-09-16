@@ -99,6 +99,8 @@ export interface RwkvCurvePoints {
     elapsedDays: number[];
     recall: number[];
     s90?: number;
+    /** True while RWKV is not ready; the curve arrives in a later request. */
+    pending?: boolean;
 }
 
 /** The recall of `curve` at `days`, linear between its points. */
@@ -163,14 +165,57 @@ export function filterRevlog(revlog: RevlogEntry[]): RevlogEntry[] {
     return result.filter((entry) => filterRevlogEntryByReviewKind(entry));
 }
 
+/** The card's latest answered review, if it has one. */
+export function latestAnsweredReview(revlog: RevlogEntry[]): RevlogEntry | undefined {
+    return revlog.find((entry) => entry.buttonChosen > 0 && filterRevlogEntryByReviewKind(entry));
+}
+
 /**
  * The reviews the chart starts its segments at: all of them, or for an
- * RWKV-Curve card only the last one, because only RWKV's curve after it is
- * known and the chart never mixes two algorithms (spec ui.card-info-rwkv-curve).
+ * RWKV-Curve card only the last answered one, because only RWKV's curve after
+ * it is known and the chart never mixes two algorithms (spec
+ * ui.card-info-rwkv-curve). RWKV's curve needs no FSRS-7 memory state, so the
+ * RWKV-Curve chart also draws for a card that FSRS-7 has no memory state for,
+ * a card that was reset for example (spec ui.card-info-curve-messages).
  */
 export function chartRevlog(revlog: RevlogEntry[], rwkvCurve?: RwkvCurvePoints): RevlogEntry[] {
-    const filtered = filterRevlog(revlog);
-    return rwkvCurve ? filtered.slice(0, 1) : filtered;
+    if (rwkvCurve) {
+        const latest = latestAnsweredReview(revlog);
+        return latest ? [latest] : [];
+    }
+    return filterRevlog(revlog);
+}
+
+/**
+ * The message the forgetting-curve box shows instead of a curve, or undefined
+ * when it draws one. Each message says why there is no curve, in the
+ * collection's own algorithm; none of them falls back to the other algorithm
+ * (spec ui.card-info-curve-messages).
+ */
+export function forgettingCurveMessage(
+    revlog: RevlogEntry[],
+    rwkvCurve?: RwkvCurvePoints,
+): string | undefined {
+    if (rwkvCurve?.pending) {
+        return tr.cardStatsCalculating();
+    }
+    const latest = latestAnsweredReview(revlog);
+    if (latest === undefined) {
+        return tr.cardStatsForgettingCurveNoAnswerYet();
+    }
+    if (rwkvCurve !== undefined && rwkvCurve.elapsedDays.length === 0) {
+        return tr.cardStatsForgettingCurveNoRwkvCurve();
+    }
+    if (chartRevlog(revlog, rwkvCurve).length > 0) {
+        return undefined;
+    }
+    const reset = revlog.find(
+        (entry) => entry.reviewKind === RevlogEntry_ReviewKind.MANUAL && entry.ease === 0,
+    );
+    if (reset !== undefined && reset.time >= latest.time) {
+        return tr.cardStatsForgettingCurveCardWasReset();
+    }
+    return tr.cardStatsForgettingCurveNotEnoughHistory();
 }
 
 export function prepareData(
