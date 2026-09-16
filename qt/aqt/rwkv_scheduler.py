@@ -267,6 +267,10 @@ _rwkv_stats_prepare_in_flight: dict[
 # the key of the last preparation that published a score map
 # (spec ui.stats-rwkv-scores-kept)
 _rwkv_stats_prepare_memo: RwkvStatsPrepareKey | None = None
+# cancel_stats_scoring() raises this counter when the Stats window closes; a
+# Stats request that started at an older value stops at its next batch
+# boundary (spec ui.stats-scoring-cancelled)
+_rwkv_stats_scoring_generation = 0
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_build_started = False
@@ -1906,6 +1910,53 @@ class RwkvStatefulReviewerBackend:
                 current_s90=float(current_s90) if current_s90 else None,
             )
             for retrievability, current_interval, current_s90, unrounded in outputs
+        ]
+
+    @property
+    def supports_resident_curve_retrievability(self) -> bool:
+        """True when the runtime can predict curve retrievability in place."""
+
+        return callable(
+            getattr(
+                self._runtime,
+                "predict_curve_retrievability_many_from_warm_up",
+                None,
+            )
+        )
+
+    def predict_curve_retrievability_inputs_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[float | None] | None:
+        """Query-only curve retrievability from the resident state.
+
+        This is the one number the Stats Retrievability graph needs under
+        RWKV-Curve. The full prediction path additionally runs the four
+        simulated-answer passes and the current-interval crossing search,
+        serializes each card's state across the bridge, hashes it, and holds
+        the GIL; none of that changes this value. Returns None when the
+        runtime cannot do it, so callers fall back to the full path; a `None`
+        inside the list means the card has no curve value.
+        """
+
+        predict_many = getattr(
+            self._runtime,
+            "predict_curve_retrievability_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            return None
+        if not review_inputs:
+            return []
+        if any(not review_input.is_query for review_input in review_inputs):
+            return None
+
+        outputs = predict_many(review_inputs)
+        if len(outputs) != len(review_inputs):
+            raise ValueError("RWKV curve retrievability prediction count mismatch")
+        return [
+            None if curve_retrievability is None else float(curve_retrievability)
+            for curve_retrievability in outputs
         ]
 
     def predict_review_requests_uncached(
@@ -4768,17 +4819,9 @@ def _rwkv_grade_now_review_input(
 def _rwkv_grade_now_card_histories(
     rows: Sequence[Sequence[object]],
 ) -> dict[int, _RwkvGradeNowCardHistory]:
-    retained_start_by_card = _benchmark_retained_historical_review_starts(rows)
     histories: dict[int, _RwkvGradeNowCardHistory] = {}
-    for index, row in enumerate(rows):
-        if (
-            _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
-            is None
-        ):
+    for row in rows:
+        if _retained_historical_review_state(row) is None:
             continue
         if len(row) < 8:
             raise _RwkvGradeNowReconciliationUnavailable(
@@ -5907,6 +5950,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    cancel_when_stats_closes: bool = False,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
@@ -5935,6 +5979,9 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return RwkvStatsPreparationStatus.UNAVAILABLE
 
     start = time.monotonic()
+    cancel_generation = (
+        _rwkv_stats_scoring_generation_now() if cancel_when_stats_closes else None
+    )
     prepare_key: RwkvStatsPrepareKey | None = None
     prepare_future: Future[RwkvStatsPreparationStatus] | None = None
     prepare_generation: int | None = None
@@ -6035,6 +6082,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_instant_due=prepare_instant_due,
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
+            cancel_generation=cancel_generation,
         )
         search_score_elapsed_ms = (time.monotonic() - search_score_start) * 1000
         if search_score_result is not None:
@@ -6148,6 +6196,15 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return prepare_status
     except _ReviewerBackendPredictionAborted:
         logger.debug("RWKV stats retrievability scoring aborted: backend stale")
+        return RwkvStatsPreparationStatus.FAILED
+    except _RwkvStatsScoringCancelled:
+        # the Stats window closed: nothing was published, and the status stays
+        # FAILED so the memo is dropped (spec ui.stats-scoring-cancelled)
+        logger.debug(
+            "RWKV stats retrievability scoring cancelled: the Stats window closed "
+            "(search=%r)",
+            search,
+        )
         return RwkvStatsPreparationStatus.FAILED
     except Exception:
         logger.exception("RWKV stats retrievability scoring failed")
@@ -6552,6 +6609,41 @@ def forget_rwkv_stats_scores() -> None:
 
     with _rwkv_stats_prepare_lock:
         _rwkv_stats_prepare_memo = None
+
+
+class _RwkvStatsScoringCancelled(Exception):
+    """The Stats window closed while its RWKV scoring was still running."""
+
+
+def cancel_stats_scoring() -> None:
+    """Stop the RWKV scoring of the Stats requests that are running now.
+
+    The Stats window calls this when it closes (spec
+    ui.stats-scoring-cancelled). A request that started before this call stops
+    at its next batch boundary, which is outside the RWKV lock, so the lock is
+    free again at once and the main window no longer waits for a page that is
+    gone. A request that starts afterwards is unaffected.
+    """
+
+    global _rwkv_stats_scoring_generation
+
+    with _rwkv_stats_prepare_lock:
+        _rwkv_stats_scoring_generation += 1
+
+
+def _rwkv_stats_scoring_generation_now() -> int:
+    with _rwkv_stats_prepare_lock:
+        return _rwkv_stats_scoring_generation
+
+
+def _raise_if_stats_scoring_cancelled(cancel_generation: int | None) -> None:
+    """Stop a cancellable Stats scoring at a batch boundary."""
+
+    if (
+        cancel_generation is not None
+        and _rwkv_stats_scoring_generation_now() != cancel_generation
+    ):
+        raise _RwkvStatsScoringCancelled
 
 
 def _begin_rwkv_stats_prepare(
@@ -16420,18 +16512,12 @@ def _historical_rwkv_review_inputs(
                 and row[0] in active_ignored_review_id_set
             )
         ]
-    retained_start_by_card = _benchmark_retained_historical_review_starts(raw_rows)
     recovery_cutoff_review_id: int | None = None
     if prepare_recovery_checkpoint:
         for raw_row_index in range(len(raw_rows) - 1, -1, -1):
             row = raw_rows[raw_row_index]
             if (
-                _benchmark_retained_historical_review_state(
-                    raw_row_index,
-                    row,
-                    retained_start_by_card,
-                )
-                is None
+                _retained_historical_review_state(row) is None
                 or len(row) < 9
                 or not isinstance(row[0], int)
                 or (after_review_id is not None and row[0] <= after_review_id)
@@ -16444,11 +16530,7 @@ def _historical_rwkv_review_inputs(
 
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
-            historical_state = _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
+            historical_state = _retained_historical_review_state(row)
             if historical_state is None:
                 continue
             if after_review_id is not None and (
@@ -16506,11 +16588,7 @@ def _historical_rwkv_review_inputs(
 
     prepared_row_count = 0
     for raw_row_index, row in enumerate(raw_rows):
-        historical_state = _benchmark_retained_historical_review_state(
-            raw_row_index,
-            row,
-            retained_start_by_card,
-        )
+        historical_state = _retained_historical_review_state(row)
         if historical_state is None:
             raw_rows[raw_row_index] = ()
             continue
@@ -16604,10 +16682,15 @@ def _historical_rwkv_review_inputs(
                     )
                     else RwkvFirstReviewElapsedSource.MISSING
                 )
+            # Only a real Learning start may measure elapsed from the card's
+            # creation. A fallback start row (`sched.rwkv-replay-start-row`) is
+            # only the first row we hold, not the card's known first review, so
+            # its creation age would invent an interval.
             elapsed_seconds = (
                 max(0, (review_id - card_id) // 1000)
                 if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
                 and historical_state == int(RwkvReviewState.LEARN_START)
+                and review_kind == 0
                 else -1
             )
             elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
@@ -16932,7 +17015,7 @@ def _historical_rwkv_review_rows(
     if not callable(all_rows):
         return []
 
-    after_clause = "and r.id > ?" if after_review_id is not None else ""
+    after_clause = "and e.id > ?" if after_review_id is not None else ""
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
     deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
@@ -16948,24 +17031,69 @@ def _historical_rwkv_review_rows(
     else:
         card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
+    # The start-row rule has ONE implementation: this SQL, which restates the
+    # backend's `rwkv_historical_review_rows` (`rslib/src/storage/revlog/mod.rs`)
+    # clause for clause. See `sched.rwkv-replay-start-row`. Every caller reads
+    # the `is_learning_start` column below; nothing re-derives the start row in
+    # Python. The `after_clause` sits in the final select, never in `eligible`,
+    # so it cannot move a card's start row.
     sql = f"""
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    {effective_deck_sql} as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    cast(r.ivl as integer) as interval_days,
+    cast(r.factor as integer) as ease_factor,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where {_rwkv_historical_answer_sql_condition("r")}
+    {deck_clause}
+    {card_clause}
+), learning_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
+)
 select
-  r.id,
-  r.cid,
-  c.nid,
-  {effective_deck_sql},
-  r.ease,
-  r.time,
-  r.type,
-  cast(r.ivl as integer),
-  cast(r.factor as integer)
-from revlog r
-join cards c on c.id = r.cid
-where {_rwkv_historical_answer_sql_condition("r")}
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.interval_days,
+  e.ease_factor,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
   {after_clause}
-  {deck_clause}
-  {card_clause}
-order by r.id, r.cid
+order by e.id, e.cid
 {limit_clause}
 """
     start = time.monotonic()
@@ -17104,63 +17232,38 @@ def _historical_review_day_offset(
     return max(0, days_elapsed - days_before_today)
 
 
-def _benchmark_retained_historical_review_rows(
+def _retained_historical_review_rows(
     rows: Sequence[Sequence[object]],
 ) -> list[tuple[Sequence[object], int]]:
-    retained_start_by_card = _benchmark_retained_historical_review_starts(rows)
+    """Each retained row with its state code.
+
+    The query already dropped the rows before each card's start row, so every
+    row here is retained; this only reads the state code off the row.
+    """
     return [
         (row, historical_state)
-        for index, row in enumerate(rows)
-        if (
-            historical_state := _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
-        )
-        is not None
+        for row in rows
+        if (historical_state := _retained_historical_review_state(row)) is not None
     ]
 
 
-def _benchmark_retained_historical_review_starts(
-    rows: Sequence[Sequence[object]],
-) -> dict[int, tuple[int, bool]]:
-    retained_start_by_card: dict[int, tuple[int, bool]] = {}
-    previous_kind_by_card: dict[int, int] = {}
+def _retained_historical_review_state(row: Sequence[object]) -> int | None:
+    """The state code of one replay row, from the query's own start-row flag.
 
-    for index, row in enumerate(rows):
-        if len(row) < 7:
-            continue
-        card_id = row[1]
-        review_kind = row[6]
-        if not isinstance(card_id, int) or not isinstance(review_kind, int):
-            continue
-        retained_start_by_card.setdefault(card_id, (index, False))
-        previous_kind = previous_kind_by_card.get(card_id)
-        if review_kind == 0 and previous_kind != 0:
-            retained_start_by_card[card_id] = (index, True)
-        previous_kind_by_card[card_id] = review_kind
-
-    return retained_start_by_card
-
-
-def _benchmark_retained_historical_review_state(
-    index: int,
-    row: Sequence[object],
-    retained_start_by_card: Mapping[int, tuple[int, bool]],
-) -> int | None:
-    if len(row) < 7:
+    `sched.rwkv-replay-start-row` lives in the SQL of
+    `_historical_rwkv_review_rows`, which restates the backend's query. Nothing
+    re-derives the start row here: two implementations of that rule are exactly
+    how the Grade Now path and the reviewer's replay drifted apart before.
+    """
+    if len(row) < 10:
         return None
-    card_id = row[1]
     review_kind = row[6]
-    if not isinstance(card_id, int) or not isinstance(review_kind, int):
-        return None
-    start_index, starts_with_learning = retained_start_by_card[card_id]
-    if index < start_index:
+    is_learning_start = row[9]
+    if not isinstance(review_kind, int) or isinstance(review_kind, bool):
         return None
     return _historical_review_state(
         review_kind,
-        is_learning_start=starts_with_learning and index == start_index,
+        is_learning_start=bool(is_learning_start),
     )
 
 
@@ -19030,12 +19133,14 @@ def _rwkv_stats_graph_scores_for_search(
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    cancel_generation: int | None = None,
 ) -> RwkvStatsSearchScoreResult | None:
     start = time.monotonic()
     if not _reviewer_backend_accepts_review_inputs(
         state_token.backend if state_token is not None else None
     ):
         return None
+    _raise_if_stats_scoring_cancelled(cancel_generation)
 
     input_build = _rwkv_review_input_batches_for_search(
         reviewer=reviewer,
@@ -19052,13 +19157,67 @@ def _rwkv_stats_graph_scores_for_search(
     queue_score_hits = 0
     score_start = time.monotonic()
 
-    if prepare_curve_due or prepare_curve_retrievability:
+    # the Stats Retrievability graph asks for the curve value alone. That
+    # value comes out of the query heads, so the resident query-only route
+    # returns exactly what the full path returns, without the four
+    # simulated-answer passes and without the current-interval crossing
+    # search. Only the curve-due flags need that search, so a request that
+    # asks for them keeps the full path, and so does a runtime too old for
+    # the query-only route.
+    curve_retrievability_only = (
+        prepare_curve_retrievability
+        and not prepare_curve_due
+        and _rwkv_supports_resident_curve_retrievability()
+    )
+    if curve_retrievability_only:
         curve_input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
                 _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             ):
+                # the batch boundary is outside the RWKV lock: a cancelled
+                # Stats request stops here and frees it
+                # (spec ui.stats-scoring-cancelled)
+                _raise_if_stats_scoring_cancelled(cancel_generation)
+                curve_retrievabilities = _rwkv_curve_retrievabilities_for_inputs(
+                    batch,
+                    state_token=state_token,
+                )
+                if curve_retrievabilities is None:
+                    return None
+                # the map also carries the rating head; the query-only route
+                # for it is the one every other card already takes
+                input_scores = _rwkv_review_scores_for_inputs(
+                    batch,
+                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+                    state_token=state_token,
+                )
+                if input_scores is None:
+                    return None
+                scores.extend(input_scores)
+                scored_card_ids = {card_id for card_id, _ in input_scores}
+                fully_predicted_card_ids.update(scored_card_ids)
+                for (card_id, _), curve_retrievability in zip(
+                    batch,
+                    curve_retrievabilities,
+                    strict=True,
+                ):
+                    if card_id in scored_card_ids and _valid_probability(
+                        curve_retrievability
+                    ):
+                        curve_scores.append((card_id, curve_retrievability))
+    elif prepare_curve_due or prepare_curve_retrievability:
+        curve_input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
+        for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
+            for batch in _chunks(
+                inputs_by_card_id,
+                _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
+            ):
+                # the batch boundary is outside the RWKV lock: a cancelled
+                # Stats request stops here and frees it
+                # (spec ui.stats-scoring-cancelled)
+                _raise_if_stats_scoring_cancelled(cancel_generation)
                 predictions = _rwkv_review_predictions_for_inputs(
                     batch,
                     batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
@@ -19111,6 +19270,7 @@ def _rwkv_stats_graph_scores_for_search(
         if not inputs_by_card_id:
             continue
 
+        _raise_if_stats_scoring_cancelled(cancel_generation)
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,
@@ -20173,6 +20333,61 @@ def _rwkv_review_current_interval_predictions_for_inputs(
             expected_state_token=state_token,
         ):
             return list(predictions)
+        if state_token is not None:
+            raise _ReviewerBackendPredictionAborted
+        return None
+
+
+def _rwkv_supports_resident_curve_retrievability() -> bool:
+    return bool(
+        getattr(_reviewer_backend, "supports_resident_curve_retrievability", False)
+    )
+
+
+def _rwkv_curve_retrievabilities_for_inputs(
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+    *,
+    state_token: _ReviewerBackendPredictionStateToken | None = None,
+) -> list[float | None] | None:
+    """Query-only curve retrievability straight from the resident state.
+
+    Used by the Stats Retrievability graph, which needs nothing else. The busy
+    / state-changed outcomes (None, or the abort exception when a state token
+    is held) are the same as `_rwkv_review_predictions_for_inputs`'.
+    """
+
+    with _try_reviewer_backend_prediction_access(
+        expected_state_token=state_token,
+    ) as backend:
+        if backend is None:
+            logger.debug("RWKV curve retrievability prediction skipped: backend busy")
+            if state_token is not None:
+                _raise_reviewer_backend_prediction_unavailable(state_token)
+            return None
+        predict = getattr(
+            backend, "predict_curve_retrievability_inputs_from_warm_up", None
+        )
+        if not callable(predict):
+            return None
+        state_generation = _reviewer_backend_state_generation(backend)
+        start = time.monotonic()
+        curve_retrievabilities = predict(
+            [review_input for _, review_input in inputs_by_card_id]
+        )
+        if curve_retrievabilities is None:
+            return None
+        logger.debug(
+            "RWKV review inputs predicted from resident state (curve "
+            "retrievability only): inputs=%s elapsed_ms=%.1f",
+            len(inputs_by_card_id),
+            (time.monotonic() - start) * 1000,
+        )
+        if _reviewer_backend_prediction_access_is_current(
+            backend,
+            expected_state_generation=state_generation,
+            expected_state_token=state_token,
+        ):
+            return list(curve_retrievabilities)
         if state_token is not None:
             raise _ReviewerBackendPredictionAborted
         return None

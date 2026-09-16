@@ -351,6 +351,27 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    /// Query-only curve retrievability per input from the resident warm-up
+    /// state, `None` where the card has no curve value. It is the
+    /// `curve_retrievability` `predict_many` returns for the same input
+    /// (spec ui.stats-one-algorithm). Releases the GIL while predicting.
+    fn predict_curve_retrievability_many_from_warm_up(
+        &mut self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Option<f32>>> {
+        let mut parsed_inputs = Vec::new();
+        for input in inputs.try_iter()? {
+            parsed_inputs.push(parse_rwkv_review_input(&input?)?);
+        }
+
+        py.detach(|| {
+            self.inner
+                .predict_curve_retrievability_many_from_warm_up(parsed_inputs)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn predict_retrievability_many_from_warm_up_packed(
         &mut self,
         py: Python<'_>,

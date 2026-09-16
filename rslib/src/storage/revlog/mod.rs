@@ -466,6 +466,59 @@ impl SqliteStorage {
         .map(|_| ())
     }
 
+    /// The cached per-review predictions of one model and one sample role,
+    /// for the ratings of the cards in `search_cids` from `after` on: the
+    /// newest row of each review (spec ui.stats-model-metrics). The caller
+    /// picks the role; rows of other roles are never mixed in.
+    pub(crate) fn cached_review_predictions(
+        &self,
+        table: &str,
+        sample_role: &str,
+        after: TimestampMillis,
+    ) -> Result<Vec<(RevlogId, f32)>> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        self.db
+            .prepare_cached(&format!(
+                "select revlog_id, prediction from (
+                     select revlog_id, prediction, row_number() over (
+                         partition by revlog_id
+                         order by updated_at desc, fold_index desc, source
+                     ) as rank
+                     from {table}
+                     where sample_role = ?1
+                       and revlog_id > ?2
+                       and revlog_id in (
+                           select id from revlog
+                           where cid in (select cid from search_cids)
+                       )
+                 )
+                 where rank = 1"
+            ))?
+            .query_and_then((sample_role, after.0), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
+    /// The newest review of the searched cards that the given model and
+    /// role have a prediction for, and how many later ratings have none.
+    pub(crate) fn newest_cached_review_prediction(
+        &self,
+        table: &str,
+        sample_role: &str,
+    ) -> Result<Option<RevlogId>> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        self.db
+            .prepare_cached(&format!(
+                "select max(revlog_id) from {table}
+                 where sample_role = ?1
+                   and revlog_id in (
+                       select id from revlog
+                       where cid in (select cid from search_cids)
+                   )"
+            ))?
+            .query_row((sample_role,), |row| row.get::<_, Option<RevlogId>>(0))
+            .map_err(Into::into)
+    }
+
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {
         self.db
             .prepare(include_str!("fix_props.sql"))?
@@ -586,6 +639,16 @@ impl SqliteStorage {
             .collect()
     }
 
+    /// The rated review rows the RWKV replay reads, each card from its start
+    /// row onwards.
+    ///
+    /// The start row is the card's latest learning start. A card with no
+    /// learning row at all (an import, another app, an old scheduler) starts at
+    /// its first rated row after its last Forget row, or at its first rated row
+    /// when it has no Forget row. Manual rows (Forget, Set Due Date) are never
+    /// rated, so they never enter the sequence themselves; only the last Forget
+    /// cuts the history. The start row always reports
+    /// `is_learning_start = true`, so the replay gives it first-row treatment.
     pub(crate) fn rwkv_historical_review_rows(
         &self,
         ignored_review_ids: &[RevlogId],
@@ -632,15 +695,28 @@ with eligible as (
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
     {ignored_clause}
-), retained_starts as (
-  select
-    cid,
-    coalesce(
-      max(case when type = 0 and (previous_type is null or previous_type != 0) then id end),
-      min(id)
-    ) as start_id
+), learning_starts as (
+  select cid, max(id) as start_id
   from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
   group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
 )
 select
   e.id,
@@ -652,7 +728,7 @@ select
   e.type,
   e.interval_days,
   e.ease_factor,
-  e.id = s.start_id and e.type = 0
+  e.id = s.start_id
 from eligible e
 join retained_starts s on s.cid = e.cid
 where e.id >= s.start_id
@@ -1420,5 +1496,180 @@ mod tests {
             }
         }
         Ok(review_times)
+    }
+
+    /// Review kinds and buttons used by the RWKV replay start-row tests.
+    const RATED_LEARNING: (i64, i64, i64) = (3, 0, 2500);
+    const RATED_REVIEW: (i64, i64, i64) = (3, 1, 2500);
+    const RATED_RELEARNING: (i64, i64, i64) = (1, 2, 2500);
+    /// Reset: manual row with a zero ease factor.
+    const FORGET: (i64, i64, i64) = (0, 4, 0);
+    /// Set Due Date, as old Anki wrote it: a Manual row with a non-zero ease
+    /// factor.
+    const SET_DUE_DATE_AS_MANUAL: (i64, i64, i64) = (0, 4, 2500);
+    /// Set Due Date, as modern Anki writes it: `RevlogReviewKind::Rescheduled`
+    /// with a zero ease.
+    const SET_DUE_DATE_AS_RESCHEDULED: (i64, i64, i64) = (0, 5, 2500);
+
+    fn add_replay_card(col: &Collection, card_id: i64) -> Result<()> {
+        col.storage.db.execute(
+            "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, \
+             factor, reps, lapses, left, odue, odid, flags, data) \
+             values (?, 1, 1, 0, 0, -1, 2, 2, 1, 10, 2500, 0, 0, 0, 0, 0, 0, '')",
+            [card_id],
+        )?;
+        Ok(())
+    }
+
+    fn add_replay_revlog(
+        col: &Collection,
+        review_id: i64,
+        card_id: i64,
+        row: (i64, i64, i64),
+    ) -> Result<()> {
+        let (ease, kind, factor) = row;
+        col.storage.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) \
+             values (?, ?, -1, ?, 10, 5, ?, 1000, ?)",
+            [review_id, card_id, ease, factor, kind],
+        )?;
+        Ok(())
+    }
+
+    /// `(review id, is_learning_start)` of every replayed row of `card_id`.
+    fn replay_start_rows(col: &Collection, card_id: i64) -> Result<Vec<(i64, bool)>> {
+        let (rows, _) = col.storage.rwkv_historical_review_rows(&[])?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.card_id == card_id)
+            .map(|row| (row.review_id, row.is_learning_start))
+            .collect())
+    }
+
+    #[test]
+    fn rwkv_replay_keeps_the_latest_learning_start() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-learning-start")?;
+        add_replay_card(&col, 100)?;
+        add_replay_revlog(&col, 1000, 100, RATED_LEARNING)?;
+        add_replay_revlog(&col, 2000, 100, RATED_REVIEW)?;
+        // A Forget followed by a new learning start: the learning start wins.
+        add_replay_revlog(&col, 3000, 100, FORGET)?;
+        add_replay_revlog(&col, 4000, 100, RATED_LEARNING)?;
+        add_replay_revlog(&col, 5000, 100, RATED_REVIEW)?;
+
+        assert_eq!(
+            replay_start_rows(&col, 100)?,
+            vec![(4000, true), (5000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_card_without_a_learning_row_starts_at_its_first_rated_row() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-no-learning-row")?;
+        add_replay_card(&col, 200)?;
+        add_replay_revlog(&col, 1000, 200, RATED_REVIEW)?;
+        add_replay_revlog(&col, 2000, 200, RATED_RELEARNING)?;
+        add_replay_revlog(&col, 3000, 200, RATED_REVIEW)?;
+
+        assert_eq!(
+            replay_start_rows(&col, 200)?,
+            vec![(1000, true), (2000, false), (3000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_card_without_a_learning_row_starts_after_its_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-forget-then-reviews")?;
+        add_replay_card(&col, 300)?;
+        add_replay_revlog(&col, 1000, 300, RATED_REVIEW)?;
+        add_replay_revlog(&col, 2000, 300, FORGET)?;
+        add_replay_revlog(&col, 3000, 300, RATED_REVIEW)?;
+        add_replay_revlog(&col, 4000, 300, RATED_REVIEW)?;
+
+        // The rows before the Forget are dropped, not merged.
+        assert_eq!(
+            replay_start_rows(&col, 300)?,
+            vec![(3000, true), (4000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_set_due_date_does_not_cut_the_history() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-set-due-date")?;
+        add_replay_card(&col, 400)?;
+        // Both encodings: old Anki wrote a Manual row, modern Anki writes a
+        // Rescheduled row.
+        add_replay_revlog(&col, 1000, 400, SET_DUE_DATE_AS_MANUAL)?;
+        add_replay_revlog(&col, 2000, 400, RATED_REVIEW)?;
+        add_replay_revlog(&col, 3000, 400, SET_DUE_DATE_AS_MANUAL)?;
+        add_replay_revlog(&col, 4000, 400, RATED_REVIEW)?;
+        add_replay_revlog(&col, 5000, 400, SET_DUE_DATE_AS_RESCHEDULED)?;
+        add_replay_revlog(&col, 6000, 400, RATED_REVIEW)?;
+
+        assert_eq!(
+            replay_start_rows(&col, 400)?,
+            vec![(2000, true), (4000, false), (6000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_uses_only_the_last_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-several-forgets")?;
+        add_replay_card(&col, 500)?;
+        add_replay_revlog(&col, 1000, 500, RATED_REVIEW)?;
+        add_replay_revlog(&col, 2000, 500, FORGET)?;
+        add_replay_revlog(&col, 3000, 500, RATED_REVIEW)?;
+        add_replay_revlog(&col, 4000, 500, FORGET)?;
+        add_replay_revlog(&col, 5000, 500, RATED_REVIEW)?;
+        add_replay_revlog(&col, 6000, 500, RATED_RELEARNING)?;
+
+        assert_eq!(
+            replay_start_rows(&col, 500)?,
+            vec![(5000, true), (6000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_learning_start_wins_over_a_later_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-learning-start-wins")?;
+        add_replay_card(&col, 600)?;
+        add_replay_revlog(&col, 1000, 600, RATED_LEARNING)?;
+        add_replay_revlog(&col, 2000, 600, RATED_REVIEW)?;
+        add_replay_revlog(&col, 3000, 600, FORGET)?;
+        // No Learning row follows the Forget, only Review rows.
+        add_replay_revlog(&col, 4000, 600, RATED_REVIEW)?;
+        add_replay_revlog(&col, 5000, 600, RATED_REVIEW)?;
+
+        // Rule 1 wins: the card keeps its learning start, so the rows from
+        // before the Forget stay and the Forget is ignored. This matches the
+        // training dataset builder, which drops manual rows before it masks, so
+        // a Forget is invisible there unless a Learning row follows it.
+        assert_eq!(
+            replay_start_rows(&col, 600)?,
+            vec![(1000, true), (2000, false), (4000, false), (5000, false)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_replay_drops_a_card_whose_last_row_is_a_forget() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-trailing-forget")?;
+        add_replay_card(&col, 700)?;
+        add_replay_revlog(&col, 1000, 700, RATED_REVIEW)?;
+        add_replay_revlog(&col, 2000, 700, RATED_REVIEW)?;
+        add_replay_revlog(&col, 3000, 700, FORGET)?;
+
+        // The card has no learning start and no rated row after its Forget, so
+        // it gets no start row and leaves the replay. The Forget reset it, so
+        // there is no memory left to replay. This is asymmetric with
+        // `rwkv_replay_learning_start_wins_over_a_later_forget` on purpose: see
+        // the spec entry.
+        assert_eq!(replay_start_rows(&col, 700)?, vec![]);
+        Ok(())
     }
 }

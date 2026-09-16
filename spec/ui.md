@@ -48,8 +48,10 @@ redraws as above; it does not wait for Save, and closing without saving
 keeps the new mode. The Stats page has the same control at the top right of
 its top bar, with the same effect: in Simple mode the page shows only the
 Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
-order; Advanced mode shows every graph. The page takes the mode when it
-loads and from its own switch. Hidden settings keep their stored values and
+order; Advanced mode shows every graph. The note editor has the same control
+at the right end of its toolbar row, and Simple mode there hides a part of
+the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
+mode when it loads and from its own switch. Hidden settings keep their stored values and
 keep taking effect.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
@@ -74,7 +76,44 @@ entries),
 (`qt/tests/test_ui_mode.py`); "the deck-options switch changes the view at
 once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
-graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
+graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
+"Simple mode shows only the Simple editor buttons, in toolbar order"
+(`ts/routes/editor/ui-mode.test.ts`).
+
+## ui.editor-simple-view
+
+Given the note editor (Add, Edit Current, the Browser's editing pane) in
+Simple mode (`ui.mode-switch`), its toolbar shows Fields..., Bold, Italic,
+Underline, the text colour, Remove formatting and Attach pictures/audio/video,
+and hides Cards..., the editor's own settings gear, Superscript, Subscript,
+the text highlight colour, Unordered list, Ordered list, Alignment, Record
+audio and Equations (MathJax/LaTeX). Advanced mode shows every one of them.
+The buttons an add-on adds (`editor_did_init_buttons`,
+`editor_did_init_left_buttons`) show in both modes. The field list, the
+audio play buttons inside the fields and the Tags row show in both modes.
+A hidden button stays in the page and is only hidden from sight, so its
+keyboard shortcut still runs it (Ctrl+L for Cards..., Ctrl+= and Ctrl+Shift+= for
+Superscript and Subscript, Ctrl+, and Ctrl+. for the lists, Ctrl+Shift+, and
+Ctrl+Shift+. for the indents, F5 for Record audio, the Ctrl+M and Ctrl+T
+combinations for the equations), its entry stays in the Remove formatting
+list, and the format it registers keeps reading and writing existing HTML.
+The switch sits at the right end of the toolbar row and changes the toolbar
+at once: the note is not reloaded and text the user has typed is kept.
+
+**Why:** plan item 2 — the Simplified/Advanced split, Simple by default.
+Andrew, 2026-09-16, chose this list: a beginner writes text, colours it,
+attaches media and tags the note; card templates, the block formatting and
+MathJax are power-user tools. Tags stay in both modes because tags are data,
+and Anki itself writes the leech tag. Add-on buttons stay because Clanki must
+not hide a feature the user installed on purpose. Hiding a button is a UI
+change, not a behavior change, so the shortcut and the feature keep working.
+
+**Pinned by:** "Simple mode shows only the Simple editor buttons, in toolbar
+order", "Advanced mode shows every editor button", "the Advanced-only buttons
+are the ones Simple drops" (`ts/routes/editor/ui-mode.test.ts`); "the editor
+switch changes the toolbar at once and keeps the typed text", "a hidden
+button keeps its shortcut", "add-on buttons show in both modes"
+(`ts/tests/e2e/editor-ui-mode.spec.ts`).
 
 ## ui.simple-recall-wording
 
@@ -153,7 +192,9 @@ the RWKV reschedule actions.
 
 ## ui.review-heatmap
 
-Given the collection flag `reviewHeatmapEnabled` on (the default), Clanki
+Given the collection flag `reviewHeatmapEnabled` on — its value in a new
+collection, so a new user gets the heatmap out of the box, while a
+collection where the user turned it off keeps it off — Clanki
 draws a review heatmap — the Review Heatmap add-on (Glutanimate, AGPLv3)
 made native: a calendar of reviews per day with the due forecast in a
 second colour, previous / today / next navigation, and four figures
@@ -183,10 +224,13 @@ latter on by default); and decks left out of the main-screen heatmap, with
 their subdecks. The settings are stored in the collection config under
 `reviewHeatmap` and sync. Until they are first saved, the add-on's stored
 settings are used (its `heatmap` collection config and profile entries),
-except a color scheme left at the add-on's own default. The heatmap's gear
-opens the tab; Shift+click on the gear cycles the color scheme and
-Shift+click on "today" cycles the calendar mode. With the switch off, or
-where neither the calendar nor the figures show, nothing is computed.
+except a color scheme left at the add-on's own default. A gear button at the
+right of the heatmap's controls opens the tab — the same gear icon the deck
+list draws for deck options (`imgs/gears.svg`), in the size and the grey of
+the three navigation buttons beside it; Shift+click on the gear cycles the
+color scheme and Shift+click on "today" cycles the calendar mode. With the
+switch off, or where neither the calendar nor the figures show, nothing is
+computed.
 
 Given the Review Heatmap add-on installed and enabled at start-up, Clanki
 disables it before add-ons load (both would draw a heatmap) and, the first
@@ -200,13 +244,18 @@ before.
 **Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
 settings, in a Preferences tab of their own, magenta by default, and retire
 the add-on with a one-time notice. Later the same day: a user who tries to
-enable the add-on must be told that Clanki has this built in.
+enable the add-on must be told that Clanki has this built in. Andrew,
+2026-09-16: the settings button carried the add-on's own three-bar mark,
+which does not say "settings" to a reader; it now shows the gear that the
+rest of Clanki uses.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
 colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
 link, disabling the add-on, the one-time notice,
+`test_the_settings_button_shows_the_deck_lists_gear`,
+`test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off`,
 `test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
 `test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`
@@ -442,6 +491,31 @@ same day, on dropping the earlier ten-minute limit: "p(recall) doesn't fall
 `test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
 (`qt/tests/test_rwkv_scheduler.py`)
 
+## ui.stats-scoring-cancelled
+
+Given the Stats window closes while a Stats graphs request is still scoring
+cards with RWKV for the Retrievability graph, the scoring stops at its next
+batch boundary. It publishes no score map, so the map the collection already
+holds is left as it is, and the remembered key of that map
+(`ui.stats-rwkv-scores-kept`) is dropped, so the next request scores again.
+The stop happens between two batches, which is outside the RWKV lock, so the
+lock is free as soon as the running batch ends. A Stats request that starts
+after the window closed is not cancelled, and the cancellation never stops the
+scoring that a Browser search or a filtered deck asks for.
+
+**Why:** the scoring takes minutes on a large collection (229 seconds of a
+230-second request on Andrew's 38,523 scorable cards). Before this, a Stats
+window that the user closed kept its scoring running to the end and kept the
+RWKV lock with it, so the main window waited for a page that was already
+gone.
+
+**Pinned by:** `test_cancelled_stats_scoring_stops_at_the_next_batch_and_frees_the_lock`,
+`test_stats_scoring_without_a_cancel_generation_is_never_cancelled`,
+`test_prepare_stats_retrievability_scores_stop_when_the_stats_window_closes`,
+`test_cancelled_stats_scoring_drops_the_kept_score_memo`,
+`test_stats_scoring_after_a_cancel_runs_to_the_end`
+(`qt/tests/test_rwkv_scheduler.py`)
+
 ## ui.stats-total-knowledge
 
 Given the Stats page, in both Simple and Advanced mode, the Total Knowledge
@@ -548,6 +622,100 @@ pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
 "Total Knowledge: the modes differ, and switching does not load it again"
 (`ts/tests/e2e/graphs.test.ts`).
 
+## ui.stats-model-metrics
+
+Given the Stats page in Advanced mode, the model-quality graphs compare the
+scheduling algorithms on the same reviews. Simple mode never shows them.
+These graphs are the one place where the values of two algorithms may stand
+side by side (`sched.one-global-algorithm`, `ui.stats-one-algorithm`),
+because comparing the algorithms is their whole purpose. Every drawn value
+carries the name of the algorithm it comes from, no value ever falls back to
+another algorithm, and an algorithm that cannot be computed is absent, with a
+line under the graph that names it and says why.
+
+They all use the same data: for every rating of the search's cards in the
+page's period, the probability of recall an algorithm predicted before that
+answer, and the answer itself (Hard, Good or Easy = remembered; Again =
+forgotten). A rating counts only when it follows an earlier rating of the
+same card in the same learning sequence, so a card's first rating, and its
+first rating after a reset, are left out: no algorithm has a memory state
+before them. Manual reschedules, resets and cram answers are not ratings.
+The period selects the ratings; the algorithms still read the whole history
+before each of them, because that is where the memory state comes from. A
+card whose review log holds no learning step has no FSRS-7 prediction at
+all, as in FSRS's own evaluation of its parameters, and RWKV's history of a
+card starts at its latest learning start, as RWKV's scheduling does.
+
+| Algorithm    | Its prediction of a rating                                        |
+| ------------ | ----------------------------------------------------------------- |
+| FSRS-7       | FSRS-7's forgetting curve at the memory state after the card's previous rating, at the days since it, with the card's preset parameters |
+| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous answered review, at the time since it |
+| RWKV-Instant | RWKV-Instant's prediction of the card at that moment, from its state before the answer |
+
+The predictions are not computed for the graph. Each algorithm writes them
+per review while it runs, and the graph reads those rows: FSRS-7's when its
+parameters are optimized, RWKV's when its state cache is built. A row counts
+only when nothing that produced it was fitted on that very review:
+
+| Algorithm | Rows that count                                                                |
+| --------- | ------------------------------------------------------------------------------ |
+| FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
+| RWKV      | any role, because the weights are frozen and were trained on other collections  |
+
+Each algorithm uses one role only, the first of its list that has any row
+for the search, and the graph names the role it used. The two algorithms are
+scored on the same ratings: a rating only one of them has a row for is left
+out, and the graph says how many were left out for each reason. A rating
+with no usable row for an algorithm is never filled in from a fresh
+computation with today's parameters, because those parameters have seen the
+rating.
+
+Reading the rows does not start any computation. Ratings newer than the
+newest stored prediction are left out, and the graph says "Predictions up to
+&lt;date&gt;; N newer reviews are not scored yet", so it never silently drops
+the newest reviews.
+
+The AUC-ROC graph draws one curve per algorithm, all at once, with no
+chooser. A curve plots the true positive rate against the false positive
+rate at every prediction threshold. The drawing area is square, so the
+dashed line of random chance runs at 45 degrees; that line's legend entry
+reads "Random chance, AUC=0.5000". Each algorithm's legend entry is its name
+and its area under the curve to four decimals, such as "FSRS-7,
+AUC=0.7230". Ratings with the same prediction form one step of the curve,
+and the area follows the trapezoid rule. An algorithm whose reviews were all
+remembered, or all forgotten, has no curve. Each curve uses the ratings its
+own algorithm predicts, so a curve appears as soon as its data is ready and
+does not wait for the others.
+
+The reading runs in a background job, so the page never waits for it and
+reads "Calculating…" meanwhile. A second request for the same cards, period
+and collection state joins the running job, a finished result is kept for
+the session, and a Simple/Advanced switch or a second visit does not start
+it again. Leaving the page or closing the window stops the job.
+
+**Why:** Andrew, 2026-09-16: add the Search Stats Extended fork's
+model-quality graphs, so that the algorithms can be compared on his own
+reviews. The no-mixing rule is deliberately relaxed here and nowhere else,
+because a comparison of one algorithm with itself says nothing; the honesty
+rules (a name on every series, no fallback, an absent series with a reason)
+are what keep the relaxation safe. All three curves at once on the AUC-ROC
+graph, and the square drawing area with the labelled diagonal, are his
+words. The rules about which stored rows count, and about scoring both
+algorithms on the same ratings, are the RWKV session's: a prediction from a
+model fitted on the very review it predicts flatters that model, and two
+scores over two different sets of reviews cannot be compared. Reading the
+stored rows rather than replaying is what the Search Stats Extended fork
+does, and it is why a panel of hundreds of thousands of reviews opens at
+once; a replay of the whole history costs minutes and now belongs to the
+user's own rebuild, never to opening a page.
+
+**Pinned by:** `only_rows_the_algorithm_had_not_seen_are_used`,
+`both_algorithms_are_scored_on_the_same_ratings`,
+`the_period_selects_the_ratings`,
+`newer_ratings_than_the_stored_predictions_are_reported`
+(`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
+`ts/routes/graphs/roc.test.ts`.
+
 ## ui.browser-interval-average
 
 Given a Browser row with review or relearning cards, the Interval column
@@ -563,3 +731,35 @@ two 30,000-day cards showed about 5,144 days (a debug build crashed).
 
 **Pinned by:** `interval_cell_averages_long_intervals_without_overflow`
 (`rslib/src/browser_table.rs`).
+
+## ui.deck-list-refresh-scroll
+
+Given the deck list on screen and a refresh of it that only reads the
+counts again — the 10-minute timer, the end of a sync, a return of the
+focus to the main window, an answer or an operation of another screen that
+changed the study queues, a deck-options or preset change, a deck added,
+renamed, moved or deleted, and any add-on that calls
+`mw.deckBrowser.refresh()` — Clanki keeps the scroll position of the page.
+The counts, the review limits and the heatmap show the new numbers. Where
+the page can stay (the stats section under the tree, the heatmap included,
+does not change and no add-on decorates a freshly loaded page), only the
+rows of the deck table are swapped, as on a collapse; otherwise the page is
+drawn again and the position is put back around the draw. Given a collapse
+or an expand made while such a refresh reads the counts, the deck keeps the
+state the user chose, so the rows under the kept position are the same
+rows.
+
+Given the user opens the deck list from another screen (start-up, the end
+of a review, Decks in the toolbar), the page starts at the top.
+
+**Why:** Andrew, 2026-09-16: the deck list jumped back to the top every 10
+minutes, because the timer drew the page again without the position. A
+refresh that only changes numbers must not move the view; opening the
+screen is not a refresh.
+
+**Pinned by:** `test_refresh_keeps_the_scroll_position_of_the_open_page`,
+`test_refresh_swaps_the_deck_table_in_place_when_the_page_can_stay`,
+`test_show_draws_the_deck_list_at_the_top`,
+`test_refresh_draws_from_the_top_on_another_screen`,
+`test_a_collapse_during_a_refresh_survives_the_refresh`
+(`qt/tests/test_deckbrowser.py`).

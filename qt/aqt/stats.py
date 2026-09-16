@@ -10,6 +10,7 @@ from typing import Any
 import aqt
 import aqt.forms
 import aqt.main
+import aqt.rwkv_scheduler
 import aqt.stats_prefetch
 import aqt.total_knowledge
 from anki.decks import DeckId
@@ -81,7 +82,10 @@ class NewDeckStats(QDialog):
     def reject(self) -> None:
         # the page's Total Knowledge RWKV job stops with it
         aqt.total_knowledge.cancel_rwkv()
-        # and so does the Advanced graphs kept for its Simple | Advanced switch
+        # so does the Retrievability graph's RWKV scoring
+        # (spec ui.stats-scoring-cancelled)
+        aqt.rwkv_scheduler.cancel_stats_scoring()
+        # and so do the Advanced graphs kept for its Simple | Advanced switch
         aqt.stats_prefetch.clear()
         self.deck_chooser.cleanup()
         self.form.web.cleanup()

@@ -26,6 +26,11 @@ service BackendStatsService {
   // It reads the collection, then replays FSRS-7 with the collection free,
   // so other collection work does not wait for the replay.
   rpc TotalKnowledge(TotalKnowledgeRequest) returns (TotalKnowledgeResponse);
+  // The model-quality graphs' FSRS-7 predictions (spec
+  // ui.stats-model-metrics). Like TotalKnowledge, it reads the collection and
+  // then replays FSRS-7 with the collection free.
+  rpc ReviewPredictions(ReviewPredictionsRequest)
+      returns (ReviewPredictionsResponse);
 }
 
 message ReviewLogs {
@@ -175,6 +180,108 @@ message TotalKnowledgeRwkvProgress {
   int32 first_day = 3;
   repeated double sum_r = 4;
   string error = 5;
+}
+
+// The model-quality graphs' data (spec ui.stats-model-metrics): for every
+// rating of the search's cards in the page's period that both models
+// predicted without having been fitted on it, each model's predicted
+// probability of recall before that answer, with the answer itself.
+message ReviewPredictionsRequest {
+  string search = 1;
+  // The page's period in days; 0 = the whole history.
+  uint32 days = 2;
+}
+
+message ReviewPredictionsResponse {
+  // One entry per scored rating, oldest first. The four lists have the same
+  // length: the models are scored on the same reviews, never on two
+  // different sets.
+  repeated int64 revlog_ids = 1;
+  repeated int64 card_ids = 2;
+  // The answers: true = Hard, Good or Easy, false = Again.
+  repeated bool remembered = 3;
+  repeated float fsrs_predictions = 4;
+  // RWKV-Instant's head; RWKV-Curve has no stored per-review value yet.
+  repeated float rwkv_predictions = 5;
+  // The sample role each model's rows came from, such as "validation_fold";
+  // empty when that model has no usable row. Roles are never mixed.
+  string fsrs_role = 6;
+  string rwkv_role = 7;
+  // Ratings one model could score and the other could not, and ratings
+  // neither could: the graph says how many it left out.
+  uint32 fsrs_only = 8;
+  uint32 rwkv_only = 9;
+  uint32 unscored = 10;
+  // The newest scored review, as a Unix timestamp in seconds, and the
+  // number of later ratings of the search that no model has scored; the
+  // graph says "predictions up to <date>; N newer reviews not scored".
+  int64 newest_scored_secs = 11;
+  uint32 newer_reviews = 12;
+}
+
+// Starts (or joins) the model-quality graphs' computation: FSRS-7's
+// predictions from the backend, and RWKV's from a replay of the review
+// history (spec ui.stats-model-metrics).
+message ReviewMetricsRequest {
+  string search = 1;
+  // The page's period in days; 0 = the whole history.
+  uint32 days = 2;
+}
+
+message ReviewMetricsJob {
+  uint32 job_id = 1;
+}
+
+message ReviewMetricsProgress {
+  enum State {
+    COMPUTING = 0;
+    DONE = 1;
+    FAILED = 2;
+    CANCELLED = 3;
+  }
+  // Why an algorithm has no series. It is never replaced by another
+  // algorithm's values (spec ui.stats-model-metrics).
+  enum Unavailable {
+    AVAILABLE = 0;
+    // No usable RWKV model.
+    NO_MODEL = 1;
+    // No preset of the searched cards has FSRS-7 parameters.
+    NO_PARAMS = 2;
+    // The search and period hold no rating this algorithm predicts.
+    NO_REVIEWS = 3;
+    // This build's RWKV cannot predict the algorithm's value per review.
+    UNSUPPORTED = 4;
+    // Still being computed.
+    NOT_READY = 5;
+  }
+  message Series {
+    deck_config.DeckConfigsForUpdate.SchedulingAlgorithm algorithm = 1;
+    Unavailable unavailable = 2;
+    // The ratings this algorithm predicted.
+    uint32 reviews = 3;
+    // The ROC curve, in order; the two lists have the same length.
+    repeated float false_positive_rate = 4;
+    repeated float true_positive_rate = 5;
+    double auc = 6;
+    // The sample role the predictions came from, such as
+    // "validation_fold"; the graph names it, and roles are never mixed.
+    string sample_role = 7;
+  }
+  State state = 1;
+  uint32 job_id = 2;
+  // One entry per algorithm, always all three, in menu order.
+  repeated Series series = 3;
+  string error = 4;
+  // The ratings both algorithms scored, and the ones left out: scored by
+  // one algorithm only, or by neither.
+  uint32 scored = 5;
+  uint32 fsrs_only = 6;
+  uint32 rwkv_only = 7;
+  uint32 unscored = 8;
+  // The newest scored review, as a Unix timestamp in seconds (0 = none),
+  // and the ratings of the search after it that nothing has scored.
+  int64 newest_scored_secs = 9;
+  uint32 newer_reviews = 10;
 }
 
 message GraphsResponse {

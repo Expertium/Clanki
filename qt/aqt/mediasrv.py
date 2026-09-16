@@ -32,6 +32,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
+import aqt.stats_metrics
 import aqt.stats_prefetch
 import aqt.total_knowledge
 from anki import (
@@ -57,6 +58,8 @@ from anki.stats_pb2 import (
     CardStatsResponse,
     GraphsRequest,
     GraphsResponse,
+    ReviewMetricsJob,
+    ReviewMetricsRequest,
     TotalKnowledgeRwkvJob,
     TotalKnowledgeRwkvRequest,
 )
@@ -1524,6 +1527,9 @@ def _graph_data(request_proto: GraphsRequest) -> tuple[bytes, dict[str, str]]:
             prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
                 reviewer
             ),
+            # the scoring stops when the Stats window closes
+            # (spec ui.stats-scoring-cancelled)
+            cancel_when_stats_closes=True,
         )
     else:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
@@ -1635,6 +1641,29 @@ def total_knowledge_rwkv_cancel() -> bytes:
     return b""
 
 
+# The model-quality graphs (spec ui.stats-model-metrics): the page starts the
+# job, polls it and cancels it when it closes.
+def review_metrics_start() -> bytes:
+    request_proto = ReviewMetricsRequest()
+    request_proto.ParseFromString(request.data)
+    return aqt.stats_metrics.start(
+        aqt.mw, request_proto.search, request_proto.days
+    ).SerializeToString()
+
+
+def review_metrics_progress() -> bytes:
+    job = ReviewMetricsJob()
+    job.ParseFromString(request.data)
+    return aqt.stats_metrics.progress(job.job_id).SerializeToString()
+
+
+def review_metrics_cancel() -> bytes:
+    job = ReviewMetricsJob()
+    job.ParseFromString(request.data)
+    aqt.stats_metrics.cancel(job.job_id)
+    return b""
+
+
 post_handler_list = [
     congrats_info,
     set_advanced_ui,
@@ -1679,6 +1708,9 @@ post_handler_list = [
     total_knowledge_rwkv_start,
     total_knowledge_rwkv_progress,
     total_knowledge_rwkv_cancel,
+    review_metrics_start,
+    review_metrics_progress,
+    review_metrics_cancel,
 ]
 
 

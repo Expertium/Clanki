@@ -78,7 +78,7 @@ impl Collection {
         let cards = self.all_cards_for_ids(&card_ids.iter().copied().collect::<Vec<_>>(), false)?;
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
         let stable_preset_ids_by_card = presets_by_card
-            .into_iter()
+            .iter()
             .map(|(card_id, preset)| {
                 Ok((
                     card_id,
@@ -104,26 +104,30 @@ impl Collection {
             let card_id = CardId(row.card_id);
             let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
             let previous_review_id = previous_review_id_by_card.insert(card_id, row.review_id);
-            let (elapsed_days, elapsed_seconds) = if let Some(previous_review_id) =
-                previous_review_id
-            {
-                (
-                    (day_offset - rwkv_historical_day_offset(previous_review_id, &timing)).max(0),
-                    ((row.review_id - previous_review_id) / 1000).max(0),
-                )
-            } else if row.is_learning_start
+            let (elapsed_days, elapsed_seconds) =
+                if let Some(previous_review_id) = previous_review_id {
+                    (
+                        (day_offset - rwkv_historical_day_offset(previous_review_id, &timing))
+                            .max(0),
+                        ((row.review_id - previous_review_id) / 1000).max(0),
+                    )
+                } else if row.is_learning_start
+                // Only a real Learning start may measure elapsed from the card's
+                // creation. A fallback start row (`sched.rwkv-replay-start-row`)
+                // is only the first row we hold, not the card's known first
+                // review, so its creation age would invent an interval.
+                && row.review_kind == 0
                 && rwkv_first_review_uses_card_creation(
                     row.deck_id,
                     &decks_by_id,
                     &configs_by_id,
                     &input.first_review_uses_creation_by_config_id,
-                )
-            {
-                let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
-                (elapsed_seconds / 86_400, elapsed_seconds)
-            } else {
-                (-1, -1)
-            };
+                ) {
+                    let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
+                    (elapsed_seconds / 86_400, elapsed_seconds)
+                } else {
+                    (-1, -1)
+                };
             let review_count_so_far = *review_count_by_card.get(&card_id).unwrap_or(&0);
             let previous_interval_days =
                 *previous_interval_days_by_card.get(&card_id).unwrap_or(&0);
@@ -485,7 +489,7 @@ impl Collection {
         let rows = eligible
             .into_iter()
             .filter_map(|partial| {
-                let preset = presets_by_card.get(&partial.card.id)?;
+                let preset = presets_by_card.get(partial.card.id)?;
                 Some(scheduler::rwkv_review_input_rows_for_cards_response::Row {
                     card_id: partial.card.id.0,
                     note_id: partial.card.note_id.0,
@@ -708,7 +712,7 @@ pub(crate) fn rwkv_review_order_keys(
     let mut keys = HashMap::with_capacity(cards.len());
     for card in &cards {
         let Some(target) = card_desired_retention(card)
-            .or_else(|| presets.get(&card.id).map(|preset| preset.desired_retention))
+            .or_else(|| presets.get(card.id).map(|preset| preset.desired_retention))
             .filter(|target| valid_card_desired_retention(*target))
         else {
             continue;
@@ -791,7 +795,8 @@ pub(crate) fn rwkv_review_candidate_metadata(
         }
     }
 
-    for (card_id, preset) in col.fsrs_presets_for_cards(&without_card_target)? {
+    let presets_without_card_target = col.fsrs_presets_for_cards(&without_card_target)?;
+    for (card_id, preset) in presets_without_card_target.iter() {
         if let Some(partial) = partial_by_card.remove(&card_id) {
             metadata.insert(
                 card_id,

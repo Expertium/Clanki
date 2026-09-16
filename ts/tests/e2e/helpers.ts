@@ -63,6 +63,22 @@ export async function setAdvancedUi(page: Page, on: boolean): Promise<void> {
     await expect.poll(() => advancedUi(page)).toBe(on);
 }
 
+/**
+ * Chooses the mode from the note editor's own toolbar switch (spec/ui.md,
+ * `ui.editor-simple-view`). The editor takes the flag when its page loads, so
+ * a page that is already open follows its own switch, not `setAdvancedUi`.
+ */
+export async function chooseEditorMode(
+    page: Page,
+    mode: "Simple" | "Advanced",
+): Promise<void> {
+    await page.locator(".editor-toolbar .ui-mode button", { hasText: mode }).first()
+        .click();
+    await expect(
+        page.locator(".editor-toolbar .ui-mode button.active").first(),
+    ).toHaveText(mode);
+}
+
 // ---------------------------------------------------------------------------
 // Field locators
 //

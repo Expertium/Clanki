@@ -1342,7 +1342,7 @@ impl Collection {
         let mut intervals = Vec::with_capacity(cards.len());
 
         for (card_id, stability, target_retrievability) in cards {
-            let preset = presets_by_card.get(card_id).or_not_found(*card_id)?;
+            let preset = presets_by_card.get(*card_id).or_not_found(*card_id)?;
             if !fsrs_by_preset_id.contains_key(&preset.id) {
                 fsrs_by_preset_id.insert(preset.id.clone(), FSRS::new(&preset.params)?);
             }
@@ -1377,7 +1377,7 @@ impl Collection {
 
         for (card_id, desired_retention) in cards {
             card_by_id.get(card_id).or_not_found(*card_id)?;
-            presets_by_card.get(card_id).or_not_found(*card_id)?;
+            presets_by_card.get(*card_id).or_not_found(*card_id)?;
             targets.push(FsrsDesiredRetentionForInterval {
                 interval_target_desired_retention: *desired_retention,
             });

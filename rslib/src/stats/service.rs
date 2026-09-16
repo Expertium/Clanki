@@ -58,6 +58,24 @@ impl crate::services::BackendStatsService for Backend {
         );
         Ok(response)
     }
+
+    /// Reads both models' cached per-review predictions (spec
+    /// ui.stats-model-metrics).
+    fn review_predictions(
+        &self,
+        input: anki_proto::stats::ReviewPredictionsRequest,
+    ) -> error::Result<anki_proto::stats::ReviewPredictionsResponse> {
+        let start = std::time::Instant::now();
+        let response = self.with_col(|col| col.review_predictions(&input.search, input.days))?;
+        tracing::debug!(
+            reviews = response.revlog_ids.len(),
+            fsrs_role = response.fsrs_role,
+            rwkv_role = response.rwkv_role,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "read the model-quality graphs' predictions"
+        );
+        Ok(response)
+    }
 }
 
 impl From<RevlogReviewKind> for i32 {

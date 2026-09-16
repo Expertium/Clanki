@@ -32,6 +32,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { promiseWithResolver } from "@tslib/promise";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { registerPackage } from "@tslib/runtime-require";
+    import { advancedUi } from "../ui-mode";
+    import AdvancedOnly from "./AdvancedOnly.svelte";
 
     const { focusedInput } = context.get();
 
@@ -97,7 +99,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const { isLegacy } = context.get();
 </script>
 
-<ButtonGroup>
+<ButtonGroup class={$advancedUi ? "" : "template-buttons-simple"}>
     <DynamicallySlottable
         slotHost={ButtonGroupItem}
         {createProps}
@@ -123,16 +125,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <IconButton
-                tooltip="{tr.editingRecordAudio()} ({getPlatformString(
-                    recordCombination,
-                )})"
-                iconSize={70}
-                {disabled}
-                on:click={attachRecordingOnFocus}
-            >
-                <Icon icon={micIcon} />
-            </IconButton>
+            <AdvancedOnly buttons={["recordAudio"]}>
+                <IconButton
+                    tooltip="{tr.editingRecordAudio()} ({getPlatformString(
+                        recordCombination,
+                    )})"
+                    iconSize={70}
+                    {disabled}
+                    on:click={attachRecordingOnFocus}
+                >
+                    <Icon icon={micIcon} />
+                </IconButton>
+            </AdvancedOnly>
+            <!-- outside the wrapper: F5 keeps working in Simple mode
+                 (spec ui.editor-simple-view) -->
             <Shortcut
                 keyCombination={recordCombination}
                 on:action={attachRecordingOnFocus}
@@ -140,7 +146,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <LatexButton />
+            <AdvancedOnly buttons={["mathjax"]}>
+                <LatexButton />
+            </AdvancedOnly>
         </ButtonGroupItem>
     </DynamicallySlottable>
 </ButtonGroup>
+
+<style lang="scss">
+    /* Simple mode hides Record audio and the equations button, so the attach
+       button is on its own and keeps both rounded ends. */
+    :global(.template-buttons-simple .button-group-item:first-child) {
+        --border-right-radius: 5px !important;
+    }
+</style>

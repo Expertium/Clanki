@@ -193,13 +193,14 @@ impl Collection {
         let mut fsrs_preset_by_card = HashMap::new();
         // only FSRS-7's retrievability reads the cards' FSRS presets
         if retrievability && algorithm == SchedulingAlgorithm::Fsrs7 {
-            let fsrs_cards: Vec<Card> = cards
+            // references: a copy of the cards costs 28 MB on a 159,000-card
+            // collection, and the presets do not need the cards afterwards
+            let fsrs_cards: Vec<&Card> = cards
                 .iter()
                 .filter(|card| card.memory_state.is_some())
-                .cloned()
                 .collect();
             let fsrs_preset_start = std::time::Instant::now();
-            let fsrs_presets_by_card = self.fsrs_presets_for_cards(&fsrs_cards)?;
+            let fsrs_presets_by_card = self.fsrs_presets_for_card_refs(&fsrs_cards)?;
             tracing::debug!(
                 searched_cards = cards.len(),
                 fsrs_cards = fsrs_cards.len(),
@@ -207,7 +208,7 @@ impl Collection {
                 "resolved FSRS presets for stats graphs"
             );
             let fsrs_build_start = std::time::Instant::now();
-            for (card_id, fsrs_preset) in fsrs_presets_by_card {
+            for (card_id, fsrs_preset) in fsrs_presets_by_card.iter() {
                 let preset_id = fsrs_preset.id.clone();
                 fsrs_preset_by_card.insert(card_id, preset_id.clone());
                 if let std::collections::hash_map::Entry::Vacant(entry) =

@@ -76,6 +76,7 @@ editing-close-html-tags = Auto-close HTML tags
 editing-from-clipboard = From Clipboard
 editing-alignment = Alignment
 editing-equations = Equations
+editing-ui-mode-tooltip = Simple keeps the buttons most people use. The same switch is in the main window, in deck options and in the statistics.
 editing-no-image-found-on-clipboard = No image found on clipboard.
 editing-image-occlusion-mode = Image Occlusion Mode
 editing-image-occlusion-zoom-out = Zoom Out

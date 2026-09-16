@@ -95,12 +95,13 @@ impl Collection {
                 })
                 .collect();
             let mut index_of: HashMap<FsrsPresetId, usize> = HashMap::new();
-            for (card, preset) in guard.col.fsrs_presets_for_cards(&cards)? {
+            let presets_by_card = guard.col.fsrs_presets_for_cards(&cards)?;
+            for (card, preset) in presets_by_card.iter() {
                 let index = match index_of.get(&preset.id) {
                     Some(&index) => index,
                     None => {
                         index_of.insert(preset.id.clone(), presets.len());
-                        presets.push(preset);
+                        presets.push(preset.clone());
                         presets.len() - 1
                     }
                 };

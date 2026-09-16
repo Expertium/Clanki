@@ -575,7 +575,8 @@ def test_grade_now_reconciles_filtered_answer_and_preserves_resident_state() -> 
     previous_review_id = (41 * 86_400 + 100) * 1000
     grade_now_review_id = (42 * 86_400 + 100) * 1000
     previous_rows = [
-        (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500),
+        # The last column is the query's `is_learning_start`.
+        (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1),
     ]
     grade_now_rows = [
         (grade_now_review_id, 1, 10, 100, 3, 0, 3, 10, 2500),
@@ -660,7 +661,7 @@ def test_grade_now_falls_back_when_learning_replaces_retained_history() -> None:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             if args:
                 return [(grade_now_review_id, 1, 10, 100, 3, 0, 0, -60, 2500)]
-            return [(previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)]
+            return [(previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1)]
 
     reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
     reviewer.mw.reviewer = reviewer
@@ -1104,7 +1105,8 @@ def test_grade_now_excluded_batch_preserves_undo_and_redo(
 ) -> None:
     previous_review_id = 1_000
     excluded_review_id = 2_000
-    previous_row = (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)
+    # The last column is the query's `is_learning_start`.
+    previous_row = (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1)
     excluded_row = (excluded_review_id, 1, 10, 100, 3, 0, 3, 4, 0)
 
     class DB:
@@ -3714,24 +3716,174 @@ def test_historical_review_kind_maps_to_training_dataset_state(
     assert rwkv_scheduler._historical_review_state(review_kind) == expected_state
 
 
+RATED_LEARNING = (3, 0, 2500)
+RATED_REVIEW = (3, 1, 2500)
+RATED_RELEARNING = (1, 2, 2500)
+FORGET = (0, 4, 0)
+
+
+def _replay_db(revlog: Sequence[tuple[int, int, tuple[int, int, int]]]) -> object:
+    """An in-memory collection holding `(review id, card id, kind)` rows.
+
+    The tests below run the replay's real SQL against it, so they pin the one
+    implementation of `sched.rwkv-replay-start-row` rather than a Python copy
+    of the rule.
+    """
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        "create table cards (id integer primary key, nid integer, did integer, "
+        "odid integer)"
+    )
+    connection.execute(
+        "create table revlog (id integer primary key, cid integer, ease integer, "
+        "ivl integer, factor integer, time integer, type integer)"
+    )
+    for card_id in sorted({card_id for _, card_id, _ in revlog}):
+        connection.execute(
+            "insert into cards (id, nid, did, odid) values (?, ?, 100, 0)",
+            (card_id, card_id * 10),
+        )
+    for review_id, card_id, (ease, kind, factor) in revlog:
+        connection.execute(
+            "insert into revlog (id, cid, ease, ivl, factor, time, type) "
+            "values (?, ?, ?, 5, ?, 100, ?)",
+            (review_id, card_id, ease, factor, kind),
+        )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            return cast(
+                list[tuple[object, ...]], connection.execute(sql, args).fetchall()
+            )
+
+    return SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+
+def _replay_start_rows(
+    reviewer: object,
+    *,
+    card_ids: Sequence[int] | None = None,
+) -> list[tuple[int, int]]:
+    """`(review id, state code)` of every replayed row, in replay order."""
+    rows = rwkv_scheduler._historical_rwkv_review_rows(reviewer, card_ids=card_ids)
+    return [
+        (cast(int, row[0]), state)
+        for row, state in rwkv_scheduler._retained_historical_review_rows(rows)
+    ]
+
+
 def test_historical_learning_start_resets_and_review_only_history_is_retained() -> None:
-    rows = [
-        (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
-        (3_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (4_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (5_000, 1, 10, 100, 3, 100, 1, 3, 2500),
-        (6_000, 2, 20, 100, 3, 100, 1, 3, 2500),
-    ]
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_LEARNING),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, RATED_LEARNING),
+            (4_000, 1, RATED_LEARNING),
+            (5_000, 1, RATED_REVIEW),
+            (6_000, 2, RATED_REVIEW),
+        ]
+    )
 
-    retained = rwkv_scheduler._benchmark_retained_historical_review_rows(rows)
-
-    assert [(row[0], state) for row, state in retained] == [
+    assert _replay_start_rows(reviewer) == [
         (3_000, 0),
-        (4_000, 1),
-        (5_000, 2),
-        (6_000, 2),
+        (4_000, int(RwkvReviewState.LEARNING)),
+        (5_000, int(RwkvReviewState.REVIEW)),
+        # Card 2 has no Learning row, so its first rated row is the start row
+        # and carries the learn-start state, not REVIEW.
+        (6_000, 0),
     ]
+
+
+def test_historical_fallback_start_row_gets_the_learn_start_state() -> None:
+    """A card with no Learning row still gets the learn-start state.
+
+    `sched.rwkv-replay-start-row`: the start row always carries the learn-start
+    code, whatever its own kind, so the model sees the same first row it saw in
+    training.
+    """
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, RATED_RELEARNING),
+            (3_000, 1, RATED_REVIEW),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (1_000, 0),
+        (2_000, int(RwkvReviewState.RELEARNING)),
+        (3_000, int(RwkvReviewState.REVIEW)),
+    ]
+
+
+def test_historical_replay_drops_the_rows_before_a_fallback_card_forget() -> None:
+    """The Forget cut reaches the Python replay, not only the backend query."""
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, FORGET),
+            (3_000, 1, RATED_REVIEW),
+            (4_000, 1, RATED_RELEARNING),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (3_000, 0),
+        (4_000, int(RwkvReviewState.RELEARNING)),
+    ]
+
+
+def test_historical_replay_keeps_a_learning_start_over_a_later_forget() -> None:
+    """Rule 1 wins, here as in the backend query."""
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_LEARNING),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, FORGET),
+            (4_000, 1, RATED_REVIEW),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (1_000, 0),
+        (2_000, int(RwkvReviewState.REVIEW)),
+        (4_000, int(RwkvReviewState.REVIEW)),
+    ]
+
+
+def test_grade_now_and_the_replay_agree_on_a_forgotten_fallback_card() -> None:
+    """The acceptance test for one start rule with one implementation.
+
+    A card with no Learning row and a Forget in the middle must give Grade Now
+    and the reviewer's replay the same start row and the same state. Both read
+    their rows from `_historical_rwkv_review_rows`, which carries the rule in
+    its SQL; Grade Now differs only in filtering to the graded card.
+    """
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, FORGET),
+            (4_000, 1, RATED_REVIEW),
+            (5_000, 1, RATED_RELEARNING),
+            (6_000, 2, RATED_LEARNING),
+        ]
+    )
+
+    replay = [entry for entry in _replay_start_rows(reviewer) if entry[0] < 6_000]
+    grade_now = _replay_start_rows(reviewer, card_ids=[1])
+
+    assert replay == grade_now
+    assert grade_now == [
+        (4_000, 0),
+        (5_000, int(RwkvReviewState.RELEARNING)),
+    ]
+
+    # The Grade Now history helper reads the same rows and keeps the same start.
+    histories = rwkv_scheduler._rwkv_grade_now_card_histories(
+        rwkv_scheduler._historical_rwkv_review_rows(reviewer, card_ids=[1])
+    )
+    assert histories[1].review_count == 2
 
 
 @pytest.mark.parametrize(
@@ -4418,6 +4570,8 @@ def test_live_answer_after_card_reload_matches_historical_replay(
             0,
             4,
             2_500,
+            # The query's `is_learning_start`.
+            1,
         ),
     ]
 
@@ -4467,6 +4621,8 @@ def test_live_answer_after_card_reload_matches_historical_replay(
             1,
             5,
             2_400,
+            # Not the start row: the card already has one.
+            0,
         )
     )
     # Simulate Card.load() after the answer operation has persisted the new row.
@@ -5142,18 +5298,29 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     assert deck_config.reviews[0].current_elapsed_days == 3
 
 
-def test_historical_rwkv_inputs_do_not_use_creation_for_non_learning_start() -> None:
+def test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start() -> None:
+    """A fallback start row gets the learn-start state but not the creation age.
+
+    `sched.rwkv-replay-start-row`: a card with no Learning row starts at its
+    first rated row, and that row carries the learn-start state so the model
+    sees the first row it saw in training. The row is only the first row we
+    hold, though, not the card's known first review, so the creation-age
+    elapsed option must not reach it: the card's creation age would invent an
+    interval that never happened.
+    """
     first_review = (40 * 86_400 + 100) * 1000
     card_id = first_review - 3 * 86_400 * 1000
     reviewer = _rwkv_reviewer(
         rwkv_review_first_review_elapsed_from_card_creation=True,
     )
-    rows = [(first_review, card_id, 10, 100, 3, 1234, 1, 3, 2500)]
+    # The last column is the query's own `is_learning_start`: this single
+    # Review row is the card's fallback start row.
+    rows = [(first_review, card_id, 10, 100, 3, 1234, 1, 3, 2500, 1)]
     reviewer.mw.col.db = SimpleNamespace(all=lambda _sql, *_args: rows)
 
     history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
 
-    assert history.reviews[0].card_type == int(RwkvReviewState.REVIEW)
+    assert history.reviews[0].card_type == int(RwkvReviewState.LEARN_START)
     assert history.reviews[0].current_elapsed_days == -1
     assert history.reviews[0].current_elapsed_seconds == -1
 
@@ -7139,8 +7306,8 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
     rows = [
-        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500),
-        (second_review, 2, 20, 200, 3, 2345, 0, 5, 2400),
+        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500, 1),
+        (second_review, 2, 20, 200, 3, 2345, 0, 5, 2400, 1),
     ]
     count_calls: list[tuple[int, int | None]] = []
 
@@ -7225,7 +7392,7 @@ def test_historical_rwkv_review_inputs_skips_full_scan_when_cache_is_current(
 
     assert len(queries) == 1
     sql, args = queries[0]
-    assert "r.id > ?" in sql
+    assert "e.id > ?" in sql
     assert "limit 1" in sql
     assert args == (1234,)
     assert history.reviews == []
@@ -17293,12 +17460,18 @@ def _rwkv_cache_reviewer(
                 ]
             assert "from revlog r" in sql
             assert "join cards c" in sql
+            # Normalize here too, not only at fixture time: a test may append a
+            # raw row after the reviewer is built, and the query it stands in
+            # for always returns the `is_learning_start` column.
+            query_rows = cast(
+                list[tuple[int, ...]], _benchmark_valid_historical_rows(rows)
+            )
             if args:
                 assert len(args) == 1
                 after_review_id = args[0]
                 assert isinstance(after_review_id, int)
-                return [row for row in rows if row[0] > after_review_id]
-            return list(rows)
+                return [row for row in query_rows if row[0] > after_review_id]
+            return query_rows
 
         def scalar(self, sql: str, *args: object) -> int | None:
             if "select crt from col" in sql:
@@ -17439,6 +17612,13 @@ def _rwkv_cache_reviewer(
 def _benchmark_valid_historical_rows(
     rows: Sequence[tuple[object, ...]],
 ) -> list[tuple[object, ...]]:
+    """Rows shaped the way the replay query returns them.
+
+    Each card's first row is made a Learning row and flagged
+    `is_learning_start`, which is the tenth column the query itself computes
+    (`sched.rwkv-replay-start-row`). These rows stand in for the query's
+    output; the rule itself is pinned by the tests that run the real SQL.
+    """
     seen_cards: set[int] = set()
     normalized: list[tuple[object, ...]] = []
     for row in rows:
@@ -17446,11 +17626,12 @@ def _benchmark_valid_historical_rows(
             normalized.append(row)
             continue
         card_id = row[1]
+        body = row[:9] if len(row) >= 9 else row
         if card_id in seen_cards:
-            normalized.append(row)
+            normalized.append((*body, 0))
             continue
         seen_cards.add(card_id)
-        normalized.append((*row[:6], 0, *row[7:]))
+        normalized.append((*body[:6], 0, *body[7:], 1))
     return normalized
 
 
@@ -18771,3 +18952,454 @@ def test_prepare_stats_retrievability_scores_scores_again_after_a_new_day() -> N
         rwkv_scheduler.forget_rwkv_stats_scores()
 
     assert backend.predicted_card_ids == [1, 1]
+
+
+def _stats_curve_input_build(count: int) -> Any:
+    """An input build of `count` review-ready query inputs."""
+
+    inputs = [
+        (
+            card_id,
+            replace(
+                _rwkv_review_input(card_id=card_id, note_id=card_id * 10),
+                current_elapsed_days=7,
+            ),
+        )
+        for card_id in range(1, count + 1)
+    ]
+    return rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size={512: inputs},
+        loaded_rows=count,
+        parsed_cards=count,
+        cards_with_state=count,
+        disabled_config_cards=0,
+        eligible_cards=count,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+    )
+
+
+def _patch_stats_search_scaffold(
+    monkeypatch: pytest.MonkeyPatch,
+    input_build: Any,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_input_batches_for_search",
+        lambda **_kwargs: input_build,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_curve_enabled_input_build",
+        lambda _reviewer, build: build,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_fresh_rwkv_review_queue_score_map",
+        lambda _reviewer: {},
+    )
+
+
+def _patch_resident_curve_route(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    supported: bool,
+    curve_retrievabilities: Callable[[int], list[float | None]] | None = None,
+    on_batch: Callable[[Sequence[tuple[int, RwkvReviewInput]]], None] | None = None,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_supports_resident_curve_retrievability",
+        lambda: supported,
+    )
+    if not supported:
+        return
+
+    def curve_route(
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+        **_kwargs: Any,
+    ) -> list[float | None]:
+        if on_batch is not None:
+            on_batch(inputs_by_card_id)
+        assert curve_retrievabilities is not None
+        return curve_retrievabilities(len(inputs_by_card_id))
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_curve_retrievabilities_for_inputs", curve_route
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_scores_for_inputs",
+        lambda inputs_by_card_id, **_kwargs: [
+            (card_id, 0.7) for card_id, _ in inputs_by_card_id
+        ],
+    )
+
+
+def test_stats_curve_retrievability_uses_the_query_only_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Retrievability graph needs only the curve value, so the scoring
+    takes the resident query-only route instead of the full prediction."""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(2))
+    batches: list[int] = []
+    _patch_resident_curve_route(
+        monkeypatch,
+        supported=True,
+        curve_retrievabilities=lambda count: [0.6, 0.8][:count],
+        on_batch=lambda batch: batches.append(len(batch)),
+    )
+
+    def full_path(*_args: Any, **_kwargs: Any) -> list[RwkvReviewPrediction | None]:
+        raise AssertionError("the full prediction path must not run")
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", full_path
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert batches == [2]
+    assert result is not None
+    assert result.scores == [(1, 0.7), (2, 0.7)]
+    assert result.curve_scores == [(1, 0.6), (2, 0.8)]
+
+
+def test_stats_curve_retrievability_falls_back_to_the_full_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older runtime has no query-only route, so the full path still runs."""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(1))
+    _patch_resident_curve_route(monkeypatch, supported=False)
+    full_calls: list[int] = []
+
+    def full_path(
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+        **_kwargs: Any,
+    ) -> list[RwkvReviewPrediction | None]:
+        full_calls.append(len(inputs_by_card_id))
+        return [RwkvReviewPrediction(retrievability=0.7, curve_retrievability=0.6)]
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", full_path
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert full_calls == [1]
+    assert result is not None
+    assert result.curve_scores == [(1, 0.6)]
+
+
+def test_stats_curve_due_keeps_the_full_prediction_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The curve-due flags need the current interval, so that request keeps
+    the full path."""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(1))
+
+    def curve_route(*_args: Any, **_kwargs: Any) -> list[float | None]:
+        raise AssertionError("the query-only route must not run")
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_supports_resident_curve_retrievability",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_curve_retrievabilities_for_inputs", curve_route
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_predictions_for_inputs",
+        lambda *_args, **_kwargs: [
+            RwkvReviewPrediction(
+                retrievability=0.7,
+                curve_retrievability=0.6,
+                current_interval=5,
+            )
+        ],
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="is:rwkv-curve:due",
+            prepare_curve_due=True,
+            prepare_curve_retrievability=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert result is not None
+    assert result.curve_due_card_ids == frozenset({1})
+
+
+def test_backend_resident_curve_retrievability_requires_runtime_support() -> None:
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+
+    # no runtime support -> None, so the caller falls back to the full path
+    assert not backend.supports_resident_curve_retrievability
+    assert (
+        backend.predict_curve_retrievability_inputs_from_warm_up([review_input]) is None
+    )
+
+    def predict_curve_retrievability_many_from_warm_up(
+        review_inputs: list[RwkvReviewInput],
+    ) -> list[float | None]:
+        assert review_inputs == [review_input, review_input]
+        return [0.42, None]
+
+    runtime.predict_curve_retrievability_many_from_warm_up = (  # type: ignore[attr-defined]
+        predict_curve_retrievability_many_from_warm_up
+    )
+    assert backend.supports_resident_curve_retrievability
+    assert backend.predict_curve_retrievability_inputs_from_warm_up(
+        [review_input, review_input]
+    ) == [0.42, None]
+    assert backend.predict_curve_retrievability_inputs_from_warm_up([]) == []
+
+
+def test_rust_runtime_curve_retrievability_keeps_none() -> None:
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    rows: list[tuple[object, ...]] = []
+
+    def predict_curve_retrievability_many_from_warm_up(
+        batch: list[tuple[object, ...]],
+    ) -> list[float | None]:
+        rows.extend(batch)
+        return [0.42, None]
+
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = SimpleNamespace(
+        predict_curve_retrievability_many_from_warm_up=(
+            predict_curve_retrievability_many_from_warm_up
+        )
+    )
+    inputs = [
+        _rwkv_review_input(card_id=1, note_id=10),
+        _rwkv_review_input(card_id=2, note_id=20),
+    ]
+
+    outputs = runtime.predict_curve_retrievability_many_from_warm_up(inputs)
+
+    assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
+    assert outputs == [0.42, None]
+
+
+def test_cancelled_stats_scoring_stops_at_the_next_batch_and_frees_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(6))
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 2)
+    scored_batches: list[int] = []
+
+    def on_batch(inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]]) -> None:
+        scored_batches.append(len(inputs_by_card_id))
+        # the Stats window closes while the first batch runs
+        rwkv_scheduler.cancel_stats_scoring()
+
+    _patch_resident_curve_route(
+        monkeypatch,
+        supported=True,
+        curve_retrievabilities=lambda count: [0.6] * count,
+        on_batch=on_batch,
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    generation = rwkv_scheduler._rwkv_stats_scoring_generation_now()
+    try:
+        with pytest.raises(rwkv_scheduler._RwkvStatsScoringCancelled):
+            rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+                reviewer=SimpleNamespace(),
+                search="deck:current",
+                prepare_curve_retrievability=True,
+                cancel_generation=generation,
+            )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    # it stopped at the boundary after the first batch, not after all three
+    assert scored_batches == [2]
+    # the boundary is outside the RWKV lock, so the lock is free again
+    assert rwkv_scheduler._reviewer_backend_execution_lock.acquire(blocking=False)
+    rwkv_scheduler._reviewer_backend_execution_lock.release()
+
+
+def test_stats_scoring_without_a_cancel_generation_is_never_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Browser search or a filtered deck asks for the same scores; closing
+    the Stats window must not stop their work."""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(4))
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 2)
+    scored_batches: list[int] = []
+
+    def on_batch(inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]]) -> None:
+        scored_batches.append(len(inputs_by_card_id))
+        rwkv_scheduler.cancel_stats_scoring()
+
+    _patch_resident_curve_route(
+        monkeypatch,
+        supported=True,
+        curve_retrievabilities=lambda count: [0.6] * count,
+        on_batch=on_batch,
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert scored_batches == [2, 2]
+    assert result is not None and len(result.curve_scores) == 4
+
+
+def _cancelling_stats_scorer(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
+    """Make the search scoring stop the way a closed Stats window stops it."""
+
+    seen: list[int | None] = []
+
+    def scorer(*, cancel_generation: int | None = None, **_kwargs: Any) -> None:
+        seen.append(cancel_generation)
+        rwkv_scheduler.cancel_stats_scoring()
+        rwkv_scheduler._raise_if_stats_scoring_cancelled(cancel_generation)
+        raise AssertionError("the scoring should have stopped")
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_stats_graph_scores_for_search", scorer)
+    return seen
+
+
+def test_prepare_stats_retrievability_scores_stop_when_the_stats_window_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    seen = _cancelling_stats_scorer(monkeypatch)
+    published: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_stats_graph_scores",
+        lambda *args, **kwargs: published.append(args),
+    )
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        status = prepare_stats_retrievability_scores(
+            reviewer,
+            "deck:current",
+            cancel_when_stats_closes=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+    # no half-published map, and the fallback scoring never ran either
+    assert published == []
+    assert backend.predicted_card_ids == []
+
+
+def test_cancelled_stats_scoring_drops_the_kept_score_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        assert backend.predicted_card_ids == [1]
+        with monkeypatch.context() as cancelled:
+            _cancelling_stats_scorer(cancelled)
+            assert (
+                prepare_stats_retrievability_scores(
+                    reviewer,
+                    "deck:current",
+                    cancel_when_stats_closes=True,
+                )
+                == rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+            )
+        # the memo is gone, so the next request scores again instead of
+        # reusing a map the cancelled job never published
+        assert (
+            prepare_stats_retrievability_scores(reviewer, "rated:7")
+            == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert backend.predicted_card_ids == [1, 1]
+
+
+def test_stats_scoring_after_a_cancel_runs_to_the_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        with monkeypatch.context() as cancelled:
+            _cancelling_stats_scorer(cancelled)
+            prepare_stats_retrievability_scores(
+                reviewer,
+                "deck:current",
+                cancel_when_stats_closes=True,
+            )
+        # the window opens again: the new request starts from the new
+        # generation, so the earlier cancel does not stop it
+        status = prepare_stats_retrievability_scores(
+            reviewer,
+            "deck:current",
+            cancel_when_stats_closes=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert backend.predicted_card_ids == [1]

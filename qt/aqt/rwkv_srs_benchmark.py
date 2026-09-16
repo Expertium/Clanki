@@ -911,6 +911,55 @@ class _RustRwkvRuntime:
             for retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
+    def predict_curve_retrievability_many_from_warm_up(
+        self,
+        review_inputs: Sequence[RwkvReviewInput],
+    ) -> Sequence[float | None]:
+        """Query-only curve retrievability from the resident state.
+
+        This is the one number the Stats Retrievability graph needs under
+        RWKV-Curve. The full prediction path additionally runs the four
+        simulated-answer passes and the current-interval crossing search,
+        serializes each card's state across the bridge and hashes it; none of
+        that changes this value. `None` means the card has no curve value.
+        """
+
+        predict_many = getattr(
+            self._process,
+            "predict_curve_retrievability_many_from_warm_up",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError(
+                "RWKV resident curve retrievability prediction is unavailable"
+            )
+
+        build_start = time.monotonic()
+        rows = [_review_input_row(review_input) for review_input in review_inputs]
+        build_elapsed_ms = (time.monotonic() - build_start) * 1000
+        predict_start = time.monotonic()
+        with self._locked_process():
+            outputs = predict_many(rows)
+        predict_elapsed_ms = (time.monotonic() - predict_start) * 1000
+        if len(outputs) != len(review_inputs):
+            raise ValueError(
+                "RWKV Rust resident curve retrievability prediction count mismatch"
+            )
+
+        logger.debug(
+            "RWKV embedded Rust resident curve retrievability batch predicted: "
+            "requests=%s build_elapsed_ms=%.1f bridge_elapsed_ms=%.1f "
+            "elapsed_ms=%.1f",
+            len(rows),
+            build_elapsed_ms,
+            predict_elapsed_ms,
+            build_elapsed_ms + predict_elapsed_ms,
+        )
+        return [
+            None if curve_retrievability is None else float(curve_retrievability)
+            for curve_retrievability in outputs
+        ]
+
     def predict_memorised_retrievability_from_warm_up(
         self,
         review_inputs: Sequence[RwkvReviewInput],

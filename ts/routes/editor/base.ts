@@ -45,6 +45,9 @@ export const editorModules = [
     ModuleName.ADDING,
     ModuleName.QT_MISC,
     ModuleName.DECKS,
+    // the "Simple | Advanced" switch (spec ui.editor-simple-view) reads its
+    // two labels from the deck-config module, as the other pages do
+    ModuleName.DECK_CONFIG,
 ];
 
 export const components = {

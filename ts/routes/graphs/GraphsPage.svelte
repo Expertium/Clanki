@@ -23,8 +23,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const search = writable(initialSearch);
     const days = writable(initialDays);
-    // for graphs that load their own data, such as Total Knowledge
+    // for graphs that load their own data, such as Total Knowledge and the
+    // model-quality graphs
     setContext("graphsSearch", search);
+    setContext("graphsDays", days);
 
     export let graphs: Component<any>[];
     /** The graphs Simple mode shows; null = every graph in both modes
