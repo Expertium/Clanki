@@ -4395,6 +4395,58 @@ def test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals() -> None
         assert not rwkv_scheduler.answer_intervals_pending(fsrs_or_instant, card)
 
 
+def test_answer_intervals_unavailable_only_when_rwkv_curve_answered() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a prediction with
+    no interval for a button is permanent, so the reviewer says so at once."""
+    reviewer = _rwkv_reviewer()
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    # no prediction yet: the wait can still end
+    assert not rwkv_scheduler.answer_intervals_unavailable(reviewer, card)
+    # a prediction of another card says nothing about this one
+    reviewer._rwkv_review_prediction = _curve_prediction(card_id=2)
+    assert not rwkv_scheduler.answer_intervals_unavailable(reviewer, card)
+    # RWKV-Curve answered and gave no interval for a button
+    reviewer._rwkv_review_prediction = replace(
+        _curve_prediction(), interval_override_used=False
+    )
+    assert rwkv_scheduler.answer_intervals_unavailable(reviewer, card)
+    # the intervals arrived
+    reviewer._rwkv_review_prediction = _curve_prediction()
+    assert not rwkv_scheduler.answer_intervals_unavailable(reviewer, card)
+
+    # FSRS-7 and RWKV-Instant presets never wait, so they never report this
+    for fsrs_or_instant in (
+        _rwkv_reviewer(rwkv_review_enabled=False),
+        _rwkv_reviewer(
+            rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+        ),
+    ):
+        fsrs_or_instant._rwkv_review_prediction = replace(
+            _curve_prediction(), interval_override_used=False
+        )
+        assert not rwkv_scheduler.answer_intervals_unavailable(fsrs_or_instant, card)
+
+
+def test_the_answer_button_wait_can_restore_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: the waiting
+    buttons restore RWKV-Curve's state; only asking again never ends the
+    wait, because the other review-time restore runs after an answer."""
+    reviewer = _rwkv_reviewer()
+    prepared: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_prepare_reviewer_backend_for_review",
+        lambda target: prepared.append(target) or True,
+    )
+
+    assert rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+
+    assert prepared == [reviewer]
+
+
 # Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a failed prediction
 # leaves no stored prediction, so the buttons wait instead of showing FSRS's.
 def test_failed_rwkv_prediction_leaves_the_buttons_waiting(

@@ -550,22 +550,33 @@ def test_on_screen_timer_keeps_running_when_the_answer_shows(monkeypatch) -> Non
     assert evals == [f"showAnswer({json.dumps('BUTTONS')});"]
 
 
-def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
-    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait"""
-    shots: list[tuple[int, Callable[[], None]]] = []
-    evals: list[str] = []
-    pending = [True]
-    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
-    monkeypatch.setattr(
-        aqt.rwkv_scheduler,
-        "answer_intervals_pending",
-        lambda reviewer, card: pending[0],
-    )
+def _done_future(value: object) -> Future[Any]:
+    future: Future[Any] = Future()
+    future.set_result(value)
+    return future
+
+
+def _rwkv_curve_waiting_reviewer(
+    evals: list[str],
+    shots: list[tuple[int, Callable[[], None]]],
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]],
+) -> Any:
+    """A reviewer showing the answer of an RWKV-Curve card, with the Qt
+    single-shot timer and the background task queue captured."""
+
+    def run_in_background(
+        task: Callable[[], object],
+        on_done: Callable[[Any], None],
+        uses_collection: bool = True,
+    ) -> None:
+        tasks.append((task, on_done))
+
     reviewer: Any = Reviewer.__new__(Reviewer)
     reviewer.mw = SimpleNamespace(
         progress=SimpleNamespace(
             single_shot=lambda delay, callback: shots.append((delay, callback))
         ),
+        taskman=SimpleNamespace(run_in_background=run_in_background),
         col=SimpleNamespace(
             decks=SimpleNamespace(
                 config_dict_for_deck_id=lambda deck_id: {"stopTimerOnAnswer": False}
@@ -580,6 +591,27 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     reviewer._scheduling_states_pending = False
     reviewer._v3 = SimpleNamespace(states=scheduling_states_with_review_current())
     reviewer._answerButtons = lambda: "BUTTONS 1d 3d"
+    return reviewer
+
+
+def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait"""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    pending = [True]
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_pending",
+        lambda reviewer, card: pending[0],
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: False,
+    )
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
 
     reviewer._showEaseButtons()
     # a second miss backs off without drawing the notice again
@@ -603,6 +635,137 @@ def test_answer_buttons_wait_for_rwkv_curve_intervals(monkeypatch) -> None:
     assert len(shots) == 2
     assert evals[-1] == 'showAnswer("BUTTONS 1d 3d");'
     assert reviewer._rwkv_intervals_retry_ms == 0
+    assert reviewer._rwkv_intervals_wait_started is None
+
+
+def test_the_waiting_answer_buttons_restore_the_rwkv_curve_state(monkeypatch) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: while the buttons
+    wait, the reviewer restores RWKV-Curve's state off the main thread. Asking
+    again alone never ends the wait, because the other review-time restore runs
+    after an answer and an answer is blocked while the buttons wait."""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    prepared: list[object] = []
+    pending = [True]
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_pending",
+        lambda reviewer, card: pending[0],
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_backend_for_answer_buttons",
+        lambda target: prepared.append(target) or True,
+    )
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
+
+    reviewer._showEaseButtons()
+
+    assert len(tasks) == 1
+    # a second preparation does not start while the first one runs
+    shots[-1][1]()
+    assert len(tasks) == 1
+
+    task, on_done = tasks[0]
+    assert task() is True
+    assert prepared == [reviewer]
+
+    # the finished preparation shows the buttons, now that the state is there
+    pending[0] = False
+    on_done(_done_future(True))
+    assert evals[-1] == 'showAnswer("BUTTONS 1d 3d");'
+
+    # leaving the card cancels the preparation's retry
+    pending[0] = True
+    reviewer._showEaseButtons()
+    task, on_done = tasks[-1]
+    drawn = len(evals)
+    reviewer.card = SimpleNamespace(id=8, current_deck_id=lambda: 1)
+    on_done(_done_future(True))
+    assert len(evals) == drawn
+
+
+def test_answer_buttons_stop_waiting_for_rwkv_curve_after_a_minute(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: the wait ends
+    after RWKV_INTERVALS_WAIT_TIMEOUT_SECS with a message, and "Try again"
+    waits again without leaving the card."""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    clock = [1000.0]
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: True
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_backend_for_answer_buttons",
+        lambda target: False,
+    )
+    monkeypatch.setattr(reviewer_module.time, "monotonic", lambda: clock[0])
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
+
+    reviewer._showEaseButtons()
+    assert len(shots) == 1
+
+    clock[0] += reviewer_module.RWKV_INTERVALS_WAIT_TIMEOUT_SECS
+    shots[-1][1]()
+
+    # the reason, a way to try again, no buttons and no further retry
+    assert len(shots) == 1
+    timed_out = json.dumps(
+        tr.qt_misc_rwkv_curve_intervals_timed_out(
+            seconds=int(reviewer_module.RWKV_INTERVALS_WAIT_TIMEOUT_SECS)
+        )
+    )[1:-1]
+    assert timed_out in evals[-1]
+    assert "rwkvCurveRetry" in evals[-1]
+    assert "BUTTONS" not in evals[-1]
+
+    # "Try again" waits again, on the same card
+    reviewer._linkHandler("rwkvCurveRetry")
+    assert len(shots) == 2
+    assert json.dumps(tr.qt_misc_rwkv_curve_intervals_pending())[1:-1] in evals[-1]
+
+
+def test_answer_buttons_say_rwkv_curve_has_no_interval_for_the_card(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a prediction with
+    no interval for a button never changes, so the reviewer says so at once."""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: True
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: True,
+    )
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
+
+    reviewer._showEaseButtons()
+
+    assert shots == [] and tasks == []
+    assert json.dumps(tr.qt_misc_rwkv_curve_no_interval())[1:-1] in evals[-1]
+    assert "BUTTONS" not in evals[-1]
 
 
 def test_remaining_review_count_is_pending_without_rwkv_instant_scores() -> None:

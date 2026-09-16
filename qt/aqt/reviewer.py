@@ -70,6 +70,9 @@ UNDO_RESTORED_CARD_ANSWER_UNBLOCK_DELAY_MS = 100
 # first wait before asking RWKV-Curve again for a card's intervals; doubles
 # up to a second
 RWKV_INTERVALS_FIRST_RETRY_MS = 50
+RWKV_INTERVALS_MAX_RETRY_MS = 1000
+# after this long the reviewer stops waiting for RWKV-Curve and says so
+RWKV_INTERVALS_WAIT_TIMEOUT_SECS = 60.0
 
 
 class RefreshNeeded(Enum):
@@ -227,6 +230,10 @@ class Reviewer:
             tuple[int, tuple[int, int, int] | None] | None
         ) = None
         self._rwkv_undo_restored_card_active = False
+        self._rwkv_intervals_retry_ms = 0
+        self._rwkv_intervals_wait_started: float | None = None
+        self._rwkv_intervals_retry_pending = False
+        self._rwkv_intervals_prepare_in_flight = False
         self._state_mutation_key = str(random.randint(0, 2**64 - 1))
         self._scheduling_states_pending = False
         self.bottom = BottomBar(mw, mw.bottomWeb)
@@ -511,6 +518,8 @@ class Reviewer:
         self._answer_update_id = None
         self._answer_rendered = False
         self._rwkv_intervals_retry_ms = 0
+        self._rwkv_intervals_wait_started = None
+        self._rwkv_intervals_retry_pending = False
         self._rwkv_undo_restored_card_active = False
         restored_undo_card = self._get_rwkv_undo_restored_card()
         if not restored_undo_card:
@@ -1796,6 +1805,8 @@ class Reviewer:
             self.web.update()
         elif url == "statesMutated":
             self._states_mutated = True
+        elif url == "rwkvCurveRetry":
+            self._retry_rwkv_curve_intervals()
         elif url.startswith("qaPaintPending:"):
             if context := self._qa_bridge_context(url, "qaPaintPending"):
                 self._on_qa_paint_pending(*context)
@@ -2042,44 +2053,129 @@ timeboxReps = 0;
             self._wait_for_rwkv_curve_intervals()
             return
         self._rwkv_intervals_retry_ms = 0
+        self._rwkv_intervals_wait_started = None
         self.bottom.web.eval(f"showAnswer({json.dumps(middle)});")
+
+    def _rwkv_curve_answer_notice(self, text: str, *, try_again: bool) -> None:
+        """Draw a message in place of the answer buttons. RWKV-Curve's
+        intervals are not there, and FSRS intervals never stand in (spec
+        sched.rwkv-curve-buttons-wait)."""
+        body = html.escape(text)
+        if try_again:
+            body += """<br><button onclick='pycmd("rwkvCurveRetry");'>%s</button>""" % (
+                html.escape(tr.qt_misc_rwkv_curve_intervals_try_again())
+            )
+        notice = (
+            "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
+            % body
+        )
+        self.bottom.web.eval(f"showAnswer({json.dumps(notice)});")
 
     def _wait_for_rwkv_curve_intervals(self) -> None:
         """RWKV-Curve has not given this card's intervals yet: show a notice
-        instead of the buttons and ask again, backing off to once a second.
+        instead of the buttons, restore RWKV-Curve's state in the background
+        and ask again, backing off to once a second. After
+        RWKV_INTERVALS_WAIT_TIMEOUT_SECS the reviewer stops and says so.
         FSRS intervals never stand in (spec sched.rwkv-curve-buttons-wait)."""
         assert self.card is not None
         if not aqt.rwkv_scheduler.rwkv_model_available():
             # it would wait forever: say why instead (spec
             # sched.rwkv-no-model-error)
-            notice = (
-                "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
-                % html.escape(tr.qt_misc_rwkv_model_not_found())
+            self._rwkv_curve_answer_notice(
+                tr.qt_misc_rwkv_model_not_found(), try_again=False
             )
-            self.bottom.web.eval(f"showAnswer({json.dumps(notice)});")
             return
+        if aqt.rwkv_scheduler.answer_intervals_unavailable(self, self.card):
+            # RWKV-Curve answered and gave no interval for a button: asking
+            # again gives the same answer, so do not wait at all
+            self._rwkv_curve_answer_notice(
+                tr.qt_misc_rwkv_curve_no_interval(), try_again=False
+            )
+            return
+        now = time.monotonic()
+        started = getattr(self, "_rwkv_intervals_wait_started", None)
+        if started is None:
+            started = now
+            self._rwkv_intervals_wait_started = started
         delay = getattr(self, "_rwkv_intervals_retry_ms", 0)
         if delay == 0:
-            notice = (
-                "<table cellpadding=0><tr><td class=stat2 align=center>%s</td></tr></table>"
-                % html.escape(tr.qt_misc_rwkv_curve_intervals_pending())
+            self._rwkv_curve_answer_notice(
+                tr.qt_misc_rwkv_curve_intervals_pending(), try_again=False
             )
-            self.bottom.web.eval(f"showAnswer({json.dumps(notice)});")
-        delay = min(max(delay * 2, RWKV_INTERVALS_FIRST_RETRY_MS), 1000)
+        if now - started >= RWKV_INTERVALS_WAIT_TIMEOUT_SECS:
+            # stop instead of waiting for ever, and say what happened
+            self._rwkv_curve_answer_notice(
+                tr.qt_misc_rwkv_curve_intervals_timed_out(
+                    seconds=int(RWKV_INTERVALS_WAIT_TIMEOUT_SECS)
+                ),
+                try_again=True,
+            )
+            return
+        # asking again is not enough: restore the state too, because no other
+        # review-time path restores it while the buttons wait
+        self._prepare_rwkv_curve_state_async()
+        delay = min(
+            max(delay * 2, RWKV_INTERVALS_FIRST_RETRY_MS),
+            RWKV_INTERVALS_MAX_RETRY_MS,
+        )
         self._rwkv_intervals_retry_ms = delay
+        if getattr(self, "_rwkv_intervals_retry_pending", False):
+            return
         card_id = self.card.id
         update_id = self._answer_update_id
 
         def retry() -> None:
-            if (
-                self.state == "answer"
-                and self.card is not None
-                and self.card.id == card_id
-                and self._answer_update_id == update_id
-            ):
+            self._rwkv_intervals_retry_pending = False
+            if self._rwkv_curve_wait_is_current(card_id, update_id):
                 self._showEaseButtons()
 
+        self._rwkv_intervals_retry_pending = True
         self.mw.progress.single_shot(delay, retry)
+
+    def _rwkv_curve_wait_is_current(self, card_id: int, update_id: int | None) -> bool:
+        """True while the reviewer still shows the answer of the same showing
+        of the same card: leaving the card cancels the wait."""
+        return (
+            self.state == "answer"
+            and self.card is not None
+            and self.card.id == card_id
+            and self._answer_update_id == update_id
+        )
+
+    def _prepare_rwkv_curve_state_async(self) -> None:
+        """Restore RWKV-Curve's resident state off the main thread while the
+        answer buttons wait. One preparation runs at a time; leaving the card
+        cancels its retry (spec sched.rwkv-curve-buttons-wait)."""
+        assert self.card is not None
+        if getattr(self, "_rwkv_intervals_prepare_in_flight", False):
+            return
+        card_id = self.card.id
+        update_id = self._answer_update_id
+
+        def prepare() -> bool:
+            return aqt.rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(self)
+
+        def prepared(future: Future[bool]) -> None:
+            self._rwkv_intervals_prepare_in_flight = False
+            try:
+                future.result()
+            except Exception:
+                logger.exception("RWKV-Curve state preparation failed")
+                return
+            if self._rwkv_curve_wait_is_current(card_id, update_id):
+                self._showEaseButtons()
+
+        self._rwkv_intervals_prepare_in_flight = True
+        self.mw.taskman.run_in_background(prepare, prepared, uses_collection=True)
+
+    def _retry_rwkv_curve_intervals(self) -> None:
+        """The "Try again" button of the notice: wait for RWKV-Curve again
+        without leaving the card (spec sched.rwkv-curve-buttons-wait)."""
+        if self.state != "answer" or self.card is None:
+            return
+        self._rwkv_intervals_wait_started = None
+        self._rwkv_intervals_retry_ms = 0
+        self._showEaseButtons()
 
     def _remaining(self) -> str:
         if not self.mw.col.conf["dueCounts"]:

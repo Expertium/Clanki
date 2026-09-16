@@ -81,6 +81,14 @@ qt-misc-rwkv-filtered-deck-preparation-failed-simple = RWKV probability of recal
 qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
 # RWKV cannot run because its model file is missing or does not load.
 qt-misc-rwkv-model-not-found = RWKV model not found
+# Shown instead of the answer buttons when RWKV-Curve calculated the card but
+# gave no interval for a button. Waiting longer cannot help.
+qt-misc-rwkv-curve-no-interval = RWKV-Curve has no interval for this card. The answer buttons stay hidden, because FSRS-7 intervals must never stand in for RWKV-Curve intervals.
+# Shown instead of the answer buttons when RWKV-Curve did not give the card's
+# intervals in time. $seconds is how long Clanki waited.
+qt-misc-rwkv-curve-intervals-timed-out = RWKV-Curve did not give the intervals of this card in { $seconds } seconds. Clanki could not load the RWKV-Curve state. Try again, or restart Clanki, or choose FSRS-7 for this deck in deck options. FSRS-7 intervals never stand in.
+# Button in the message above. It waits for RWKV-Curve again, on the same card.
+qt-misc-rwkv-curve-intervals-try-again = Try again
 # The progress window while Clanki loads the saved RWKV state at start-up.
 # It says what the user waits for, not which file is read (Andrew,
 # 2026-09-16).
