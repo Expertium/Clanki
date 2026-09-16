@@ -77,9 +77,7 @@ class FakeView:
 
 def expand(model: Any, searching: bool) -> FakeView:
     view = FakeView()
-    SidebarTreeView._expand_where_necessary(
-        cast(Any, view), model, searching=searching
-    )
+    SidebarTreeView._expand_where_necessary(cast(Any, view), model, searching=searching)
     return view
 
 
