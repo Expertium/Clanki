@@ -68,11 +68,16 @@ service SchedulerService {
       returns (ComputeFsrsParamsResponse);
   rpc ComputeFsrsParamsBatch(ComputeFsrsParamsBatchRequest)
       returns (ComputeFsrsParamsBatchResponse);
-  // Recomputes the stored per-review FSRS-7 predictions of every preset
-  // that has none for some of its reviews, and returns how many rows it
-  // wrote (spec ui.stats-fsrs-predictions-ready). Preset-wide and
-  // collection-wide; it never follows the Stats page's own search.
-  rpc RefreshFsrsReviewPredictions(generic.Empty) returns (generic.UInt32);
+  // The presets that have a rated review no stored validation fold covers
+  // (spec ui.stats-fsrs-predictions-ready). The caller recomputes them ONE
+  // AT A TIME, so the collection is free between presets.
+  rpc StaleFsrsPredictionPresets(generic.Empty)
+      returns (StaleFsrsPredictionPresetsResponse);
+  // Recomputes one preset's stored per-review FSRS-7 predictions and
+  // returns how many rows it wrote. The preset's whole card set, over the
+  // whole collection; it never follows the Stats page's own search.
+  rpc RefreshFsrsReviewPredictions(RefreshFsrsReviewPredictionsRequest)
+      returns (generic.UInt32);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);
@@ -596,6 +601,14 @@ message ComputeFsrsParamsBatchResponse {
   }
 
   repeated Item items = 1;
+}
+
+message StaleFsrsPredictionPresetsResponse {
+  repeated int64 deck_config_ids = 1;
+}
+
+message RefreshFsrsReviewPredictionsRequest {
+  int64 deck_config_id = 1;
 }
 
 message ComputeFsrsReviewRetrievabilityCalibrationRequest {

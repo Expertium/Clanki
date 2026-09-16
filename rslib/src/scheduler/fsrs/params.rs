@@ -496,6 +496,28 @@ impl Collection {
         Ok(stored as u32)
     }
 
+    /// The same pass with NO progress handling at all: it neither clears
+    /// the collection's progress nor reports its own, so a background
+    /// backfill cannot wipe or fight the progress the main thread is
+    /// showing (spec ui.stats-fsrs-predictions-ready).
+    pub(crate) fn compute_fsrs_review_retrievability_calibration_cache_quietly(
+        &mut self,
+        params: &[f32],
+        context: &FsrsReviewPredictionContext,
+        include_validation_folds: bool,
+    ) -> Result<u32> {
+        let rows =
+            fsrs_review_retrievability_cache_rows(params, context, include_validation_folds, None)?;
+        let stored = self
+            .storage
+            .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")?;
+        tracing::debug!(
+            predictions = stored,
+            "stored FSRS review retrievability calibration cache in the background"
+        );
+        Ok(stored as u32)
+    }
+
     fn create_fsrs_review_retrievability_progress_thread(
         &self,
         context: &FsrsReviewPredictionContext,
@@ -592,7 +614,8 @@ impl Collection {
         search: impl TryIntoSearch,
     ) -> Result<Vec<RevlogEntry>> {
         let search = search.try_into_search()?;
-        // a whole-collection search can match revlog entries of deleted cards, too
+        // a whole-collection search can match revlog entries of deleted cards,
+        // too
         if let Node::Group(nodes) = &search {
             if let &[Node::Search(SearchNode::WholeCollection)] = &nodes[..] {
                 return self.storage.get_all_revlog_entries_in_card_order();
@@ -677,8 +700,8 @@ impl Collection {
         anki_progress.state.reviews = target_counts.total_targets as u32;
         anki_progress.state.long_term_reviews = target_counts.long_term_targets as u32;
         anki_progress.state.short_term_reviews = target_counts.short_term_targets as u32;
-        // Ensure UI receives review counts even in paths that don't emit per-fold
-        // progress.
+        // Ensure UI receives review counts even in paths that don't emit
+        // per-fold progress.
         let _ = anki_progress.update(false, |_| {});
 
         let eval = if uses_external_evaluation(training_search, search) {
@@ -1082,8 +1105,9 @@ pub(crate) fn reviews_for_fsrs(
         if entry.is_cramming() {
             continue;
         }
-        // For incomplete review histories, initial memory state is based on the first
-        // user-graded review after the cutoff date with interval >= 1d.
+        // For incomplete review histories, initial memory state is based on the
+        // first user-graded review after the cutoff date with interval
+        // >= 1d.
         let within_cutoff = entry.id.0 > ignore_revlogs_before.0;
         let user_graded = entry.has_rating();
         let interday = entry.interval >= 1 || entry.interval <= -86400;
@@ -1095,8 +1119,8 @@ pub(crate) fn reviews_for_fsrs(
             first_of_last_learn_entries = Some(index);
             revlogs_complete = true;
         } else if entry.is_reset() {
-            // Ignore entries prior to a `Reset` if a learning step has come after,
-            // but consider revlogs complete.
+            // Ignore entries prior to a `Reset` if a learning step has come
+            // after, but consider revlogs complete.
             if first_of_last_learn_entries.is_some() {
                 revlogs_complete = true;
                 break;
@@ -1117,16 +1141,18 @@ pub(crate) fn reviews_for_fsrs(
         }
     }
     if training {
-        // While training, ignore the entire card if the first learning step of the last
-        // group of learning steps is before the ignore_revlogs_before date
+        // While training, ignore the entire card if the first learning step of
+        // the last group of learning steps is before the
+        // ignore_revlogs_before date
         if let Some(idx) = first_of_last_learn_entries {
             if entries[idx].id.0 < ignore_revlogs_before.0 {
                 return None;
             }
         }
     } else {
-        // While reviewing, if the first learning step is before the ignore date,
-        // we ignore it, and will fall back on SM2 info and the last user grade below.
+        // While reviewing, if the first learning step is before the ignore
+        // date, we ignore it, and will fall back on SM2 info and the
+        // last user grade below.
         if let Some(idx) = first_of_last_learn_entries {
             if entries[idx].id.0 < ignore_revlogs_before.0 && idx < entries.len() - 1 {
                 revlogs_complete = false;
@@ -1158,8 +1184,8 @@ pub(crate) fn reviews_for_fsrs(
     let delta_ts = fsrs_review_delta_ts(&entries);
 
     let items = if training {
-        // Convert the remaining entries into separate FSRSItems, where each item
-        // contains all reviews done until then.
+        // Convert the remaining entries into separate FSRSItems, where each
+        // item contains all reviews done until then.
         let mut items = Vec::with_capacity(entries.len());
         let mut current_reviews = Vec::with_capacity(entries.len());
         for (idx, (entry, &delta_t)) in entries.iter().zip(delta_ts.iter()).enumerate() {
@@ -1180,7 +1206,8 @@ pub(crate) fn reviews_for_fsrs(
         items
     } else {
         // When not training, we only need the final FSRS item, which represents
-        // the complete history of the card. This avoids expensive clones in a loop.
+        // the complete history of the card. This avoids expensive clones in a
+        // loop.
         let reviews = entries
             .iter()
             .zip(delta_ts.iter())
@@ -1725,8 +1752,8 @@ pub(crate) mod tests {
 
     #[test]
     fn card_reset_drops_all_previous_history() {
-        // If Reset comes in between two Learn entries, only the ones after the Reset
-        // are used.
+        // If Reset comes in between two Learn entries, only the ones after the
+        // Reset are used.
         assert_eq!(
             convert(
                 &[
@@ -1742,7 +1769,8 @@ pub(crate) mod tests {
             ),
             fsrs_items!([review(0), review(4)])
         );
-        // Return None if Reset is the last entry or is followed by only manual entries.
+        // Return None if Reset is the last entry or is followed by only manual
+        // entries.
         assert_eq!(
             convert(
                 &[
@@ -1761,8 +1789,9 @@ pub(crate) mod tests {
             ),
             None,
         );
-        // If non-learning user-graded entries are found after Reset, return None during
-        // training but return the remaining entries during memory state calculation.
+        // If non-learning user-graded entries are found after Reset, return
+        // None during training but return the remaining entries during
+        // memory state calculation.
         assert_eq!(
             convert(
                 &[
@@ -1883,8 +1912,8 @@ pub(crate) mod tests {
         }
 
         // The health check evaluates every target, same-day ones included
-        // (spec sched.fsrs7-only), so the same-day lapses lower the pass rate the
-        // adjustment uses. Without them the same evaluation fails.
+        // (spec sched.fsrs7-only), so the same-day lapses lower the pass rate
+        // the adjustment uses. Without them the same evaluation fails.
         let long_term_only = items
             .iter()
             .filter(|item| has_long_term_target(item))

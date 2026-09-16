@@ -73,29 +73,25 @@ impl Collection {
         self.storage.clear_fsrs_review_predictions_for_decks(&decks)
     }
 
-    /// Recomputes the predictions of every preset that has none for some of
-    /// its reviews, and returns how many rows it wrote. The rows are
+    /// Recomputes ONE preset's predictions and returns how many rows it
+    /// wrote. One preset per call, so the collection is free between them
+    /// and the main thread is never shut out for the length of a whole
+    /// backfill (spec ui.stats-fsrs-predictions-ready). The rows are
     /// validation folds, so nothing that produced a row had seen the review
     /// it predicts (spec ui.stats-model-metrics).
-    pub(crate) fn refresh_fsrs_review_predictions(&mut self) -> Result<u32> {
-        let stale = self.presets_with_stale_fsrs_review_predictions()?;
-        if stale.is_empty() {
-            return Ok(0);
-        }
-        let configs: HashMap<DeckConfigId, DeckConfig> = self
+    pub(crate) fn refresh_fsrs_review_predictions_of(
+        &mut self,
+        preset: DeckConfigId,
+    ) -> Result<u32> {
+        let Some(config) = self
             .storage
             .all_deck_config()?
             .into_iter()
-            .map(|config| (config.id, config))
-            .collect();
-        let mut written = 0;
-        for preset in stale {
-            let Some(config) = configs.get(&preset) else {
-                continue;
-            };
-            written += self.refresh_fsrs_review_predictions_of_preset(config)?;
-        }
-        Ok(written)
+            .find(|config| config.id == preset)
+        else {
+            return Ok(0);
+        };
+        self.refresh_fsrs_review_predictions_of_preset(&config)
     }
 
     fn refresh_fsrs_review_predictions_of_preset(&mut self, config: &DeckConfig) -> Result<u32> {
@@ -117,7 +113,10 @@ impl Collection {
             return Ok(0);
         }
         let context = FsrsReviewPredictionContext::from_prepared(&prepared);
-        self.compute_fsrs_review_retrievability_calibration_cache(&params, &context, true)
+        // no progress handling: this runs while the user is doing something
+        // else, and a background pass must not clear or contend with the
+        // progress the main thread is showing
+        self.compute_fsrs_review_retrievability_calibration_cache_quietly(&params, &context, true)
     }
 }
 
