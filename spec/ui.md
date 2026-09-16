@@ -34,8 +34,8 @@ with "…" placeholders meanwhile) is not done. In
 Simple mode the deck list's bottom row shows Find Decks Online (the button
 formerly named "Get Shared") and Create Deck but not Import File (Import
 stays under File); these buttons share one width in both modes, the
-deck menu (the gear next to a deck) has no RWKV submenu (Reschedule With
-RWKV-Curve, Reschedule All Decks) and no Advance or Postpone entries
+deck menu (the gear next to a deck) has no RWKV submenu (Reschedule this
+deck, Reschedule all decks) and no Advance or Postpone entries
 (`ui.advance-postpone`), nor has the Browser's Cards menu, Tools > Add-ons
 is shown in both modes,
 and the
