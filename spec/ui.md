@@ -698,7 +698,10 @@ each bin's ratings that were remembered. A dashed diagonal is a perfect
 algorithm: a point above it means the algorithm predicted too little, below
 it too much. Each point carries a vertical line through the 2.5 and 97.5
 percentiles of its share, from 500 resamples of the CARDS (not of the
-ratings, because a card's own ratings are not independent). The ratings of
+ratings, because a card's own ratings are not independent). The same
+reviews always give the same line: the cards are resampled in a fixed
+order, from a fixed seed, so opening the page twice does not move the error
+bars. The ratings of
 each bin are drawn as grey bars behind the line, on their own axis at the
 right. Three tiles above the graph give the average predicted probability,
 the actual recall, and the number of ratings.
@@ -771,7 +774,9 @@ user's own rebuild, never to opening a page.
 `the_period_selects_the_ratings`,
 `newer_ratings_than_the_stored_predictions_are_reported`,
 `calibration_bins_and_their_intervals`,
-`um_plus_groups_the_ratings_by_how_far_the_algorithms_differ`
+`um_plus_groups_the_ratings_by_how_far_the_algorithms_differ`,
+`the_same_reviews_always_give_the_same_interval`,
+`the_parallel_bootstrap_draws_what_one_thread_drew`
 (`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`;
 `ts/routes/graphs/um-plus.test.ts`.
