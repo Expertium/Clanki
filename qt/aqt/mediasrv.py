@@ -1589,9 +1589,17 @@ def _prefetch_advanced_stats_graphs(served: GraphsRequest) -> None:
     advanced = aqt.stats_prefetch.advanced_request(served)
     if advanced is None:
         return
-    aqt.stats_prefetch.start(
-        advanced, _collection_state(), _graph_data, mw.taskman.run_in_background
-    )
+
+    def launch(task: Callable[[], None]) -> None:
+        # this runs on a media-server thread; run_in_background must be called
+        # from the Qt main thread, or taskman prints a bug warning and its
+        # pending on-main closures are not flushed first
+        def on_main() -> None:
+            mw.taskman.run_in_background(task)
+
+        mw.taskman.run_on_main(on_main)
+
+    aqt.stats_prefetch.start(advanced, _collection_state(), _graph_data, launch)
 
 
 def graphs() -> Response:
