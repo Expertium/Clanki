@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 
 use rusqlite::params;
@@ -712,6 +713,24 @@ order by e.id, e.cid"
             ))?
             .query_and_then([], row_to_revlog_entry)?
             .collect()
+    }
+
+    /// The review log entries of `cids`, oldest first. One pass over the
+    /// whole table: for many cards, far faster than looking each card's
+    /// entries up in the cid index.
+    pub(crate) fn get_revlog_entries_of_cards_by_scan(
+        &self,
+        cids: &HashSet<CardId>,
+    ) -> Result<Vec<RevlogEntry>> {
+        let mut stmt = self.db.prepare_cached(include_str!("get.sql"))?;
+        let mut rows = stmt.query([])?;
+        let mut entries = vec![];
+        while let Some(row) = rows.next()? {
+            if cids.contains(&row.get(1)?) {
+                entries.push(row_to_revlog_entry(row)?);
+            }
+        }
+        Ok(entries)
     }
 
     pub(crate) fn get_revlog_entries_for_export_dataset(&self) -> Result<Vec<RevlogEntry>> {

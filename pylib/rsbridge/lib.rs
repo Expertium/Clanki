@@ -364,6 +364,32 @@ impl RwkvInference {
         Ok(PyBytes::new(py, &packed).unbind())
     }
 
+    /// Total Knowledge under RWKV-Curve (spec ui.stats-total-knowledge):
+    /// `spans` are `(card_id, review_day, first_day, last_day)`; returns the
+    /// first day and the per-day sums of the stored curves' recall from it.
+    /// Releases the GIL while computing.
+    fn curve_retrievability_day_sums_from_warm_up(
+        &mut self,
+        py: Python<'_>,
+        spans: Vec<(i64, i64, i64, i64)>,
+    ) -> (i64, Vec<f64>) {
+        let spans: Vec<rwkv::RwkvCurveSpan> = spans
+            .into_iter()
+            .map(
+                |(card_id, review_day, first_day, last_day)| rwkv::RwkvCurveSpan {
+                    card_id,
+                    review_day,
+                    first_day,
+                    last_day,
+                },
+            )
+            .collect();
+        py.detach(|| {
+            self.inner
+                .curve_retrievability_day_sums_from_warm_up(&spans)
+        })
+    }
+
     fn predict_retrievability_many_packed(
         &mut self,
         requests: &Bound<'_, PyBytes>,

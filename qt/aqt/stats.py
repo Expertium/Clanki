@@ -10,6 +10,7 @@ from typing import Any
 import aqt
 import aqt.forms
 import aqt.main
+import aqt.total_knowledge
 from anki.decks import DeckId
 from anki.utils import is_mac
 from aqt import gui_hooks
@@ -77,6 +78,8 @@ class NewDeckStats(QDialog):
         self.activateWindow()
 
     def reject(self) -> None:
+        # the page's Total Knowledge RWKV job stops with it
+        aqt.total_knowledge.cancel_rwkv()
         self.deck_chooser.cleanup()
         self.form.web.cleanup()
         self.form.web = None  # type: ignore

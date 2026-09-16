@@ -32,6 +32,7 @@ import aqt
 import aqt.main
 import aqt.operations
 import aqt.rwkv_scheduler
+import aqt.total_knowledge
 from anki import (
     decks_pb2,
     frontend_pb2,
@@ -50,7 +51,12 @@ from anki.collection import (
 )
 from anki.decks import UpdateDeckConfigs, UpdateDeckConfigsMode
 from anki.scheduler.v3 import SchedulingStatesWithContext, SetSchedulingStatesRequest
-from anki.stats_pb2 import CardStatsResponse, GraphsRequest
+from anki.stats_pb2 import (
+    CardStatsResponse,
+    GraphsRequest,
+    TotalKnowledgeRwkvJob,
+    TotalKnowledgeRwkvRequest,
+)
 from anki.utils import dev_mode, from_json_bytes, to_json_bytes
 from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
@@ -1503,6 +1509,29 @@ def graphs() -> Response:
     return response
 
 
+# Total Knowledge under RWKV (spec ui.stats-total-knowledge): the page starts
+# the job, polls it and cancels it when it closes.
+def total_knowledge_rwkv_start() -> bytes:
+    request_proto = TotalKnowledgeRwkvRequest()
+    request_proto.ParseFromString(request.data)
+    return aqt.total_knowledge.start_rwkv(
+        aqt.mw, request_proto.search, curve=request_proto.curve
+    ).SerializeToString()
+
+
+def total_knowledge_rwkv_progress() -> bytes:
+    job = TotalKnowledgeRwkvJob()
+    job.ParseFromString(request.data)
+    return aqt.total_knowledge.rwkv_progress(job.job_id).SerializeToString()
+
+
+def total_knowledge_rwkv_cancel() -> bytes:
+    job = TotalKnowledgeRwkvJob()
+    job.ParseFromString(request.data)
+    aqt.total_knowledge.cancel_rwkv(job.job_id)
+    return b""
+
+
 post_handler_list = [
     congrats_info,
     set_advanced_ui,
@@ -1544,6 +1573,9 @@ post_handler_list = [
     save_custom_colours,
     card_stats,
     graphs,
+    total_knowledge_rwkv_start,
+    total_knowledge_rwkv_progress,
+    total_knowledge_rwkv_cancel,
 ]
 
 
@@ -1582,6 +1614,7 @@ exposed_backend_list = [
     "get_review_logs",
     "get_graph_preferences",
     "set_graph_preferences",
+    "total_knowledge",
     # TagsService
     "complete_tag",
     # ImageOcclusionService

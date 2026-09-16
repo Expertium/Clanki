@@ -934,6 +934,21 @@ class _RustRwkvRuntime:
             raise ValueError("RWKV packed resident prediction count mismatch")
         return outputs
 
+    def curve_retrievability_day_sums_from_warm_up(
+        self,
+        spans: Sequence[tuple[int, int, int, int]],
+    ) -> tuple[int, Sequence[float]]:
+        """Total Knowledge under RWKV-Curve (spec ui.stats-total-knowledge):
+        `spans` are (card id, day of its last review, first day, last day);
+        returns the first day and the per-day sums of the stored curves'
+        recall from it."""
+
+        with self._locked_process():
+            first_day, sums = self._process.curve_retrievability_day_sums_from_warm_up(
+                list(spans)
+            )
+        return int(first_day), sums
+
     def predict_retrievability_many_after_review(
         self,
         *,

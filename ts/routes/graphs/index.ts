@@ -52,6 +52,7 @@ import RetrievabilityGraph from "./RetrievabilityGraph.svelte";
 import ReviewsGraph from "./ReviewsGraph.svelte";
 import StabilityGraph from "./StabilityGraph.svelte";
 import TodayStats from "./TodayStats.svelte";
+import TotalKnowledgeGraph from "./TotalKnowledgeGraph.svelte";
 
 export const graphComponents = {
     TodayStats,
@@ -64,6 +65,7 @@ export const graphComponents = {
     EaseGraph,
     DifficultyGraph,
     RetrievabilityGraph,
+    TotalKnowledgeGraph,
     HourGraph,
     ButtonsGraph,
     AddedGraph,
