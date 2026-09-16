@@ -76,6 +76,44 @@ once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`).
 
+## ui.simple-recall-wording
+
+Given Simple mode (`ui.mode-switch`), no text the user sees calls the chance
+of recalling a card now "retrievability"; it is called "Probability of
+recall" instead. Advanced mode keeps the technical word. The places that show
+the word in both modes are:
+
+| Where                                            | Simple mode                                           | Advanced mode             |
+| ------------------------------------------------ | ----------------------------------------------------- | ------------------------- |
+| Browser column (name and notes tooltip)           | Probability of recall                                 | Retrievability            |
+| Card info, the forgetting-curve tooltip           | Probability of recall                                 | Retrievability            |
+| Filtered deck, the "Cards selected by" orders     | Ascending / Descending probability of recall          | Ascending / Descending retrievability |
+| Filtered-deck rebuild failure (RWKV)              | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt. | RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt. |
+
+The Browser reads the mode when it builds its column list and the
+filtered-deck dialog when it opens, so a mode switch reaches those names the
+next time the window is opened. Only the text
+changes: the search syntax (`prop:r`), the column key `retrievability`, the
+order of the cards, and every API and protobuf name stay as they are. The graphs,
+deck-options settings and dialogs that name retrievability show in Advanced
+mode only (`ui.mode-switch`, `ui.advance-postpone`,
+`deck-options.simple-view`), so they keep the technical word everywhere.
+
+**Why:** Andrew, 2026-09-16: "don't use the word 'retrievability' in Simple
+mode"; he chose the replacement wording "probability of recall". Simple mode
+is for users who do not read the FSRS papers. "Probability of recall" states
+what the number is; "memory strength" would be wrong, because that is
+stability.
+
+**Pinned by:** `simple_mode_names_the_retrievability_column_in_plain_words`
+(`rslib/src/browser_table.rs`);
+`simple_mode_names_the_filtered_deck_orders_in_plain_words`
+(`rslib/src/decks/service.rs`); "Simple mode's forgetting-curve tooltip does
+not say retrievability" and "Advanced mode's forgetting-curve tooltip keeps
+retrievability" (`ts/routes/card-info/forgetting-curve.test.ts`);
+`test_filtered_deck_failure_avoids_retrievability_in_simple_mode`
+(`qt/tests/test_ui_mode.py`).
+
 ## ui.advance-postpone
 
 Given Advanced mode (`ui.mode-switch`) and a collection whose algorithm is
