@@ -736,10 +736,22 @@ def test_answer_buttons_stop_waiting_for_rwkv_curve_after_a_minute(
     assert "rwkvCurveRetry" in evals[-1]
     assert "BUTTONS" not in evals[-1]
 
-    # "Try again" waits again, on the same card
+    # "Try again" waits again, on the same card, and does not start a second
+    # preparation while the first one still runs
+    assert len(tasks) == 1
     reviewer._linkHandler("rwkvCurveRetry")
     assert len(shots) == 2
+    assert len(tasks) == 1
     assert json.dumps(tr.qt_misc_rwkv_curve_intervals_pending())[1:-1] in evals[-1]
+
+    # the card changes while the wait runs: the pending timer draws nothing,
+    # and neither does the preparation that was started for the old card
+    reviewer.card = SimpleNamespace(id=8, current_deck_id=lambda: 1)
+    drawn = len(evals)
+    shots[-1][1]()
+    tasks[0][1](_done_future(True))
+    assert len(evals) == drawn
+    assert len(shots) == 2
 
 
 def test_answer_buttons_say_rwkv_curve_has_no_interval_for_the_card(
