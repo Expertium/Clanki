@@ -372,6 +372,34 @@ S90 of 210 days for Good got FSRS-7's 88 days and FSRS-7's S90 of 88.3 days.
 `test_grade_now_under_fsrs7_keeps_the_given_options`
 (`qt/tests/test_grade_now.py`).
 
+## sched.rwkv-replay-start-row
+
+Given a card whose review log the RWKV replay reads, the replay starts the
+card at its latest learning start (the latest rated Learning row that does not
+follow another Learning row). Given a card with no rated Learning row at all,
+the replay starts it at its first rated row after its last Forget row, or at
+its first rated row when the card has no Forget row. The rows before the start
+row are dropped, not merged, and the start row always gets the first-review
+treatment: the elapsed sentinel and no previous-interval features. Manual rows
+never enter the sequence: Forget (a manual row with a zero ease factor) only
+cuts the history, and Set Due Date (a manual row with a non-zero ease factor)
+is not a cut point, because it does not reset the card's memory. Only the last
+Forget counts.
+
+**Why:** Andrew, 2026-09-16. A review log with no Learning row comes from an
+import, from another application or from an old scheduler. Before this entry
+such a card could not get the first-review treatment, so the replay read its
+first row as a mid-history review with no state behind it. A Forget is the
+only event that resets the card's memory, so it is the only point the replay
+may cut at.
+
+**Pinned by:** `rwkv_replay_keeps_the_latest_learning_start`,
+`rwkv_replay_card_without_a_learning_row_starts_at_its_first_rated_row`,
+`rwkv_replay_card_without_a_learning_row_starts_after_its_forget`,
+`rwkv_replay_set_due_date_does_not_cut_the_history`,
+`rwkv_replay_uses_only_the_last_forget`
+(`rslib/src/storage/revlog/mod.rs`).
+
 ## sched.rwkv-exact-elapsed
 
 Given a learning card that RWKV predicts for, the elapsed time RWKV gets is
