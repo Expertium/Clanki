@@ -153,7 +153,9 @@ the RWKV reschedule actions.
 
 ## ui.review-heatmap
 
-Given the collection flag `reviewHeatmapEnabled` on (the default), Clanki
+Given the collection flag `reviewHeatmapEnabled` on — its value in a new
+collection, so a new user gets the heatmap out of the box, while a
+collection where the user turned it off keeps it off — Clanki
 draws a review heatmap — the Review Heatmap add-on (Glutanimate, AGPLv3)
 made native: a calendar of reviews per day with the due forecast in a
 second colour, previous / today / next navigation, and four figures
@@ -183,10 +185,13 @@ latter on by default); and decks left out of the main-screen heatmap, with
 their subdecks. The settings are stored in the collection config under
 `reviewHeatmap` and sync. Until they are first saved, the add-on's stored
 settings are used (its `heatmap` collection config and profile entries),
-except a color scheme left at the add-on's own default. The heatmap's gear
-opens the tab; Shift+click on the gear cycles the color scheme and
-Shift+click on "today" cycles the calendar mode. With the switch off, or
-where neither the calendar nor the figures show, nothing is computed.
+except a color scheme left at the add-on's own default. A gear button at the
+right of the heatmap's controls opens the tab — the same gear icon the deck
+list draws for deck options (`imgs/gears.svg`), in the size and the grey of
+the three navigation buttons beside it; Shift+click on the gear cycles the
+color scheme and Shift+click on "today" cycles the calendar mode. With the
+switch off, or where neither the calendar nor the figures show, nothing is
+computed.
 
 Given the Review Heatmap add-on installed and enabled at start-up, Clanki
 disables it before add-ons load (both would draw a heatmap) and, the first
@@ -200,13 +205,18 @@ before.
 **Why:** Andrew, 2026-09-15: integrate the add-on natively with all its
 settings, in a Preferences tab of their own, magenta by default, and retire
 the add-on with a one-time notice. Later the same day: a user who tries to
-enable the add-on must be told that Clanki has this built in.
+enable the add-on must be told that Clanki has this built in. Andrew,
+2026-09-16: the settings button carried the add-on's own three-bar mark,
+which does not say "settings" to a reader; it now shows the gear that the
+rest of Clanki uses.
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
 colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
 link, disabling the add-on, the one-time notice,
+`test_the_settings_button_shows_the_deck_lists_gear`,
+`test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off`,
 `test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
 `test_installing_the_review_heatmap_addon_leaves_it_disabled`);
 `test_update_collection_writes_the_review_heatmap_preference`
