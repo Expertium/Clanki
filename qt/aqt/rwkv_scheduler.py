@@ -267,6 +267,10 @@ _rwkv_stats_prepare_in_flight: dict[
 # the key of the last preparation that published a score map
 # (spec ui.stats-rwkv-scores-kept)
 _rwkv_stats_prepare_memo: RwkvStatsPrepareKey | None = None
+# cancel_stats_scoring() raises this counter when the Stats window closes; a
+# Stats request that started at an older value stops at its next batch
+# boundary (spec ui.stats-scoring-cancelled)
+_rwkv_stats_scoring_generation = 0
 _rwkv_score_prewarm_lock = threading.Lock()
 _rwkv_score_prewarm_in_flight: set[RwkvScorePrewarmKey] = set()
 _rwkv_startup_build_started = False
@@ -5954,6 +5958,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    cancel_when_stats_closes: bool = False,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search."""
 
@@ -5982,6 +5987,9 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return RwkvStatsPreparationStatus.UNAVAILABLE
 
     start = time.monotonic()
+    cancel_generation = (
+        _rwkv_stats_scoring_generation_now() if cancel_when_stats_closes else None
+    )
     prepare_key: RwkvStatsPrepareKey | None = None
     prepare_future: Future[RwkvStatsPreparationStatus] | None = None
     prepare_generation: int | None = None
@@ -6082,6 +6090,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_instant_due=prepare_instant_due,
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
+            cancel_generation=cancel_generation,
         )
         search_score_elapsed_ms = (time.monotonic() - search_score_start) * 1000
         if search_score_result is not None:
@@ -6195,6 +6204,15 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return prepare_status
     except _ReviewerBackendPredictionAborted:
         logger.debug("RWKV stats retrievability scoring aborted: backend stale")
+        return RwkvStatsPreparationStatus.FAILED
+    except _RwkvStatsScoringCancelled:
+        # the Stats window closed: nothing was published, and the status stays
+        # FAILED so the memo is dropped (spec ui.stats-scoring-cancelled)
+        logger.debug(
+            "RWKV stats retrievability scoring cancelled: the Stats window closed "
+            "(search=%r)",
+            search,
+        )
         return RwkvStatsPreparationStatus.FAILED
     except Exception:
         logger.exception("RWKV stats retrievability scoring failed")
@@ -6599,6 +6617,41 @@ def forget_rwkv_stats_scores() -> None:
 
     with _rwkv_stats_prepare_lock:
         _rwkv_stats_prepare_memo = None
+
+
+class _RwkvStatsScoringCancelled(Exception):
+    """The Stats window closed while its RWKV scoring was still running."""
+
+
+def cancel_stats_scoring() -> None:
+    """Stop the RWKV scoring of the Stats requests that are running now.
+
+    The Stats window calls this when it closes (spec
+    ui.stats-scoring-cancelled). A request that started before this call stops
+    at its next batch boundary, which is outside the RWKV lock, so the lock is
+    free again at once and the main window no longer waits for a page that is
+    gone. A request that starts afterwards is unaffected.
+    """
+
+    global _rwkv_stats_scoring_generation
+
+    with _rwkv_stats_prepare_lock:
+        _rwkv_stats_scoring_generation += 1
+
+
+def _rwkv_stats_scoring_generation_now() -> int:
+    with _rwkv_stats_prepare_lock:
+        return _rwkv_stats_scoring_generation
+
+
+def _raise_if_stats_scoring_cancelled(cancel_generation: int | None) -> None:
+    """Stop a cancellable Stats scoring at a batch boundary."""
+
+    if (
+        cancel_generation is not None
+        and _rwkv_stats_scoring_generation_now() != cancel_generation
+    ):
+        raise _RwkvStatsScoringCancelled
 
 
 def _begin_rwkv_stats_prepare(
@@ -19077,12 +19130,14 @@ def _rwkv_stats_graph_scores_for_search(
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    cancel_generation: int | None = None,
 ) -> RwkvStatsSearchScoreResult | None:
     start = time.monotonic()
     if not _reviewer_backend_accepts_review_inputs(
         state_token.backend if state_token is not None else None
     ):
         return None
+    _raise_if_stats_scoring_cancelled(cancel_generation)
 
     input_build = _rwkv_review_input_batches_for_search(
         reviewer=reviewer,
@@ -19118,6 +19173,10 @@ def _rwkv_stats_graph_scores_for_search(
                 inputs_by_card_id,
                 _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             ):
+                # the batch boundary is outside the RWKV lock: a cancelled
+                # Stats request stops here and frees it
+                # (spec ui.stats-scoring-cancelled)
+                _raise_if_stats_scoring_cancelled(cancel_generation)
                 curve_retrievabilities = _rwkv_curve_retrievabilities_for_inputs(
                     batch,
                     state_token=state_token,
@@ -19152,6 +19211,10 @@ def _rwkv_stats_graph_scores_for_search(
                 inputs_by_card_id,
                 _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
             ):
+                # the batch boundary is outside the RWKV lock: a cancelled
+                # Stats request stops here and frees it
+                # (spec ui.stats-scoring-cancelled)
+                _raise_if_stats_scoring_cancelled(cancel_generation)
                 predictions = _rwkv_review_predictions_for_inputs(
                     batch,
                     batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
@@ -19204,6 +19267,7 @@ def _rwkv_stats_graph_scores_for_search(
         if not inputs_by_card_id:
             continue
 
+        _raise_if_stats_scoring_cancelled(cancel_generation)
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,

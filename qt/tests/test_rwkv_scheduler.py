@@ -19033,3 +19033,192 @@ def test_rust_runtime_curve_retrievability_keeps_none() -> None:
     assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
     assert outputs == [0.42, None]
 
+
+def test_cancelled_stats_scoring_stops_at_the_next_batch_and_frees_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(6))
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 2)
+    scored_batches: list[int] = []
+
+    def on_batch(inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]]) -> None:
+        scored_batches.append(len(inputs_by_card_id))
+        # the Stats window closes while the first batch runs
+        rwkv_scheduler.cancel_stats_scoring()
+
+    _patch_resident_curve_route(
+        monkeypatch,
+        supported=True,
+        curve_retrievabilities=lambda count: [0.6] * count,
+        on_batch=on_batch,
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    generation = rwkv_scheduler._rwkv_stats_scoring_generation_now()
+    try:
+        with pytest.raises(rwkv_scheduler._RwkvStatsScoringCancelled):
+            rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+                reviewer=SimpleNamespace(),
+                search="deck:current",
+                prepare_curve_retrievability=True,
+                cancel_generation=generation,
+            )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    # it stopped at the boundary after the first batch, not after all three
+    assert scored_batches == [2]
+    # the boundary is outside the RWKV lock, so the lock is free again
+    assert rwkv_scheduler._reviewer_backend_execution_lock.acquire(blocking=False)
+    rwkv_scheduler._reviewer_backend_execution_lock.release()
+
+
+def test_stats_scoring_without_a_cancel_generation_is_never_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Browser search or a filtered deck asks for the same scores; closing
+    the Stats window must not stop their work."""
+
+    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(4))
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 2)
+    scored_batches: list[int] = []
+
+    def on_batch(inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]]) -> None:
+        scored_batches.append(len(inputs_by_card_id))
+        rwkv_scheduler.cancel_stats_scoring()
+
+    _patch_resident_curve_route(
+        monkeypatch,
+        supported=True,
+        curve_retrievabilities=lambda count: [0.6] * count,
+        on_batch=on_batch,
+    )
+
+    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert scored_batches == [2, 2]
+    assert result is not None and len(result.curve_scores) == 4
+
+
+def _cancelling_stats_scorer(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
+    """Make the search scoring stop the way a closed Stats window stops it."""
+
+    seen: list[int | None] = []
+
+    def scorer(*, cancel_generation: int | None = None, **_kwargs: Any) -> None:
+        seen.append(cancel_generation)
+        rwkv_scheduler.cancel_stats_scoring()
+        rwkv_scheduler._raise_if_stats_scoring_cancelled(cancel_generation)
+        raise AssertionError("the scoring should have stopped")
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_stats_graph_scores_for_search", scorer)
+    return seen
+
+
+def test_prepare_stats_retrievability_scores_stop_when_the_stats_window_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    seen = _cancelling_stats_scorer(monkeypatch)
+    published: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_stats_graph_scores",
+        lambda *args, **kwargs: published.append(args),
+    )
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        status = prepare_stats_retrievability_scores(
+            reviewer,
+            "deck:current",
+            cancel_when_stats_closes=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+    # no half-published map, and the fallback scoring never ran either
+    assert published == []
+    assert backend.predicted_card_ids == []
+
+
+def test_cancelled_stats_scoring_drops_the_kept_score_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        assert backend.predicted_card_ids == [1]
+        with monkeypatch.context() as cancelled:
+            _cancelling_stats_scorer(cancelled)
+            assert (
+                prepare_stats_retrievability_scores(
+                    reviewer,
+                    "deck:current",
+                    cancel_when_stats_closes=True,
+                )
+                == rwkv_scheduler.RwkvStatsPreparationStatus.FAILED
+            )
+        # the memo is gone, so the next request scores again instead of
+        # reusing a map the cancelled job never published
+        assert (
+            prepare_stats_retrievability_scores(reviewer, "rated:7")
+            == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert backend.predicted_card_ids == [1, 1]
+
+
+def test_stats_scoring_after_a_cancel_runs_to_the_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.stats-scoring-cancelled"""
+
+    backend, reviewer = _stats_reuse_scaffold()
+    previous_backend = set_reviewer_backend(backend)
+    rwkv_scheduler.forget_rwkv_stats_scores()
+    try:
+        with monkeypatch.context() as cancelled:
+            _cancelling_stats_scorer(cancelled)
+            prepare_stats_retrievability_scores(
+                reviewer,
+                "deck:current",
+                cancel_when_stats_closes=True,
+            )
+        # the window opens again: the new request starts from the new
+        # generation, so the earlier cancel does not stop it
+        status = prepare_stats_retrievability_scores(
+            reviewer,
+            "deck:current",
+            cancel_when_stats_closes=True,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
+
+    assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert backend.predicted_card_ids == [1]

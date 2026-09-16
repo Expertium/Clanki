@@ -2,3 +2,6 @@
   needs one number per card, and RWKV now computes that number on its own
   instead of running the four simulated-answer passes and the interval search
   that the graph never uses. The numbers the graph draws do not change.
+- Closing the Stats window now stops the RWKV calculation the Retrievability
+  graph started. Before, the calculation ran to the end for a window that was
+  already gone, and the main window waited for it.

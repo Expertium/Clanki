@@ -1522,6 +1522,9 @@ def graphs() -> Response:
             prepare_curve_retrievability=aqt.rwkv_scheduler.rwkv_curve_collection_active(
                 reviewer
             ),
+            # the scoring stops when the Stats window closes
+            # (spec ui.stats-scoring-cancelled)
+            cancel_when_stats_closes=True,
         )
     else:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
