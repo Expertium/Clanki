@@ -143,7 +143,7 @@ another algorithm's:
 | `cardsInfo` `nextReviews`              | the 4 labels        | 4 empty strings                       | 4 empty strings            |
 | `guiCurrentCard` `nextReviews`         | the buttons' labels | once RWKV-Curve gave them, else empty | empty strings              |
 | `areDue`                               | as the add-on       | as the add-on                         | null for a review card     |
-| `answerCards` / `gradeNow`             | answered            | not answered: false / an error        | answered                   |
+| `answerCards` / `gradeNow`             | answered            | answered with RWKV-Curve's intervals  | answered                   |
 
 These are the values card info shows (`ui.card-info-one-algorithm`); the
 curve is taken at the time since the card's last answered review.
@@ -154,19 +154,42 @@ the Browser does, RWKV scores prepared first for `prop:rwkv:r` and
 `getIntervals`, `getEaseFactors` and `getDeckStats` give the stored values,
 as the Browser, card info and the deck list show them (the ease factor is
 stored but used by none of Clanki's algorithms; under RWKV-Instant the
-deck list's review counts are RWKV-Instant's scored counts). A card that
-RWKV-Curve schedules is answered only in the reviewer (`guiAnswerCard`):
-its intervals come from the prediction made when the card is shown.
+deck list's review counts are RWKV-Instant's scored counts).
+
+`answerCards`, `gradeNow` and `guiAnswerCard` answer a card the way the
+reviewer answers it, whatever schedules it. `answerCards` and `gradeNow`
+answer through Grade Now (`sched.grade-now-rwkv-curve`), so an RWKV-Curve
+card stores RWKV-Curve's interval and S90 and never FSRS-7's;
+`guiAnswerCard` answers through the reviewer, as before. `answerCards`
+answers the cards of the other algorithms one at a time, as the add-on
+does, and its RWKV-Curve cards after them, one Grade Now per `ease`.
+Given a card RWKV-Curve has no intervals for
+(`sched.rwkv-curve-buttons-wait`), that card is not answered:
+
+- `answerCards` gives `false` for it, as it did for every RWKV-Curve card
+  before, and answers the other cards of the request;
+- `gradeNow` grades the other cards and then fails with "gradeNow:
+  RWKV-Curve has no intervals yet for card(s) `<ids>`, so they were not
+  graded; the other cards were graded";
+- `guiAnswerCard` gives `false`, because the reviewer ignores the answer.
 
 **Why:** Andrew, 2026-09-15: never mix two scheduling algorithms in one
-display, stat or computation; hide rather than fall back.
+display, stat or computation; hide rather than fall back. Andrew,
+2026-09-16: "Grade Now should work with all algorithms, yes" — before
+that, `answerCards` gave `false` and `gradeNow` an error for every
+RWKV-Curve card, because the plain answer path would have stored FSRS-7's
+interval.
 
 **Pinned by:** `qt/tests/test_ankiconnect.py`
 (`test_card_algorithm_follows_the_card_preset`,
 `test_prop_values_follow_the_algorithm`,
 `test_next_reviews_are_hidden_for_rwkv`,
 `test_are_due_is_null_for_rwkv_instant_review_cards`,
-`test_rwkv_curve_cards_are_not_answered_outside_the_reviewer`,
+`test_answer_cards_answers_each_algorithm_as_the_reviewer`,
+`test_answer_cards_gives_false_while_rwkv_curve_has_no_intervals`,
+`test_grade_now_answers_each_algorithm_as_the_reviewer`,
+`test_grade_now_fails_naming_the_cards_without_rwkv_curve_intervals`,
+`test_gui_answer_card_is_false_while_rwkv_curve_has_no_intervals`,
 `test_rwkv_retrievability_searches_are_prepared_as_in_the_browser`).
 
 ## ankiconnect.settings

@@ -18,6 +18,7 @@ import re
 import socket
 import threading
 import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
@@ -29,7 +30,9 @@ import pytest
 
 import anki.lang
 import aqt
+from anki.cards_pb2 import FsrsMemoryState
 from anki.collection import Collection
+from anki.decks import DeckConfigId, DeckId
 from aqt import ankiconnect, ankiconnect_server
 from aqt.ankiconnect import (
     ADDON_NOTICE_SHOWN_KEY,
@@ -219,7 +222,11 @@ def server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     service = AnkiConnectService(mw, AnkiConnectSettings(enabled=True, bind_port=0))
     # the refresh is checked by its own test; here it just stays pending
     monkeypatch.setattr(service, "_schedule_refresh", lambda: None)
-    # FSRS-7 unless a test says otherwise
+    # FSRS-7 unless a test says otherwise: the collection itself, so that the
+    # cards are answered by the algorithm the action reports, and the
+    # AnkiConnect layer, which the algorithm tests below drive for real
+    col.set_config("schedulingAlgorithm", "fsrs7")
+    col.decks.update_config(col.decks.get_config(DeckConfigId(1)))
     monkeypatch.setattr(AnkiConnect, "_card_algorithm", lambda self, card: "fsrs7")
     service.start(listen_now=True)
     # the "listening" status went to the main thread
@@ -1722,14 +1729,201 @@ def test_are_due_is_null_for_rwkv_instant_review_cards(
     assert server.invoke("areDue", cards=[review, new]) == [None, True]
 
 
-def test_rwkv_curve_cards_are_not_answered_outside_the_reviewer(
+# Answering under each algorithm (ankiconnect.one-algorithm)
+######################################################################
+#
+# These tests drive the server over HTTP against a collection of one
+# algorithm, with a stand-in RWKV model, so `_card_algorithm` decides as it
+# does for a client. `server` (FSRS-7) is not used here.
+
+
+class _RwkvBackend:
+    """Stands in for the RWKV model: the same prediction for every card."""
+
+    def __init__(self, prediction: Any) -> None:
+        self.prediction = prediction
+
+    def predict_review(self, *, reviewer: Any, card: Any) -> Any:
+        return self.prediction
+
+
+def _curve_prediction() -> Any:
+    """RWKV-Curve for every card: Good in 200 days, S90 210 days."""
+    from aqt.rwkv_scheduler import RwkvIntervalOverride, RwkvReviewPrediction
+
+    return RwkvReviewPrediction(
+        retrievability=0.83,
+        interval_overrides=RwkvIntervalOverride(again=0.2, hard=90, good=200, easy=300),
+        s90_overrides=RwkvIntervalOverride(again=1, hard=95, good=210, easy=320),
+    )
+
+
+@pytest.fixture
+def algorithm_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Callable[..., Server]]:
+    from aqt import rwkv_scheduler
+
+    started: list[tuple[AnkiConnectService, Collection]] = []
+    previous = rwkv_scheduler.set_reviewer_backend(None)
+
+    def make(algorithm: str, model: Any = "curve", ready: bool = True) -> Server:
+        col = Collection(str(tmp_path / f"{algorithm}-{len(started)}.anki2"))
+        # a preset write takes the collection's algorithm
+        # (sched.one-global-algorithm)
+        col.set_config("schedulingAlgorithm", algorithm)
+        col.decks.update_config(col.decks.get_config(DeckConfigId(1)))
+        mw = _make_mw(col)
+        service = AnkiConnectService(mw, AnkiConnectSettings(enabled=True, bind_port=0))
+        monkeypatch.setattr(service, "_schedule_refresh", lambda: None)
+        service.start(listen_now=True)
+        mw.taskman.on_main = 0
+        started.append((service, col))
+        backend = _RwkvBackend(_curve_prediction()) if model == "curve" else model
+        rwkv_scheduler.set_reviewer_backend(backend)
+        if backend is not None and ready:
+            rwkv_scheduler._reviewer_backend_warmup_states[(id(backend), id(col))] = (
+                None
+            )
+        return Server(service, col, mw)
+
+    try:
+        yield make
+    finally:
+        rwkv_scheduler.set_reviewer_backend(previous)
+        rwkv_scheduler._reviewer_backend_warmup_states.clear()
+        for service, col in started:
+            service.shutdown()
+            col.close()
+
+
+def _add_review_card(col: Collection) -> int:
+    """A review card of 20 days, as test_grade_now.py builds it."""
+    note = col.new_note(col.models.by_name("Basic"))
+    note.fields[0] = "front"
+    col.add_note(note, DeckId(1))
+    card = note.cards()[0]
+    card.type = 2
+    card.queue = 2
+    card.ivl = 20
+    card.due = col.sched.today
+    card.memory_state = FsrsMemoryState(stability=20, difficulty=5)
+    card.last_review_time = card.id // 1000 - 20 * 86_400
+    col.update_card(card, skip_undo_entry=True)
+    return card.id
+
+
+def _assert_answered_as_the_reviewer(
+    col: Collection, card_id: int, algorithm: str, fsrs7_good: int
+) -> None:
+    card = col.get_card(card_id)
+    assert col.db.scalar("select count() from revlog where cid = ?", card_id) == 1
+    if algorithm == "rwkvCurve":
+        # RWKV-Curve's 200 days with review fuzz, and its S90 of 210, never
+        # FSRS-7's interval
+        assert 190 <= card.ivl <= 210, (card.ivl, fsrs7_good)
+        assert abs(card.ivl - fsrs7_good) > 20, (card.ivl, fsrs7_good)
+        assert card.memory_state is not None
+        assert card.memory_state.stability == pytest.approx(210)
+    else:
+        # FSRS-7 and RWKV-Instant store the FSRS states
+        # (sched.rwkv-instant-no-intervals)
+        assert card.ivl == fsrs7_good
+
+
+@pytest.mark.parametrize("algorithm", ["fsrs7", "rwkvCurve", "rwkvInstant"])
+def test_answer_cards_answers_each_algorithm_as_the_reviewer(
+    algorithm_server: Callable[..., Server], algorithm: str
+) -> None:
+    server = algorithm_server(algorithm)
+    card_id = _add_review_card(server.col)
+    fsrs7_good = server.col.sched.get_scheduling_states(
+        card_id
+    ).good.normal.review.scheduled_days
+
+    assert server.invoke("answerCards", answers=[{"cardId": card_id, "ease": 3}]) == [
+        True
+    ]
+
+    _assert_answered_as_the_reviewer(server.col, card_id, algorithm, fsrs7_good)
+
+
+@pytest.mark.parametrize("algorithm", ["fsrs7", "rwkvCurve", "rwkvInstant"])
+def test_grade_now_answers_each_algorithm_as_the_reviewer(
+    algorithm_server: Callable[..., Server], algorithm: str
+) -> None:
+    server = algorithm_server(algorithm)
+    card_id = _add_review_card(server.col)
+    fsrs7_good = server.col.sched.get_scheduling_states(
+        card_id
+    ).good.normal.review.scheduled_days
+
+    assert server.invoke("gradeNow", cards=[card_id], ease=3) is True
+
+    _assert_answered_as_the_reviewer(server.col, card_id, algorithm, fsrs7_good)
+
+
+def test_answer_cards_gives_false_while_rwkv_curve_has_no_intervals(
+    algorithm_server: Callable[..., Server],
+) -> None:
+    # no RWKV model at all: RWKV-Curve has no intervals for the card
+    server = algorithm_server("rwkvCurve", None)
+    card_id = _add_review_card(server.col)
+
+    # the missing card keeps its place in the result, as in the add-on
+    assert server.invoke(
+        "answerCards",
+        answers=[{"cardId": 1, "ease": 3}, {"cardId": card_id, "ease": 3}],
+    ) == [False, False]
+
+    card = server.col.get_card(card_id)
+    assert (card.ivl, card.queue) == (20, 2)
+    assert server.invoke("getReviewsOfCards", cards=[card_id])[str(card_id)] == []
+
+
+def test_answer_cards_keeps_the_per_card_ease_under_rwkv_curve(
+    algorithm_server: Callable[..., Server],
+) -> None:
+    server = algorithm_server("rwkvCurve")
+    again = _add_review_card(server.col)
+    good = _add_review_card(server.col)
+
+    assert server.invoke(
+        "answerCards",
+        answers=[{"cardId": again, "ease": 1}, {"cardId": good, "ease": 3}],
+    ) == [True, True]
+
+    # RWKV-Curve gives Again 0.2 days and Good 200 days
+    assert server.col.get_card(again).ivl < 10
+    assert 190 <= server.col.get_card(good).ivl <= 210
+
+
+def test_grade_now_fails_naming_the_cards_without_rwkv_curve_intervals(
+    algorithm_server: Callable[..., Server],
+) -> None:
+    server = algorithm_server("rwkvCurve", None)
+    card_id = _add_review_card(server.col)
+
+    error = server.error("gradeNow", cards=[card_id], ease=3)
+
+    assert "RWKV-Curve has no intervals yet" in error and str(card_id) in error
+    card = server.col.get_card(card_id)
+    assert (card.ivl, card.queue) == (20, 2)
+    assert server.invoke("getReviewsOfCards", cards=[card_id])[str(card_id)] == []
+
+
+def test_gui_answer_card_is_false_while_rwkv_curve_has_no_intervals(
     server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (cid,) = server.cards_of(server.add_basic())
-    monkeypatch.setattr(AnkiConnect, "_card_algorithm", lambda self, card: "rwkvCurve")
-    assert server.invoke("answerCards", answers=[{"cardId": cid, "ease": 3}]) == [False]
-    assert "RWKV-Curve" in server.error("gradeNow", cards=[cid], ease=3)
-    assert server.invoke("getReviewsOfCards", cards=[cid])[str(cid)] == []
+    from aqt import rwkv_scheduler
+
+    reviewer = _reviewing(server)
+    monkeypatch.setattr(rwkv_scheduler, "answer_intervals_pending", lambda r, c: True)
+    assert server.invoke("guiAnswerCard", ease=3) is False
+    reviewer._answerCard.assert_not_called()
+    monkeypatch.setattr(rwkv_scheduler, "answer_intervals_pending", lambda r, c: False)
+    assert server.invoke("guiAnswerCard", ease=3) is True
+    reviewer._answerCard.assert_called_once_with(3)
 
 
 # Refreshing the screens (ankiconnect.actions)
