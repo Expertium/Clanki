@@ -47,6 +47,9 @@ use crate::storage::FsrsReviewRetrievabilitySampleRole;
 pub(crate) type Params = Vec<f32>;
 
 const FSRS_VALIDATION_FOLDS: usize = 5;
+/// Cards per call when the memory states of a replay are computed together.
+/// The same size as the Total Knowledge replay uses.
+const FSRS_MEMORY_STATE_BATCH: usize = 256;
 const FSRS_CALIBRATION_PROGRESS_SCALE: usize = 1000;
 
 pub(crate) fn ignore_revlogs_before_date_to_ms(
@@ -894,51 +897,62 @@ fn fsrs_review_retrievability_predictions_for_targets(
     // review (see `Fsrs7Curve`). It covers FSRS-7 parameters only; anything
     // else falls back to the tensor path.
     let curve = Fsrs7Curve::new(params);
-    // Cards are independent, so the replays run in parallel; each worker
+    // Only the cards that hold a wanted rating are replayed, shortest
+    // history first so that a batch pads little.
+    let mut wanted: Vec<&FsrsReviewPredictionSource> = sources
+        .iter()
+        .filter(|source| {
+            target_revlog_ids.is_none_or(|ids| {
+                source
+                    .targets
+                    .iter()
+                    .any(|(revlog_id, _)| ids.contains(revlog_id))
+            })
+        })
+        .collect();
+    wanted.sort_unstable_by_key(|source| source.reviews.len());
+
+    // Cards are independent, so the batches run in parallel; each worker
     // builds its own model, as the Total Knowledge replay does.
-    let per_source: Vec<Vec<(RevlogId, f32)>> = sources
-        .par_iter()
+    let per_batch: Vec<Vec<(RevlogId, f32)>> = wanted
+        .par_chunks(FSRS_MEMORY_STATE_BATCH)
         .map_init(
             || FSRS::new(params).ok(),
-            |fsrs, source| {
+            |fsrs, batch| {
                 let Some(fsrs) = fsrs.as_ref() else {
                     return Ok(Vec::new());
                 };
-                if let Some(target_revlog_ids) = target_revlog_ids {
-                    if !source
-                        .targets
-                        .iter()
-                        .any(|(revlog_id, _)| target_revlog_ids.contains(revlog_id))
-                    {
-                        return Ok(Vec::new());
-                    }
-                }
-                let item = FSRSItem {
-                    reviews: source.reviews.clone(),
-                };
-                let memory_states = fsrs.historical_memory_states(item, None)?;
+                let items = batch
+                    .iter()
+                    .map(|source| FSRSItem {
+                        reviews: source.reviews.clone(),
+                    })
+                    .collect();
+                let states = fsrs.historical_memory_state_batch(items, None)?;
                 let mut predictions = Vec::new();
-                for &(revlog_id, review_index) in &source.targets {
-                    if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
-                        continue;
-                    }
-                    let Some(previous_state) = review_index
-                        .checked_sub(1)
-                        .and_then(|index| memory_states.get(index))
-                    else {
-                        continue;
-                    };
-                    let Some(review) = source.reviews.get(review_index) else {
-                        continue;
-                    };
-                    let prediction = curve
-                        .as_ref()
-                        .and_then(|curve| curve.retrievability(*previous_state, review.delta_t))
-                        .unwrap_or_else(|| {
-                            fsrs.current_retrievability(*previous_state, review.delta_t)
-                        });
-                    if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
-                        predictions.push((revlog_id, prediction));
+                for (source, memory_states) in batch.iter().zip(states) {
+                    for &(revlog_id, review_index) in &source.targets {
+                        if target_revlog_ids.is_some_and(|ids| !ids.contains(&revlog_id)) {
+                            continue;
+                        }
+                        let Some(previous_state) = review_index
+                            .checked_sub(1)
+                            .and_then(|index| memory_states.get(index))
+                        else {
+                            continue;
+                        };
+                        let Some(review) = source.reviews.get(review_index) else {
+                            continue;
+                        };
+                        let prediction = curve
+                            .as_ref()
+                            .and_then(|curve| curve.retrievability(*previous_state, review.delta_t))
+                            .unwrap_or_else(|| {
+                                fsrs.current_retrievability(*previous_state, review.delta_t)
+                            });
+                        if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
+                            predictions.push((revlog_id, prediction));
+                        }
                     }
                 }
                 Ok(predictions)
@@ -946,7 +960,7 @@ fn fsrs_review_retrievability_predictions_for_targets(
         )
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(per_source.into_iter().flatten().collect())
+    Ok(per_batch.into_iter().flatten().collect())
 }
 
 fn fsrs_review_retrievability_progress_wants_abort(
