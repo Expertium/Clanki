@@ -575,7 +575,8 @@ def test_grade_now_reconciles_filtered_answer_and_preserves_resident_state() -> 
     previous_review_id = (41 * 86_400 + 100) * 1000
     grade_now_review_id = (42 * 86_400 + 100) * 1000
     previous_rows = [
-        (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500),
+        # The last column is the query's `is_learning_start`.
+        (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1),
     ]
     grade_now_rows = [
         (grade_now_review_id, 1, 10, 100, 3, 0, 3, 10, 2500),
@@ -660,7 +661,7 @@ def test_grade_now_falls_back_when_learning_replaces_retained_history() -> None:
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
             if args:
                 return [(grade_now_review_id, 1, 10, 100, 3, 0, 0, -60, 2500)]
-            return [(previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)]
+            return [(previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1)]
 
     reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
     reviewer.mw.reviewer = reviewer
@@ -1104,7 +1105,8 @@ def test_grade_now_excluded_batch_preserves_undo_and_redo(
 ) -> None:
     previous_review_id = 1_000
     excluded_review_id = 2_000
-    previous_row = (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500)
+    # The last column is the query's `is_learning_start`.
+    previous_row = (previous_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 1)
     excluded_row = (excluded_review_id, 1, 10, 100, 3, 0, 3, 4, 0)
 
     class DB:
@@ -3714,24 +3716,174 @@ def test_historical_review_kind_maps_to_training_dataset_state(
     assert rwkv_scheduler._historical_review_state(review_kind) == expected_state
 
 
+RATED_LEARNING = (3, 0, 2500)
+RATED_REVIEW = (3, 1, 2500)
+RATED_RELEARNING = (1, 2, 2500)
+FORGET = (0, 4, 0)
+
+
+def _replay_db(revlog: Sequence[tuple[int, int, tuple[int, int, int]]]) -> object:
+    """An in-memory collection holding `(review id, card id, kind)` rows.
+
+    The tests below run the replay's real SQL against it, so they pin the one
+    implementation of `sched.rwkv-replay-start-row` rather than a Python copy
+    of the rule.
+    """
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        "create table cards (id integer primary key, nid integer, did integer, "
+        "odid integer)"
+    )
+    connection.execute(
+        "create table revlog (id integer primary key, cid integer, ease integer, "
+        "ivl integer, factor integer, time integer, type integer)"
+    )
+    for card_id in sorted({card_id for _, card_id, _ in revlog}):
+        connection.execute(
+            "insert into cards (id, nid, did, odid) values (?, ?, 100, 0)",
+            (card_id, card_id * 10),
+        )
+    for review_id, card_id, (ease, kind, factor) in revlog:
+        connection.execute(
+            "insert into revlog (id, cid, ease, ivl, factor, time, type) "
+            "values (?, ?, ?, 5, ?, 100, ?)",
+            (review_id, card_id, ease, factor, kind),
+        )
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            return cast(
+                list[tuple[object, ...]], connection.execute(sql, args).fetchall()
+            )
+
+    return SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+
+
+def _replay_start_rows(
+    reviewer: object,
+    *,
+    card_ids: Sequence[int] | None = None,
+) -> list[tuple[int, int]]:
+    """`(review id, state code)` of every replayed row, in replay order."""
+    rows = rwkv_scheduler._historical_rwkv_review_rows(reviewer, card_ids=card_ids)
+    return [
+        (cast(int, row[0]), state)
+        for row, state in rwkv_scheduler._retained_historical_review_rows(rows)
+    ]
+
+
 def test_historical_learning_start_resets_and_review_only_history_is_retained() -> None:
-    rows = [
-        (1_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (2_000, 1, 10, 100, 3, 100, 1, 2, 2500),
-        (3_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (4_000, 1, 10, 100, 3, 100, 0, 1, 2500),
-        (5_000, 1, 10, 100, 3, 100, 1, 3, 2500),
-        (6_000, 2, 20, 100, 3, 100, 1, 3, 2500),
-    ]
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_LEARNING),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, RATED_LEARNING),
+            (4_000, 1, RATED_LEARNING),
+            (5_000, 1, RATED_REVIEW),
+            (6_000, 2, RATED_REVIEW),
+        ]
+    )
 
-    retained = rwkv_scheduler._benchmark_retained_historical_review_rows(rows)
-
-    assert [(row[0], state) for row, state in retained] == [
+    assert _replay_start_rows(reviewer) == [
         (3_000, 0),
-        (4_000, 1),
-        (5_000, 2),
-        (6_000, 2),
+        (4_000, int(RwkvReviewState.LEARNING)),
+        (5_000, int(RwkvReviewState.REVIEW)),
+        # Card 2 has no Learning row, so its first rated row is the start row
+        # and carries the learn-start state, not REVIEW.
+        (6_000, 0),
     ]
+
+
+def test_historical_fallback_start_row_gets_the_learn_start_state() -> None:
+    """A card with no Learning row still gets the learn-start state.
+
+    `sched.rwkv-replay-start-row`: the start row always carries the learn-start
+    code, whatever its own kind, so the model sees the same first row it saw in
+    training.
+    """
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, RATED_RELEARNING),
+            (3_000, 1, RATED_REVIEW),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (1_000, 0),
+        (2_000, int(RwkvReviewState.RELEARNING)),
+        (3_000, int(RwkvReviewState.REVIEW)),
+    ]
+
+
+def test_historical_replay_drops_the_rows_before_a_fallback_card_forget() -> None:
+    """The Forget cut reaches the Python replay, not only the backend query."""
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, FORGET),
+            (3_000, 1, RATED_REVIEW),
+            (4_000, 1, RATED_RELEARNING),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (3_000, 0),
+        (4_000, int(RwkvReviewState.RELEARNING)),
+    ]
+
+
+def test_historical_replay_keeps_a_learning_start_over_a_later_forget() -> None:
+    """Rule 1 wins, here as in the backend query."""
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_LEARNING),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, FORGET),
+            (4_000, 1, RATED_REVIEW),
+        ]
+    )
+
+    assert _replay_start_rows(reviewer) == [
+        (1_000, 0),
+        (2_000, int(RwkvReviewState.REVIEW)),
+        (4_000, int(RwkvReviewState.REVIEW)),
+    ]
+
+
+def test_grade_now_and_the_replay_agree_on_a_forgotten_fallback_card() -> None:
+    """The acceptance test for one start rule with one implementation.
+
+    A card with no Learning row and a Forget in the middle must give Grade Now
+    and the reviewer's replay the same start row and the same state. Both read
+    their rows from `_historical_rwkv_review_rows`, which carries the rule in
+    its SQL; Grade Now differs only in filtering to the graded card.
+    """
+    reviewer = _replay_db(
+        [
+            (1_000, 1, RATED_REVIEW),
+            (2_000, 1, RATED_REVIEW),
+            (3_000, 1, FORGET),
+            (4_000, 1, RATED_REVIEW),
+            (5_000, 1, RATED_RELEARNING),
+            (6_000, 2, RATED_LEARNING),
+        ]
+    )
+
+    replay = [entry for entry in _replay_start_rows(reviewer) if entry[0] < 6_000]
+    grade_now = _replay_start_rows(reviewer, card_ids=[1])
+
+    assert replay == grade_now
+    assert grade_now == [
+        (4_000, 0),
+        (5_000, int(RwkvReviewState.RELEARNING)),
+    ]
+
+    # The Grade Now history helper reads the same rows and keeps the same start.
+    histories = rwkv_scheduler._rwkv_grade_now_card_histories(
+        rwkv_scheduler._historical_rwkv_review_rows(reviewer, card_ids=[1])
+    )
+    assert histories[1].review_count == 2
 
 
 @pytest.mark.parametrize(
@@ -4418,6 +4570,8 @@ def test_live_answer_after_card_reload_matches_historical_replay(
             0,
             4,
             2_500,
+            # The query's `is_learning_start`.
+            1,
         ),
     ]
 
@@ -4467,6 +4621,8 @@ def test_live_answer_after_card_reload_matches_historical_replay(
             1,
             5,
             2_400,
+            # Not the start row: the card already has one.
+            0,
         )
     )
     # Simulate Card.load() after the answer operation has persisted the new row.
@@ -5142,18 +5298,29 @@ def test_historical_rwkv_inputs_can_use_card_creation_for_first_review_elapsed()
     assert deck_config.reviews[0].current_elapsed_days == 3
 
 
-def test_historical_rwkv_inputs_do_not_use_creation_for_non_learning_start() -> None:
+def test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start() -> None:
+    """A fallback start row gets the learn-start state but not the creation age.
+
+    `sched.rwkv-replay-start-row`: a card with no Learning row starts at its
+    first rated row, and that row carries the learn-start state so the model
+    sees the first row it saw in training. The row is only the first row we
+    hold, though, not the card's known first review, so the creation-age
+    elapsed option must not reach it: the card's creation age would invent an
+    interval that never happened.
+    """
     first_review = (40 * 86_400 + 100) * 1000
     card_id = first_review - 3 * 86_400 * 1000
     reviewer = _rwkv_reviewer(
         rwkv_review_first_review_elapsed_from_card_creation=True,
     )
-    rows = [(first_review, card_id, 10, 100, 3, 1234, 1, 3, 2500)]
+    # The last column is the query's own `is_learning_start`: this single
+    # Review row is the card's fallback start row.
+    rows = [(first_review, card_id, 10, 100, 3, 1234, 1, 3, 2500, 1)]
     reviewer.mw.col.db = SimpleNamespace(all=lambda _sql, *_args: rows)
 
     history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
 
-    assert history.reviews[0].card_type == int(RwkvReviewState.REVIEW)
+    assert history.reviews[0].card_type == int(RwkvReviewState.LEARN_START)
     assert history.reviews[0].current_elapsed_days == -1
     assert history.reviews[0].current_elapsed_seconds == -1
 
@@ -7139,8 +7306,8 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     first_review = (40 * 86_400 + 100) * 1000
     second_review = (41 * 86_400 + 3_700) * 1000
     rows = [
-        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500),
-        (second_review, 2, 20, 200, 3, 2345, 0, 5, 2400),
+        (first_review, 1, 10, 100, 2, 1234, 0, 3, 2500, 1),
+        (second_review, 2, 20, 200, 3, 2345, 0, 5, 2400, 1),
     ]
     count_calls: list[tuple[int, int | None]] = []
 
@@ -7225,7 +7392,7 @@ def test_historical_rwkv_review_inputs_skips_full_scan_when_cache_is_current(
 
     assert len(queries) == 1
     sql, args = queries[0]
-    assert "r.id > ?" in sql
+    assert "e.id > ?" in sql
     assert "limit 1" in sql
     assert args == (1234,)
     assert history.reviews == []
@@ -17293,12 +17460,18 @@ def _rwkv_cache_reviewer(
                 ]
             assert "from revlog r" in sql
             assert "join cards c" in sql
+            # Normalize here too, not only at fixture time: a test may append a
+            # raw row after the reviewer is built, and the query it stands in
+            # for always returns the `is_learning_start` column.
+            query_rows = cast(
+                list[tuple[int, ...]], _benchmark_valid_historical_rows(rows)
+            )
             if args:
                 assert len(args) == 1
                 after_review_id = args[0]
                 assert isinstance(after_review_id, int)
-                return [row for row in rows if row[0] > after_review_id]
-            return list(rows)
+                return [row for row in query_rows if row[0] > after_review_id]
+            return query_rows
 
         def scalar(self, sql: str, *args: object) -> int | None:
             if "select crt from col" in sql:
@@ -17439,6 +17612,13 @@ def _rwkv_cache_reviewer(
 def _benchmark_valid_historical_rows(
     rows: Sequence[tuple[object, ...]],
 ) -> list[tuple[object, ...]]:
+    """Rows shaped the way the replay query returns them.
+
+    Each card's first row is made a Learning row and flagged
+    `is_learning_start`, which is the tenth column the query itself computes
+    (`sched.rwkv-replay-start-row`). These rows stand in for the query's
+    output; the rule itself is pinned by the tests that run the real SQL.
+    """
     seen_cards: set[int] = set()
     normalized: list[tuple[object, ...]] = []
     for row in rows:
@@ -17446,11 +17626,12 @@ def _benchmark_valid_historical_rows(
             normalized.append(row)
             continue
         card_id = row[1]
+        body = row[:9] if len(row) >= 9 else row
         if card_id in seen_cards:
-            normalized.append(row)
+            normalized.append((*body, 0))
             continue
         seen_cards.add(card_id)
-        normalized.append((*row[:6], 0, *row[7:]))
+        normalized.append((*body[:6], 0, *body[7:], 1))
     return normalized
 
 

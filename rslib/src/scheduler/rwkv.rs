@@ -104,26 +104,30 @@ impl Collection {
             let card_id = CardId(row.card_id);
             let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
             let previous_review_id = previous_review_id_by_card.insert(card_id, row.review_id);
-            let (elapsed_days, elapsed_seconds) = if let Some(previous_review_id) =
-                previous_review_id
-            {
-                (
-                    (day_offset - rwkv_historical_day_offset(previous_review_id, &timing)).max(0),
-                    ((row.review_id - previous_review_id) / 1000).max(0),
-                )
-            } else if row.is_learning_start
+            let (elapsed_days, elapsed_seconds) =
+                if let Some(previous_review_id) = previous_review_id {
+                    (
+                        (day_offset - rwkv_historical_day_offset(previous_review_id, &timing))
+                            .max(0),
+                        ((row.review_id - previous_review_id) / 1000).max(0),
+                    )
+                } else if row.is_learning_start
+                // Only a real Learning start may measure elapsed from the card's
+                // creation. A fallback start row (`sched.rwkv-replay-start-row`)
+                // is only the first row we hold, not the card's known first
+                // review, so its creation age would invent an interval.
+                && row.review_kind == 0
                 && rwkv_first_review_uses_card_creation(
                     row.deck_id,
                     &decks_by_id,
                     &configs_by_id,
                     &input.first_review_uses_creation_by_config_id,
-                )
-            {
-                let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
-                (elapsed_seconds / 86_400, elapsed_seconds)
-            } else {
-                (-1, -1)
-            };
+                ) {
+                    let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
+                    (elapsed_seconds / 86_400, elapsed_seconds)
+                } else {
+                    (-1, -1)
+                };
             let review_count_so_far = *review_count_by_card.get(&card_id).unwrap_or(&0);
             let previous_interval_days =
                 *previous_interval_days_by_card.get(&card_id).unwrap_or(&0);

@@ -4819,17 +4819,9 @@ def _rwkv_grade_now_review_input(
 def _rwkv_grade_now_card_histories(
     rows: Sequence[Sequence[object]],
 ) -> dict[int, _RwkvGradeNowCardHistory]:
-    retained_start_by_card = _benchmark_retained_historical_review_starts(rows)
     histories: dict[int, _RwkvGradeNowCardHistory] = {}
-    for index, row in enumerate(rows):
-        if (
-            _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
-            is None
-        ):
+    for row in rows:
+        if _retained_historical_review_state(row) is None:
             continue
         if len(row) < 8:
             raise _RwkvGradeNowReconciliationUnavailable(
@@ -16520,18 +16512,12 @@ def _historical_rwkv_review_inputs(
                 and row[0] in active_ignored_review_id_set
             )
         ]
-    retained_start_by_card = _benchmark_retained_historical_review_starts(raw_rows)
     recovery_cutoff_review_id: int | None = None
     if prepare_recovery_checkpoint:
         for raw_row_index in range(len(raw_rows) - 1, -1, -1):
             row = raw_rows[raw_row_index]
             if (
-                _benchmark_retained_historical_review_state(
-                    raw_row_index,
-                    row,
-                    retained_start_by_card,
-                )
-                is None
+                _retained_historical_review_state(row) is None
                 or len(row) < 9
                 or not isinstance(row[0], int)
                 or (after_review_id is not None and row[0] <= after_review_id)
@@ -16544,11 +16530,7 @@ def _historical_rwkv_review_inputs(
 
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
-            historical_state = _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
+            historical_state = _retained_historical_review_state(row)
             if historical_state is None:
                 continue
             if after_review_id is not None and (
@@ -16606,11 +16588,7 @@ def _historical_rwkv_review_inputs(
 
     prepared_row_count = 0
     for raw_row_index, row in enumerate(raw_rows):
-        historical_state = _benchmark_retained_historical_review_state(
-            raw_row_index,
-            row,
-            retained_start_by_card,
-        )
+        historical_state = _retained_historical_review_state(row)
         if historical_state is None:
             raw_rows[raw_row_index] = ()
             continue
@@ -16704,10 +16682,15 @@ def _historical_rwkv_review_inputs(
                     )
                     else RwkvFirstReviewElapsedSource.MISSING
                 )
+            # Only a real Learning start may measure elapsed from the card's
+            # creation. A fallback start row (`sched.rwkv-replay-start-row`) is
+            # only the first row we hold, not the card's known first review, so
+            # its creation age would invent an interval.
             elapsed_seconds = (
                 max(0, (review_id - card_id) // 1000)
                 if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
                 and historical_state == int(RwkvReviewState.LEARN_START)
+                and review_kind == 0
                 else -1
             )
             elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
@@ -17032,7 +17015,7 @@ def _historical_rwkv_review_rows(
     if not callable(all_rows):
         return []
 
-    after_clause = "and r.id > ?" if after_review_id is not None else ""
+    after_clause = "and e.id > ?" if after_review_id is not None else ""
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
     deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
@@ -17048,24 +17031,69 @@ def _historical_rwkv_review_rows(
     else:
         card_clause = ""
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
+    # The start-row rule has ONE implementation: this SQL, which restates the
+    # backend's `rwkv_historical_review_rows` (`rslib/src/storage/revlog/mod.rs`)
+    # clause for clause. See `sched.rwkv-replay-start-row`. Every caller reads
+    # the `is_learning_start` column below; nothing re-derives the start row in
+    # Python. The `after_clause` sits in the final select, never in `eligible`,
+    # so it cannot move a card's start row.
     sql = f"""
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    {effective_deck_sql} as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    cast(r.ivl as integer) as interval_days,
+    cast(r.factor as integer) as ease_factor,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where {_rwkv_historical_answer_sql_condition("r")}
+    {deck_clause}
+    {card_clause}
+), learning_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
+)
 select
-  r.id,
-  r.cid,
-  c.nid,
-  {effective_deck_sql},
-  r.ease,
-  r.time,
-  r.type,
-  cast(r.ivl as integer),
-  cast(r.factor as integer)
-from revlog r
-join cards c on c.id = r.cid
-where {_rwkv_historical_answer_sql_condition("r")}
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.interval_days,
+  e.ease_factor,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
   {after_clause}
-  {deck_clause}
-  {card_clause}
-order by r.id, r.cid
+order by e.id, e.cid
 {limit_clause}
 """
     start = time.monotonic()
@@ -17204,63 +17232,38 @@ def _historical_review_day_offset(
     return max(0, days_elapsed - days_before_today)
 
 
-def _benchmark_retained_historical_review_rows(
+def _retained_historical_review_rows(
     rows: Sequence[Sequence[object]],
 ) -> list[tuple[Sequence[object], int]]:
-    retained_start_by_card = _benchmark_retained_historical_review_starts(rows)
+    """Each retained row with its state code.
+
+    The query already dropped the rows before each card's start row, so every
+    row here is retained; this only reads the state code off the row.
+    """
     return [
         (row, historical_state)
-        for index, row in enumerate(rows)
-        if (
-            historical_state := _benchmark_retained_historical_review_state(
-                index,
-                row,
-                retained_start_by_card,
-            )
-        )
-        is not None
+        for row in rows
+        if (historical_state := _retained_historical_review_state(row)) is not None
     ]
 
 
-def _benchmark_retained_historical_review_starts(
-    rows: Sequence[Sequence[object]],
-) -> dict[int, tuple[int, bool]]:
-    retained_start_by_card: dict[int, tuple[int, bool]] = {}
-    previous_kind_by_card: dict[int, int] = {}
+def _retained_historical_review_state(row: Sequence[object]) -> int | None:
+    """The state code of one replay row, from the query's own start-row flag.
 
-    for index, row in enumerate(rows):
-        if len(row) < 7:
-            continue
-        card_id = row[1]
-        review_kind = row[6]
-        if not isinstance(card_id, int) or not isinstance(review_kind, int):
-            continue
-        retained_start_by_card.setdefault(card_id, (index, False))
-        previous_kind = previous_kind_by_card.get(card_id)
-        if review_kind == 0 and previous_kind != 0:
-            retained_start_by_card[card_id] = (index, True)
-        previous_kind_by_card[card_id] = review_kind
-
-    return retained_start_by_card
-
-
-def _benchmark_retained_historical_review_state(
-    index: int,
-    row: Sequence[object],
-    retained_start_by_card: Mapping[int, tuple[int, bool]],
-) -> int | None:
-    if len(row) < 7:
+    `sched.rwkv-replay-start-row` lives in the SQL of
+    `_historical_rwkv_review_rows`, which restates the backend's query. Nothing
+    re-derives the start row here: two implementations of that rule are exactly
+    how the Grade Now path and the reviewer's replay drifted apart before.
+    """
+    if len(row) < 10:
         return None
-    card_id = row[1]
     review_kind = row[6]
-    if not isinstance(card_id, int) or not isinstance(review_kind, int):
-        return None
-    start_index, starts_with_learning = retained_start_by_card[card_id]
-    if index < start_index:
+    is_learning_start = row[9]
+    if not isinstance(review_kind, int) or isinstance(review_kind, bool):
         return None
     return _historical_review_state(
         review_kind,
-        is_learning_start=starts_with_learning and index == start_index,
+        is_learning_start=bool(is_learning_start),
     )
 
 

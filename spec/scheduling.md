@@ -383,8 +383,50 @@ row are dropped, not merged, and the start row always gets the first-review
 treatment: the elapsed sentinel and no previous-interval features. Manual rows
 never enter the sequence: Forget (a manual row with a zero ease factor) only
 cuts the history, and Set Due Date (a manual row with a non-zero ease factor)
-is not a cut point, because it does not reset the card's memory. Only the last
-Forget counts.
+is not a cut point, because it does not reset the card's memory. Modern Anki
+writes Set Due Date as a Rescheduled row with a zero ease, and old Anki wrote it
+as a Manual row with a non-zero ease factor; neither is rated, so neither cuts.
+Only the last Forget counts.
+
+The start row always carries the learn-start state code, whatever the row's own
+kind, because the training dataset gives the first surviving row of every card
+that code.
+
+The deck option that measures a first review's elapsed time from the card's
+creation is the one exception to the first-row treatment: it reaches a **real
+Learning start only**, never a fallback start row, which keeps the elapsed
+sentinel. **Why:** the training dataset gives every start row the sentinel,
+including a relearn start after a Forget, and never a creation age, so the
+sentinel is the parity-correct value for any start row. The creation-age option
+on a real Learning start is already this fork's own deviation from training, a
+deck option Andrew chose; its scope must not widen to rows whose "first review"
+is only the first row the collection holds.
+
+**The rule has one implementation: the SQL.** The backend query
+(`rwkv_historical_review_rows`, `rslib/src/storage/revlog/mod.rs`) and the
+Python replay query (`_historical_rwkv_review_rows`,
+`qt/aqt/rwkv_scheduler.py`) each compute the start row and return an
+`is_learning_start` column; every reader takes that column. No caller
+re-derives the start row, so the reviewer's replay and Grade Now cannot drift
+apart: Grade Now reads the same query, filtered to the graded card.
+
+The two SQL texts are held together by the backend fingerprint, which hashes
+the rows the backend read and compares them with the rows Python read. A text
+that drifts reports `history_is_valid = false` instead of disagreeing in
+silence.
+
+The Forget cut applies **only** to a card with no rated Learning row. A card
+that has a learning start keeps that start row, so a Forget after it is ignored
+and the rows from before it stay. A card with no learning start whose last row
+is a Forget gets no start row at all and leaves the replay, because the Forget
+reset it and no rated row follows.
+
+**This asymmetry is deliberate; do not "fix" it.** The training dataset builder
+drops manual rows before it masks, so a Forget is invisible there unless a
+Learning row follows it. Rule 1 therefore reproduces training exactly for a card
+that has a learning start. The cut exists only for the card that training never
+saw: the one with no Learning row, where the Forget is the only evidence of a
+reset.
 
 **Why:** Andrew, 2026-09-16. A review log with no Learning row comes from an
 import, from another application or from an old scheduler. Before this entry
@@ -397,8 +439,18 @@ may cut at.
 `rwkv_replay_card_without_a_learning_row_starts_at_its_first_rated_row`,
 `rwkv_replay_card_without_a_learning_row_starts_after_its_forget`,
 `rwkv_replay_set_due_date_does_not_cut_the_history`,
-`rwkv_replay_uses_only_the_last_forget`
-(`rslib/src/storage/revlog/mod.rs`).
+`rwkv_replay_uses_only_the_last_forget`,
+`rwkv_replay_learning_start_wins_over_a_later_forget`,
+`rwkv_replay_drops_a_card_whose_last_row_is_a_forget`
+(`rslib/src/storage/revlog/mod.rs`) and
+`test_historical_fallback_start_row_gets_the_learn_start_state`,
+`test_historical_replay_drops_the_rows_before_a_fallback_card_forget`,
+`test_historical_replay_keeps_a_learning_start_over_a_later_forget`,
+`test_grade_now_and_the_replay_agree_on_a_forgotten_fallback_card`,
+`test_historical_rwkv_inputs_do_not_use_creation_for_a_fallback_start`
+(`qt/tests/test_rwkv_scheduler.py`) and
+`test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint`
+(`qt/tests/test_rwkv_replay_sql_drift.py`).
 
 ## sched.rwkv-exact-elapsed
 
