@@ -895,6 +895,12 @@ graphs then show FSRS-7 as absent with its own reason, "its predictions for
 these reviews are being computed", and never draw a value that the current
 parameters did not produce. No other algorithm is drawn in its place.
 
+A pass that fails says so: Clanki shows one message in that session naming
+what could not be stored, and does not count that day as done, so the pass
+tries again. An empty FSRS-7 series on its own cannot be told apart from a
+series still being computed, and a pass that reports no progress reports no
+failure either.
+
 The stored rows are validation folds, so nothing that produced a row had
 seen the review it predicts. The rows written while answering carry a
 different sample role, and the graph takes the first role of its list that
@@ -916,7 +922,9 @@ request 125, which is why it runs in the background and at most once a day
 rather than while a page is open.
 
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
-`test_the_collection_is_free_between_presets`
+`test_the_collection_is_free_between_presets`,
+`test_a_pass_that_fails_says_so`,
+`test_the_fake_backend_returns_what_the_real_backend_returns`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,
 `another_presets_predictions_survive_a_parameter_change`
