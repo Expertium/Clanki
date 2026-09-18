@@ -769,6 +769,19 @@ class _RwkvGradeNowReconciliationUnavailable(Exception):
     pass
 
 
+class RwkvCurveRecordingUnavailable(RuntimeError):
+    """The replay cannot report RWKV-Curve's value for a past review.
+
+    A pass that records RWKV-Curve raises this instead of walking the whole
+    history and writing no rows. A silent guard hid exactly that fault once:
+    `curve_recorder` was checked for and never added, so the pass ran for
+    minutes and recorded nothing.
+    """
+
+
+_CURVE_VALUE_MISSING = object()
+
+
 class _ReviewerBackendPredictionAborted(Exception):
     pass
 
@@ -1205,6 +1218,7 @@ class RwkvStatefulReviewerBackend:
         *,
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
+        curve_recorder: Callable[[int, float], None] | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
@@ -1242,6 +1256,14 @@ class RwkvStatefulReviewerBackend:
                 "prediction_recorder": prediction_recorder,
                 "progress": progress,
             }
+            if curve_recorder is not None:
+                if not _callable_accepts_keyword(bulk_parameters, "curve_recorder"):
+                    raise RwkvCurveRecordingUnavailable(
+                        "the RWKV runtime's bulk warm-up does not take a "
+                        "curve_recorder, so RWKV-Curve's per-review "
+                        "predictions cannot be recorded"
+                    )
+                kwargs["curve_recorder"] = curve_recorder
             if bulk_supports_snapshots:
                 kwargs["snapshot_after_reviews"] = sorted(snapshot_endpoints)
                 kwargs["snapshot_recorder"] = snapshot_recorder
@@ -1264,7 +1286,9 @@ class RwkvStatefulReviewerBackend:
                     identity,
                     review_input,
                 )
-                if prediction_recorder is not None and review_ids is not None:
+                if (
+                    prediction_recorder is not None or curve_recorder is not None
+                ) and review_ids is not None:
                     review_id = (
                         review_ids[processed - 1]
                         if processed - 1 < len(review_ids)
@@ -1290,10 +1314,18 @@ class RwkvStatefulReviewerBackend:
                             "retrievability",
                             None,
                         )
-                        if isinstance(retrievability, (int, float)) and math.isfinite(
-                            retrievability
+                        if (
+                            prediction_recorder is not None
+                            and isinstance(retrievability, (int, float))
+                            and math.isfinite(retrievability)
                         ):
                             prediction_recorder(review_id, retrievability)
+                        if curve_recorder is not None:
+                            self._record_warm_up_curve_value(
+                                curve_recorder,
+                                review_id,
+                                prediction,
+                            )
 
                 transition = self._runtime.review(
                     review_input=_rwkv_state_update_input(review_input),
@@ -1323,6 +1355,29 @@ class RwkvStatefulReviewerBackend:
                     processed=processed,
                     total=total,
                 )
+
+    @staticmethod
+    def _record_warm_up_curve_value(
+        curve_recorder: Callable[[int, float], None],
+        review_id: int,
+        prediction: object,
+    ) -> None:
+        """Hand RWKV-Curve's own value for this review to its recorder.
+
+        The value is the curve the replay held at the card's previous
+        answered review, read at this review's own elapsed time; the query
+        above asks for exactly that. A card's first review has no such curve
+        and gets no row, and no other algorithm's value stands in.
+        """
+
+        curve = getattr(prediction, "curve_retrievability", _CURVE_VALUE_MISSING)
+        if curve is _CURVE_VALUE_MISSING:
+            raise RwkvCurveRecordingUnavailable(
+                "the RWKV runtime does not report RWKV-Curve's value for a "
+                "past review, so its per-review predictions cannot be recorded"
+            )
+        if isinstance(curve, (int, float)) and math.isfinite(curve):
+            curve_recorder(review_id, float(curve))
 
     def _can_use_runtime_bulk_warm_up(self) -> bool:
         if self._runtime_owns_warm_up_state():
@@ -3238,6 +3293,9 @@ class _RwkvCurveReviewPredictionWriter:
         self._source = source
         self._sample_role = sample_role
         self._rows: list[tuple[int, float]] = []
+        # how many rows reached the collection, so a pass that recorded
+        # nothing can say so instead of looking like a pass that worked
+        self.written = 0
 
     def __call__(self, review_id: int, prediction: float) -> None:
         self.record(review_id, prediction)
@@ -3286,6 +3344,8 @@ class _RwkvCurveReviewPredictionWriter:
             )
         except Exception:
             logger.exception("failed to store RWKV-Curve predictions")
+        else:
+            self.written += len(rows)
 
 
 def set_reviewer_backend(
@@ -10350,6 +10410,18 @@ def recompute_rwkv_calibration_data(
         )
         return False
 
+    if not _callable_accepts_keyword(
+        _callable_parameters(cast(Callable[..., Any], warm_up)),
+        "curve_recorder",
+    ):
+        # Refuse before the replay starts. The pass used to skip the recorder
+        # here and then walk the whole history writing no RWKV-Curve row, for
+        # minutes, with nothing said.
+        raise RwkvCurveRecordingUnavailable(
+            "the RWKV warm-up does not take a curve_recorder, so RWKV-Curve's "
+            "per-review predictions cannot be recorded"
+        )
+
     reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
     try:
@@ -10425,15 +10497,9 @@ def recompute_rwkv_calibration_data(
                 warm_up_kwargs: dict[str, Any] = {
                     "review_ids": history.review_ids,
                     "prediction_recorder": writer.record,
+                    "curve_recorder": curve_writer.record,
                     "progress": replay_progress,
                 }
-                # a backend that cannot report the curve head simply does
-                # not record RWKV-Curve; it is never given another
-                # algorithm's value instead
-                if _callable_accepts_keyword(
-                    inspect.signature(warm_up).parameters, "curve_recorder"
-                ):
-                    warm_up_kwargs["curve_recorder"] = curve_writer.record
                 cast(Callable[..., object], warm_up)(
                     history.reviews,
                     **warm_up_kwargs,
@@ -10442,6 +10508,13 @@ def recompute_rwkv_calibration_data(
             finally:
                 writer.flush()
                 curve_writer.flush()
+            if curve_writer.written == 0 and len(history.reviews) > 1:
+                # the replay ran and recorded nothing: say so in the log
+                # rather than leave an empty series to be found in the UI
+                logger.error(
+                    "RWKV-Curve recorded no prediction over %s replayed reviews",
+                    len(history.reviews),
+                )
             logger.debug(
                 "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
                 len(history.reviews),
@@ -10451,6 +10524,10 @@ def recompute_rwkv_calibration_data(
     except _ReviewerBackendWarmupInvalidated:
         logger.debug("RWKV calibration data recompute invalidated")
         return False
+    except RwkvCurveRecordingUnavailable:
+        # never a silent False: a pass that cannot record RWKV-Curve says so
+        logger.exception("RWKV-Curve per-review predictions cannot be recorded")
+        raise
     except Exception:
         logger.exception("RWKV calibration data recompute failed")
         return False
@@ -10524,7 +10601,7 @@ def ensure_rwkv_calibration_data(
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
     """Recompute RWKV calibration rows with a modal progress dialog."""
 
-    from aqt.utils import tooltip
+    from aqt.utils import tooltip, tr
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
@@ -10555,6 +10632,10 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
         def done(future: Future[bool]) -> None:
             try:
                 recomputed = future.result()
+            except RwkvCurveRecordingUnavailable:
+                logger.exception("RWKV-Curve per-review predictions cannot be recorded")
+                tooltip(tr.qt_misc_rwkv_curve_not_recorded(), parent=parent)
+                return
             except Exception:
                 logger.exception("RWKV calibration data recompute failed")
                 tooltip("RWKV calibration data recompute failed.", parent=parent)
