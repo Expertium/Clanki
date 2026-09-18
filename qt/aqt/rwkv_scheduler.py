@@ -31,7 +31,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NamedTuple, Protocol, TypedDict, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NamedTuple,
+    Protocol,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 from typing_extensions import NotRequired
 
@@ -51,6 +59,11 @@ from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QWidget
+
+if TYPE_CHECKING:
+    # rwkv_srs_benchmark imports from this module, so the import is for
+    # type checking only
+    from aqt.rwkv_srs_benchmark import MemorisedDayRows
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -12080,6 +12093,30 @@ def _predict_rwkv_memorised_day(
     if not callable(predict):
         raise ValueError("RWKV resident-state prediction is unavailable")
     return cast(Sequence[float], predict(query_inputs))
+
+
+def _predict_rwkv_memorised_day_from_rows(
+    runtime: object,
+    rows: MemorisedDayRows,
+    *,
+    day: int,
+) -> Sequence[float]:
+    """One Memorised day, from rows packed once per rating.
+
+    `_predict_rwkv_memorised_day` packs every card again on every day, which
+    is the whole cost of Total Knowledge on a large collection. The rows here
+    are already packed, and the Rust side derives the day and the two elapsed
+    fields (spec ui.stats-total-knowledge).
+    """
+
+    packed_predict = getattr(
+        runtime,
+        "predict_memorised_retrievability_on_day",
+        None,
+    )
+    if callable(packed_predict):
+        return _f32_array_from_little_endian_bytes(packed_predict(rows, day=day))
+    return _predict_rwkv_memorised_day(runtime, rows.review_inputs(), day=day)
 
 
 def _compute_rwkv_memorised_history(

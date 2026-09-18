@@ -190,6 +190,7 @@ new_runtime: Callable[[], Any] = _new_runtime
 
 def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
     import aqt.rwkv_scheduler as rwkv
+    from aqt.rwkv_srs_benchmark import MemorisedDayRows
 
     reviewer = SimpleNamespace(mw=mw)
     timing = rwkv._timing_today(reviewer)
@@ -225,8 +226,11 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
     runtime = new_runtime()
     changes_by_day = _changes_by_day(events, today)
     spans_sums = [0.0] * (today - first_day + 1)
-    # instant head: each card whose R comes from an earlier rating
-    last_rating: dict[int, Any] = {}
+    # instant head: each card whose R comes from an earlier rating. The rows
+    # are packed once per rating, not once per day: only the day and the two
+    # elapsed fields change from day to day, and the Rust side derives those
+    # (spec ui.stats-total-knowledge)
+    last_rating = MemorisedDayRows()
     review_index = 0
     for day in range(first_day, today + 1):
         if job.cancel_event.is_set():
@@ -240,11 +244,11 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
 
         changes = changes_by_day.get(day, ())
         for card_id, _event, _until in changes:
-            last_rating.pop(card_id, None)
+            last_rating.remove(card_id)
         total = 0.0
         if not job.curve and last_rating:
-            predictions = rwkv._predict_rwkv_memorised_day(
-                runtime, list(last_rating.values()), day=day
+            predictions = rwkv._predict_rwkv_memorised_day_from_rows(
+                runtime, last_rating, day=day
             )
             total += sum(min(max(float(r), 0.0), 1.0) for r in predictions)
         spans: list[tuple[int, int, int, int]] = []
@@ -257,7 +261,7 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
                 if until > day + 1:
                     spans.append((card_id, day, day + 1, until - 1))
             else:
-                last_rating[card_id] = event.review
+                last_rating.set(card_id, event.review)
         if spans:
             start, sums = runtime.curve_retrievability_day_sums_from_warm_up(spans)
             for offset, value in enumerate(sums):
