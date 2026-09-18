@@ -185,7 +185,13 @@ _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_STORE_FILE = "state-v12.sqlite3"
 _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
-_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
+_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 5
+# Schema 4 kept one serialized delta stream per segment. The backend
+# converts such a store to schema 5 the first time it reads it, and the
+# tables this module touches are the same in both, so both are readable.
+_RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS = (4, 5)
+# the old schema, the one the first profile open after the update converts
+_RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
@@ -769,6 +775,19 @@ class _RwkvGradeNowReconciliationUnavailable(Exception):
     pass
 
 
+class RwkvCurveRecordingUnavailable(RuntimeError):
+    """The replay cannot report RWKV-Curve's value for a past review.
+
+    A pass that records RWKV-Curve raises this instead of walking the whole
+    history and writing no rows. A silent guard hid exactly that fault once:
+    `curve_recorder` was checked for and never added, so the pass ran for
+    minutes and recorded nothing.
+    """
+
+
+_CURVE_VALUE_MISSING = object()
+
+
 class _ReviewerBackendPredictionAborted(Exception):
     pass
 
@@ -1205,6 +1224,7 @@ class RwkvStatefulReviewerBackend:
         *,
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
+        curve_recorder: Callable[[int, float], None] | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
@@ -1242,6 +1262,14 @@ class RwkvStatefulReviewerBackend:
                 "prediction_recorder": prediction_recorder,
                 "progress": progress,
             }
+            if curve_recorder is not None:
+                if not _callable_accepts_keyword(bulk_parameters, "curve_recorder"):
+                    raise RwkvCurveRecordingUnavailable(
+                        "the RWKV runtime's bulk warm-up does not take a "
+                        "curve_recorder, so RWKV-Curve's per-review "
+                        "predictions cannot be recorded"
+                    )
+                kwargs["curve_recorder"] = curve_recorder
             if bulk_supports_snapshots:
                 kwargs["snapshot_after_reviews"] = sorted(snapshot_endpoints)
                 kwargs["snapshot_recorder"] = snapshot_recorder
@@ -1264,7 +1292,9 @@ class RwkvStatefulReviewerBackend:
                     identity,
                     review_input,
                 )
-                if prediction_recorder is not None and review_ids is not None:
+                if (
+                    prediction_recorder is not None or curve_recorder is not None
+                ) and review_ids is not None:
                     review_id = (
                         review_ids[processed - 1]
                         if processed - 1 < len(review_ids)
@@ -1290,10 +1320,18 @@ class RwkvStatefulReviewerBackend:
                             "retrievability",
                             None,
                         )
-                        if isinstance(retrievability, (int, float)) and math.isfinite(
-                            retrievability
+                        if (
+                            prediction_recorder is not None
+                            and isinstance(retrievability, (int, float))
+                            and math.isfinite(retrievability)
                         ):
                             prediction_recorder(review_id, retrievability)
+                        if curve_recorder is not None:
+                            self._record_warm_up_curve_value(
+                                curve_recorder,
+                                review_id,
+                                prediction,
+                            )
 
                 transition = self._runtime.review(
                     review_input=_rwkv_state_update_input(review_input),
@@ -1323,6 +1361,36 @@ class RwkvStatefulReviewerBackend:
                     processed=processed,
                     total=total,
                 )
+
+    @staticmethod
+    def _record_warm_up_curve_value(
+        curve_recorder: Callable[[int, float], None],
+        review_id: int,
+        prediction: object,
+    ) -> None:
+        """Hand RWKV-Curve's own value for this review to its recorder.
+
+        The value is the curve the replay held at the card's previous
+        answered review, read at this review's own elapsed time; the query
+        above asks for exactly that. A card's first review has no such curve
+        and gets no row, and no other algorithm's value stands in.
+
+        A query that produced no prediction at all is skipped, exactly as
+        RWKV-Instant's recorder skips it: that is a runtime with nothing to
+        say about this review, not a runtime that cannot report curves. The
+        error below is for the second case only.
+        """
+
+        if prediction is None:
+            return
+        curve = getattr(prediction, "curve_retrievability", _CURVE_VALUE_MISSING)
+        if curve is _CURVE_VALUE_MISSING:
+            raise RwkvCurveRecordingUnavailable(
+                "the RWKV runtime does not report RWKV-Curve's value for a "
+                "past review, so its per-review predictions cannot be recorded"
+            )
+        if isinstance(curve, (int, float)) and math.isfinite(curve):
+            curve_recorder(review_id, float(curve))
 
     def _can_use_runtime_bulk_warm_up(self) -> bool:
         if self._runtime_owns_warm_up_state():
@@ -3238,6 +3306,9 @@ class _RwkvCurveReviewPredictionWriter:
         self._source = source
         self._sample_role = sample_role
         self._rows: list[tuple[int, float]] = []
+        # how many rows reached the collection, so a pass that recorded
+        # nothing can say so instead of looking like a pass that worked
+        self.written = 0
 
     def __call__(self, review_id: int, prediction: float) -> None:
         self.record(review_id, prediction)
@@ -3286,6 +3357,8 @@ class _RwkvCurveReviewPredictionWriter:
             )
         except Exception:
             logger.exception("failed to store RWKV-Curve predictions")
+        else:
+            self.written += len(rows)
 
 
 def set_reviewer_backend(
@@ -10350,6 +10423,18 @@ def recompute_rwkv_calibration_data(
         )
         return False
 
+    if not _callable_accepts_keyword(
+        _callable_parameters(cast(Callable[..., Any], warm_up)),
+        "curve_recorder",
+    ):
+        # Refuse before the replay starts. The pass used to skip the recorder
+        # here and then walk the whole history writing no RWKV-Curve row, for
+        # minutes, with nothing said.
+        raise RwkvCurveRecordingUnavailable(
+            "the RWKV warm-up does not take a curve_recorder, so RWKV-Curve's "
+            "per-review predictions cannot be recorded"
+        )
+
     reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
     try:
@@ -10425,15 +10510,9 @@ def recompute_rwkv_calibration_data(
                 warm_up_kwargs: dict[str, Any] = {
                     "review_ids": history.review_ids,
                     "prediction_recorder": writer.record,
+                    "curve_recorder": curve_writer.record,
                     "progress": replay_progress,
                 }
-                # a backend that cannot report the curve head simply does
-                # not record RWKV-Curve; it is never given another
-                # algorithm's value instead
-                if _callable_accepts_keyword(
-                    inspect.signature(warm_up).parameters, "curve_recorder"
-                ):
-                    warm_up_kwargs["curve_recorder"] = curve_writer.record
                 cast(Callable[..., object], warm_up)(
                     history.reviews,
                     **warm_up_kwargs,
@@ -10442,6 +10521,13 @@ def recompute_rwkv_calibration_data(
             finally:
                 writer.flush()
                 curve_writer.flush()
+            if curve_writer.written == 0 and len(history.reviews) > 1:
+                # the replay ran and recorded nothing: say so in the log
+                # rather than leave an empty series to be found in the UI
+                logger.error(
+                    "RWKV-Curve recorded no prediction over %s replayed reviews",
+                    len(history.reviews),
+                )
             logger.debug(
                 "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
                 len(history.reviews),
@@ -10451,6 +10537,10 @@ def recompute_rwkv_calibration_data(
     except _ReviewerBackendWarmupInvalidated:
         logger.debug("RWKV calibration data recompute invalidated")
         return False
+    except RwkvCurveRecordingUnavailable:
+        # never a silent False: a pass that cannot record RWKV-Curve says so
+        logger.exception("RWKV-Curve per-review predictions cannot be recorded")
+        raise
     except Exception:
         logger.exception("RWKV calibration data recompute failed")
         return False
@@ -10524,7 +10614,7 @@ def ensure_rwkv_calibration_data(
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
     """Recompute RWKV calibration rows with a modal progress dialog."""
 
-    from aqt.utils import tooltip
+    from aqt.utils import tooltip, tr
 
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
@@ -10555,6 +10645,10 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
         def done(future: Future[bool]) -> None:
             try:
                 recomputed = future.result()
+            except RwkvCurveRecordingUnavailable:
+                logger.exception("RWKV-Curve per-review predictions cannot be recorded")
+                tooltip(tr.qt_misc_rwkv_curve_not_recorded(), parent=parent)
+                return
             except Exception:
                 logger.exception("RWKV calibration data recompute failed")
                 tooltip("RWKV calibration data recompute failed.", parent=parent)
@@ -11312,6 +11406,29 @@ def _finish_rwkv_state_cache_operation(
     )
 
 
+def rwkv_state_cache_store_needs_upgrade(mw: object) -> bool:
+    """Whether the saved store is still in the old serialized format.
+
+    The conversion happens once, inside the restore, so the start-up window
+    says a one-time update is running instead of the ordinary "Starting"
+    (spec sched.rwkv-lazy-state-upgrade-window).
+    """
+
+    cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+    if cache_dir is None:
+        return False
+    path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
+    if not path.is_file():
+        return False
+    try:
+        with _rwkv_state_cache_connection(path) as connection:
+            row = connection.execute("pragma user_version").fetchone()
+    except Exception:
+        logger.debug("failed to read the RWKV state-cache store schema version")
+        return False
+    return bool(row) and row[0] == _RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION
+
+
 def load_rwkv_state_cache_with_progress(
     mw: object,
     *,
@@ -11388,15 +11505,29 @@ def load_rwkv_state_cache_with_progress(
 
         from aqt.utils import tr
 
+        # the one-time conversion runs inside this restore, and it is the
+        # only wait long enough to need its own words
+        upgrading = rwkv_state_cache_store_needs_upgrade(mw)
+        label = (
+            tr.qt_misc_rwkv_state_upgrade_label()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_label()
+        )
+        title = (
+            tr.qt_misc_rwkv_state_upgrade_title()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_title()
+        )
+
         try:
             with_progress(
                 load,
                 done,
                 parent=parent,
-                label=tr.qt_misc_rwkv_startup_label(),
+                label=label,
                 immediate=True,
                 uses_collection=True,
-                title=tr.qt_misc_rwkv_startup_title(),
+                title=title,
             )
         except Exception:
             finish(False)
@@ -14004,7 +14135,7 @@ def _prune_rwkv_state_cache_store(
     placeholders = ",".join("?" for _ in reachable_segment_ids)
     with _rwkv_state_cache_connection(path) as connection:
         connection.execute(
-            f"delete from segment_state_chunks where segment_id not in ({placeholders})",
+            f"delete from entity_states where segment_id not in ({placeholders})",
             reachable_segment_ids,
         )
         connection.execute(
@@ -14837,7 +14968,7 @@ def _read_rwkv_state_cache_store_segment_history(
         raise FileNotFoundError(path)
     with _rwkv_state_cache_connection(path) as connection:
         schema_version = connection.execute("pragma user_version").fetchone()
-        if schema_version != (_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION,):
+        if schema_version[0] not in _RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS:
             raise ValueError("unsupported RWKV state-cache store schema")
         generation_row = connection.execute(
             "select value from store_metadata where key = 'generation'"
@@ -14913,9 +15044,8 @@ def _rwkv_state_cache_store_segment_chain(
         generation_row = connection.execute(
             "select value from store_metadata where key = 'generation'"
         ).fetchone()
-        if schema_version != (
-            _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION,
-        ) or generation_row != (store_generation,):
+        readable = schema_version[0] in _RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS
+        if not readable or generation_row != (store_generation,):
             raise ValueError("RWKV state-cache store identity mismatch")
         current_segment_id: int | None = segment_id
         while current_segment_id is not None:

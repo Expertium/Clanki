@@ -162,7 +162,8 @@ service SchedulerService {
   // Stores one algorithm's per-review predictions in the generic table
   // (spec ui.stats-model-metrics). The algorithm is named on every row, so
   // no write can land in another algorithm's rows.
-  rpc SetReviewPredictions(ReviewPredictionRowsRequest) returns (generic.UInt32);
+  rpc SetReviewPredictions(ReviewPredictionRowsRequest)
+      returns (generic.UInt32);
   rpc SetRwkvReviewRetrievabilityCacheRows(
       RwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
   // Applies desktop-computed RWKV reschedule intervals and S90 values.

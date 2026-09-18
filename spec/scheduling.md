@@ -284,6 +284,65 @@ and Cancel).
 **Pinned by:** `test_startup_builds_the_state_and_the_calibration_data_without_asking`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-lazy-state-load
+
+Given a saved RWKV state cache, when a profile opens, Clanki reads only the
+shared states and a key index from it. The deck, preset and global states are
+read in full; every card and note state stays in the store and is read one key
+at a time, the first time that card or note is part of a prediction, an answer
+or a warm-up row.
+
+- A read returns the entity's complete state as of its latest write, or it
+  fails with an error. A key the index does not hold has no cached state, and
+  the card takes the same path a card with no state has always taken.
+- A row whose own kind and id are not the ones asked for, and a store whose
+  generation is not the restored one, are errors, not states.
+- The deck, preset and global states are current before any prediction runs.
+- A state this session wrote is never replaced by the stored one.
+
+The store keeps one row per (segment, kind, entity), so the newest segment of
+the restored chain that holds a key answers the read in one lookup. A store
+written by an older Clanki, which held one serialized delta stream per
+segment, is converted to rows once, at the first profile open that reads it;
+no review is replayed and no state changes.
+
+**Why:** Andrew, 2026-09-16: "can we do anything about the long ass loading of
+RWKV states on Clanki startup?" His cache is 3.51 GB and a study session needs
+about 25 MB of it, so reading all of it behind the start-up progress window
+cost about 4 seconds and 3.3 GB of memory at every profile open, and more when
+the file is not in the operating system's cache. A state is replaced at every
+review and never accumulated, so every stored row is a full snapshot of one
+entity and a point lookup is exact.
+
+**Pinned by:** `lazy_state_reads_match_resident_predictions`,
+`lazy_state_read_rejects_a_foreign_row`,
+`a_lazy_session_writes_a_complete_checkpoint_chain`,
+`delta_state_store_restores_checkpoint_chain` (`rslib/src/rwkv/mod.rs`);
+`test_rwkv_delta_store_prune_removes_unreachable_entity_states`
+(`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-lazy-state-upgrade-window
+
+Given a saved RWKV state cache in the old format, when a profile opens, the
+start-up progress window is titled "One-time update" and reads "Clanki is
+reorganising its saved review data so it can start faster. This happens once
+and can take some time." The conversion runs once, inside that wait; every
+later start-up of the same profile shows the ordinary "Starting" window
+again. A profile with a converted store, and a profile with no store at all,
+never show the one-time words.
+
+**Why:** Andrew, 2026-09-16, wrote both strings himself. The conversion is the
+only start-up wait long enough to need its own words: it takes 15.6 seconds on
+his 3.51 GB store, against 0.171 seconds for an ordinary lazy restore, so a
+window that says "Starting" for fifteen seconds once would look like a fault.
+It names what the user waits for, not the format it converts, and it promises
+"once" because the converted store is never converted again. The promise is
+safe to print because the conversion builds a new file and renames it into
+place: ending the wait early loses nothing.
+
+**Pinned by:** `test_only_the_one_time_upgrade_gets_the_one_time_words`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`
@@ -317,15 +376,15 @@ after an answer, and an answer is blocked while the buttons wait.
 
 The wait covers every reason RWKV-Curve has no intervals yet:
 
-| Reason | Ends by itself? |
-|---|---|
-| its state still loading | yes |
-| its state not loaded (cold after a queue change, a sync or an undo) | only because the reviewer restores it |
-| another RWKV task holding it | yes |
-| its state changing during the prediction | yes |
-| no prediction | depends on the run |
-| an error, also an error while the answer states are built from RWKV-Curve's intervals after the prediction itself succeeded | depends on the run |
-| a button without an interval | no: see below |
+| Reason                                                                                                                      | Ends by itself?                       |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| its state still loading                                                                                                     | yes                                   |
+| its state not loaded (cold after a queue change, a sync or an undo)                                                         | only because the reviewer restores it |
+| another RWKV task holding it                                                                                                | yes                                   |
+| its state changing during the prediction                                                                                    | yes                                   |
+| no prediction                                                                                                               | depends on the run                    |
+| an error, also an error while the answer states are built from RWKV-Curve's intervals after the prediction itself succeeded | depends on the run                    |
+| a button without an interval                                                                                                | no: see below                         |
 
 After an error no prediction is kept, so an answer stores no RWKV-Curve S90
 with states that are not RWKV-Curve's.

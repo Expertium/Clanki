@@ -126,7 +126,7 @@ import aqt.forms
 
 
 from aqt import addcards, addons, browser, editcurrent, filtered_deck  # isort:skip
-from aqt import stats, about, preferences, mediasync  # isort:skip
+from aqt import stats, about, support, preferences, mediasync  # isort:skip
 
 
 class DialogManager:
@@ -141,6 +141,7 @@ class DialogManager:
         "DeckStats": [stats.DeckStats, None],
         "NewDeckStats": [stats.NewDeckStats, None],
         "About": [about.show, None],
+        "Support": [support.show, None],
         "Preferences": [preferences.Preferences, None],
         "sync_log": [mediasync.MediaSyncDialog, None],
     }

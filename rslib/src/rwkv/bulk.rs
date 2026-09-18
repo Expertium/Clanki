@@ -124,6 +124,8 @@ fn warm_up_reviews_bulk_impl(
     if rows == 0 {
         return Ok(vec![]);
     }
+    // Every state this batch reads has to be resident before the modules run.
+    inference.warm_up_states.ensure_loaded_many(&inputs)?;
 
     let model = inference.model.clone();
 
@@ -180,21 +182,21 @@ fn warm_up_reviews_bulk_impl(
     // an earlier call, and its curve is the one `inference.curves` holds
     // right now. Snapshot it before the loop below overwrites the map with
     // this batch's LAST rows, which are later reviews and the wrong curve.
-    let carried_in_curves: HashMap<i64, ReviewCurve> = record_predictions
-        .then(|| {
-            inputs
-                .iter()
-                .enumerate()
-                .filter(|(row_index, _)| previous_row_of_same_card[*row_index].is_none())
-                .filter_map(|(_, input)| {
-                    inference
-                        .curves
-                        .get(&input.card_id)
-                        .map(|curve| (input.card_id, curve.clone()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let carried_in_curves: HashMap<i64, ReviewCurve> = if record_predictions {
+        inputs
+            .iter()
+            .enumerate()
+            .filter(|(row_index, _)| previous_row_of_same_card[*row_index].is_none())
+            .filter_map(|(_, input)| {
+                inference
+                    .curves
+                    .get(&input.card_id)
+                    .map(|curve| (input.card_id, curve.clone()))
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let curve_rows: Vec<usize> = if record_predictions {
         (0..rows).collect()
     } else {

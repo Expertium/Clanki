@@ -10,3 +10,8 @@ release Clanki is built on, and the data folder stays `Anki2`.
 """
 
 APP_NAME = "Clanki"
+
+# Clanki's own repository (spec branding.about-window-disclaimer): shown in
+# the About and Support windows so a reader can find Clanki's own source,
+# distinct from official Anki's.
+CLANKI_REPOSITORY = "https://github.com/Expertium/Clanki"

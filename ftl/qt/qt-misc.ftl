@@ -89,6 +89,11 @@ qt-misc-rwkv-curve-no-interval = RWKV-Curve has no interval for this card. The a
 qt-misc-rwkv-curve-intervals-timed-out = RWKV-Curve did not give the intervals of this card in { $seconds } seconds. Clanki could not load the RWKV-Curve state. Try again, or restart Clanki, or choose FSRS-7 for this deck in deck options. FSRS-7 intervals never stand in.
 # Button in the message above. It waits for RWKV-Curve again, on the same card.
 qt-misc-rwkv-curve-intervals-try-again = Try again
+# The progress window shown ONCE, at the first start-up after the update,
+# while Clanki converts a saved RWKV state cache that an older version
+# wrote. Andrew chose this wording himself (2026-09-16); keep it as written.
+qt-misc-rwkv-state-upgrade-title = One-time update
+qt-misc-rwkv-state-upgrade-label = Clanki is reorganising its saved review data so it can start faster. This happens once and can take some time.
 # The progress window while Clanki loads the saved RWKV state at start-up.
 # It says what the user waits for, not which file is read (Andrew,
 # 2026-09-16).
@@ -106,6 +111,10 @@ qt-misc-rwkv-curve-grade-now-skipped =
 # reviews fails. Without it the model-quality graphs have no FSRS-7 series,
 # and an empty series alone does not say that anything went wrong.
 qt-misc-fsrs-predictions-pass-failed = Clanki could not store FSRS-7's predictions of your past reviews, so the model comparison graphs cannot show FSRS-7. The reason is in the log file.
+# Shown when the RWKV calibration pass cannot record RWKV-Curve's value for
+# a past review. The pass stops before it starts, rather than replaying the
+# whole history and writing nothing.
+qt-misc-rwkv-curve-not-recorded = RWKV-Curve's predictions of your past reviews were not recorded, because this version of Clanki cannot calculate them. Nothing was recomputed.
 qt-misc-rwkv-model-missing = The RWKV model file is missing or does not load, so RWKV cannot schedule your cards. Reinstall Clanki, or choose FSRS-7 as the algorithm in deck options (Advanced mode).
 
 ## deprecated- these strings will be removed in the future, and do not need

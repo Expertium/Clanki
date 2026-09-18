@@ -77,7 +77,6 @@ from aqt.utils import (
     getFile,
     getOnlyText,
     openHelp,
-    openLink,
     restoreGeom,
     restoreState,
     saveGeom,
@@ -1657,7 +1656,9 @@ title="{}" {}>{}</button>""".format(
         aqt.dialogs.open("About", self)
 
     def onDonate(self) -> None:
-        openLink(aqt.appDonate)
+        """Shows a small dialog instead of linking straight to Anki's own
+        support page (spec branding.support-window)."""
+        aqt.dialogs.open("Support", self)
 
     def onDocumentation(self) -> None:
         openHelp(HelpPage.INDEX)
@@ -1752,6 +1753,7 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.action_check_for_updates.triggered, self.on_check_for_updates)
         m.action_check_for_updates.setVisible(not aqt.is_portable())
         qconnect(m.actionPreferences.triggered, self.onPrefs)
+        self._sync_tools_menu_for_ui_mode()
 
         # View
         qconnect(
@@ -1790,6 +1792,7 @@ title="{}" {}>{}</button>""".format(
         with aqt.stats_prefetch.ui_mode_write(self.col):
             self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
+        self._sync_tools_menu_for_ui_mode()
         # in place: a toolbar reload would clear the sync button's colour and
         # spinner (spec ui.mode-switch)
         self.toolbar.update_ui_mode_toggle()
@@ -1799,12 +1802,29 @@ title="{}" {}>{}</button>""".format(
         # change that does not affect dueness (spec ui.mode-switch).
         if self.state == "deckBrowser":
             self.deckBrowser.redraw_for_ui_mode()
+        # The overview's bottom row (Custom Study) depends on the mode; redraw
+        # it the same cheap, in-place way (spec ui.simple-mode-tools-hidden).
+        elif self.state == "overview":
+            self.overview.redraw_for_ui_mode()
 
     def _sync_advanced_ui_action(self) -> None:
         action = self.form.actionAdvancedUi
         action.blockSignals(True)
         action.setChecked(self.advanced_ui())
         action.blockSignals(False)
+
+    def _sync_tools_menu_for_ui_mode(self) -> None:
+        """Hide the power-user Tools items in Simple mode
+        (spec ui.simple-mode-tools-hidden). Study Deck..., Add-ons, Check for
+        Updates and Preferences stay in both modes; add-on-contributed menu
+        entries are untouched."""
+        m = self.form
+        advanced = self.advanced_ui()
+        m.actionCreateFiltered.setVisible(advanced)
+        m.actionFullDatabaseCheck.setVisible(advanced)
+        m.actionCheckMediaDatabase.setVisible(advanced)
+        m.actionEmptyCards.setVisible(advanced)
+        m.actionNoteTypes.setVisible(advanced)
 
     def updateTitleBar(self) -> None:
         self.setWindowTitle(aqt.application_name())

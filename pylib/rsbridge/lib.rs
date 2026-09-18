@@ -534,10 +534,14 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    fn warm_up_snapshot(&self, py: Python<'_>) -> RwkvWarmUpSnapshot {
-        let (snapshot, cache_state) =
-            py.detach(|| (self.inner.warm_up_snapshot(), self.inner.cache_state()));
-        (
+    fn warm_up_snapshot(&mut self, py: Python<'_>) -> PyResult<RwkvWarmUpSnapshot> {
+        let (snapshot, cache_state) = py
+            .detach(|| {
+                let snapshot = self.inner.warm_up_snapshot()?;
+                Ok::<_, std::io::Error>((snapshot, self.inner.cache_state()))
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        Ok((
             py_state_map(py, snapshot.card_states),
             py_state_map(py, snapshot.note_states),
             py_state_map(py, snapshot.deck_states),
@@ -546,16 +550,18 @@ impl RwkvInference {
                 .global_state
                 .map(|state| PyBytes::new(py, &state).unbind()),
             PyBytes::new(py, &cache_state).unbind(),
-        )
+        ))
     }
 
     fn warm_up_state(
-        &self,
+        &mut self,
         py: Python<'_>,
         review: &Bound<'_, PyAny>,
     ) -> PyResult<RwkvSerializedState> {
         let input = parse_rwkv_review_input(review)?;
-        let state = py.detach(|| self.inner.warm_up_state(&input));
+        let state = py
+            .detach(|| self.inner.warm_up_state(&input))
+            .map_err(|err| PyException::new_err(err.to_string()))?;
         Ok((
             state.card.map(|state| PyBytes::new(py, &state).unbind()),
             state.note.map(|state| PyBytes::new(py, &state).unbind()),
@@ -565,7 +571,7 @@ impl RwkvInference {
         ))
     }
 
-    fn append_warm_up_snapshot_binary(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+    fn append_warm_up_snapshot_binary(&mut self, py: Python<'_>, path: &str) -> PyResult<()> {
         py.detach(|| self.inner.append_warm_up_snapshot_binary(path.into()))
             .map_err(|err| PyException::new_err(err.to_string()))
     }

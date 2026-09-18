@@ -925,7 +925,7 @@ fn fsrs_review_retrievability_predictions_for_targets(
     let mut wanted: Vec<&FsrsReviewPredictionSource> = sources
         .iter()
         .filter(|source| {
-            target_revlog_ids.is_none_or(|ids| {
+            target_revlog_ids.map_or(true, |ids| {
                 source
                     .targets
                     .iter()
