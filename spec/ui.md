@@ -816,7 +816,8 @@ user's own rebuild, never to opening a page.
 `test_rwkv_calibration_recompute_records_the_curve_of_every_review`,
 `test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve`,
 `test_bulk_warm_up_is_handed_the_curve_recorder`,
-`test_bulk_warm_up_without_a_curve_recorder_keyword_says_so`
+`test_bulk_warm_up_without_a_curve_recorder_keyword_says_so`,
+`test_a_query_with_no_prediction_is_skipped_not_reported`
 (`qt/tests/test_rwkv_scheduler.py`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`;
 `ts/routes/graphs/um-plus.test.ts`.

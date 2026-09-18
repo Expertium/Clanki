@@ -19720,3 +19720,90 @@ def test_bulk_warm_up_without_a_curve_recorder_keyword_says_so() -> None:
         )
 
     assert runtime.replays == 0
+
+
+def test_a_query_with_no_prediction_is_skipped_not_reported() -> None:
+    """A runtime with nothing to say about a review is not a runtime that
+    cannot report curves. RWKV-Instant's recorder skips such a row, so
+    RWKV-Curve's does too, and the loud error stays for the real case: a
+    prediction that has no curve field at all."""
+
+    curve_recorded: list[tuple[int, float]] = []
+
+    class _SilentQueryRuntime(_CacheRuntime):
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            if review_input.ease is None:
+                return RwkvReviewTransition()
+            return super().review(
+                review_input=review_input,
+                card_state=card_state,
+                note_state=note_state,
+                deck_state=deck_state,
+                preset_state=preset_state,
+                global_state=global_state,
+            )
+
+    backend = RwkvStatefulReviewerBackend(_SilentQueryRuntime())
+    backend.warm_up(
+        [_rwkv_answered_review_input(card_id=1, note_id=10, ease=3)],
+        review_ids=[41],
+        prediction_recorder=lambda review_id, value: None,
+        curve_recorder=lambda review_id, value: curve_recorded.append(
+            (review_id, value)
+        ),
+    )
+    assert curve_recorded == []
+
+    # but a prediction object with no curve field at all still says so
+    class _NoCurveFieldRuntime(_CacheRuntime):
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            if review_input.ease is None:
+                return RwkvReviewTransition(
+                    prediction=cast(Any, SimpleNamespace(retrievability=0.45))
+                )
+            return super().review(
+                review_input=review_input,
+                card_state=card_state,
+                note_state=note_state,
+                deck_state=deck_state,
+                preset_state=preset_state,
+                global_state=global_state,
+            )
+
+    backend = RwkvStatefulReviewerBackend(_NoCurveFieldRuntime())
+    with pytest.raises(rwkv_scheduler.RwkvCurveRecordingUnavailable):
+        backend.warm_up(
+            [_rwkv_answered_review_input(card_id=1, note_id=10, ease=3)],
+            review_ids=[41],
+            prediction_recorder=lambda review_id, value: None,
+            curve_recorder=lambda review_id, value: None,
+        )
+
+
+def _rwkv_answered_review_input(
+    *, card_id: int, note_id: int, ease: int
+) -> RwkvReviewInput:
+    return replace(
+        _rwkv_review_input(card_id=card_id, note_id=note_id),
+        is_query=False,
+        ease=ease,
+        duration_millis=1234,
+    )

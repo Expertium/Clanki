@@ -1368,8 +1368,15 @@ class RwkvStatefulReviewerBackend:
         answered review, read at this review's own elapsed time; the query
         above asks for exactly that. A card's first review has no such curve
         and gets no row, and no other algorithm's value stands in.
+
+        A query that produced no prediction at all is skipped, exactly as
+        RWKV-Instant's recorder skips it: that is a runtime with nothing to
+        say about this review, not a runtime that cannot report curves. The
+        error below is for the second case only.
         """
 
+        if prediction is None:
+            return
         curve = getattr(prediction, "curve_retrievability", _CURVE_VALUE_MISSING)
         if curve is _CURVE_VALUE_MISSING:
             raise RwkvCurveRecordingUnavailable(
