@@ -77,7 +77,6 @@ from aqt.utils import (
     getFile,
     getOnlyText,
     openHelp,
-    openLink,
     restoreGeom,
     restoreState,
     saveGeom,
@@ -1657,7 +1656,9 @@ title="{}" {}>{}</button>""".format(
         aqt.dialogs.open("About", self)
 
     def onDonate(self) -> None:
-        openLink(aqt.appDonate)
+        """Shows a small dialog instead of linking straight to Anki's own
+        support page (spec branding.support-window)."""
+        aqt.dialogs.open("Support", self)
 
     def onDocumentation(self) -> None:
         openHelp(HelpPage.INDEX)

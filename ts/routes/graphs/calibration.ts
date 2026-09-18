@@ -16,7 +16,7 @@ import { localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, axisRight, line, max, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
-import { algorithmName, ALGORITHM_COLOURS } from "./roc";
+import { ALGORITHM_COLOURS, algorithmName } from "./roc";
 
 /** Every tenth: the axes step by 0.1, not 0.2 (spec ui.stats-model-metrics). */
 export const axisTenths = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
