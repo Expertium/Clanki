@@ -1024,6 +1024,9 @@ class ReviewHeatmap:
         self._cache: dict[tuple[Any, ...], _RenderCache] = {}
         self._older_reviews: dict[Any, Any] = {}
         self._contents = _Contents()
+        # the collection whose per-deck counts were warmed up (see
+        # on_deck_browser_did_render)
+        self._warmed_collection: object | None = None
 
     def enabled(self) -> bool:
         col = self.mw.col
@@ -1072,6 +1075,37 @@ class ReviewHeatmap:
             self.render(view, current_deck_only)
         except Exception:
             return
+
+    def on_deck_browser_did_render(self, deck_browser: DeckBrowser) -> None:
+        """The first time a collection's deck list is drawn, prepare the
+        current deck's overview heatmap in the background, 2 s later.
+
+        The first overview heatmap of a session counts the older reviews of
+        every deck at once (`_older_reviews_by_deck`), which is about 0.6 s on
+        a collection of a million reviews, and the overview is drawn only
+        after it. Done here, before the user opens a deck, the first deck
+        opens as fast as the later ones. The work and its result are the ones
+        the overview would have made; only the moment moves."""
+        col = self.mw.col
+        if col is None or col is self._warmed_collection:
+            return
+        self._warmed_collection = col
+        self._schedule_warm_up()
+
+    def _schedule_warm_up(self) -> None:
+        from aqt.operations import QueryOp
+
+        def warm_up() -> None:
+            QueryOp(
+                parent=self.mw,
+                op=lambda _col: self.prepare(
+                    HeatmapView.overview, current_deck_only=True
+                ),
+                success=lambda _: None,
+            ).run_in_background()
+
+        # after start-up's own work on the collection, not in front of it
+        self.mw.progress.single_shot(2000, warm_up)
 
     def render_for_stats(self, period: int, whole_collection: bool) -> str:
         """The legacy stats screen: 1 month, 1 year or the whole history."""
@@ -1238,6 +1272,7 @@ def initialize(mw: AnkiQt) -> ReviewHeatmap:
     gui_hooks.overview_will_render_content.append(
         heatmap.on_overview_will_render_content
     )
+    gui_hooks.deck_browser_did_render.append(heatmap.on_deck_browser_did_render)
     gui_hooks.webview_did_receive_js_message.append(
         heatmap.on_webview_did_receive_js_message
     )
