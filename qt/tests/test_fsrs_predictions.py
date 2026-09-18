@@ -5,16 +5,14 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 import aqt.fsrs_predictions as predictions
-
-
-class _Presets:
-    def __init__(self, ids: list[int]) -> None:
-        self.deck_config_ids = ids
 
 
 class _Backend:
@@ -34,9 +32,15 @@ class _Backend:
         self._started = started
         self._release = release
 
-    def stale_fsrs_prediction_presets(self) -> _Presets:
+    def stale_fsrs_prediction_presets(self) -> list[int]:
+        """The SHAPE the generated backend really returns: the ids, not a
+        response message. The fake used to wrap them in an object with a
+        `deck_config_ids` field, which the real backend has never had, so
+        the pass read a field that did not exist, raised on its first line
+        and wrote nothing for two days."""
+
         self.presets_asked += 1
-        return _Presets(list(self._presets))
+        return list(self._presets)
 
     def refresh_fsrs_review_predictions(self, deck_config_id: int) -> int:
         began = time.monotonic()
@@ -50,7 +54,13 @@ class _Backend:
 
 def _mw(backend: _Backend, today: int = 3) -> SimpleNamespace:
     collection = SimpleNamespace(_backend=backend, sched=SimpleNamespace(today=today))
-    return SimpleNamespace(col=collection, pm=SimpleNamespace(profile={}))
+    warnings: list[object] = []
+    return SimpleNamespace(
+        col=collection,
+        pm=SimpleNamespace(profile={}),
+        taskman=SimpleNamespace(run_on_main=warnings.append),
+        reported_failures=warnings,
+    )
 
 
 def _quiet() -> tuple[threading.Event, threading.Event]:
@@ -58,6 +68,13 @@ def _quiet() -> tuple[threading.Event, threading.Event]:
     release = threading.Event()
     release.set()
     return started, release
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_failure_report() -> object:
+    predictions.reset_failure_report()
+    yield
+    predictions.reset_failure_report()
 
 
 # Pins spec/ui.md#ui.stats-fsrs-predictions-ready
@@ -159,3 +176,62 @@ def test_the_collection_is_free_between_presets() -> None:
     for (_, ended), (began, _) in zip(backend.spans, backend.spans[1:]):
         assert began >= ended
         assert began - ended >= predictions.BETWEEN_PRESETS_SECS / 2
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_the_fake_backend_returns_what_the_real_backend_returns() -> None:
+    """The fake's shape is checked against the generated backend's own.
+
+    The pass read `.deck_config_ids` off the result for two days. Every test
+    passed, because the fake had invented that field. A fake that is never
+    compared with the real thing pins nothing.
+    """
+
+    from anki._backend_generated import RustBackendGenerated as RustBackend
+
+    real = inspect.signature(RustBackend.stale_fsrs_prediction_presets)
+    fake = inspect.signature(_Backend.stale_fsrs_prediction_presets)
+    # a sequence of ids on both sides, never a message with a field on it
+    assert "Sequence[int]" in str(real.return_annotation)
+    assert "list[int]" in str(fake.return_annotation)
+    assert list(real.parameters) == list(fake.parameters) == ["self"]
+
+    assert (
+        inspect.signature(RustBackend.refresh_fsrs_review_predictions).return_annotation
+        == "int"
+    )
+    assert list(
+        inspect.signature(RustBackend.refresh_fsrs_review_predictions).parameters
+    ) == list(inspect.signature(_Backend.refresh_fsrs_review_predictions).parameters)
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_pass_that_fails_says_so() -> None:
+    class _BrokenBackend(_Backend):
+        def stale_fsrs_prediction_presets(self) -> list[int]:
+            self.presets_asked += 1
+            raise RuntimeError("the backend said no")
+
+    started, release = _quiet()
+    backend = _BrokenBackend(started, release)
+    mw = _mw(backend)
+    predictions.reset_failure_report()
+
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        pass
+
+    # it wrote nothing AND it said so: an empty series alone cannot be told
+    # apart from a collection that needs no pass
+    assert backend.calls == 0
+    assert len(mw.reported_failures) == 1
+    # the day is not recorded, so the pass tries again rather than counting
+    # a failure as today's upkeep
+    assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+    # a second failure in the same session does not warn again
+    mw.col.sched.today = 4
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        pass
+    assert len(mw.reported_failures) == 1
