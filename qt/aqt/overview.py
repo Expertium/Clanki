@@ -112,11 +112,13 @@ class Overview:
 
     def redraw_for_ui_mode(self) -> None:
         """Redraw after a Simple/Advanced switch without recomputing the due
-        counts (spec ui.mode-switch): the New/Learn/Due counts table depends
-        on the mode (spec ui.simple-mode-deck-counts), so the page is
-        redrawn from scheduler state already loaded, the same cheap way the
-        deck list's bottom row redraws in place."""
+        counts (spec ui.mode-switch): the New/Learn/Due counts table (spec
+        ui.simple-mode-deck-counts) and the bottom bar's Custom Study button
+        (spec ui.simple-mode-tools-hidden) both depend on the mode, so both
+        are redrawn from scheduler state already loaded, the same cheap way
+        the deck list's bottom row redraws in place."""
         self._renderPage()
+        self._renderBottom()
 
     def _retry_rwkv_counts(self) -> None:
         """RWKV-Instant has not scored the deck yet: ask again in 2 s, unless
@@ -387,9 +389,10 @@ class Overview:
         if is_dyn:
             links.append(["R", "refresh", tr.actions_rebuild()])
             links.append(["E", "empty", tr.studying_empty()])
-        else:
+        # Advanced-only (spec ui.simple-mode-tools-hidden)
+        elif self.mw.advanced_ui():
             links.append(["C", "studymore", tr.actions_custom_study()])
-            # links.append(["F", "cram", _("Filter/Cram")])
+        # links.append(["F", "cram", _("Filter/Cram")])
         if self.mw.col.sched.have_buried():
             links.append(["U", "unbury", tr.studying_unbury()])
         if not is_dyn:

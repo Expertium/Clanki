@@ -17481,6 +17481,7 @@ def _rwkv_cache_reviewer(
     rows[:] = cast(list[tuple[int, ...]], _benchmark_valid_historical_rows(rows))
     states = SchedulingStates()
     rwkv_retrievability_rows: list[tuple[int, float, str, int, str, int]] = []
+    review_prediction_rows: list[tuple[int, int, float, str, str]] = []
     saved_deck_configs: list[dict[str, object]] = []
 
     class DB:
@@ -17611,6 +17612,24 @@ def _rwkv_cache_reviewer(
                 existing[review_id] for review_id in sorted(existing)
             ]
 
+        def set_review_predictions(
+            self,
+            *,
+            algorithm: int,
+            source: str,
+            rows: Sequence[object],
+        ) -> None:
+            for row in rows:
+                review_prediction_rows.append(
+                    (
+                        int(algorithm),
+                        getattr(row, "revlog_id"),
+                        getattr(row, "prediction"),
+                        source,
+                        getattr(row, "sample_role", "final_fit"),
+                    )
+                )
+
     class Scheduler:
         def _timing_today(self) -> SimpleNamespace:
             return SimpleNamespace(days_elapsed=42, next_day_at=43 * 86_400)
@@ -17654,6 +17673,7 @@ def _rwkv_cache_reviewer(
         path=str(profile_folder / "collection.anki2"),
         fsrs_preset_for_card=lambda card_id: SimpleNamespace(id="1000"),
         rwkv_retrievability_rows=rwkv_retrievability_rows,
+        review_prediction_rows=review_prediction_rows,
         saved_deck_configs=saved_deck_configs,
     )
     mw = SimpleNamespace(
@@ -19474,3 +19494,318 @@ def test_the_startup_progress_text_names_no_internals() -> None:
         encoding="utf-8"
     )
     assert "Loading RWKV state cache" not in source
+
+
+class _CurveCacheRuntime(_CacheRuntime):
+    """A runtime that reports RWKV-Curve's value for a past review.
+
+    Its query answers carry `curve_retrievability`, and a card's FIRST query
+    carries none, as the model has no stored curve before a card's first
+    answer.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queried_cards: list[int] = []
+
+    def review(
+        self,
+        *,
+        review_input: RwkvReviewInput,
+        card_state: object | None,
+        note_state: object | None,
+        deck_state: object | None,
+        preset_state: object | None,
+        global_state: object | None,
+    ) -> RwkvReviewTransition:
+        if review_input.ease is None:
+            card_id = review_input.identity.card_id
+            seen = card_id in self.queried_cards
+            self.queried_cards.append(card_id)
+            return RwkvReviewTransition(
+                prediction=RwkvReviewPrediction(
+                    retrievability=0.45,
+                    curve_retrievability=0.62 if seen else None,
+                )
+            )
+        return super().review(
+            review_input=review_input,
+            card_state=card_state,
+            note_state=note_state,
+            deck_state=deck_state,
+            preset_state=preset_state,
+            global_state=global_state,
+        )
+
+
+def test_rwkv_calibration_recompute_records_the_curve_of_every_review(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    backend = RwkvStatefulReviewerBackend(_CurveCacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+
+    reviewer.mw.col.review_prediction_rows.clear()
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    # the card's first review has no stored curve before it, so it gets no
+    # row; the second review gets RWKV-Curve's own value, under RWKV-Curve's
+    # own algorithm id (spec ui.stats-model-metrics)
+    assert reviewer.mw.col.review_prediction_rows == [
+        (
+            int(rwkv_scheduler._RWKV_CURVE_ALGORITHM),
+            second_review,
+            pytest.approx(0.62),
+            "rwkv_curve_calibration_recompute",
+            rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
+        )
+    ]
+
+
+def test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    class _BackendWithoutCurveRecorder:
+        """A backend whose warm-up predates RWKV-Curve's recorder."""
+
+        def __init__(self) -> None:
+            self.replays: list[int] = []
+
+        def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
+            return RwkvBackendCacheSnapshot(
+                card_states={},
+                note_states={},
+                deck_states={},
+                preset_states={},
+                global_state=None,
+                runtime_state=None,
+            )
+
+        def restore_cache_snapshot(
+            self, snapshot: RwkvBackendCacheSnapshot
+        ) -> None: ...
+
+        def reset_cache_snapshot(self) -> None: ...
+
+        def warm_up(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            review_ids: Sequence[int] | None = None,
+            prediction_recorder: Any = None,
+            progress: Any = None,
+            snapshot_after_reviews: Sequence[int] = (),
+            snapshot_recorder: Any = None,
+        ) -> None:
+            self.replays.append(len(reviews))
+
+    backend = _BackendWithoutCurveRecorder()
+    set_reviewer_backend(cast(Any, backend))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    with pytest.raises(rwkv_scheduler.RwkvCurveRecordingUnavailable):
+        rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw)
+
+    # it refuses BEFORE the replay: the old guard skipped the recorder and
+    # then walked the whole history for minutes, writing nothing
+    assert backend.replays == []
+    assert reviewer.mw.col.review_prediction_rows == []
+
+
+def test_bulk_warm_up_is_handed_the_curve_recorder() -> None:
+    recorded: list[tuple[int, float]] = []
+    curve_recorded: list[tuple[int, float]] = []
+
+    class _BulkCurveRuntime:
+        def __init__(self) -> None:
+            self.curve_recorders: list[Any] = []
+
+        def warm_up_reviews(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            review_ids: Sequence[int] | None,
+            prediction_recorder: Any,
+            curve_recorder: Any = None,
+            progress: Any = None,
+        ) -> RwkvBackendCacheSnapshot:
+            self.curve_recorders.append(curve_recorder)
+            assert review_ids is not None
+            prediction_recorder(review_ids[0], 0.31)
+            if curve_recorder is not None:
+                curve_recorder(review_ids[0], 0.57)
+            return RwkvBackendCacheSnapshot(
+                card_states={1: b"card-1"},
+                note_states={10: b"note-10"},
+                deck_states={100: b"deck-100"},
+                preset_states={1000: b"preset-1000"},
+                global_state=b"global",
+                runtime_state=b"runtime",
+            )
+
+        def review(self, **kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up should replace per-review replay")
+
+    runtime = _BulkCurveRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    backend.warm_up(
+        [_rwkv_review_input(card_id=1, note_id=10)],
+        review_ids=[41],
+        prediction_recorder=lambda review_id, value: recorded.append(
+            (review_id, value)
+        ),
+        curve_recorder=lambda review_id, value: curve_recorded.append(
+            (review_id, value)
+        ),
+    )
+
+    assert recorded == [(41, 0.31)]
+    assert curve_recorded == [(41, 0.57)]
+    assert runtime.curve_recorders and runtime.curve_recorders[0] is not None
+
+
+def test_bulk_warm_up_without_a_curve_recorder_keyword_says_so() -> None:
+    class _BulkRuntimeWithoutCurve:
+        def __init__(self) -> None:
+            self.replays = 0
+
+        def warm_up_reviews(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            review_ids: Sequence[int] | None,
+            prediction_recorder: Any,
+            progress: Any = None,
+        ) -> RwkvBackendCacheSnapshot:
+            self.replays += 1
+            raise AssertionError("the bulk warm-up must not run")
+
+        def review(self, **kwargs: object) -> RwkvReviewTransition:
+            raise AssertionError("bulk warm-up should replace per-review replay")
+
+    runtime = _BulkRuntimeWithoutCurve()
+    backend = RwkvStatefulReviewerBackend(runtime)
+
+    with pytest.raises(rwkv_scheduler.RwkvCurveRecordingUnavailable):
+        backend.warm_up(
+            [_rwkv_review_input(card_id=1, note_id=10)],
+            review_ids=[41],
+            prediction_recorder=lambda review_id, value: None,
+            curve_recorder=lambda review_id, value: None,
+        )
+
+    assert runtime.replays == 0
+
+
+def test_a_query_with_no_prediction_is_skipped_not_reported() -> None:
+    """A runtime with nothing to say about a review is not a runtime that
+    cannot report curves. RWKV-Instant's recorder skips such a row, so
+    RWKV-Curve's does too, and the loud error stays for the real case: a
+    prediction that has no curve field at all."""
+
+    curve_recorded: list[tuple[int, float]] = []
+
+    class _SilentQueryRuntime(_CacheRuntime):
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            if review_input.ease is None:
+                return RwkvReviewTransition()
+            return super().review(
+                review_input=review_input,
+                card_state=card_state,
+                note_state=note_state,
+                deck_state=deck_state,
+                preset_state=preset_state,
+                global_state=global_state,
+            )
+
+    backend = RwkvStatefulReviewerBackend(_SilentQueryRuntime())
+    backend.warm_up(
+        [_rwkv_answered_review_input(card_id=1, note_id=10, ease=3)],
+        review_ids=[41],
+        prediction_recorder=lambda review_id, value: None,
+        curve_recorder=lambda review_id, value: curve_recorded.append(
+            (review_id, value)
+        ),
+    )
+    assert curve_recorded == []
+
+    # but a prediction object with no curve field at all still says so
+    class _NoCurveFieldRuntime(_CacheRuntime):
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            if review_input.ease is None:
+                return RwkvReviewTransition(
+                    prediction=cast(Any, SimpleNamespace(retrievability=0.45))
+                )
+            return super().review(
+                review_input=review_input,
+                card_state=card_state,
+                note_state=note_state,
+                deck_state=deck_state,
+                preset_state=preset_state,
+                global_state=global_state,
+            )
+
+    backend = RwkvStatefulReviewerBackend(_NoCurveFieldRuntime())
+    with pytest.raises(rwkv_scheduler.RwkvCurveRecordingUnavailable):
+        backend.warm_up(
+            [_rwkv_answered_review_input(card_id=1, note_id=10, ease=3)],
+            review_ids=[41],
+            prediction_recorder=lambda review_id, value: None,
+            curve_recorder=lambda review_id, value: None,
+        )
+
+
+def _rwkv_answered_review_input(
+    *, card_id: int, note_id: int, ease: int
+) -> RwkvReviewInput:
+    return replace(
+        _rwkv_review_input(card_id=card_id, note_id=note_id),
+        is_query=False,
+        ease=ease,
+        duration_millis=1234,
+    )

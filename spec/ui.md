@@ -108,7 +108,39 @@ need to see split out.
 `test_rwkv_deck_count_update_sums_learn_into_due_in_simple_mode`
 (`qt/tests/test_deckbrowser.py`); `test_overview_table_sums_learn_into_due_in_simple_mode`,
 `test_overview_table_keeps_learn_and_due_separate_in_advanced_mode`,
-`test_overview_mode_redraw_repaints_the_counts_table`
+`test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar`
+(`qt/tests/test_overview.py`).
+
+## ui.simple-mode-tools-hidden
+
+Given Simple mode (`ui.mode-switch`), the Tools menu hides Create Filtered
+Deck..., Check Database, Check Media, Empty Cards... and Manage Note Types.
+Study Deck..., Add-ons, Check for Updates and Preferences stay in both
+modes; an installed add-on's own menu entries are untouched (an add-on may
+add entries anywhere in the menu; hiding them is not ours to do). The deck
+overview's bottom bar loses the Custom Study button in Simple mode; Options
+and Description stay in both modes. Switching the mode updates both places
+in place, the same cheap way as the deck list's bottom row
+(`ui.mode-switch`): no due-count recompute. A hidden item is hidden, not
+disabled — its keyboard shortcut (`c` for Custom Study) still runs it, same
+as `ui.editor-simple-view`'s hidden editor buttons.
+
+Check for Updates stays visible in both modes as-is; two known, separate
+defects in the check itself (`spec/updates.md`,
+`updates.release-source` and `updates.dev-build-always-offered`) are out of
+scope for this entry.
+
+**Why:** Andrew, 2026-09-17: these are power-user tools a Simple-mode user
+does not need and should not be confused by; Custom Study is an
+Advanced-only feature of the overview screen for the same reason. Simple
+mode hides items rather than replacing them, keeping it a strict subset of
+Advanced (`CLAUDE.md`, "Simple mode is a subset of Advanced").
+
+**Pinned by:** `test_tools_menu_hides_power_user_items_in_simple_mode`,
+`test_tools_menu_keeps_shared_items_in_both_modes`,
+`test_switching_the_mode_updates_the_tools_menu`
+(`qt/tests/test_ui_mode.py`); `test_overview_bottom_bar_hides_custom_study_in_simple_mode`,
+`test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar`
 (`qt/tests/test_overview.py`).
 
 ## ui.editor-simple-view
@@ -320,18 +352,30 @@ same time waits, and the "Processing..." window appeared during reviews.
 ## ui.card-info-rwkv-curve
 
 Given a card whose preset runs RWKV-Curve, card info's forgetting-curve chart
-shows only RWKV-Curve's own curve: the curve RWKV stored for the card at its
-last answered review, from that review to now and then as a dashed preview.
-It draws no FSRS-7 segments for the reviews before it, since RWKV's past
-curves are not stored. The chart's tooltip, card info's "Stability" row and
-the latest review's stability in the page data show that curve's S90 (where
-it meets 90% recall), not the S90 stored on the card. While RWKV has no
-curve for the card (its state still loading, busy, or no answered review),
-the chart shows no data and card info has no "Stability" row. The curve
-reaches the page as recall at 0 and at 300 elapsed times evenly spaced in
-log time from one minute to 100 years, joined by straight lines. The chart
-starts at the card's latest answered review, whether or not FSRS-7 has a
-memory state for the card (`ui.card-info-curve-messages`).
+shows only RWKV-Curve's own curves. **The rule:** no FSRS-7 segment and no
+FSRS-7 value is ever drawn on such a card, whatever RWKV has. FSRS-7's
+parameters change nothing on the chart.
+
+**A limitation, not a decision:** the chart today draws ONE segment, from the
+card's last answered review onward, and nothing for the reviews before it.
+The full history is meant to be drawn. Clanki keeps one RWKV curve per card,
+the curve the model held at that card's last answered review, and keeps no
+curve for any earlier review, so there is nothing to draw the earlier
+segments from. What would remove it: storing the curve the model held at
+every review. The per-review values the RWKV replay records
+(`ui.stats-model-metrics`) are ONE recall number per review, not a curve, so
+they are enough for the model-quality graphs and not enough for a segment.
+
+The drawn segment runs from the last answered review to now and then as a
+dashed preview. The chart's tooltip, card info's "Stability" row and the
+latest review's stability in the page data show that curve's S90 (where it
+meets 90% recall), not the S90 stored on the card. While RWKV has no curve
+for the card (its state still loading, busy, or no answered review), the
+chart shows no data and card info has no "Stability" row. A curve reaches
+the page as recall at 0 and at 300 elapsed times evenly spaced in log time
+from one minute to 100 years, joined by straight lines. The chart draws
+whether or not FSRS-7 has a memory state for the card
+(`ui.card-info-curve-messages`).
 
 Card info for such a card shows no other FSRS-7 value either: no
 "Difficulty" row, and its one "Retrievability" row is the curve's recall
@@ -346,7 +390,13 @@ RWKV-Curve as for FSRS-7; the Stability row and the tooltip show the drawn
 curve's S90; with no RWKV curve, hide the segment; never mix two algorithms
 in one display, in general (so no FSRS-7 segments or values in an
 RWKV-Curve card's info); and the older reviews of an RWKV-Curve card show
-no FSRS-7 S90.
+no FSRS-7 S90. He also asked, on the same day, that the forgetting curve
+"always shows the full history of a card, all reviews", for both algorithms,
+and on 2026-09-16, shown the one-segment chart: "that is absolutely not
+intended whatsoever". His no-mixing rule forbids borrowing FSRS-7's curve;
+it says nothing about RWKV's own, and the empty history does not follow from
+it. This entry stated the two as one sentence, so a missing feature read as
+a decision.
 
 **Pinned by:** `card_curve_points_are_the_curve_and_its_s90`
 (`rslib/src/rwkv/mod.rs`);
@@ -359,10 +409,10 @@ no FSRS-7 S90.
 and R, and no difficulty", "an RWKV-Curve card without a curve shows no
 stability and a calculating R" (`ts/routes/card-info/lib.test.ts`);
 "rwkvRecallAt interpolates between the
-curve's points", "an RWKV-Curve card's chart starts at its last review: no
-FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
-curve and S90", "without an RWKV curve yet the chart stops at the last
-review" (`ts/routes/card-info/forgetting-curve.test.ts`).
+curve's points", "no FSRS-7 value reaches an RWKV-Curve card's chart",
+"after the last review an RWKV-Curve card follows RWKV's curve and S90",
+"without an RWKV curve yet the chart stops at the last review"
+(`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## ui.card-info-curve-messages
 
@@ -690,7 +740,10 @@ value is recorded by the same replay that records RWKV-Instant's: the
 warm-up already computes the curve head at every review, and its prediction
 of a review is the curve the replay had stored at that card's PREVIOUS
 answered review, at that review's own elapsed time. A card's first review
-has no such curve and gets no row; nothing is substituted for it.
+has no such curve and gets no row; nothing is substituted for it. RWKV-Curve's
+value goes to RWKV-Curve's own recorder, and a replay that cannot report that
+value does not run at all: the pass stops before it starts and says why,
+rather than walking the whole history and recording nothing.
 
 Each algorithm's rows live under its own name. RWKV-Curve's are in the
 generic `review_predictions` table, which is keyed by algorithm as well as
@@ -840,7 +893,13 @@ user's own rebuild, never to opening a page.
 (`rslib/src/rwkv/mod.rs`),
 `the_same_reviews_always_give_the_same_interval`,
 `the_parallel_bootstrap_draws_what_one_thread_drew`
-(`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
+(`rslib/src/stats/review_metrics.rs`);
+`test_rwkv_calibration_recompute_records_the_curve_of_every_review`,
+`test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve`,
+`test_bulk_warm_up_is_handed_the_curve_recorder`,
+`test_bulk_warm_up_without_a_curve_recorder_keyword_says_so`,
+`test_a_query_with_no_prediction_is_skipped_not_reported`
+(`qt/tests/test_rwkv_scheduler.py`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`;
 `ts/routes/graphs/um-plus.test.ts`.
 
@@ -908,6 +967,12 @@ graphs then show FSRS-7 as absent with its own reason, "its predictions for
 these reviews are being computed", and never draw a value that the current
 parameters did not produce. No other algorithm is drawn in its place.
 
+A pass that fails says so: Clanki shows one message in that session naming
+what could not be stored, and does not count that day as done, so the pass
+tries again. An empty FSRS-7 series on its own cannot be told apart from a
+series still being computed, and a pass that reports no progress reports no
+failure either.
+
 The stored rows are validation folds, so nothing that produced a row had
 seen the review it predicts. The rows written while answering carry a
 different sample role, and the graph takes the first role of its list that
@@ -929,7 +994,9 @@ request 125, which is why it runs in the background and at most once a day
 rather than while a page is open.
 
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
-`test_the_collection_is_free_between_presets`
+`test_the_collection_is_free_between_presets`,
+`test_a_pass_that_fails_says_so`,
+`test_the_fake_backend_returns_what_the_real_backend_returns`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,
 `another_presets_predictions_survive_a_parameter_change`
