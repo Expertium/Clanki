@@ -1084,7 +1084,7 @@ class AddonsDialog(QDialog):
         self.redrawAddons()
 
     def onGetAddons(self) -> None:
-        obj = GetAddons(self)
+        obj = GetAddons(self, self.mgr)
         if obj.ids:
             download_addons(
                 self, self.mgr, obj.ids, self.after_downloading, force_enable=True
@@ -1143,10 +1143,12 @@ class AddonsDialog(QDialog):
 
 
 class GetAddons(QDialog):
-    def __init__(self, dlg: AddonsDialog) -> None:
-        QDialog.__init__(self, dlg)
-        self.addonsDlg = dlg
-        self.mgr = dlg.mgr
+    def __init__(self, parent: QWidget, mgr: AddonManager) -> None:
+        """`parent` need not be the Add-ons list window (spec
+        ui.get-decks-and-get-addons): the deck list's Get Add-ons button
+        opens this dialog directly, without opening that window first."""
+        QDialog.__init__(self, parent)
+        self.mgr = mgr
         self.mw = self.mgr.mw
         self.ids: list[int] = []
         self.form = aqt.forms.getaddons.Ui_Dialog()

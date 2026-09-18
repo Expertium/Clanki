@@ -207,6 +207,70 @@ def test_collapse_reloads_when_the_table_gets_a_script(browser, monkeypatch):
     assert scripts == [] and reloads == [True]
 
 
+# Pins spec/ui.md#ui.get-decks-and-get-addons.
+def test_deck_list_shows_get_addons_in_advanced_mode_only(browser):
+    browser.mw = SimpleNamespace(advanced_ui=lambda: False)
+    simple = browser._buttons_html()
+    assert 'pycmd("get_addons")' not in simple
+    assert 'pycmd("shared")' in simple
+
+    browser.mw = SimpleNamespace(advanced_ui=lambda: True)
+    advanced = browser._buttons_html()
+    assert 'pycmd("get_addons")' in advanced
+
+
+def test_get_addons_button_opens_the_existing_install_dialog(browser, monkeypatch):
+    """The deck list's Get Add-ons button opens the same GetAddons dialog as
+    Tools > Add-ons > Get Add-ons, unchanged (spec
+    ui.get-decks-and-get-addons)."""
+    import aqt.addons as addons_module
+
+    calls: list[tuple] = []
+
+    class FakeGetAddons:
+        def __init__(self, parent: object, mgr: object) -> None:
+            calls.append((parent, mgr))
+            self.ids = [123]
+
+    downloaded: list[tuple] = []
+    monkeypatch.setattr(addons_module, "GetAddons", FakeGetAddons)
+    monkeypatch.setattr(
+        addons_module,
+        "download_addons",
+        lambda parent, mgr, ids, on_done, force_enable=False: downloaded.append(
+            (parent, mgr, ids, force_enable)
+        ),
+    )
+    mw = SimpleNamespace(addonManager="mgr-stub")
+    browser.mw = mw
+
+    browser._on_get_addons()
+
+    assert calls == [(mw, "mgr-stub")]
+    assert downloaded == [(mw, "mgr-stub", [123], True)]
+
+
+def test_get_addons_button_does_nothing_when_no_code_was_entered(browser, monkeypatch):
+    import aqt.addons as addons_module
+
+    class FakeGetAddons:
+        def __init__(self, parent: object, mgr: object) -> None:
+            self.ids = []
+
+    downloaded: list[tuple] = []
+    monkeypatch.setattr(addons_module, "GetAddons", FakeGetAddons)
+    monkeypatch.setattr(
+        addons_module,
+        "download_addons",
+        lambda *args, **kwargs: downloaded.append((args, kwargs)),
+    )
+    browser.mw = SimpleNamespace(addonManager="mgr-stub")
+
+    browser._on_get_addons()
+
+    assert downloaded == []
+
+
 # Pins spec/ui.md#ui.simple-mode-deck-counts.
 def test_deck_list_header_hides_learn_column_in_simple_mode(browser, monkeypatch):
     from aqt.utils import tr
