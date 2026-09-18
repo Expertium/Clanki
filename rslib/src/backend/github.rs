@@ -50,6 +50,38 @@ fn find_platform_installer_asset<'a>(
     })
 }
 
+/// Fetches the raw release JSON from `url`. A repository with zero releases
+/// is reported the same way as "no update available" (via `no_updates_msg`),
+/// never as an error: GitHub 404s `/releases/latest` and 200s `/releases`
+/// with `[]` when there is nothing to return.
+async fn fetch_release_info(
+    client: &reqwest::Client,
+    url: &str,
+    include_prerelease: bool,
+    no_updates_msg: &str,
+) -> Result<Value> {
+    let response = client
+        .get(url)
+        .header("User-Agent", user_agent())
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(reqwest_error_to_anki_error)?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        invalid_input!("{}", no_updates_msg);
+    }
+    let response = response
+        .error_for_status()
+        .map_err(reqwest_error_to_anki_error)?;
+    if include_prerelease {
+        let json: Value = response.json().await?;
+        let releases = json.as_array().or_invalid("expected an array")?;
+        Ok(releases.first().or_invalid(no_updates_msg)?.clone())
+    } else {
+        Ok(response.json().await?)
+    }
+}
+
 fn release_is_downloaded(filename: &str, checksum: &str) -> Result<bool> {
     let output_path = release_path(filename)?;
     if output_path.exists() {
@@ -83,24 +115,13 @@ impl BackendGithubService for Backend {
             LATEST_RELEASE_URL
         };
         self.runtime_handle().block_on(async {
-            let response = self
-                .web_client()
-                .get(url)
-                .header("User-Agent", user_agent())
-                .timeout(Duration::from_secs(60))
-                .send()
-                .await
-                .map_err(reqwest_error_to_anki_error)?
-                .error_for_status()
-                .map_err(reqwest_error_to_anki_error)?;
-            let release_info: Value;
-            if input.include_prerelease {
-                let json: Value = response.json().await?;
-                let releases = json.as_array().or_invalid("expected an array")?;
-                release_info = releases.first().or_invalid("no releases found")?.clone();
-            } else {
-                release_info = response.json().await?;
-            }
+            let release_info = fetch_release_info(
+                &self.web_client(),
+                url,
+                input.include_prerelease,
+                &no_updates_msg,
+            )
+            .await?;
             let tag_name = release_info["tag_name"]
                 .as_str()
                 .or_invalid("release tag not found")?;
@@ -171,8 +192,114 @@ impl BackendGithubService for Backend {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use wiremock::matchers::method;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
 
     use super::*;
+
+    const NO_UPDATES: &str = "No updates available.";
+
+    fn assert_is_no_updates_error(err: AnkiError) {
+        match err {
+            AnkiError::InvalidInput { source } => assert_eq!(source.message(), NO_UPDATES),
+            other => panic!("expected the \"no updates\" InvalidInput error, got {other:?}"),
+        }
+    }
+
+    /// Pins spec/updates.md#updates.dev-build-always-offered's sibling rule
+    /// in updates.release-source: a repository with zero releases is
+    /// reported as "no update available", not as an error. GitHub 404s
+    /// `/releases/latest` when there are no releases at all.
+    #[tokio::test]
+    async fn no_releases_at_all_is_reported_as_no_updates() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let err = fetch_release_info(
+            &reqwest::Client::new(),
+            &mock_server.uri(),
+            false,
+            NO_UPDATES,
+        )
+        .await
+        .unwrap_err();
+        assert_is_no_updates_error(err);
+    }
+
+    /// Same rule, for the `include_prerelease` path: GitHub 200s `/releases`
+    /// with an empty array instead of 404ing.
+    #[tokio::test]
+    async fn empty_releases_array_is_reported_as_no_updates() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&mock_server)
+            .await;
+
+        let err = fetch_release_info(
+            &reqwest::Client::new(),
+            &mock_server.uri(),
+            true,
+            NO_UPDATES,
+        )
+        .await
+        .unwrap_err();
+        assert_is_no_updates_error(err);
+    }
+
+    /// A real failure must still surface as an error and must NOT be
+    /// reported as "no update available" — only the absence of releases is
+    /// special-cased.
+    #[tokio::test]
+    async fn other_failures_are_not_reported_as_no_updates() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let err = fetch_release_info(
+            &reqwest::Client::new(),
+            &mock_server.uri(),
+            false,
+            NO_UPDATES,
+        )
+        .await
+        .unwrap_err();
+        assert!(!matches!(
+            &err,
+            AnkiError::InvalidInput { source } if source.message() == NO_UPDATES
+        ));
+    }
+
+    /// Sanity check that the refactor to extract [fetch_release_info] kept
+    /// the ordinary, non-empty case working.
+    #[tokio::test]
+    async fn returns_the_first_release_when_prereleases_are_included() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "tag_name": "26.10" },
+                { "tag_name": "26.09" },
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let release_info = fetch_release_info(
+            &reqwest::Client::new(),
+            &mock_server.uri(),
+            true,
+            NO_UPDATES,
+        )
+        .await
+        .unwrap();
+        assert_eq!(release_info["tag_name"].as_str(), Some("26.10"));
+    }
 
     /// Pins spec/updates.md#updates.release-source: Clanki must never offer
     /// another project's releases as an update to itself.
