@@ -107,6 +107,10 @@ qt-misc-rwkv-curve-grade-now-skipped =
         [one] { $cards } card was not graded: RWKV-Curve has no intervals for it yet.
        *[other] { $cards } cards were not graded: RWKV-Curve has no intervals for them yet.
     }
+# Shown when the automatic pass that stores FSRS-7's predictions of past
+# reviews fails. Without it the model-quality graphs have no FSRS-7 series,
+# and an empty series alone does not say that anything went wrong.
+qt-misc-fsrs-predictions-pass-failed = Clanki could not store FSRS-7's predictions of your past reviews, so the model comparison graphs cannot show FSRS-7. The reason is in the log file.
 qt-misc-rwkv-model-missing = The RWKV model file is missing or does not load, so RWKV cannot schedule your cards. Reinstall Clanki, or choose FSRS-7 as the algorithm in deck options (Advanced mode).
 
 ## deprecated- these strings will be removed in the future, and do not need
