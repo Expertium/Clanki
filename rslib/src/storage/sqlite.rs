@@ -818,7 +818,9 @@ mod sort_field_index_test {
         );
 
         // a collection that arrives without the index gets it at the next open
-        col.storage.db.execute_batch("drop index ix_notes_sfld_nocase;")?;
+        col.storage
+            .db
+            .execute_batch("drop index ix_notes_sfld_nocase;")?;
         col.storage.ensure_sort_field_index()?;
         let exists: bool = col.storage.db.query_row(
             "select exists(select 1 from sqlite_master where type = 'index' and name = ?)",
@@ -830,4 +832,3 @@ mod sort_field_index_test {
         Ok(())
     }
 }
-

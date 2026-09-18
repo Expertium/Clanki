@@ -3,11 +3,7 @@
 
 import { expect, test } from "vitest";
 
-import {
-    ADVANCED_ONLY_EDITOR_BUTTONS,
-    EDITOR_BUTTONS,
-    editorButtonsForMode,
-} from "./ui-mode";
+import { ADVANCED_ONLY_EDITOR_BUTTONS, EDITOR_BUTTONS, editorButtonsForMode } from "./ui-mode";
 
 // Pins spec/ui.md#ui.editor-simple-view: the list Simple mode shows.
 test("Simple mode shows only the Simple editor buttons, in toolbar order", () => {

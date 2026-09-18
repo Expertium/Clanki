@@ -78,7 +78,7 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
         await page.getByRole("button", { name: "Simple", exact: true }).click();
         await expect(page.getByRole("button", { name: "Optimize All Presets" })).toBeVisible();
         await expect(
-            page.locator('[role="button"][aria-label="FSRS Parameters"]'),
+            page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]"),
         ).toHaveCount(0);
     } finally {
         await setAdvancedUi(page, false);
