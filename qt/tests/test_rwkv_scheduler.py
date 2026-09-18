@@ -6533,7 +6533,7 @@ def test_rwkv_delta_store_reuses_final_checkpoint_as_snapshot(
     assert metadata["checkpoints"] == [checkpoint_entry]
 
 
-def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
+def test_rwkv_delta_store_prune_removes_unreachable_entity_states(
     tmp_path: Path,
 ) -> None:
     store_path = tmp_path / "state.sqlite3"
@@ -6549,18 +6549,19 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
               id integer primary key,
               parent_id integer
             );
-            create table segment_state_chunks (
+            create table entity_states (
               id integer primary key,
               segment_id integer not null,
-              chunk_index integer not null,
-              state_delta blob not null
+              kind integer not null,
+              entity_id integer not null,
+              state blob
             );
             insert into store_metadata values ('generation', 'generation');
             insert into segments values (1, null), (2, 1), (3, null);
-            insert into segment_state_chunks values
-              (1, 1, 0, X'01'),
-              (2, 2, 0, X'02'),
-              (3, 3, 0, X'03');
+            insert into entity_states values
+              (1, 1, 0, 10, X'01'),
+              (2, 2, 0, 11, X'02'),
+              (3, 3, 0, 12, X'03');
             """
         )
 
@@ -6576,7 +6577,7 @@ def test_rwkv_delta_store_prune_removes_unreachable_state_chunks(
             (2,),
         ]
         assert connection.execute(
-            "select segment_id from segment_state_chunks order by segment_id"
+            "select segment_id from entity_states order by segment_id"
         ).fetchall() == [(1,), (2,)]
 
 
@@ -19494,6 +19495,87 @@ def test_the_startup_progress_text_names_no_internals() -> None:
         encoding="utf-8"
     )
     assert "Loading RWKV state cache" not in source
+
+
+def _state_store_at_schema(profile_folder: Path, version: int) -> None:
+    cache_dir = profile_folder / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(f"pragma user_version = {version}")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _startup_window_words(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_folder: Path,
+) -> tuple[str, str]:
+    captured: dict[str, object] = {}
+
+    class Taskman:
+        def run_on_main(self, callback: Callable[[], None]) -> None:
+            callback()
+
+        def with_progress(
+            self,
+            task: Callable[[], bool],
+            on_done: Callable[[Future[bool]], None],
+            **kwargs: object,
+        ) -> None:
+            captured.update(kwargs)
+
+    mw = SimpleNamespace(
+        taskman=Taskman(),
+        pm=SimpleNamespace(profileFolder=lambda: str(profile_folder)),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache",
+        lambda _mw, *, progress=None: True,
+    )
+    rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
+    return cast(str, captured["title"]), cast(str, captured["label"])
+
+
+# Pins spec/scheduling.md#sched.rwkv-lazy-state-upgrade-window
+def test_only_the_one_time_upgrade_gets_the_one_time_words(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aqt.utils import tr
+
+    # a store in the old format: the start-up converts it once, and says so
+    old = tmp_path / "old"
+    _state_store_at_schema(old, 4)
+    assert rwkv_scheduler.rwkv_state_cache_store_needs_upgrade(
+        SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(old)))
+    )
+    title, label = _startup_window_words(monkeypatch, old)
+    assert title == tr.qt_misc_rwkv_state_upgrade_title()
+    assert "reorganising" in label
+    assert label == tr.qt_misc_rwkv_state_upgrade_label()
+
+    # a store already converted: the ordinary start-up words, unchanged.
+    # The two paths shared one string until the lazy load arrived, so a
+    # later change could merge them again without anyone noticing.
+    new = tmp_path / "new"
+    _state_store_at_schema(new, 5)
+    assert not rwkv_scheduler.rwkv_state_cache_store_needs_upgrade(
+        SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(new)))
+    )
+    title, label = _startup_window_words(monkeypatch, new)
+    assert title == tr.qt_misc_rwkv_startup_title() == "Starting"
+    assert label == tr.qt_misc_rwkv_startup_label()
+
+    # and a profile with no store at all is not an upgrade either
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not rwkv_scheduler.rwkv_state_cache_store_needs_upgrade(
+        SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(empty)))
+    )
 
 
 class _CurveCacheRuntime(_CacheRuntime):

@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = if args.resident_state {
         StateSnapshot::default()
     } else {
-        StateSnapshot::from_inference(&inference)
+        StateSnapshot::from_inference(&mut inference)
     };
     let snapshot_ms = elapsed_ms(snapshot_start);
 
@@ -1019,8 +1019,8 @@ struct StateSnapshot {
 }
 
 impl StateSnapshot {
-    fn from_inference(inference: &RwkvInference) -> Self {
-        let snapshot = inference.warm_up_snapshot();
+    fn from_inference(inference: &mut RwkvInference) -> Self {
+        let snapshot = inference.warm_up_snapshot().unwrap();
         Self {
             card: snapshot.card_states.into_iter().collect(),
             note: snapshot.note_states.into_iter().collect(),
