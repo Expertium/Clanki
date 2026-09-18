@@ -110,6 +110,14 @@ class Overview:
         if self._refresh_needed:
             self.refresh()
 
+    def redraw_for_ui_mode(self) -> None:
+        """Redraw after a Simple/Advanced switch without recomputing the due
+        counts (spec ui.mode-switch): the New/Learn/Due counts table depends
+        on the mode (spec ui.simple-mode-deck-counts), so the page is
+        redrawn from scheduler state already loaded, the same cheap way the
+        deck list's bottom row redraws in place."""
+        self._renderPage()
+
     def _retry_rwkv_counts(self) -> None:
         """RWKV-Instant has not scored the deck yet: ask again in 2 s, unless
         RWKV cannot run (spec sched.rwkv-instant-waits)."""
@@ -321,13 +329,37 @@ class Overview:
 </tr>
 """
 
+        if self.mw.advanced_ui():
+            rows = (
+                number_row(tr.actions_new(), "new-count", counts[0], buried_new)
+                + number_row(
+                    tr.scheduling_learning(), "learn-count", counts[1], buried_learning
+                )
+                + number_row(
+                    tr.studying_to_review(), "review-count", counts[2], buried_review
+                )
+            )
+        else:
+            # Simple mode shows one Due row that already includes Learn
+            # (spec ui.simple-mode-deck-counts); only the display is
+            # summed, self.mw.col.sched.counts() itself stays untouched.
+            due_count = (
+                counts[2] if isinstance(counts[2], str) else counts[2] + learning_count
+            )
+            rows = number_row(
+                tr.actions_new(), "new-count", counts[0], buried_new
+            ) + number_row(
+                tr.studying_to_review(),
+                "review-count",
+                due_count,
+                buried_review + buried_learning,
+            )
+
         return f"""
 <table width=400 cellpadding=5>
 <tr><td align=center valign=top>
 <table cellspacing=5>
-{number_row(tr.actions_new(), "new-count", counts[0], buried_new)}
-{number_row(tr.scheduling_learning(), "learn-count", counts[1], buried_learning)}
-{number_row(tr.studying_to_review(), "review-count", counts[2], buried_review)}
+{rows}
 </table>
 </td><td align=center>
 {but("study", tr.studying_study_now(), id="study", extra=" autofocus")}</td></tr></table>"""

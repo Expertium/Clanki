@@ -160,7 +160,10 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
     mw.deckBrowser.redraw_for_ui_mode.assert_not_called()
 
 
-def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
+def test_deck_browser_mode_redraw_updates_the_bottom_bar_and_the_tree() -> None:
+    """Pins spec/ui.md#ui.simple-mode-deck-counts: the tree's New/Learn/Due
+    columns depend on the mode too, so the mode redraw now updates both the
+    bottom bar and the tree, each in place when it can."""
     browser = cast(
         Any,
         SimpleNamespace(
@@ -168,20 +171,24 @@ def test_deck_browser_mode_redraw_only_draws_the_bottom_bar() -> None:
             _renderPage=MagicMock(),
             _drawButtons=MagicMock(),
             _redraw_buttons_in_place=MagicMock(return_value=False),
+            _redraw_tree_in_place=MagicMock(return_value=False),
             refresh=MagicMock(),
         ),
     )
     DeckBrowser.redraw_for_ui_mode(browser)
-    # the page with the tree on screen does not read the mode
     browser._drawButtons.assert_called_once()
-    browser._renderPage.assert_not_called()
+    browser._redraw_tree_in_place.assert_called_once()
+    browser._renderPage.assert_called_once_with(reuse=True)
     browser.refresh.assert_not_called()
 
-    # the buttons swapped in the open bar: no drawing
+    # both swap in place: no drawing, no page reload
     browser._drawButtons.reset_mock()
+    browser._renderPage.reset_mock()
     browser._redraw_buttons_in_place.return_value = True
+    browser._redraw_tree_in_place.return_value = True
     DeckBrowser.redraw_for_ui_mode(browser)
     browser._drawButtons.assert_not_called()
+    browser._renderPage.assert_not_called()
 
     # nothing rendered yet: a normal refresh
     browser = cast(
@@ -209,6 +216,9 @@ def test_mode_switch_swaps_the_deck_list_buttons_in_place() -> None:
         browser.mw = mw
         browser.bottom = BottomBar(mw, web)
         browser._render_data = cast(Any, object())
+        # this test is scoped to the bottom bar; the tree's own in-place
+        # redraw (spec ui.simple-mode-deck-counts) is exercised separately
+        browser._redraw_tree_in_place = MagicMock(return_value=True)  # type: ignore[method-assign]
         web._bridge_context = DeckBrowserBottomBar(browser)
         return browser, web
 

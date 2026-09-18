@@ -12913,6 +12913,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
     tree = SimpleNamespace(children=[pending_scope, ready_scope])
     scripts: list[str] = []
     browser = DeckBrowser.__new__(DeckBrowser)
+    browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     browser.web = SimpleNamespace(eval=scripts.append)
     browser._render_data = SimpleNamespace(tree=tree)
     browser._rwkv_pending_deck_ids = browser._deck_ids_in_rwkv_scopes(tree, [10])
@@ -12988,6 +12989,7 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
             v3_scheduler=lambda: True,
         ),
         button=lambda *args, **kwargs: "",
+        advanced_ui=lambda: True,
     )
     overview._rwkv_counts_pending = True
 

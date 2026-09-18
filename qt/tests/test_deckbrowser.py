@@ -24,6 +24,7 @@ def browser(monkeypatch: pytest.MonkeyPatch):
     browser._rwkv_pending_deck_ids = set()
     browser._pending_collapse = {}
     browser._rwkv_count_generation = 0
+    browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     return browser
 
 
@@ -101,11 +102,12 @@ def _collapsible(browser, monkeypatch):
     browser.web = SimpleNamespace(eval=scripts.append)
     browser._renderPage = lambda reuse=False: reloads.append(reuse)
     browser.mw = SimpleNamespace(
+        advanced_ui=lambda: True,
         col=SimpleNamespace(
             decks=SimpleNamespace(
                 find_deck_in_tree=lambda tree, did: parent if did == 1 else None
             )
-        )
+        ),
     )
     ops: list[bool] = []
     monkeypatch.setattr(
@@ -203,6 +205,73 @@ def test_collapse_reloads_when_the_table_gets_a_script(browser, monkeypatch):
     browser._collapse(1)
 
     assert scripts == [] and reloads == [True]
+
+
+# Pins spec/ui.md#ui.simple-mode-deck-counts.
+def test_deck_list_header_hides_learn_column_in_simple_mode(browser, monkeypatch):
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "decks_learn_header", lambda: "LEARN_HEADER_MARKER")
+    browser.mw = SimpleNamespace(advanced_ui=lambda: False)
+    tree = DeckTreeNode(children=[])
+    browser._render_data = SimpleNamespace(tree=tree, current_deck_id=1)
+
+    rendered = browser._renderDeckTree(tree)
+
+    assert "LEARN_HEADER_MARKER" not in rendered
+
+
+def test_deck_list_header_shows_learn_column_in_advanced_mode(browser, monkeypatch):
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "decks_learn_header", lambda: "LEARN_HEADER_MARKER")
+    browser.mw = SimpleNamespace(advanced_ui=lambda: True)
+    tree = DeckTreeNode(children=[])
+    browser._render_data = SimpleNamespace(tree=tree, current_deck_id=1)
+
+    rendered = browser._renderDeckTree(tree)
+
+    assert "LEARN_HEADER_MARKER" in rendered
+
+
+def test_deck_row_sums_learn_into_due_in_simple_mode(browser):
+    browser.mw = SimpleNamespace(advanced_ui=lambda: False)
+    node = DeckTreeNode(deck_id=1, new_count=3, learn_count=4, review_count=5)
+    tree = DeckTreeNode(children=[node])
+    browser._render_data = SimpleNamespace(tree=tree, current_deck_id=1)
+
+    rendered = browser._renderDeckTree(tree)
+
+    assert 'id="deck-1-learn-count"' not in rendered
+    assert 'id="deck-1-review-count" class="review-count">9</span>' in rendered
+
+
+def test_deck_row_keeps_learn_and_due_separate_in_advanced_mode(browser):
+    browser.mw = SimpleNamespace(advanced_ui=lambda: True)
+    node = DeckTreeNode(deck_id=1, new_count=3, learn_count=4, review_count=5)
+    tree = DeckTreeNode(children=[node])
+    browser._render_data = SimpleNamespace(tree=tree, current_deck_id=1)
+
+    rendered = browser._renderDeckTree(tree)
+
+    assert 'id="deck-1-learn-count" class="learn-count">4</span>' in rendered
+    assert 'id="deck-1-review-count" class="review-count">5</span>' in rendered
+
+
+def test_rwkv_deck_count_update_sums_learn_into_due_in_simple_mode(browser):
+    import json
+
+    browser.mw = SimpleNamespace(advanced_ui=lambda: False)
+    node = DeckTreeNode(deck_id=1, new_count=3, learn_count=4, review_count=5)
+    tree = DeckTreeNode(children=[node])
+    browser._render_data = SimpleNamespace(tree=tree)
+    scripts: list[str] = []
+    browser.web = SimpleNamespace(eval=scripts.append)
+
+    browser._render_rwkv_deck_counts()
+
+    rows = json.loads(scripts[-1].split("const rows = ", 1)[1].split(";\n", 1)[0])
+    assert rows == [[1, 3, 4, 9]]
 
 
 # Pins spec/ui.md#ui.mode-switch: the RWKV submenu of a deck's gear menu names
@@ -318,6 +387,7 @@ def refreshable(browser, monkeypatch):
     browser.web = page
     browser.mw = SimpleNamespace(
         state="deckBrowser",
+        advanced_ui=lambda: True,
         toolbar=SimpleNamespace(redraw=lambda: None),
         col=SimpleNamespace(
             decks=SimpleNamespace(
