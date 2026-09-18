@@ -289,18 +289,30 @@ same time waits, and the "Processing..." window appeared during reviews.
 ## ui.card-info-rwkv-curve
 
 Given a card whose preset runs RWKV-Curve, card info's forgetting-curve chart
-shows only RWKV-Curve's own curve: the curve RWKV stored for the card at its
-last answered review, from that review to now and then as a dashed preview.
-It draws no FSRS-7 segments for the reviews before it, since RWKV's past
-curves are not stored. The chart's tooltip, card info's "Stability" row and
-the latest review's stability in the page data show that curve's S90 (where
-it meets 90% recall), not the S90 stored on the card. While RWKV has no
-curve for the card (its state still loading, busy, or no answered review),
-the chart shows no data and card info has no "Stability" row. The curve
-reaches the page as recall at 0 and at 300 elapsed times evenly spaced in
-log time from one minute to 100 years, joined by straight lines. The chart
-starts at the card's latest answered review, whether or not FSRS-7 has a
-memory state for the card (`ui.card-info-curve-messages`).
+shows only RWKV-Curve's own curves. **The rule:** no FSRS-7 segment and no
+FSRS-7 value is ever drawn on such a card, whatever RWKV has. FSRS-7's
+parameters change nothing on the chart.
+
+**A limitation, not a decision:** the chart today draws ONE segment, from the
+card's last answered review onward, and nothing for the reviews before it.
+The full history is meant to be drawn. Clanki keeps one RWKV curve per card,
+the curve the model held at that card's last answered review, and keeps no
+curve for any earlier review, so there is nothing to draw the earlier
+segments from. What would remove it: storing the curve the model held at
+every review. The per-review values the RWKV replay records
+(`ui.stats-model-metrics`) are ONE recall number per review, not a curve, so
+they are enough for the model-quality graphs and not enough for a segment.
+
+The drawn segment runs from the last answered review to now and then as a
+dashed preview. The chart's tooltip, card info's "Stability" row and the
+latest review's stability in the page data show that curve's S90 (where it
+meets 90% recall), not the S90 stored on the card. While RWKV has no curve
+for the card (its state still loading, busy, or no answered review), the
+chart shows no data and card info has no "Stability" row. A curve reaches
+the page as recall at 0 and at 300 elapsed times evenly spaced in log time
+from one minute to 100 years, joined by straight lines. The chart draws
+whether or not FSRS-7 has a memory state for the card
+(`ui.card-info-curve-messages`).
 
 Card info for such a card shows no other FSRS-7 value either: no
 "Difficulty" row, and its one "Retrievability" row is the curve's recall
@@ -315,7 +327,13 @@ RWKV-Curve as for FSRS-7; the Stability row and the tooltip show the drawn
 curve's S90; with no RWKV curve, hide the segment; never mix two algorithms
 in one display, in general (so no FSRS-7 segments or values in an
 RWKV-Curve card's info); and the older reviews of an RWKV-Curve card show
-no FSRS-7 S90.
+no FSRS-7 S90. He also asked, on the same day, that the forgetting curve
+"always shows the full history of a card, all reviews", for both algorithms,
+and on 2026-09-16, shown the one-segment chart: "that is absolutely not
+intended whatsoever". His no-mixing rule forbids borrowing FSRS-7's curve;
+it says nothing about RWKV's own, and the empty history does not follow from
+it. This entry stated the two as one sentence, so a missing feature read as
+a decision.
 
 **Pinned by:** `card_curve_points_are_the_curve_and_its_s90`
 (`rslib/src/rwkv/mod.rs`);
@@ -328,10 +346,10 @@ no FSRS-7 S90.
 and R, and no difficulty", "an RWKV-Curve card without a curve shows no
 stability and a calculating R" (`ts/routes/card-info/lib.test.ts`);
 "rwkvRecallAt interpolates between the
-curve's points", "an RWKV-Curve card's chart starts at its last review: no
-FSRS-7 segments", "after the last review an RWKV-Curve card follows RWKV's
-curve and S90", "without an RWKV curve yet the chart stops at the last
-review" (`ts/routes/card-info/forgetting-curve.test.ts`).
+curve's points", "no FSRS-7 value reaches an RWKV-Curve card's chart",
+"after the last review an RWKV-Curve card follows RWKV's curve and S90",
+"without an RWKV curve yet the chart stops at the last review"
+(`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## ui.card-info-curve-messages
 

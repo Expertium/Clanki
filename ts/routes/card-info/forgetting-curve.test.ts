@@ -164,12 +164,45 @@ function resetThenNothing(): any {
     ];
 }
 
-test("an RWKV-Curve card's chart starts at its last review: no FSRS-7 segments", () => {
-    const rwkvCurve = { elapsedDays: [0, 10], recall: [1, 0.5], s90: 2 };
-    expect(chartRevlog(twoReviews(), rwkvCurve).map((entry) => entry.time)).toEqual([
-        twoReviews()[0].time,
-    ]);
-    expect(chartRevlog(twoReviews())).toHaveLength(2);
+// The RULE, not today's symptom. The chart draws one segment only because
+// Clanki stores one RWKV curve per card, which is a limitation and not a
+// decision (spec ui.card-info-rwkv-curve); pinning "the chart starts at the
+// last review" would make drawing the full history look like a regression.
+// What must stay true forever is that no FSRS-7 value reaches the chart, and
+// the sharpest way to say that is: FSRS-7's parameters change nothing.
+test("no FSRS-7 value reaches an RWKV-Curve card's chart", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2 };
+        // params 23 to 33 are the ones FSRS-7's own curve reads
+        const otherParams = fsrs7Params().map((value, index) => (index >= 23 ? value * 0.5 : value));
+
+        const drawn = prepareData(
+            chartRevlog(twoReviews(), rwkvCurve),
+            30,
+            fsrs7Params(),
+            rwkvCurve,
+        );
+        const drawnWithOtherParams = prepareData(
+            chartRevlog(twoReviews(), rwkvCurve),
+            30,
+            otherParams,
+            rwkvCurve,
+        );
+        expect(drawn.length).toBeGreaterThan(0);
+        expect(drawnWithOtherParams).toEqual(drawn);
+        expect(drawn.every((point) => point.stabilityS90 === rwkvCurve.s90)).toBe(true);
+
+        // and the two parameter sets really do draw different charts for an
+        // FSRS-7 card, so this test can fail
+        const fsrs = prepareData(chartRevlog(twoReviews()), 30, fsrs7Params());
+        const fsrsWithOtherParams = prepareData(chartRevlog(twoReviews()), 30, otherParams);
+        expect(fsrsWithOtherParams).not.toEqual(fsrs);
+        expect(chartRevlog(twoReviews())).toHaveLength(2);
+    } finally {
+        vi.useRealTimers();
+    }
 });
 
 // Pins spec/ui.md#ui.card-info-curve-messages
