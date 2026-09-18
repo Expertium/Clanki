@@ -9,8 +9,12 @@ ecosystem rather than to this program keep the word Anki: the file formats
 (Anki Deck Package, Anki Collection Package, .apkg/.colpkg/.anki, add-on
 packages), version references to old Anki releases (Anki 2.x, 23.10), the
 `Documents/Anki` and `Anki2` data folders, AnkiWeb, AnkiDroid, AnkiMobile and
-AnkiHub, and the "Support Anki" donation link. Translations other than English
-are inherited from Anki and still say Anki.
+AnkiHub. Translations other than English are inherited from Anki and still
+say Anki.
+
+Help > Support Anki & Clanki (renamed from "Support Anki",
+`branding.support-window`) is the one menu item that intentionally names
+both: it now offers support for either project, so it says both names.
 
 **Why:** Andrew, 2026-09-14: everything visible should say Clanki.
 
@@ -56,3 +60,33 @@ explicit disclaimer is needed and must come first, not last.
 `test_about_window_links_to_official_anki_and_to_clankis_own_repository`,
 `test_about_window_disclaimer_is_shown_before_clankis_own_description`
 (`qt/tests/test_about.py`).
+
+## branding.support-window
+
+Given Help > Support Anki & Clanki (renamed from "Support Anki", which used
+to link straight to Anki's own support page), a small dialog is shown
+instead, holding three things in order: a fork clarification consistent
+with the About window; a link to Anki's own manual
+(`https://docs.ankiweb.net`), labelled as Anki's, not Clanki's; and, kept
+visually apart from the other two (a horizontal rule, its own heading),
+Andrew's Ethereum address for anyone who wants to support Clanki's author
+specifically, plus a "Copy address" button that copies it to the clipboard.
+The address is a Python constant
+(`aqt.support.CLANKI_AUTHOR_ETHEREUM_ADDRESS`, EIP-55 checksummed —
+its mixed upper/lower-case letters are not to be normalised), never
+in an ftl file, so a translator cannot touch it. Its exact value:
+`0xf9c22186be4dbF21dE3E149C167Ed90DE0E37279`.
+
+**Why:** Andrew, 2026-09-18: "Idk what to do about Help->Support Anki.
+Currently it links to the Anki manual. I think we should show a window
+that says: 1) A clarification that this is a fork 2) A link to the
+official Anki manual 3) My Ethereum address, in case somebody wants to
+support me specifically." The address must be exact and copyable: a wrong
+character sends a stranger's money to nobody, and retyping 42 characters by
+hand is how people lose money.
+
+**Pinned by:** `test_support_window_states_it_is_a_fork`,
+`test_support_window_labels_the_manual_link_as_ankis`,
+`test_support_window_ethereum_address_is_exact`,
+`test_support_window_ethereum_address_is_not_in_any_ftl_file`
+(`qt/tests/test_support.py`).
