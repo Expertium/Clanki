@@ -26,46 +26,27 @@ class ClosableQDialog(QDialog):
         callback()
 
 
-def show(mw: aqt.AnkiQt) -> QDialog:
-    dialog = ClosableQDialog(mw)
-    disable_help_button(dialog)
-    mw.garbage_collect_on_dialog_finish(dialog)
-    abt = aqt.forms.about.Ui_About()
-    abt.setupUi(dialog)
+def _fork_disclaimer_html() -> str:
+    """The identity notice at the top of the About window (spec
+    branding.about-window-disclaimer), factored out so it can be pinned
+    without instantiating a real dialog."""
+    return (
+        "<p style='border:1px solid; padding:8px;'>"
+        f"<b>{tr.about_fork_notice()}</b>"
+        f"<br>{tr.about_official_anki_link(val=aqt.appWebsite)}"
+        f"<br>{tr.about_clanki_repository_link(val=aqt.branding.CLANKI_REPOSITORY)}"
+        "</p>"
+    )
 
-    def on_copy() -> None:
-        txt = supportText()
-        if mw.addonManager.dirty:
-            txt += "\n" + addon_debug_info()
-        clipboard = QApplication.clipboard()
-        assert clipboard is not None
-        clipboard.setText(txt)
-        tooltip(tr.about_copied_to_clipboard(), parent=dialog)
 
-    btn = QPushButton(tr.about_copy_debug_info())
-    qconnect(btn.clicked, on_copy)
-    abt.buttonBox.addButton(btn, QDialogButtonBox.ButtonRole.ActionRole)
-
-    ok_button = abt.buttonBox.button(QDialogButtonBox.StandardButton.Ok)
-    assert ok_button is not None
-    ok_button.setFocus()
-
-    btnLayout = abt.buttonBox.layout()
-    assert btnLayout is not None
-    btnLayout.setContentsMargins(12, 12, 12, 12)
-
-    # WebView cleanup
-    ######################################################################
-
-    def on_dialog_destroyed() -> None:
-        abt.label.cleanup()
-        abt.label = None  # type: ignore
-
-    qconnect(dialog.destroyed, on_dialog_destroyed)
-
-    # WebView contents
-    ######################################################################
+def _about_text() -> str:
+    """The About window's WebView content. No Qt widget dependency, so it
+    can be pinned directly (spec branding.about-window-disclaimer)."""
     abouttext = "<center><img src='/_anki/imgs/anki-logo-thin.png'></center>"
+    # Clear, prominent identity disclaimer, first thing shown (spec
+    # branding.about-window-disclaimer): a reader must walk away knowing
+    # this is not official Anki, not merely be able to work it out.
+    abouttext += _fork_disclaimer_html()
     lede = tr.about_anki_is_a_friendly_intelligent_spaced()
     abouttext += f"<p>{lede}"
     abouttext += f"<p>{tr.about_anki_is_licensed_under_the_agpl3()}"
@@ -237,6 +218,48 @@ def show(mw: aqt.AnkiQt) -> QDialog:
     )
     abouttext += f"<p>{tr.about_if_you_have_contributed_and_are()}"
     abouttext += f"<p>{tr.about_a_big_thanks_to_all_the()}"
+    return abouttext
+
+
+def show(mw: aqt.AnkiQt) -> QDialog:
+    dialog = ClosableQDialog(mw)
+    disable_help_button(dialog)
+    mw.garbage_collect_on_dialog_finish(dialog)
+    abt = aqt.forms.about.Ui_About()
+    abt.setupUi(dialog)
+
+    def on_copy() -> None:
+        txt = supportText()
+        if mw.addonManager.dirty:
+            txt += "\n" + addon_debug_info()
+        clipboard = QApplication.clipboard()
+        assert clipboard is not None
+        clipboard.setText(txt)
+        tooltip(tr.about_copied_to_clipboard(), parent=dialog)
+
+    btn = QPushButton(tr.about_copy_debug_info())
+    qconnect(btn.clicked, on_copy)
+    abt.buttonBox.addButton(btn, QDialogButtonBox.ButtonRole.ActionRole)
+
+    ok_button = abt.buttonBox.button(QDialogButtonBox.StandardButton.Ok)
+    assert ok_button is not None
+    ok_button.setFocus()
+
+    btnLayout = abt.buttonBox.layout()
+    assert btnLayout is not None
+    btnLayout.setContentsMargins(12, 12, 12, 12)
+
+    # WebView cleanup
+    ######################################################################
+
+    def on_dialog_destroyed() -> None:
+        abt.label.cleanup()
+        abt.label = None  # type: ignore
+
+    qconnect(dialog.destroyed, on_dialog_destroyed)
+
+    abouttext = _about_text()
+
     abt.label.setMinimumWidth(800)
     abt.label.setMinimumHeight(600)
     dialog.show()
