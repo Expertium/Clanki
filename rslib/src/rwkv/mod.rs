@@ -10287,7 +10287,11 @@ create table segment_state_chunks (
             }
         }
         connection
-            .pragma_update(None, "user_version", STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION)
+            .pragma_update(
+                None,
+                "user_version",
+                STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION,
+            )
             .unwrap();
         connection.close().unwrap();
         rows
@@ -10431,8 +10435,8 @@ create table segment_state_chunks (
             .unwrap();
         assert!(lazy.warm_up_states.lazy.is_some());
         let error = {
-            let mut connection = Connection::open(temporary_dir.path().join("guard.sqlite3"))
-                .unwrap();
+            let mut connection =
+                Connection::open(temporary_dir.path().join("guard.sqlite3")).unwrap();
             connection
                 .execute_batch("create table segments (id integer primary key);")
                 .unwrap();
@@ -10454,8 +10458,7 @@ create table segment_state_chunks (
 
         // The same writer accepts the full checkpoint once the states are read.
         lazy.warm_up_states.force_load_all().unwrap();
-        let mut connection =
-            Connection::open(temporary_dir.path().join("guard2.sqlite3")).unwrap();
+        let mut connection = Connection::open(temporary_dir.path().join("guard2.sqlite3")).unwrap();
         connection
             .execute_batch("create table segments (id integer primary key);")
             .unwrap();
