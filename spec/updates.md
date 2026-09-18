@@ -5,17 +5,20 @@
 Clanki checks its own repository for updates:
 `https://api.github.com/repos/Expertium/Clanki/releases` (and `/releases/latest`
 when prereleases are excluded). It must never query another project's
-repository.
+repository. `Expertium/Clanki` is a public repository, so both endpoints need
+no authentication. A repository with zero releases is reported as "no update
+available", not as an error: GitHub 404s `/releases/latest` and 200s
+`/releases` with `[]` when there is nothing to return, and both are treated
+the same as "nothing to offer".
 
 **Why:** the fork point inherited `JSchoreels/anki` in these constants. Left
 alone, Clanki offered his fork as an update to itself, so accepting the prompt
 would replace Clanki with a different program.
 
-**Pinned by:** `release_urls_point_at_clanki` (`rslib/src/backend/github.rs`)
-
-**Known consequence, not yet fixed:** the repo is private and has no releases,
-so the check currently fails rather than reporting "no updates". See
-`updates.dev-build-always-offered` for a second, separate defect.
+**Pinned by:** `release_urls_point_at_clanki`,
+`no_releases_at_all_is_reported_as_no_updates`,
+`empty_releases_array_is_reported_as_no_updates`,
+`other_failures_are_not_reported_as_no_updates` (`rslib/src/backend/github.rs`)
 
 ## updates.dev-build-always-offered
 
