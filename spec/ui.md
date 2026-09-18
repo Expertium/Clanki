@@ -80,6 +80,38 @@ graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 "Simple mode shows only the Simple editor buttons, in toolbar order"
 (`ts/routes/editor/ui-mode.test.ts`).
 
+## ui.simple-mode-tools-hidden
+
+Given Simple mode (`ui.mode-switch`), the Tools menu hides Create Filtered
+Deck..., Check Database, Check Media, Empty Cards... and Manage Note Types.
+Study Deck..., Add-ons, Check for Updates and Preferences stay in both
+modes; an installed add-on's own menu entries are untouched (an add-on may
+add entries anywhere in the menu; hiding them is not ours to do). The deck
+overview's bottom bar loses the Custom Study button in Simple mode; Options
+and Description stay in both modes. Switching the mode updates both places
+in place, the same cheap way as the deck list's bottom row
+(`ui.mode-switch`): no due-count recompute. A hidden item is hidden, not
+disabled — its keyboard shortcut (`c` for Custom Study) still runs it, same
+as `ui.editor-simple-view`'s hidden editor buttons.
+
+Check for Updates stays visible in both modes as-is; two known, separate
+defects in the check itself (`spec/updates.md`,
+`updates.release-source` and `updates.dev-build-always-offered`) are out of
+scope for this entry.
+
+**Why:** Andrew, 2026-09-17: these are power-user tools a Simple-mode user
+does not need and should not be confused by; Custom Study is an
+Advanced-only feature of the overview screen for the same reason. Simple
+mode hides items rather than replacing them, keeping it a strict subset of
+Advanced (`CLAUDE.md`, "Simple mode is a subset of Advanced").
+
+**Pinned by:** `test_tools_menu_hides_power_user_items_in_simple_mode`,
+`test_tools_menu_keeps_shared_items_in_both_modes`,
+`test_switching_the_mode_updates_the_tools_menu`
+(`qt/tests/test_ui_mode.py`); `test_overview_bottom_bar_hides_custom_study_in_simple_mode`,
+`test_overview_mode_redraw_only_draws_the_bottom_bar`
+(`qt/tests/test_overview.py`).
+
 ## ui.editor-simple-view
 
 Given the note editor (Add, Edit Current, the Browser's editing pane) in
