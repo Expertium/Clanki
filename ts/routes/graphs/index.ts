@@ -50,12 +50,12 @@ import HourGraph from "./HourGraph.svelte";
 import IntervalsGraph from "./IntervalsGraph.svelte";
 import RangeBox from "./RangeBox.svelte";
 import RetrievabilityGraph from "./RetrievabilityGraph.svelte";
-import RocGraph from "./RocGraph.svelte";
 import ReviewsGraph from "./ReviewsGraph.svelte";
+import RocGraph from "./RocGraph.svelte";
 import StabilityGraph from "./StabilityGraph.svelte";
 import TodayStats from "./TodayStats.svelte";
-import UmPlusGraph from "./UmPlusGraph.svelte";
 import TotalKnowledgeGraph from "./TotalKnowledgeGraph.svelte";
+import UmPlusGraph from "./UmPlusGraph.svelte";
 
 export const graphComponents = {
     TodayStats,

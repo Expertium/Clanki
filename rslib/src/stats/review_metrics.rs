@@ -924,7 +924,7 @@ fn um_plus_pair(
     let mut difference = vec![0.0f64; UM_BIN_COUNT];
     let mut error_a = vec![0.0f64; UM_BIN_COUNT];
     let mut error_b = vec![0.0f64; UM_BIN_COUNT];
-    let mut counts = vec![0u32; UM_BIN_COUNT];
+    let mut counts = [0u32; UM_BIN_COUNT];
     let mut reviews = 0u32;
     for ((&a, &b), &remembered) in predictions_a.iter().zip(predictions_b).zip(remembered) {
         if !a.is_finite() || !b.is_finite() {

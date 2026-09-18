@@ -389,13 +389,13 @@ Given card info's "Forgetting Curve" box with no curve to draw, it shows a
 short message that says why, never the words "NO DATA", and never a value of
 the other algorithm (`sched.one-global-algorithm`):
 
-| Case                                                   | Message                                                                     |
-| ------------------------------------------------------ | --------------------------------------------------------------------------- |
-| RWKV is not ready (state loading, or another thread holds it) | "Calculating…"                                                        |
-| RWKV-Curve answered but has no curve for the card       | "RWKV-Curve has no curve for this card yet. It gets one after your next answer." |
-| the card has no answered review                         | "No curve yet. It appears after you answer this card."                      |
-| FSRS-7 after a reset, with no answer since              | "This card was reset. The curve appears after you answer it again."         |
-| FSRS-7 with no review on a later day                    | "No curve yet. This card needs a review on a later day."                    |
+| Case                                                          | Message                                                                          |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| RWKV is not ready (state loading, or another thread holds it) | "Calculating…"                                                                   |
+| RWKV-Curve answered but has no curve for the card             | "RWKV-Curve has no curve for this card yet. It gets one after your next answer." |
+| the card has no answered review                               | "No curve yet. It appears after you answer this card."                           |
+| FSRS-7 after a reset, with no answer since                    | "This card was reset. The curve appears after you answer it again."              |
+| FSRS-7 with no review on a later day                          | "No curve yet. This card needs a review on a later day."                         |
 
 While RWKV is not ready, the card-stats response marks its curve `pending` and
 the card-info page asks for the card again every 2 seconds, so the curve
@@ -533,7 +533,7 @@ start the RWKV calculation from zero again. RWKV's answer depends on neither
 the mode nor the period. On Andrew's collection one pass costs 230 seconds
 and 229 of them are RWKV scoring the 38,523 cards of the search. Andrew, the
 same day, on dropping the earlier ten-minute limit: "p(recall) doesn't fall
-*that* fast for most cards, so remove the time limit."
+_that_ fast for most cards, so remove the time limit."
 
 **Pinned by:** `test_prepare_stats_retrievability_scores_reuses_published_scores`,
 `test_prepare_stats_retrievability_scores_keep_the_scores_however_long_the_wait`,
@@ -696,11 +696,11 @@ card whose review log holds no learning step has no FSRS-7 prediction at
 all, as in FSRS's own evaluation of its parameters, and RWKV's history of a
 card starts at its latest learning start, as RWKV's scheduling does.
 
-| Algorithm    | Its prediction of a rating                                        |
-| ------------ | ----------------------------------------------------------------- |
+| Algorithm    | Its prediction of a rating                                                                                                              |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | FSRS-7       | FSRS-7's forgetting curve at the memory state after the card's previous rating, at the days since it, with the card's preset parameters |
-| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous answered review, at the time since it |
-| RWKV-Instant | RWKV-Instant's prediction of the card at that moment, from its state before the answer |
+| RWKV-Curve   | the recall of the curve RWKV stored at the card's previous answered review, at the time since it                                        |
+| RWKV-Instant | RWKV-Instant's prediction of the card at that moment, from its state before the answer                                                  |
 
 The predictions are not computed for the graph. Each algorithm writes them
 per review while it runs, and the graph reads those rows: FSRS-7's when its
@@ -732,8 +732,8 @@ recorded", so a series covering days cannot look like one covering years;
 after a full replay records the history, that line is gone. A row counts
 only when nothing that produced it was fitted on that very review:
 
-| Algorithm | Rows that count                                                                |
-| --------- | ------------------------------------------------------------------------------ |
+| Algorithm | Rows that count                                                                 |
+| --------- | ------------------------------------------------------------------------------- |
 | FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
 | RWKV      | any role, because the weights are frozen and were trained on other collections  |
 
@@ -876,14 +876,14 @@ user's own rebuild, never to opening a page.
 
 Given the Stats graphs, their colours and their axis steps are these:
 
-| Graph                       | What it draws            | Colour            |
-| --------------------------- | ------------------------ | ----------------- |
-| Card Retrievability         | the FSRS-7 series        | green `#2f9e44`   |
-| Card Retrievability         | the RWKV series          | blue `#1c7ed6`    |
-| Calibration                 | the count bars behind it | blue `#6ba3d6`    |
-| Calibration                 | the perfect diagonal     | grey `#8a8a8a`    |
-| AUC-ROC                     | the random-chance line   | grey `#8a8a8a`    |
-| AUC-ROC and Calibration     | one curve per algorithm  | `ALGORITHM_COLOURS` |
+| Graph                   | What it draws            | Colour              |
+| ----------------------- | ------------------------ | ------------------- |
+| Card Retrievability     | the FSRS-7 series        | green `#2f9e44`     |
+| Card Retrievability     | the RWKV series          | blue `#1c7ed6`      |
+| Calibration             | the count bars behind it | blue `#6ba3d6`      |
+| Calibration             | the perfect diagonal     | grey `#8a8a8a`      |
+| AUC-ROC                 | the random-chance line   | grey `#8a8a8a`      |
+| AUC-ROC and Calibration | one curve per algorithm  | `ALGORITHM_COLOURS` |
 
 The AUC-ROC and Calibration graphs step both axes by 0.1, from 0 to 1, on
 eleven ticks each. Only the two reference lines are grey: a grey series
@@ -897,6 +897,7 @@ calibration count bars "look lame"; he asked for blue or green, and for
 neither is amber" (`ts/routes/graphs/retrievability.test.ts`); "both axes
 step by 0.1" (`ts/routes/graphs/roc.test.ts`); "both axes step by 0.1, and
 the count bars are blue" (`ts/routes/graphs/calibration.test.ts`).
+
 ## ui.stats-fsrs-predictions-ready
 
 Given a collection with FSRS-7 presets, Clanki keeps FSRS-7's per-review
