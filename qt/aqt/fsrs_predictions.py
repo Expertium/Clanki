@@ -19,6 +19,10 @@ the collection is free between presets and the main thread is never shut out
 for the length of a whole backfill. It reports no progress of its own and
 clears none, so it cannot disturb what the main thread is showing.
 
+A pass that fails says so. It cannot report progress, so a failure left no
+trace at all beyond a log line, and an empty FSRS-7 series looks the same as
+one that is merely still being computed.
+
 It runs at most once a day on its own, which is the upkeep the graphs need:
 a stored row is a validation fold, and the per-answer rows written while
 reviewing carry a different sample role that the graph's role order hides
@@ -44,12 +48,23 @@ BETWEEN_PRESETS_SECS = 0.25
 _lock = threading.Lock()
 _running = False
 _waiting = False
+# a failed pass warns once per session, not once per preset and not once
+# per retry
+_failure_reported = False
 
 
 def rwkv_startup_busy(mw: Any) -> bool:
     """True while the RWKV state cache is loading or building. That load
     holds the collection, so the pass must not queue in front of it."""
     return bool(getattr(mw, "_rwkv_state_cache_loading", False))
+
+
+def reset_failure_report() -> None:
+    """Forget that a failure was reported. For tests only."""
+
+    global _failure_reported
+    with _lock:
+        _failure_reported = False
 
 
 def is_running() -> bool:
@@ -122,7 +137,10 @@ def _record_finished(mw: Any, col: Any) -> None:
 def _run(mw: Any, col: Any) -> None:
     global _running
     try:
-        presets = list(col._backend.stale_fsrs_prediction_presets().deck_config_ids)
+        # the generated backend method already returns the ids, not the
+        # response message; reading a field off them raised AttributeError
+        # on the pass's first line and the log was the only place it showed
+        presets = list(col._backend.stale_fsrs_prediction_presets())
         written = 0
         for index, preset in enumerate(presets):
             if index:
@@ -138,6 +156,33 @@ def _run(mw: Any, col: Any) -> None:
         _record_finished(mw, col)
     except Exception:
         logger.exception("the FSRS review prediction pass failed")
+        report_failure(mw)
     finally:
         with _lock:
             _running = False
+
+
+def report_failure(mw: Any) -> None:
+    """Tell the user that the pass failed, once per session.
+
+    A pass that writes nothing and says nothing looks exactly like a
+    collection that needs no pass. This one died on its first line for two
+    days, and the only sign was an empty FSRS-7 series
+    (spec ui.stats-fsrs-predictions-ready).
+    """
+
+    global _failure_reported
+    with _lock:
+        if _failure_reported:
+            return
+        _failure_reported = True
+    run_on_main = getattr(getattr(mw, "taskman", None), "run_on_main", None)
+    if not callable(run_on_main):
+        return
+
+    def show() -> None:
+        from aqt.utils import showWarning, tr
+
+        showWarning(tr.qt_misc_fsrs_predictions_pass_failed(), parent=mw)
+
+    run_on_main(show)
