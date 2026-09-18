@@ -163,7 +163,7 @@ export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
     if (progress.unscored > 0) {
         notes.push(
             tr.statisticsModelMetricsNone({
-                reviews: localizedNumber(progress.unscored, 0),
+                reviews: progress.unscored,
             }),
         );
     }

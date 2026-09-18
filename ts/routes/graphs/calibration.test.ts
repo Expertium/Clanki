@@ -14,11 +14,11 @@ import { expect, test } from "vitest";
 import {
     axisTenths,
     binPoints,
-    COUNT_BAR_COLOUR,
     calibrationBounds,
     calibrationSeries,
     chooserOptions,
     chosenAlgorithm,
+    COUNT_BAR_COLOUR,
     renderCalibration,
     tiles,
 } from "./calibration";
