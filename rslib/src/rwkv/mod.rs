@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -38,13 +39,42 @@ const HEAD_DIM: usize = 4 * D_MODEL;
 const NUM_CURVES: usize = 128;
 const ANSWER_EASES: [u8; 4] = [1, 2, 3, 4];
 const S90_TARGET_RETENTION: f32 = 0.9;
-const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 4;
-const STATE_CACHE_STORE_PAGE_SIZE: i64 = 64 * 1024;
+const STATE_CACHE_STORE_SCHEMA_VERSION: i64 = 5;
+/// The last schema that kept one serialized delta stream per segment. A store
+/// at this version is migrated to `entity_states` rows before it is read.
+const STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION: i64 = 4;
+/// Page size of the state-cache store. One card state is about 51 KiB, so a
+/// 16 KiB page keeps the per-row overflow waste under one page while a point
+/// read of one entity still costs only four pages.
+const STATE_CACHE_STORE_PAGE_SIZE: i64 = 16 * 1024;
 const STATE_CACHE_DELTA_MAGIC: &[u8] = b"ARWKVSTATEDELTA1\0";
-#[cfg(not(test))]
-const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024 * 1024;
-#[cfg(test)]
-const STATE_CACHE_DELTA_CHUNK_BYTES: usize = 64 * 1024;
+const STATE_CACHE_KIND_CARD: i64 = 0;
+const STATE_CACHE_KIND_NOTE: i64 = 1;
+const STATE_CACHE_KIND_DECK: i64 = 2;
+const STATE_CACHE_KIND_PRESET: i64 = 3;
+const STATE_CACHE_KIND_GLOBAL: i64 = 4;
+/// The global stream holds exactly one entity, so its rows all use this id.
+const STATE_CACHE_GLOBAL_ENTITY_ID: i64 = 0;
+/// One row per (segment, kind, entity). A null `state` is the "this entity
+/// has no cached state" that the old delta stream wrote as a zero marker. The
+/// unique index is what turns a warm-up state read into a point lookup.
+///
+/// Do not put the states back into one blob per segment. Schema 4 did that,
+/// and a blob cannot be read by key: SQLite reaches an offset inside a blob by
+/// walking its overflow-page chain, so it cannot skip the pages in between.
+/// A scan of Andrew's 3.28 GB store that asked for the 947,593 bytes of keys
+/// alone still made 50,304 read operations and still read 3.29 GB from the
+/// operating system. Only an index gives a point lookup.
+const STATE_CACHE_ENTITY_STATES_DDL: &str = r#"
+create table entity_states (
+  id integer primary key,
+  segment_id integer not null references segments(id) on delete cascade,
+  kind integer not null,
+  entity_id integer not null,
+  state blob
+);
+create unique index entity_states_key on entity_states (segment_id, kind, entity_id);
+"#;
 
 const MODULE_LAYERS: [usize; 5] = [3, 4, 2, 3, 4];
 const CHANNEL_MIXER_DIMS: [usize; 5] = [192, 256, 192, 256, 256];
@@ -813,6 +843,8 @@ impl RwkvInference {
             }
         }
 
+        self.warm_up_states.ensure_loaded_many(&inputs)?;
+
         let features = inputs
             .iter()
             .map(|input| self.features.features_for(input))
@@ -850,6 +882,8 @@ impl RwkvInference {
                 ));
             }
         }
+
+        self.warm_up_states.ensure_loaded_many(&inputs)?;
 
         let features = inputs
             .iter()
@@ -901,6 +935,8 @@ impl RwkvInference {
                 ));
             }
         }
+
+        self.warm_up_states.ensure_loaded_many(&inputs)?;
 
         let features = inputs
             .iter()
@@ -1146,6 +1182,9 @@ impl RwkvInference {
             ));
         }
 
+        self.warm_up_states.ensure_loaded_many(&answers)?;
+        self.warm_up_states.ensure_loaded_many(&query_inputs)?;
+
         Ok(predict_retrievability_many_after_reviews_for_identity(
             self.model.as_ref(),
             &mut self.features,
@@ -1193,6 +1232,7 @@ impl RwkvInference {
                 self.features.features_for(&query_input)
             });
 
+            self.warm_up_states.ensure_loaded(&input)?;
             let features = self.features.features_for(&input);
             let model = &*self.model;
             // The query and answer inputs share card/note/deck/preset ids, so
@@ -1251,6 +1291,7 @@ impl RwkvInference {
                 continue;
             }
 
+            self.warm_up_states.ensure_loaded(input).unwrap();
             let mut query_input = input.clone();
             query_input.is_query = true;
             query_input.ease = None;
@@ -1277,8 +1318,9 @@ impl RwkvInference {
         predictions
     }
 
-    pub fn warm_up_snapshot(&self) -> RwkvWarmUpSnapshot {
-        RwkvWarmUpSnapshot {
+    pub fn warm_up_snapshot(&mut self) -> io::Result<RwkvWarmUpSnapshot> {
+        self.warm_up_states.force_load_all()?;
+        Ok(RwkvWarmUpSnapshot {
             card_states: serialize_state_map(&self.warm_up_states.card),
             note_states: serialize_state_map(&self.warm_up_states.note),
             deck_states: serialize_state_map(&self.warm_up_states.deck),
@@ -1288,14 +1330,16 @@ impl RwkvInference {
                 .global
                 .as_ref()
                 .map(serialize_module_state),
-        }
+        })
     }
 
-    pub fn warm_up_state(&self, input: &ReviewInput) -> ReviewStateOwned {
-        self.warm_up_states.serialized_state(input)
+    pub fn warm_up_state(&mut self, input: &ReviewInput) -> io::Result<ReviewStateOwned> {
+        self.warm_up_states.ensure_loaded(input)?;
+        Ok(self.warm_up_states.serialized_state(input))
     }
 
-    pub fn append_warm_up_snapshot_binary(&self, path: PathBuf) -> io::Result<()> {
+    pub fn append_warm_up_snapshot_binary(&mut self, path: PathBuf) -> io::Result<()> {
+        self.warm_up_states.force_load_all()?;
         let mut out = fs::OpenOptions::new().append(true).open(path)?;
         write_snapshot_state_map(&mut out, &self.warm_up_states.card)?;
         write_snapshot_state_map(&mut out, &self.warm_up_states.note)?;
@@ -1329,8 +1373,13 @@ impl RwkvInference {
         full: bool,
         durable: bool,
     ) -> io::Result<i64> {
+        // A full checkpoint restates every entity, so nothing may be left
+        // behind in the store it is about to replace.
+        if full {
+            self.warm_up_states.force_load_all()?;
+        }
+        self.warm_up_states.close_state_source();
         let runtime_state_len = self.runtime_cache_state_len();
-        let state_delta_len = self.warm_up_states.checkpoint_delta_len(full)?;
         let store = match self.state_cache_store.take() {
             Some(store) if store.matches(&path, store_generation, durable) => store,
             _ => StateCacheStoreWriter::open(path, store_generation, durable)?,
@@ -1376,8 +1425,6 @@ insert into segments (
                 )
                 .map_err(state_cache_store_error)?;
             let segment_id = transaction.last_insert_rowid();
-            let state_delta_chunk_ids =
-                insert_state_cache_delta_chunks(&transaction, segment_id, state_delta_len)?;
             {
                 let mut runtime_state = transaction
                     .blob_open(MAIN_DB, "segments", "runtime_state", segment_id, false)
@@ -1385,16 +1432,8 @@ insert into segments (
                 self.write_runtime_cache_state(&mut runtime_state)?;
                 runtime_state.close().map_err(state_cache_store_error)?;
             }
-            {
-                let mut state_delta = StateCacheDeltaChunkWriter::new(
-                    &transaction,
-                    state_delta_chunk_ids,
-                    state_delta_len,
-                )?;
-                self.warm_up_states
-                    .write_checkpoint_delta(&mut state_delta, full)?;
-                state_delta.finish()?;
-            }
+            self.warm_up_states
+                .write_checkpoint_rows(&transaction, segment_id, full)?;
             transaction.commit().map_err(state_cache_store_error)?;
             self.warm_up_states.mark_checkpoint_saved();
             Ok(segment_id)
@@ -1406,6 +1445,7 @@ insert into segments (
     }
 
     pub fn finish_warm_up_state_checkpoints(&mut self) -> io::Result<()> {
+        self.warm_up_states.close_state_source();
         let Some(store) = self.state_cache_store.take() else {
             return Ok(());
         };
@@ -1425,8 +1465,9 @@ insert into segments (
         segment_id: i64,
     ) -> io::Result<()> {
         self.finish_warm_up_state_checkpoints()?;
+        migrate_state_cache_store(&path)?;
         let connection = Connection::open_with_flags(
-            path,
+            &path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(state_cache_store_error)?;
@@ -1446,7 +1487,41 @@ insert into segments (
                 )
             })?;
         let segment_chain = state_cache_segment_chain(&connection, segment_id)?;
-        let warm_up_states = read_state_cache_maps(&connection, &segment_chain)?;
+        // Only the key index is read here. The deck, preset and global states
+        // are a few megabytes together and every prediction needs them, so
+        // they are read now; the card and note states are read one at a time
+        // when a card actually comes up.
+        let index = build_state_cache_index(&connection, &segment_chain)?;
+        let mut warm_up_states = ReviewStateMaps::default();
+        for (entity_id, row_id) in &index.deck {
+            if let Some(state) =
+                read_state_cache_entity(&connection, STATE_CACHE_KIND_DECK, *entity_id, *row_id)?
+            {
+                warm_up_states.deck.insert(*entity_id, state);
+            }
+        }
+        for (entity_id, row_id) in &index.preset {
+            if let Some(state) =
+                read_state_cache_entity(&connection, STATE_CACHE_KIND_PRESET, *entity_id, *row_id)?
+            {
+                warm_up_states.preset.insert(*entity_id, state);
+            }
+        }
+        if let Some(row_id) = index.global {
+            warm_up_states.global = read_state_cache_entity(
+                &connection,
+                STATE_CACHE_KIND_GLOBAL,
+                STATE_CACHE_GLOBAL_ENTITY_ID,
+                row_id,
+            )?;
+        }
+        warm_up_states.lazy = Some(LazyStateSource {
+            path,
+            store_generation: store_generation.to_string(),
+            connection: Mutex::new(Some(connection)),
+            card: index.card,
+            note: index.note,
+        });
         let (features, curves) = read_runtime_cache_state(&runtime_state)?;
 
         self.warm_up_states = warm_up_states;
@@ -3722,6 +3797,10 @@ struct ReviewStateMaps {
     deck: HashMap<i64, ModuleState>,
     preset: HashMap<i64, ModuleState>,
     global: Option<ModuleState>,
+    /// The card and note states of a restored checkpoint that are still in the
+    /// store. `card` and `note` above hold only the entities this session has
+    /// already touched.
+    lazy: Option<LazyStateSource>,
     dirty_card: HashSet<i64>,
     dirty_note: HashSet<i64>,
     dirty_deck: HashSet<i64>,
@@ -3743,6 +3822,7 @@ impl ReviewStateMaps {
             deck: deserialize_state_map(deck_states)?,
             preset: deserialize_state_map(preset_states)?,
             global: deserialize_module_state(global_state)?,
+            lazy: None,
             dirty_card: HashSet::new(),
             dirty_note: HashSet::new(),
             dirty_deck: HashSet::new(),
@@ -3825,6 +3905,7 @@ impl ReviewStateMaps {
     }
 
     fn store(&mut self, input: &ReviewInput, state: SrsState) {
+        self.forget_lazy(input.card_id, input.note_id);
         self.card.insert(input.card_id, state.card);
         self.mark_dirty(input);
         if let Some(note_id) = input.note_id {
@@ -3861,6 +3942,7 @@ impl ReviewStateMaps {
         preset_id: Option<i64>,
         state: &ReviewStateOwned,
     ) -> io::Result<()> {
+        self.forget_lazy(card_id, note_id);
         restore_serialized_state(&mut self.card, card_id, state.card.as_deref())?;
         self.dirty_card.insert(card_id);
         restore_optional_serialized_state(&mut self.note, note_id, state.note.as_deref())?;
@@ -3882,49 +3964,337 @@ impl ReviewStateMaps {
         self.global_dirty = false;
     }
 
-    fn checkpoint_delta_len(&self, full: bool) -> io::Result<usize> {
-        let mut len = STATE_CACHE_DELTA_MAGIC.len();
-        for (states, dirty) in [
-            (&self.card, &self.dirty_card),
-            (&self.note, &self.dirty_note),
-            (&self.deck, &self.dirty_deck),
-            (&self.preset, &self.dirty_preset),
-        ] {
-            len = len
-                .checked_add(state_cache_map_delta_len(states, dirty, full)?)
-                .ok_or_else(state_cache_delta_too_large)?;
+    /// Writes this checkpoint's states as `entity_states` rows. A full
+    /// checkpoint writes every resident entity; an incremental one writes only
+    /// the entities this session changed, and the older segments of the chain
+    /// keep the rest.
+    fn write_checkpoint_rows(
+        &self,
+        transaction: &Transaction<'_>,
+        segment_id: i64,
+        full: bool,
+    ) -> io::Result<()> {
+        // A full checkpoint restates every entity, so a session that still has
+        // states in the store would write a "full" segment holding only what it
+        // touched, and every other card would lose its state. Refuse instead of
+        // trusting the caller to have called `force_load_all` first.
+        if full && self.lazy.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a full RWKV state checkpoint needs every state resident",
+            ));
         }
-        len = len.checked_add(1).ok_or_else(state_cache_delta_too_large)?;
-        if full || self.global_dirty {
-            if let Some(global) = &self.global {
-                len = len
-                    .checked_add(4 + serialized_module_state_len(global))
-                    .ok_or_else(state_cache_delta_too_large)?;
+        let mut statement = transaction
+            .prepare(
+                "insert into entity_states (segment_id, kind, entity_id, state) \
+                 values (?, ?, ?, ?)",
+            )
+            .map_err(state_cache_store_error)?;
+        for (kind, states, dirty) in [
+            (STATE_CACHE_KIND_CARD, &self.card, &self.dirty_card),
+            (STATE_CACHE_KIND_NOTE, &self.note, &self.dirty_note),
+            (STATE_CACHE_KIND_DECK, &self.deck, &self.dirty_deck),
+            (STATE_CACHE_KIND_PRESET, &self.preset, &self.dirty_preset),
+        ] {
+            for entity_id in state_cache_delta_identities(states, dirty, full) {
+                let state = states.get(&entity_id).map(serialize_module_state);
+                statement
+                    .execute(params![segment_id, kind, entity_id, state])
+                    .map_err(state_cache_store_error)?;
             }
         }
-        Ok(len)
-    }
-
-    fn write_checkpoint_delta(&self, out: &mut impl io::Write, full: bool) -> io::Result<()> {
-        out.write_all(STATE_CACHE_DELTA_MAGIC)?;
-        for (states, dirty) in [
-            (&self.card, &self.dirty_card),
-            (&self.note, &self.dirty_note),
-            (&self.deck, &self.dirty_deck),
-            (&self.preset, &self.dirty_preset),
-        ] {
-            write_state_cache_map_delta(out, states, dirty, full)?;
-        }
-        if !full && !self.global_dirty {
-            out.write_all(&[0])?;
-        } else if let Some(global) = &self.global {
-            out.write_all(&[2])?;
-            write_snapshot_module_state(out, global)?;
-        } else {
-            out.write_all(&[1])?;
+        if full || self.global_dirty {
+            let state = self.global.as_ref().map(serialize_module_state);
+            statement
+                .execute(params![
+                    segment_id,
+                    STATE_CACHE_KIND_GLOBAL,
+                    STATE_CACHE_GLOBAL_ENTITY_ID,
+                    state
+                ])
+                .map_err(state_cache_store_error)?;
         }
         Ok(())
     }
+
+    fn resident(&self, kind: i64, entity_id: i64) -> bool {
+        match kind {
+            STATE_CACHE_KIND_CARD => self.card.contains_key(&entity_id),
+            _ => self.note.contains_key(&entity_id),
+        }
+    }
+
+    /// Makes one card or note state resident.
+    ///
+    /// A key that the index does not hold had no state in the restored chain,
+    /// which is the "no cached state" a brand-new card has. A row that cannot
+    /// be read, or whose own key does not match the key asked for, is an
+    /// error: a partial or foreign state must never reach the model.
+    fn load_lazy(&mut self, kind: i64, entity_id: i64) -> io::Result<()> {
+        if self.resident(kind, entity_id) {
+            return Ok(());
+        }
+        let Some(row_id) = self
+            .lazy
+            .as_ref()
+            .and_then(|source| source.row_id(kind, entity_id))
+        else {
+            return Ok(());
+        };
+        let Some(source) = self.lazy.as_mut() else {
+            return Ok(());
+        };
+        let state = source.read(kind, entity_id, row_id)?;
+        source.forget(kind, entity_id);
+        if let Some(state) = state {
+            match kind {
+                STATE_CACHE_KIND_CARD => self.card.insert(entity_id, state),
+                _ => self.note.insert(entity_id, state),
+            };
+        }
+        Ok(())
+    }
+
+    /// Makes every state one review input reads resident. Deck, preset and
+    /// global are read at restore time and are always resident already.
+    fn ensure_loaded(&mut self, input: &ReviewInput) -> io::Result<()> {
+        if self.lazy.is_none() {
+            return Ok(());
+        }
+        self.load_lazy(STATE_CACHE_KIND_CARD, input.card_id)?;
+        if let Some(note_id) = input.note_id {
+            self.load_lazy(STATE_CACHE_KIND_NOTE, note_id)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_loaded_many(&mut self, inputs: &[ReviewInput]) -> io::Result<()> {
+        if self.lazy.is_none() {
+            return Ok(());
+        }
+        for input in inputs {
+            self.ensure_loaded(input)?;
+        }
+        Ok(())
+    }
+
+    /// Makes every card and note state of the restored chain resident. The
+    /// paths that write or copy a full snapshot need the whole map, so they
+    /// pay the read that a study session avoids.
+    fn force_load_all(&mut self) -> io::Result<()> {
+        let Some(source) = self.lazy.as_ref() else {
+            return Ok(());
+        };
+        for (kind, entity_id) in source.pending_keys() {
+            self.load_lazy(kind, entity_id)?;
+        }
+        self.lazy = None;
+        Ok(())
+    }
+
+    /// Drops the index entries for one input, so a state this session wrote
+    /// can never be replaced by the stored one.
+    fn forget_lazy(&mut self, card_id: i64, note_id: Option<i64>) {
+        let Some(source) = self.lazy.as_mut() else {
+            return;
+        };
+        source.forget(STATE_CACHE_KIND_CARD, card_id);
+        if let Some(note_id) = note_id {
+            source.forget(STATE_CACHE_KIND_NOTE, note_id);
+        }
+    }
+
+    /// Closes the store handle the lazy reads use, so the app can replace or
+    /// remove the store file. The next lazy read opens it again.
+    fn close_state_source(&mut self) {
+        if let Some(source) = self.lazy.as_ref() {
+            source.close();
+        }
+    }
+}
+
+/// The card and note states of a restored checkpoint chain that are still in
+/// the store, indexed by key.
+///
+/// Building this reads the store's key index only - about 1 MB where the
+/// states are 3.5 GB - and a study session then reads back the few hundred
+/// entities it actually reviews.
+struct LazyStateSource {
+    path: PathBuf,
+    store_generation: String,
+    /// Opened on the first lazy read and dropped whenever the app is about to
+    /// touch the store file. The next read opens it again.
+    connection: Mutex<Option<Connection>>,
+    card: HashMap<i64, i64>,
+    note: HashMap<i64, i64>,
+}
+
+impl LazyStateSource {
+    fn row_id(&self, kind: i64, entity_id: i64) -> Option<i64> {
+        match kind {
+            STATE_CACHE_KIND_CARD => self.card.get(&entity_id).copied(),
+            _ => self.note.get(&entity_id).copied(),
+        }
+    }
+
+    fn forget(&mut self, kind: i64, entity_id: i64) {
+        match kind {
+            STATE_CACHE_KIND_CARD => self.card.remove(&entity_id),
+            _ => self.note.remove(&entity_id),
+        };
+    }
+
+    fn pending_keys(&self) -> Vec<(i64, i64)> {
+        self.card
+            .keys()
+            .map(|entity_id| (STATE_CACHE_KIND_CARD, *entity_id))
+            .chain(
+                self.note
+                    .keys()
+                    .map(|entity_id| (STATE_CACHE_KIND_NOTE, *entity_id)),
+            )
+            .collect()
+    }
+
+    fn read(&self, kind: i64, entity_id: i64, row_id: i64) -> io::Result<Option<ModuleState>> {
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| io::Error::other("RWKV state-cache reader lock poisoned"))?;
+        if guard.is_none() {
+            let connection = Connection::open_with_flags(
+                &self.path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(state_cache_store_error)?;
+            validate_state_cache_store(&connection, &self.store_generation)?;
+            *guard = Some(connection);
+        }
+        let connection = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("missing RWKV state-cache reader"))?;
+        read_state_cache_entity(connection, kind, entity_id, row_id)
+    }
+
+    fn close(&self) {
+        if let Ok(mut guard) = self.connection.lock() {
+            *guard = None;
+        }
+    }
+}
+
+/// Reads one entity's complete state.
+///
+/// The row carries its own key and the store carries its generation, and both
+/// are checked, so a store that was replaced under us fails loudly instead of
+/// returning some other entity's state. The state body itself is length- and
+/// magic-checked by `deserialize_module_state`, so a short read is an error
+/// rather than a partial state.
+fn read_state_cache_entity(
+    connection: &Connection,
+    kind: i64,
+    entity_id: i64,
+    row_id: i64,
+) -> io::Result<Option<ModuleState>> {
+    let row = connection
+        .query_row(
+            "select kind, entity_id, state from entity_states where id = ?",
+            [row_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(state_cache_store_error)?;
+    let Some((row_kind, row_entity_id, state)) = row else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing RWKV state-cache entity row",
+        ));
+    };
+    if row_kind != kind || row_entity_id != entity_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RWKV state-cache entity row key mismatch",
+        ));
+    }
+    deserialize_module_state(state.as_deref())
+}
+
+/// The newest row of each (kind, entity) in a restored segment chain.
+struct StateCacheIndex {
+    card: HashMap<i64, i64>,
+    note: HashMap<i64, i64>,
+    deck: HashMap<i64, i64>,
+    preset: HashMap<i64, i64>,
+    global: Option<i64>,
+}
+
+/// Indexes a restored segment chain by key, reading no states.
+///
+/// A state is replaced at every review and never accumulated, so every row is
+/// a full snapshot of one entity and the newest row for a key is the whole
+/// answer. The chain is ordered newest first, so the first row seen wins.
+fn build_state_cache_index(
+    connection: &Connection,
+    segment_chain: &[i64],
+) -> io::Result<StateCacheIndex> {
+    let mut index = StateCacheIndex {
+        card: HashMap::new(),
+        note: HashMap::new(),
+        deck: HashMap::new(),
+        preset: HashMap::new(),
+        global: None,
+    };
+    let mut seen_global = false;
+    let mut statement = connection
+        .prepare("select kind, entity_id, id from entity_states where segment_id = ?")
+        .map_err(state_cache_store_error)?;
+    for segment_id in segment_chain {
+        let rows = statement
+            .query_map([segment_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(state_cache_store_error)?;
+        for row in rows {
+            let (kind, entity_id, row_id) = row.map_err(state_cache_store_error)?;
+            match kind {
+                STATE_CACHE_KIND_CARD => {
+                    index.card.entry(entity_id).or_insert(row_id);
+                }
+                STATE_CACHE_KIND_NOTE => {
+                    index.note.entry(entity_id).or_insert(row_id);
+                }
+                STATE_CACHE_KIND_DECK => {
+                    index.deck.entry(entity_id).or_insert(row_id);
+                }
+                STATE_CACHE_KIND_PRESET => {
+                    index.preset.entry(entity_id).or_insert(row_id);
+                }
+                STATE_CACHE_KIND_GLOBAL => {
+                    if !seen_global {
+                        seen_global = true;
+                        index.global = Some(row_id);
+                    }
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unknown RWKV state-cache entity kind",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(index)
 }
 
 fn state_cache_delta_identities(
@@ -3939,48 +4309,6 @@ fn state_cache_delta_identities(
     };
     identities.sort_unstable();
     identities
-}
-
-fn state_cache_map_delta_len(
-    states: &HashMap<i64, ModuleState>,
-    dirty: &HashSet<i64>,
-    full: bool,
-) -> io::Result<usize> {
-    let identities = state_cache_delta_identities(states, dirty, full);
-    let mut len = 4_usize;
-    for identity in identities {
-        len = len.checked_add(9).ok_or_else(state_cache_delta_too_large)?;
-        if let Some(state) = states.get(&identity) {
-            len = len
-                .checked_add(4 + serialized_module_state_len(state))
-                .ok_or_else(state_cache_delta_too_large)?;
-        }
-    }
-    Ok(len)
-}
-
-fn write_state_cache_map_delta(
-    out: &mut impl io::Write,
-    states: &HashMap<i64, ModuleState>,
-    dirty: &HashSet<i64>,
-    full: bool,
-) -> io::Result<()> {
-    let identities = state_cache_delta_identities(states, dirty, full);
-    write_snapshot_u32(out, identities.len())?;
-    for identity in identities {
-        out.write_all(&identity.to_le_bytes())?;
-        if let Some(state) = states.get(&identity) {
-            out.write_all(&[1])?;
-            write_snapshot_module_state(out, state)?;
-        } else {
-            out.write_all(&[0])?;
-        }
-    }
-    Ok(())
-}
-
-fn state_cache_delta_too_large() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "RWKV state delta is too large")
 }
 
 fn restore_serialized_state(
@@ -4184,6 +4512,9 @@ fn open_state_cache_store(
             .pragma_update(None, "page_size", STATE_CACHE_STORE_PAGE_SIZE)
             .map_err(state_cache_store_error)?;
         connection
+            .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+            .map_err(state_cache_store_error)?;
+        connection
             .execute_batch(
                 r#"
 create table store_metadata (
@@ -4201,13 +4532,6 @@ create table segments (
   previous_intervals blob not null,
   review_counts blob not null,
   runtime_state blob not null
-);
-create table segment_state_chunks (
-  id integer primary key,
-  segment_id integer not null references segments(id) on delete cascade,
-  chunk_index integer not null,
-  state_delta blob not null,
-  unique (segment_id, chunk_index)
 );
 "#,
             )
@@ -4278,121 +4602,17 @@ fn validate_state_cache_parent(
     Ok(())
 }
 
-fn insert_state_cache_delta_chunks(
-    transaction: &Transaction<'_>,
+/// The chunk rows of one schema-4 segment, in the attached store the upgrade
+/// reads from.
+fn old_state_cache_delta_chunk_ids(
+    connection: &Connection,
     segment_id: i64,
-    state_delta_len: usize,
 ) -> io::Result<Vec<i64>> {
-    let mut chunk_ids = Vec::with_capacity(state_delta_len.div_ceil(STATE_CACHE_DELTA_CHUNK_BYTES));
-    let mut remaining = state_delta_len;
-    let mut chunk_index = 0_i64;
-    while remaining > 0 {
-        let chunk_len = remaining.min(STATE_CACHE_DELTA_CHUNK_BYTES);
-        transaction
-            .execute(
-                r#"
-insert into segment_state_chunks (segment_id, chunk_index, state_delta)
-values (?, ?, zeroblob(?))
-"#,
-                params![
-                    segment_id,
-                    chunk_index,
-                    i64::try_from(chunk_len).map_err(|_| state_cache_delta_too_large())?,
-                ],
-            )
-            .map_err(state_cache_store_error)?;
-        chunk_ids.push(transaction.last_insert_rowid());
-        remaining -= chunk_len;
-        chunk_index += 1;
-    }
-    if chunk_ids.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "empty RWKV state delta",
-        ));
-    }
-    Ok(chunk_ids)
-}
-
-struct StateCacheDeltaChunkWriter<'conn> {
-    blob: Blob<'conn>,
-    remaining_chunk_ids: std::vec::IntoIter<i64>,
-    expected_len: usize,
-    written: usize,
-}
-
-impl<'conn> StateCacheDeltaChunkWriter<'conn> {
-    fn new(
-        connection: &'conn Connection,
-        chunk_ids: Vec<i64>,
-        expected_len: usize,
-    ) -> io::Result<Self> {
-        let mut remaining_chunk_ids = chunk_ids.into_iter();
-        let first_chunk_id = remaining_chunk_ids.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing RWKV state delta chunk")
-        })?;
-        let blob = connection
-            .blob_open(
-                MAIN_DB,
-                "segment_state_chunks",
-                "state_delta",
-                first_chunk_id,
-                false,
-            )
-            .map_err(state_cache_store_error)?;
-        Ok(Self {
-            blob,
-            remaining_chunk_ids,
-            expected_len,
-            written: 0,
-        })
-    }
-
-    fn finish(mut self) -> io::Result<()> {
-        if self.written != self.expected_len || self.remaining_chunk_ids.next().is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incomplete RWKV state delta",
-            ));
-        }
-        self.blob.close().map_err(state_cache_store_error)
-    }
-}
-
-impl io::Write for StateCacheDeltaChunkWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut written = 0;
-        while written < buf.len() {
-            let chunk_written = io::Write::write(&mut self.blob, &buf[written..])?;
-            if chunk_written == 0 {
-                let next_chunk_id = self.remaining_chunk_ids.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "RWKV state delta exceeds allocated chunks",
-                    )
-                })?;
-                self.blob
-                    .reopen(next_chunk_id)
-                    .map_err(state_cache_store_error)?;
-            } else {
-                written += chunk_written;
-                self.written += chunk_written;
-            }
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn state_cache_delta_chunk_ids(connection: &Connection, segment_id: i64) -> io::Result<Vec<i64>> {
     let mut statement = connection
         .prepare(
             r#"
 select id, chunk_index
-from segment_state_chunks
+from old_store.segment_state_chunks
 where segment_id = ?
 order by chunk_index
 "#,
@@ -4436,7 +4656,7 @@ impl<'conn> StateCacheDeltaChunkReader<'conn> {
         })?;
         let blob = connection
             .blob_open(
-                MAIN_DB,
+                STATE_CACHE_OLD_STORE_NAME,
                 "segment_state_chunks",
                 "state_delta",
                 first_chunk_id,
@@ -4504,90 +4724,339 @@ fn state_cache_segment_chain(
     Ok(chain)
 }
 
-fn read_state_cache_maps(
-    connection: &Connection,
-    segment_chain: &[i64],
-) -> io::Result<ReviewStateMaps> {
-    let mut result = ReviewStateMaps::default();
-    let mut seen_card = HashSet::new();
-    let mut seen_note = HashSet::new();
-    let mut seen_deck = HashSet::new();
-    let mut seen_preset = HashSet::new();
-    let mut seen_global = false;
-    for segment_id in segment_chain {
-        let chunk_ids = state_cache_delta_chunk_ids(connection, *segment_id)?;
-        let mut state_delta = StateCacheDeltaChunkReader::new(connection, chunk_ids)?;
-        let mut magic = vec![0; STATE_CACHE_DELTA_MAGIC.len()];
-        io::Read::read_exact(&mut state_delta, &mut magic)?;
-        if magic != STATE_CACHE_DELTA_MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid RWKV state-cache delta header",
-            ));
-        }
-        read_state_cache_map_delta(&mut state_delta, &mut result.card, &mut seen_card)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.note, &mut seen_note)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.deck, &mut seen_deck)?;
-        read_state_cache_map_delta(&mut state_delta, &mut result.preset, &mut seen_preset)?;
-        match read_state_cache_u8(&mut state_delta)? {
-            0 => {}
-            1 => {
-                if !seen_global {
-                    seen_global = true;
-                    result.global = None;
-                }
-            }
-            2 => {
-                let size = read_state_cache_u32(&mut state_delta)? as usize;
-                if seen_global {
-                    skip_state_cache_bytes(&mut state_delta, size)?;
-                } else {
-                    seen_global = true;
-                    let mut state = vec![0; size];
-                    io::Read::read_exact(&mut state_delta, &mut state)?;
-                    result.global = deserialize_module_state(Some(&state))?;
-                }
-            }
-            _ => return Err(invalid_state_cache_delta_marker()),
-        }
-        let mut trailing = [0];
-        if io::Read::read(&mut state_delta, &mut trailing)? != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "trailing RWKV state-cache delta data",
-            ));
+/// The name of the half-built store the upgrade writes beside the old one.
+const STATE_CACHE_UPGRADE_SUFFIX: &str = "upgrade";
+/// The name the upgrade attaches the schema-4 store under.
+const STATE_CACHE_OLD_STORE_NAME: &std::ffi::CStr = c"old_store";
+
+/// Rewrites a schema-4 store, which kept one serialized delta stream per
+/// segment, as one `entity_states` row per (segment, kind, entity).
+///
+/// Every entry in a stream was already a full snapshot of one entity - an RNN
+/// state is replaced at each review, never accumulated - so the conversion is
+/// a straight copy and no review is replayed.
+///
+/// The new store is built in a file beside the old one and is put in its place
+/// only after every row is written and counted. An interruption therefore
+/// costs a second run and never the cache: the schema-4 store is untouched
+/// until the rename, and a half-built file left behind is removed by the next
+/// run.
+fn migrate_state_cache_store(path: &Path) -> io::Result<()> {
+    {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(state_cache_store_error)?;
+        let schema_version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .map_err(state_cache_store_error)?;
+        connection
+            .close()
+            .map_err(|(_, error)| state_cache_store_error(error))?;
+        if schema_version != STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION {
+            return Ok(());
         }
     }
-    Ok(result)
+    let upgrade_path = state_cache_upgrade_path(path);
+    if upgrade_path.exists() {
+        std::fs::remove_file(&upgrade_path)?;
+    }
+    check_state_cache_upgrade_space(path)?;
+    let result = build_upgraded_state_cache_store(path, &upgrade_path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&upgrade_path);
+        return result;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&upgrade_path)?
+        .sync_all()?;
+    std::fs::rename(&upgrade_path, path)?;
+    Ok(())
 }
 
-fn read_state_cache_map_delta(
-    input: &mut impl io::Read,
-    states: &mut HashMap<i64, ModuleState>,
-    seen: &mut HashSet<i64>,
-) -> io::Result<()> {
-    for _ in 0..read_state_cache_u32(input)? {
-        let identity = read_state_cache_i64(input)?;
-        match read_state_cache_u8(input)? {
-            0 => {
-                seen.insert(identity);
-            }
-            1 => {
-                let size = read_state_cache_u32(input)? as usize;
-                if seen.insert(identity) {
-                    let mut state = vec![0; size];
-                    io::Read::read_exact(input, &mut state)?;
-                    if let Some(state) = deserialize_module_state(Some(&state))? {
-                        states.insert(identity, state);
-                    }
-                } else {
-                    skip_state_cache_bytes(input, size)?;
-                }
-            }
-            _ => return Err(invalid_state_cache_delta_marker()),
+/// Refuses the upgrade when the disk cannot hold the store twice.
+///
+/// The new store is built beside the old one and holds the same states, so the
+/// upgrade needs about the size of the store again, plus room for the rows'
+/// own overhead. Running out of space in the middle costs nothing but the
+/// time - the old store is untouched until the rename - so this check exists
+/// to say why, not to keep the cache safe.
+fn check_state_cache_upgrade_space(path: &Path) -> io::Result<()> {
+    let store_bytes = std::fs::metadata(path)?.len();
+    let needed = store_bytes + store_bytes / 20;
+    let directory = path.parent().unwrap_or(Path::new("."));
+    let Some(available) = available_disk_space(directory) else {
+        return Ok(());
+    };
+    if available >= needed {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the RWKV state cache cannot be upgraded: it needs {needed} bytes of \
+         free space in {} and {available} bytes are free",
+        directory.display()
+    )))
+}
+
+/// Free space a normal user can still use in `directory`, or `None` when the
+/// platform did not answer.
+#[cfg(windows)]
+fn available_disk_space(directory: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Declared here rather than through a new crate feature: one call, one
+    // signature, and no other part of rslib asks about free space.
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory_name: *const u16,
+            free_bytes_available_to_caller: *mut u64,
+            total_bytes: *mut u64,
+            total_free_bytes: *mut u64,
+        ) -> i32;
+    }
+
+    let mut wide: Vec<u16> = directory.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut available = 0_u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(unix)]
+fn available_disk_space(directory: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut path = directory.as_os_str().as_bytes().to_vec();
+    path.push(0);
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::statvfs(path.as_ptr().cast::<libc::c_char>(), &mut stats) };
+    if ok != 0 {
+        return None;
+    }
+    Some((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
+}
+
+/// No answer on a platform that is neither Windows nor unix, so the upgrade
+/// runs and fails on a full disk instead of refusing first.
+#[cfg(not(any(windows, unix)))]
+fn available_disk_space(_directory: &Path) -> Option<u64> {
+    None
+}
+
+fn state_cache_upgrade_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(STATE_CACHE_UPGRADE_SUFFIX);
+    path.with_file_name(name)
+}
+
+/// Writes the whole schema-5 store to `upgrade_path`, reading the schema-4
+/// store at `path` through an attached database.
+fn build_upgraded_state_cache_store(path: &Path, upgrade_path: &Path) -> io::Result<()> {
+    let mut connection = Connection::open(upgrade_path).map_err(state_cache_store_error)?;
+    connection
+        .pragma_update(None, "page_size", STATE_CACHE_STORE_PAGE_SIZE)
+        .map_err(state_cache_store_error)?;
+    // The file is thrown away unless it is complete, so its own durability
+    // does not matter; only the rename at the end has to be ordered.
+    connection
+        .execute_batch(
+            "pragma journal_mode = off;
+             pragma synchronous = off;",
+        )
+        .map_err(state_cache_store_error)?;
+    connection
+        .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+        .map_err(state_cache_store_error)?;
+    connection
+        .execute_batch(
+            r#"
+create table store_metadata (
+  key text primary key,
+  value text not null
+) without rowid;
+create table segments (
+  id integer primary key,
+  parent_id integer references segments(id),
+  last_review_id integer not null,
+  review_count integer not null,
+  history_hash text not null,
+  replay_key text not null,
+  previous_review_ids blob not null,
+  previous_intervals blob not null,
+  review_counts blob not null,
+  runtime_state blob not null
+);
+"#,
+        )
+        .map_err(state_cache_store_error)?;
+    let old_path = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("RWKV state-cache path is not valid unicode"))?;
+    connection
+        .execute("attach database ? as old_store", [old_path])
+        .map_err(state_cache_store_error)?;
+    let expected = (|| -> io::Result<(i64, i64)> {
+        let transaction = connection.transaction().map_err(state_cache_store_error)?;
+        transaction
+            .execute_batch(
+                "insert into store_metadata select * from old_store.store_metadata;
+                 insert into segments select * from old_store.segments;",
+            )
+            .map_err(state_cache_store_error)?;
+        let segment_ids = {
+            let mut statement = transaction
+                .prepare("select id from old_store.segments order by id")
+                .map_err(state_cache_store_error)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(state_cache_store_error)?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()
+                .map_err(state_cache_store_error)?
+        };
+        let mut rows = 0_i64;
+        let mut state_bytes = 0_i64;
+        for segment_id in segment_ids {
+            let (segment_rows, segment_bytes) =
+                migrate_state_cache_segment(&transaction, segment_id)?;
+            rows += segment_rows;
+            state_bytes += segment_bytes;
+        }
+        transaction.commit().map_err(state_cache_store_error)?;
+        Ok((rows, state_bytes))
+    })()?;
+    connection
+        .execute_batch("detach database old_store")
+        .map_err(state_cache_store_error)?;
+    // `length()` of a blob column reads the row header, not the blob, so this
+    // check costs a scan of the table's own pages and not of the states.
+    let written = connection
+        .query_row(
+            "select count(*), coalesce(sum(length(state)), 0) from entity_states",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(state_cache_store_error)?;
+    if written != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the upgraded RWKV state-cache store is incomplete: \
+                 wrote {} rows of {} bytes, expected {} rows of {} bytes",
+                written.0, written.1, expected.0, expected.1
+            ),
+        ));
+    }
+    connection
+        .pragma_update(None, "user_version", STATE_CACHE_STORE_SCHEMA_VERSION)
+        .map_err(state_cache_store_error)?;
+    connection
+        .close()
+        .map_err(|(_, error)| state_cache_store_error(error))
+}
+
+/// Converts one schema-4 segment's delta stream into `entity_states` rows.
+///
+/// Returns the number of rows written and the number of state bytes in them,
+/// so that the caller can check the finished store against the source.
+fn migrate_state_cache_segment(
+    transaction: &Transaction<'_>,
+    segment_id: i64,
+) -> io::Result<(i64, i64)> {
+    let mut rows = 0_i64;
+    let mut state_bytes = 0_i64;
+    let chunk_ids = old_state_cache_delta_chunk_ids(transaction, segment_id)?;
+    let mut statement = transaction
+        .prepare(
+            "insert into entity_states (segment_id, kind, entity_id, state) \
+             values (?, ?, ?, ?)",
+        )
+        .map_err(state_cache_store_error)?;
+    let mut state_delta = StateCacheDeltaChunkReader::new(transaction, chunk_ids)?;
+    let mut magic = vec![0; STATE_CACHE_DELTA_MAGIC.len()];
+    io::Read::read_exact(&mut state_delta, &mut magic)?;
+    if magic != STATE_CACHE_DELTA_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid RWKV state-cache delta header",
+        ));
+    }
+    for kind in [
+        STATE_CACHE_KIND_CARD,
+        STATE_CACHE_KIND_NOTE,
+        STATE_CACHE_KIND_DECK,
+        STATE_CACHE_KIND_PRESET,
+    ] {
+        for _ in 0..read_state_cache_u32(&mut state_delta)? {
+            let entity_id = read_state_cache_i64(&mut state_delta)?;
+            let state = read_state_cache_delta_state(&mut state_delta)?;
+            rows += 1;
+            state_bytes += state.as_ref().map_or(0, |state| state.len() as i64);
+            statement
+                .execute(params![segment_id, kind, entity_id, state])
+                .map_err(state_cache_store_error)?;
         }
     }
-    Ok(())
+    match read_state_cache_u8(&mut state_delta)? {
+        0 => {}
+        1 => {
+            rows += 1;
+            statement
+                .execute(params![
+                    segment_id,
+                    STATE_CACHE_KIND_GLOBAL,
+                    STATE_CACHE_GLOBAL_ENTITY_ID,
+                    None::<Vec<u8>>
+                ])
+                .map_err(state_cache_store_error)?;
+        }
+        2 => {
+            let size = read_state_cache_u32(&mut state_delta)? as usize;
+            let mut state = vec![0; size];
+            io::Read::read_exact(&mut state_delta, &mut state)?;
+            rows += 1;
+            state_bytes += size as i64;
+            statement
+                .execute(params![
+                    segment_id,
+                    STATE_CACHE_KIND_GLOBAL,
+                    STATE_CACHE_GLOBAL_ENTITY_ID,
+                    Some(state)
+                ])
+                .map_err(state_cache_store_error)?;
+        }
+        _ => return Err(invalid_state_cache_delta_marker()),
+    }
+    let mut trailing = [0];
+    if io::Read::read(&mut state_delta, &mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing RWKV state-cache delta data",
+        ));
+    }
+    Ok((rows, state_bytes))
+}
+
+fn read_state_cache_delta_state(input: &mut impl io::Read) -> io::Result<Option<Vec<u8>>> {
+    match read_state_cache_u8(input)? {
+        0 => Ok(None),
+        1 => {
+            let size = read_state_cache_u32(input)? as usize;
+            let mut state = vec![0; size];
+            io::Read::read_exact(input, &mut state)?;
+            Ok(Some(state))
+        }
+        _ => Err(invalid_state_cache_delta_marker()),
+    }
 }
 
 fn read_state_cache_u8(input: &mut impl io::Read) -> io::Result<u8> {
@@ -4606,16 +5075,6 @@ fn read_state_cache_i64(input: &mut impl io::Read) -> io::Result<i64> {
     let mut value = [0; 8];
     io::Read::read_exact(input, &mut value)?;
     Ok(i64::from_le_bytes(value))
-}
-
-fn skip_state_cache_bytes(input: &mut impl io::Read, mut size: usize) -> io::Result<()> {
-    let mut buffer = [0; 8192];
-    while size > 0 {
-        let read_size = size.min(buffer.len());
-        io::Read::read_exact(input, &mut buffer[..read_size])?;
-        size -= read_size;
-    }
-    Ok(())
 }
 
 fn invalid_state_cache_delta_marker() -> io::Error {
@@ -9125,9 +9584,9 @@ order by e.id, e.cid
         serialized
     }
 
-    fn assert_warm_up_parity(sequential: &RwkvInference, bulk: &RwkvInference) {
-        let sequential_snapshot = sequential.warm_up_snapshot();
-        let bulk_snapshot = bulk.warm_up_snapshot();
+    fn assert_warm_up_parity(sequential: &mut RwkvInference, bulk: &mut RwkvInference) {
+        let sequential_snapshot = sequential.warm_up_snapshot().unwrap();
+        let bulk_snapshot = bulk.warm_up_snapshot().unwrap();
         assert_eq!(
             sorted_states(sequential_snapshot.card_states),
             sorted_states(bulk_snapshot.card_states),
@@ -9271,7 +9730,7 @@ order by e.id, e.cid
             .iter()
             .map(|input| ReviewPredictionRequest {
                 input: input.clone(),
-                state: inference.warm_up_state(input),
+                state: inference.warm_up_state(input).unwrap(),
             })
             .collect::<Vec<_>>();
         let expected = inference.predict_many(requests).unwrap();
@@ -9333,7 +9792,7 @@ order by e.id, e.cid
             .iter()
             .map(|input| ReviewPredictionRequest {
                 input: input.clone(),
-                state: inference.warm_up_state(input),
+                state: inference.warm_up_state(input).unwrap(),
             })
             .collect::<Vec<_>>();
         let expected = inference.predict_many(requests).unwrap();
@@ -9459,13 +9918,721 @@ order by e.id, e.cid
                     "logloss changed: before={sequential_log_loss:.15}, after={bulk_log_loss:.15}, delta={log_loss_delta:.15}"
                 );
             }
-            assert_warm_up_parity(&sequential, &bulk);
+            assert_warm_up_parity(&mut sequential, &mut bulk);
             assert_eq!(
                 sequential.cache_state().len(),
                 bulk.cache_state().len(),
                 "runtime cache size diverged (record={record_predictions})"
             );
         }
+    }
+
+    /// Measurement harness, not a pin. Point it at a **copy** of a real
+    /// state-cache store:
+    ///
+    /// ```text
+    /// ANKI_RWKV_STATE_STORE=<path> ANKI_RWKV_STATE_GENERATION=<generation>
+    /// ANKI_RWKV_STATE_SEGMENT=<segment id> ANKI_RWKV_STATE_READS=<count>
+    /// cargo test --release -p anki --lib rwkv_state_store_startup_benchmark
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn rwkv_state_store_startup_benchmark() {
+        let Ok(store) = std::env::var("ANKI_RWKV_STATE_STORE") else {
+            eprintln!("skipping: ANKI_RWKV_STATE_STORE is not set");
+            return;
+        };
+        let generation = std::env::var("ANKI_RWKV_STATE_GENERATION").unwrap();
+        let segment_id: i64 = std::env::var("ANKI_RWKV_STATE_SEGMENT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let reads: usize = std::env::var("ANKI_RWKV_STATE_READS")
+            .unwrap_or_else(|_| "300".to_string())
+            .parse()
+            .unwrap();
+        let weights = embedded_weights_path().expect("RWKV weights are missing");
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let started = std::time::Instant::now();
+        inference
+            .restore_warm_up_state_checkpoint(store.into(), &generation, segment_id)
+            .unwrap();
+        println!("restore_ms {}", started.elapsed().as_secs_f64() * 1000.0);
+        let source = inference
+            .warm_up_states
+            .lazy
+            .as_ref()
+            .expect("restored session should read states lazily");
+        println!(
+            "indexed_cards {} indexed_notes {} resident_decks {} resident_presets {}",
+            source.card.len(),
+            source.note.len(),
+            inference.warm_up_states.deck.len(),
+            inference.warm_up_states.preset.len()
+        );
+        let mut card_ids = source.card.keys().copied().collect::<Vec<_>>();
+        card_ids.sort_unstable();
+        let step = (card_ids.len() / reads.max(1)).max(1);
+        let sample = card_ids
+            .into_iter()
+            .step_by(step)
+            .take(reads)
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        for card_id in &sample {
+            inference
+                .warm_up_states
+                .load_lazy(STATE_CACHE_KIND_CARD, *card_id)
+                .unwrap();
+        }
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "card_reads {} total_ms {elapsed} per_read_ms {}",
+            sample.len(),
+            elapsed / sample.len() as f64
+        );
+    }
+
+    /// Reviews over many cards and notes, several reviews per card, so that
+    /// the cards end the warm-up in states that predict different values.
+    fn lazy_state_reviews(cards: i64, per_card: i64) -> Vec<ReviewInput> {
+        let mut state = 0x6a09e667f3bcc908_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as i64
+        };
+        (0..cards * per_card)
+            .map(|index| {
+                let card_id = 100 + index % cards;
+                ReviewInput {
+                    card_id,
+                    note_id: Some(10_000 + card_id / 2),
+                    deck_id: Some(20_000 + card_id.rem_euclid(8)),
+                    preset_id: Some(30_000 + card_id.rem_euclid(4)),
+                    is_query: false,
+                    ease: Some((next().rem_euclid(4) + 1) as u8),
+                    duration_millis: Some(1_500 + next().rem_euclid(20_000)),
+                    card_type: Some(next().rem_euclid(3)),
+                    day_offset: Some(7_300 + index / cards * 30),
+                    current_elapsed_days: Some(next().rem_euclid(120) - 1),
+                    current_elapsed_seconds: Some(next().rem_euclid(120 * 86_400) - 1),
+                    target_retentions: [Some(0.9), Some(0.9), Some(0.9), Some(0.9)],
+                    enforce_grade_order: true,
+                }
+            })
+            .collect()
+    }
+
+    /// Pins `sched.rwkv-lazy-state-load`: a restored session that reads card
+    /// and note states one key at a time predicts exactly what the fully
+    /// resident warm-up predicts, and reads back only the keys it asks for.
+    ///
+    /// The fixture has 900 cards over 450 notes, and the check below proves
+    /// the predictions differ from card to card, so a state read for the
+    /// wrong key would change a prediction and fail this test.
+    #[test]
+    fn lazy_state_reads_match_resident_predictions() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(900, 4);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "lazy-generation";
+
+        let mut resident = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        resident.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = resident
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "lazy-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        resident.finish_warm_up_state_checkpoints().unwrap();
+
+        let mut seen = HashSet::new();
+        let queries = reviews
+            .iter()
+            .rev()
+            .filter(|review| seen.insert(review.card_id))
+            .map(|review| ReviewInput {
+                is_query: true,
+                ease: None,
+                ..review.clone()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            queries.len() > 300,
+            "fixture should cover more than 300 cards, got {}",
+            queries.len()
+        );
+        let sample = queries[..300].to_vec();
+
+        let mut lazy = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        lazy.restore_warm_up_state_checkpoint(store_path, generation, segment_id)
+            .unwrap();
+        let indexed_cards = lazy
+            .warm_up_states
+            .lazy
+            .as_ref()
+            .expect("restored session should read states lazily")
+            .card
+            .len();
+        assert_eq!(
+            indexed_cards,
+            queries.len(),
+            "every card should be indexed and none of them resident yet"
+        );
+        assert!(
+            lazy.warm_up_states.card.is_empty(),
+            "no card state should be resident before a card comes up"
+        );
+
+        let expected = resident
+            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .unwrap();
+        let actual = lazy
+            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .unwrap();
+        assert_eq!(expected.len(), sample.len());
+        for (index, (expected, actual)) in expected.iter().zip(&actual).enumerate() {
+            assert_eq!(
+                expected.retrievability.to_bits(),
+                actual.retrievability.to_bits(),
+                "retrievability diverged at row {index}"
+            );
+            assert_eq!(
+                expected.current_interval, actual.current_interval,
+                "interval diverged at row {index}"
+            );
+            assert_eq!(
+                expected.current_s90.map(f32::to_bits),
+                actual.current_s90.map(f32::to_bits),
+                "S90 diverged at row {index}"
+            );
+        }
+
+        // Only the 300 cards asked for were read back.
+        assert_eq!(
+            lazy.warm_up_states.card.len(),
+            300,
+            "lazy session should hold only the cards it predicted"
+        );
+        assert_eq!(
+            lazy.warm_up_states.lazy.as_ref().unwrap().card.len(),
+            indexed_cards - 300,
+            "the rest of the cards should still be in the store"
+        );
+
+        // The state each card was predicted from must be the resident one,
+        // byte for byte. A pin that cannot fail is not a pin, so the check
+        // below also proves the 300 cards have 300 different states: a read
+        // that returned another card's state would change these bytes.
+        let mut card_states = Vec::new();
+        for input in &sample {
+            let lazy_state = lazy.warm_up_state(input).unwrap();
+            let resident_state = resident.warm_up_state(input).unwrap();
+            assert_eq!(
+                lazy_state.card, resident_state.card,
+                "card {} state diverged",
+                input.card_id
+            );
+            assert_eq!(
+                lazy_state.note, resident_state.note,
+                "note of card {} diverged",
+                input.card_id
+            );
+            assert_eq!(
+                lazy_state.deck, resident_state.deck,
+                "deck of card {} diverged",
+                input.card_id
+            );
+            assert_eq!(
+                lazy_state.preset, resident_state.preset,
+                "preset of card {} diverged",
+                input.card_id
+            );
+            assert_eq!(lazy_state.global, resident_state.global, "global diverged");
+            card_states.push(lazy_state.card.expect("card state"));
+        }
+        let distinct = card_states.iter().collect::<HashSet<_>>();
+        assert!(
+            distinct.len() > 250,
+            "the fixture's cards should nearly all carry their own state, got {} of {}",
+            distinct.len(),
+            card_states.len()
+        );
+    }
+
+    /// Rewrites a schema-5 store in the schema-4 format the upgrade has to
+    /// read, and returns the rows it wrote, keyed by (kind, entity).
+    ///
+    /// The code that wrote schema 4 is gone, so the bytes are laid out here
+    /// from the format's own description. The returned map is what the test
+    /// checks the upgraded store against, so the check does not go through the
+    /// upgrade's own reader.
+    fn downgrade_state_cache_store_to_v4(
+        path: &std::path::Path,
+        chunk_bytes: usize,
+    ) -> HashMap<(i64, i64, i64), Option<Vec<u8>>> {
+        let connection = Connection::open(path).unwrap();
+        let mut rows: HashMap<(i64, i64, i64), Option<Vec<u8>>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare("select segment_id, kind, entity_id, state from entity_states")
+                .unwrap();
+            let mapped = statement
+                .query_map([], |row| {
+                    Ok((
+                        (
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ),
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                })
+                .unwrap();
+            for row in mapped {
+                let (key, state) = row.unwrap();
+                rows.insert(key, state);
+            }
+        }
+        let segment_ids = {
+            let mut statement = connection
+                .prepare("select id from segments order by id")
+                .unwrap();
+            let mapped = statement.query_map([], |row| row.get::<_, i64>(0)).unwrap();
+            mapped.map(|row| row.unwrap()).collect::<Vec<i64>>()
+        };
+        connection
+            .execute_batch(
+                r#"
+drop table entity_states;
+create table segment_state_chunks (
+  id integer primary key,
+  segment_id integer not null references segments(id) on delete cascade,
+  chunk_index integer not null,
+  state_delta blob not null,
+  unique (segment_id, chunk_index)
+);
+"#,
+            )
+            .unwrap();
+        for segment_id in segment_ids {
+            let mut stream = Vec::new();
+            stream.extend_from_slice(STATE_CACHE_DELTA_MAGIC);
+            for kind in [
+                STATE_CACHE_KIND_CARD,
+                STATE_CACHE_KIND_NOTE,
+                STATE_CACHE_KIND_DECK,
+                STATE_CACHE_KIND_PRESET,
+            ] {
+                let mut entities = rows
+                    .iter()
+                    .filter(|((row_segment, row_kind, _), _)| {
+                        *row_segment == segment_id && *row_kind == kind
+                    })
+                    .map(|((_, _, entity_id), state)| (*entity_id, state.clone()))
+                    .collect::<Vec<_>>();
+                entities.sort_by_key(|(entity_id, _)| *entity_id);
+                stream.extend_from_slice(&(entities.len() as u32).to_le_bytes());
+                for (entity_id, state) in entities {
+                    stream.extend_from_slice(&entity_id.to_le_bytes());
+                    match state {
+                        Some(state) => {
+                            stream.push(1);
+                            stream.extend_from_slice(&(state.len() as u32).to_le_bytes());
+                            stream.extend_from_slice(&state);
+                        }
+                        None => stream.push(0),
+                    }
+                }
+            }
+            match rows.get(&(
+                segment_id,
+                STATE_CACHE_KIND_GLOBAL,
+                STATE_CACHE_GLOBAL_ENTITY_ID,
+            )) {
+                None => stream.push(0),
+                Some(None) => stream.push(1),
+                Some(Some(state)) => {
+                    stream.push(2);
+                    stream.extend_from_slice(&(state.len() as u32).to_le_bytes());
+                    stream.extend_from_slice(state);
+                }
+            }
+            for (chunk_index, chunk) in stream.chunks(chunk_bytes).enumerate() {
+                connection
+                    .execute(
+                        "insert into segment_state_chunks (segment_id, chunk_index, state_delta) \
+                         values (?, ?, ?)",
+                        params![segment_id, chunk_index as i64, chunk],
+                    )
+                    .unwrap();
+            }
+        }
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION,
+            )
+            .unwrap();
+        connection.close().unwrap();
+        rows
+    }
+
+    /// Pins the upgrade of a store an older Clanki wrote: every row of the
+    /// upgraded store carries the bytes the schema-4 stream held for that key,
+    /// and the upgraded store restores the session the states came from.
+    #[test]
+    fn a_schema_4_store_upgrades_without_changing_a_state() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(40, 3);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "upgrade-generation";
+
+        let mut expected = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        expected.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = expected
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "upgrade-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        expected.finish_warm_up_state_checkpoints().unwrap();
+
+        // 512-byte chunks, so a state spans about a hundred of them and the
+        // upgrade's reader has to cross chunk boundaries inside one entity.
+        let written = downgrade_state_cache_store_to_v4(&store_path, 512);
+        assert!(written.len() > 60, "fixture should hold many entities");
+        let version: i64 = Connection::open(&store_path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, STATE_CACHE_STORE_CHUNKED_SCHEMA_VERSION);
+
+        migrate_state_cache_store(&store_path).unwrap();
+
+        let connection = Connection::open(&store_path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, STATE_CACHE_STORE_SCHEMA_VERSION);
+        assert!(
+            !state_cache_upgrade_path(&store_path).exists(),
+            "the half-built store should be gone"
+        );
+        let mut upgraded: HashMap<(i64, i64, i64), Option<Vec<u8>>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare("select segment_id, kind, entity_id, state from entity_states")
+                .unwrap();
+            let mapped = statement
+                .query_map([], |row| {
+                    Ok((
+                        (
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ),
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                })
+                .unwrap();
+            for row in mapped {
+                let (key, state) = row.unwrap();
+                assert!(
+                    upgraded.insert(key, state).is_none(),
+                    "a key should appear once per segment"
+                );
+            }
+        }
+        assert_eq!(upgraded, written, "the upgrade changed a stored state");
+        let chunk_table: i64 = connection
+            .query_row(
+                "select count(*) from sqlite_master where type = 'table' and name = ?",
+                ["segment_state_chunks"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunk_table, 0, "the old chunk table should be gone");
+        drop(connection);
+
+        let mut restored = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        restored
+            .restore_warm_up_state_checkpoint(store_path, generation, segment_id)
+            .unwrap();
+        assert_warm_up_parity(&mut expected, &mut restored);
+    }
+
+    /// Pins the guard on the full-checkpoint writer: a session that still has
+    /// states in the store may not write a segment that claims to hold them
+    /// all. The three callers load everything first; a fourth one that forgets
+    /// gets an error instead of a store with the other cards dropped.
+    #[test]
+    fn a_full_checkpoint_refuses_a_session_that_still_reads_lazily() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(40, 3);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "guard-generation";
+
+        let mut resident = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        resident.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = resident
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "guard-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        resident.finish_warm_up_state_checkpoints().unwrap();
+
+        let mut lazy = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        lazy.restore_warm_up_state_checkpoint(store_path.clone(), generation, segment_id)
+            .unwrap();
+        assert!(lazy.warm_up_states.lazy.is_some());
+        let error = {
+            let mut connection =
+                Connection::open(temporary_dir.path().join("guard.sqlite3")).unwrap();
+            connection
+                .execute_batch("create table segments (id integer primary key);")
+                .unwrap();
+            connection
+                .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+                .unwrap();
+            connection
+                .execute("insert into segments (id) values (1)", [])
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            lazy.warm_up_states
+                .write_checkpoint_rows(&transaction, 1, true)
+                .expect_err("a full checkpoint needs every state resident")
+        };
+        assert!(
+            error.to_string().contains("needs every state resident"),
+            "unexpected error: {error}"
+        );
+
+        // The same writer accepts the full checkpoint once the states are read.
+        lazy.warm_up_states.force_load_all().unwrap();
+        let mut connection = Connection::open(temporary_dir.path().join("guard2.sqlite3")).unwrap();
+        connection
+            .execute_batch("create table segments (id integer primary key);")
+            .unwrap();
+        connection
+            .execute_batch(STATE_CACHE_ENTITY_STATES_DDL)
+            .unwrap();
+        connection
+            .execute("insert into segments (id) values (1)", [])
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        lazy.warm_up_states
+            .write_checkpoint_rows(&transaction, 1, true)
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+
+    /// Pins the day-to-day flow: a session that restored lazily and then
+    /// answered more reviews writes a checkpoint that holds only what it
+    /// changed, and the chain still restores every state.
+    #[test]
+    fn a_lazy_session_writes_a_complete_checkpoint_chain() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = lazy_state_reviews(400, 3);
+        let split = reviews.len() * 2 / 3;
+        let prefix = reviews[..split].to_vec();
+        // A short tail, so that the second checkpoint covers only some of the
+        // cards and the rest have to come from the first one.
+        let suffix = reviews[split..split + 60].to_vec();
+        let reviews = reviews[..split + 60].to_vec();
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "chain-generation";
+
+        let mut expected = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        expected.warm_up_reviews(reviews.clone(), false).unwrap();
+
+        let mut staged = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        staged.warm_up_reviews(prefix, false).unwrap();
+        let first_segment = staged
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                split as i64,
+                split as i64,
+                "prefix-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        staged.finish_warm_up_state_checkpoints().unwrap();
+
+        let mut session = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        session
+            .restore_warm_up_state_checkpoint(store_path.clone(), generation, first_segment)
+            .unwrap();
+        session.warm_up_reviews(suffix, false).unwrap();
+        let second_segment = session
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                Some(first_segment),
+                reviews.len() as i64,
+                reviews.len() as i64,
+                "final-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                false,
+                false,
+            )
+            .unwrap();
+        session.finish_warm_up_state_checkpoints().unwrap();
+
+        let connection = Connection::open(&store_path).unwrap();
+        let first_rows: i64 = connection
+            .query_row(
+                "select count(*) from entity_states where segment_id = ?",
+                [first_segment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let second_rows: i64 = connection
+            .query_row(
+                "select count(*) from entity_states where segment_id = ?",
+                [second_segment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            second_rows < first_rows,
+            "the second checkpoint should hold only what the session changed: \
+             {second_rows} >= {first_rows}"
+        );
+
+        let mut restored = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        restored
+            .restore_warm_up_state_checkpoint(store_path, generation, second_segment)
+            .unwrap();
+        assert_warm_up_parity(&mut expected, &mut restored);
+    }
+
+    /// Pins the "never a stale-but-plausible state" half of
+    /// `sched.rwkv-lazy-state-load`: a row that does not carry the key it was
+    /// asked for is an error, not a state.
+    #[test]
+    fn lazy_state_read_rejects_a_foreign_row() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = bulk_parity_reviews(40);
+        let temporary_dir = tempfile::tempdir().unwrap();
+        let store_path = temporary_dir.path().join("state.sqlite3");
+        let generation = "foreign-generation";
+
+        let mut resident = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        resident.warm_up_reviews(reviews.clone(), false).unwrap();
+        let segment_id = resident
+            .write_warm_up_state_checkpoint(
+                store_path.clone(),
+                generation,
+                None,
+                40,
+                40,
+                "foreign-hash",
+                "replay-key",
+                b"previous-ids",
+                b"previous-intervals",
+                b"review-counts",
+                true,
+                false,
+            )
+            .unwrap();
+        resident.finish_warm_up_state_checkpoints().unwrap();
+
+        let mut lazy = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        lazy.restore_warm_up_state_checkpoint(store_path, generation, segment_id)
+            .unwrap();
+        let mut card_ids = lazy
+            .warm_up_states
+            .lazy
+            .as_ref()
+            .unwrap()
+            .card
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        card_ids.sort_unstable();
+        assert!(card_ids.len() > 1);
+        let (first, second) = (card_ids[0], card_ids[1]);
+        {
+            let source = lazy.warm_up_states.lazy.as_mut().unwrap();
+            let first_row = source.card[&first];
+            let second_row = source.card[&second];
+            source.card.insert(first, second_row);
+            source.card.insert(second, first_row);
+        }
+        let error = lazy
+            .warm_up_states
+            .load_lazy(STATE_CACHE_KIND_CARD, first)
+            .expect_err("a row with another card's key must not be accepted");
+        assert!(
+            error.to_string().contains("key mismatch"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -9532,49 +10699,47 @@ order by e.id, e.cid
             .pragma_query_value(None, "page_size", |row| row.get(0))
             .unwrap();
         assert_eq!(page_size, STATE_CACHE_STORE_PAGE_SIZE);
-        let first_state_bytes: i64 = connection
+        let first_state_rows: i64 = connection
             .query_row(
-                "select coalesce(sum(length(state_delta)), 0) \
-                 from segment_state_chunks where segment_id = ?",
+                "select count(*) from entity_states where segment_id = ?",
                 [first_segment],
                 |row| row.get(0),
             )
             .unwrap();
-        let second_state_bytes: i64 = connection
+        let second_state_rows: i64 = connection
             .query_row(
-                "select coalesce(sum(length(state_delta)), 0) \
-                 from segment_state_chunks where segment_id = ?",
+                "select count(*) from entity_states where segment_id = ?",
                 [second_segment],
                 |row| row.get(0),
             )
             .unwrap();
-        let first_chunk_count: i64 = connection
+        let first_card_rows: i64 = connection
             .query_row(
-                "select count(*) from segment_state_chunks where segment_id = ?",
-                [first_segment],
+                "select count(*) from entity_states where segment_id = ? and kind = ?",
+                params![first_segment, STATE_CACHE_KIND_CARD],
                 |row| row.get(0),
             )
             .unwrap();
         assert!(
-            first_chunk_count > 1,
-            "test checkpoint should exercise multi-chunk state"
+            first_card_rows > 1,
+            "test checkpoint should store many card rows"
         );
         assert!(
-            second_state_bytes < first_state_bytes,
-            "suffix checkpoint should contain only dirty states: {second_state_bytes} >= {first_state_bytes}"
+            second_state_rows < first_state_rows,
+            "suffix checkpoint should hold only dirty states: {second_state_rows} >= {first_state_rows}"
         );
 
         let mut restored_prefix = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
         restored_prefix
             .restore_warm_up_state_checkpoint(store_path.clone(), generation, first_segment)
             .unwrap();
-        assert_warm_up_parity(&expected_prefix, &restored_prefix);
+        assert_warm_up_parity(&mut expected_prefix, &mut restored_prefix);
 
         let mut restored_final = RwkvInference::load(weights, 0.9, 36_500).unwrap();
         restored_final
             .restore_warm_up_state_checkpoint(store_path, generation, second_segment)
             .unwrap();
-        assert_warm_up_parity(&expected_final, &restored_final);
+        assert_warm_up_parity(&mut expected_final, &mut restored_final);
     }
 
     #[test]
@@ -9624,8 +10789,8 @@ order by e.id, e.cid
             .into_iter()
             .map(|ease| simulated_answer_input(&query, ease))
             .collect::<Vec<_>>();
-        let snapshot = || {
-            let states = inference.warm_up_snapshot();
+        fn snapshot_of(inference: &mut RwkvInference) -> RwkvWorkloadSimulationSnapshot {
+            let states = inference.warm_up_snapshot().unwrap();
             RwkvWorkloadSimulationSnapshot {
                 card_states: states.card_states,
                 note_states: states.note_states,
@@ -9634,25 +10799,27 @@ order by e.id, e.cid
                 global_state: states.global_state,
                 runtime_state: Some(inference.cache_state()),
             }
-        };
+        }
 
         let expected = answers
             .iter()
             .map(|answer| {
+                let snapshot = snapshot_of(&mut inference);
                 inference
                     .predict_retrievability_many_after_review(
                         answer.clone(),
                         vec![query.clone()],
-                        snapshot(),
+                        snapshot,
                     )
                     .unwrap()[0]
             })
             .collect::<Vec<_>>();
+        let snapshot = snapshot_of(&mut inference);
         let snapshot_actual = inference
             .predict_retrievability_many_after_reviews(
                 answers.clone(),
                 vec![query.clone()],
-                snapshot(),
+                snapshot,
             )
             .unwrap()
             .into_iter()
@@ -9701,7 +10868,7 @@ order by e.id, e.cid
         }
 
         assert_prediction_parity(&sequential_predictions, &bulk_predictions);
-        assert_warm_up_parity(&sequential, &bulk);
+        assert_warm_up_parity(&mut sequential, &mut bulk);
     }
 
     /// The gap the RWKV session named: a card's FIRST row inside a batch
@@ -9837,7 +11004,7 @@ order by e.id, e.cid
             offset += call;
         }
 
-        assert_warm_up_parity(&sequential, &wavefront);
+        assert_warm_up_parity(&mut sequential, &mut wavefront);
         assert_eq!(sequential.cache_state(), wavefront.cache_state());
     }
 
@@ -9881,7 +11048,7 @@ order by e.id, e.cid
             max_delta <= 1e-5,
             "max fast bulk prediction delta: {max_delta}"
         );
-        assert_warm_up_parity(&exact, &fast);
+        assert_warm_up_parity(&mut exact, &mut fast);
     }
 
     #[test]
