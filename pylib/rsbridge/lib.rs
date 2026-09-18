@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::sync::OnceLock;
+
 use anki::backend::init_backend;
 use anki::backend::Backend as RustBackend;
 use anki::log::set_global_logger;
@@ -380,8 +382,10 @@ impl RwkvInference {
         let parsed_inputs = parse_packed_rwkv_review_inputs(inputs.as_bytes())?;
         let outputs = py
             .detach(|| {
-                self.inner
-                    .predict_retrievability_many_from_warm_up(parsed_inputs)
+                background_rwkv_pool().install(|| {
+                    self.inner
+                        .predict_retrievability_many_from_warm_up(parsed_inputs)
+                })
             })
             .map_err(|err| PyException::new_err(err.to_string()))?;
         let mut packed = Vec::with_capacity(outputs.len() * std::mem::size_of::<f32>());
@@ -412,8 +416,10 @@ impl RwkvInference {
             )
             .collect();
         py.detach(|| {
-            self.inner
-                .curve_retrievability_day_sums_from_warm_up(&spans)
+            background_rwkv_pool().install(|| {
+                self.inner
+                    .curve_retrievability_day_sums_from_warm_up(&spans)
+            })
         })
     }
 
@@ -512,8 +518,10 @@ impl RwkvInference {
         }
 
         py.detach(|| {
-            self.inner
-                .warm_up_reviews(parsed_reviews, record_predictions)
+            background_rwkv_pool().install(|| {
+                self.inner
+                    .warm_up_reviews(parsed_reviews, record_predictions)
+            })
         })
         .map(warm_up_predictions_as_tuples)
         .map_err(|err| PyException::new_err(err.to_string()))
@@ -527,8 +535,10 @@ impl RwkvInference {
     ) -> PyResult<Vec<(usize, f32, Option<f32>)>> {
         let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
         py.detach(|| {
-            self.inner
-                .warm_up_reviews(parsed_reviews, record_predictions)
+            background_rwkv_pool().install(|| {
+                self.inner
+                    .warm_up_reviews(parsed_reviews, record_predictions)
+            })
         })
         .map(warm_up_predictions_as_tuples)
         .map_err(|err| PyException::new_err(err.to_string()))
@@ -870,6 +880,38 @@ fn parse_packed_rwkv_prediction_requests(
 }
 
 const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU2";
+
+/// Worker threads for RWKV's history-scale passes: `max(1, min(8,
+/// int(0.25 * logical processors)))` (Andrew, 2026-09-19). The passes replay
+/// or score the whole review history in the background while the user keeps
+/// working, so they must not take the whole machine.
+///
+/// Measured on his 32-thread machine, on the first 100,000 reviews of his
+/// collection: rayon's default 32 threads ran the replay in 10.1 s with 16
+/// cores busy; 16 threads, 10.2 s with 10 busy; 8 threads, 12.5 s with 6
+/// busy; 4 threads, 19.3 s. So 8 costs a quarter more time and frees about
+/// ten cores; counting physical cores instead would give 4 and nearly double
+/// the time.
+fn background_rwkv_thread_count(logical_processors: usize) -> usize {
+    (logical_processors / 4).clamp(1, 8)
+}
+
+/// The pool the history-scale RWKV calls run in. Anything they parallelise
+/// with rayon runs on these threads instead of the global pool, which the
+/// interactive calls (a study queue, one card's answer) keep to themselves.
+fn background_rwkv_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let logical_processors = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(background_rwkv_thread_count(logical_processors))
+            .thread_name(|index| format!("rwkv-background-{index}"))
+            .build()
+            .expect("RWKV background thread pool")
+    })
+}
 
 /// The warm-up's predictions as plain tuples for Python: the review's place
 /// in the batch, RWKV-Instant's value, and RWKV-Curve's value or None.
@@ -1253,4 +1295,30 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(syncserver)).unwrap();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod background_pool_tests {
+    use super::background_rwkv_thread_count;
+
+    #[test]
+    fn background_rwkv_threads_are_a_quarter_of_the_logical_processors_from_1_to_8() {
+        // max(1, min(8, int(0.25 * logical processors)))
+        for (logical, threads) in [
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (7, 1),
+            (8, 2),
+            (12, 3),
+            (16, 4),
+            (31, 7),
+            (32, 8),
+            (64, 8),
+            (256, 8),
+        ] {
+            assert_eq!(background_rwkv_thread_count(logical), threads, "{logical}");
+        }
+    }
 }

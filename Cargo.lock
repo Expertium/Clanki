@@ -5472,6 +5472,7 @@ version = "0.0.0"
 dependencies = [
  "anki",
  "pyo3",
+ "rayon",
 ]
 
 [[package]]
