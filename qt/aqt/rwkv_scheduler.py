@@ -16862,9 +16862,13 @@ def _historical_rwkv_review_inputs(
             )
             break
 
+    # each row's state, worked out once: the passes below walk the rows five
+    # times, and the state of a row does not change between them
+    retained_states = [_retained_historical_review_state(row) for row in raw_rows]
+
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
-            historical_state = _retained_historical_review_state(row)
+            historical_state = retained_states[index]
             if historical_state is None:
                 continue
             if after_review_id is not None and (
@@ -16925,7 +16929,7 @@ def _historical_rwkv_review_inputs(
     # is read from it where the loop hands a hash out
     history_hasher = _RwkvHistoryHasher(history_hash)
     for raw_row_index, row in enumerate(raw_rows):
-        historical_state = _retained_historical_review_state(row)
+        historical_state = retained_states[raw_row_index]
         if historical_state is None:
             raw_rows[raw_row_index] = ()
             continue
