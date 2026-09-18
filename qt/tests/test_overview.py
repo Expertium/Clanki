@@ -30,9 +30,7 @@ def _overview(*, advanced: bool, dyn: bool = False, buried: bool = False) -> Any
                     sched=SimpleNamespace(have_buried=lambda: buried),
                 ),
             ),
-            bottom=SimpleNamespace(
-                draw=lambda buf="", **_kwargs: draws.append(buf)
-            ),
+            bottom=SimpleNamespace(draw=lambda buf="", **_kwargs: draws.append(buf)),
             _linkHandler=lambda _url: None,
         ),
     )
