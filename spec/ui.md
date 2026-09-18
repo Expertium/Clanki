@@ -80,6 +80,37 @@ graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 "Simple mode shows only the Simple editor buttons, in toolbar order"
 (`ts/routes/editor/ui-mode.test.ts`).
 
+## ui.simple-mode-deck-counts
+
+Given Simple mode (`ui.mode-switch`), the deck list and the deck overview
+show two counts, New and Due, where Due already includes Learn; Advanced
+mode shows all three, New, Learn and Due. This is a display change only:
+`Collection.sched.counts()`, the deck tree's `new_count` / `learn_count` /
+`review_count`, and every other reader of those three numbers keep them
+separate; only the HTML that shows them sums Learn into Due, and only in
+Simple mode. Simple mode's Due column and row are the same control as
+Advanced's, carrying a summed value, not a different control (so the
+subset rule, `CLAUDE.md` "Simple mode is a subset of Advanced", holds:
+Simple loses a column, it does not gain one). Switching the mode redraws
+the deck list's tree and the overview's counts table in place, from state
+already on screen, the same way the deck list's bottom row already does
+(`ui.mode-switch`): no due count is recomputed.
+
+**Why:** Andrew, 2026-09-17: "in Simple UI mode, in the main menu do not
+show Learn and only show Due, with Learn numbers added to Due numbers" —
+Learn/relearn queues are a scheduling detail a Simple-mode user does not
+need to see split out.
+
+**Pinned by:** `test_deck_list_header_hides_learn_column_in_simple_mode`,
+`test_deck_list_header_shows_learn_column_in_advanced_mode`,
+`test_deck_row_sums_learn_into_due_in_simple_mode`,
+`test_deck_row_keeps_learn_and_due_separate_in_advanced_mode`,
+`test_rwkv_deck_count_update_sums_learn_into_due_in_simple_mode`
+(`qt/tests/test_deckbrowser.py`); `test_overview_table_sums_learn_into_due_in_simple_mode`,
+`test_overview_table_keeps_learn_and_due_separate_in_advanced_mode`,
+`test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar`
+(`qt/tests/test_overview.py`).
+
 ## ui.simple-mode-tools-hidden
 
 Given Simple mode (`ui.mode-switch`), the Tools menu hides Create Filtered
@@ -109,7 +140,7 @@ Advanced (`CLAUDE.md`, "Simple mode is a subset of Advanced").
 `test_tools_menu_keeps_shared_items_in_both_modes`,
 `test_switching_the_mode_updates_the_tools_menu`
 (`qt/tests/test_ui_mode.py`); `test_overview_bottom_bar_hides_custom_study_in_simple_mode`,
-`test_overview_mode_redraw_only_draws_the_bottom_bar`
+`test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar`
 (`qt/tests/test_overview.py`).
 
 ## ui.editor-simple-view

@@ -1796,14 +1796,18 @@ title="{}" {}>{}</button>""".format(
         # in place: a toolbar reload would clear the sync button's colour and
         # spinner (spec ui.mode-switch)
         self.toolbar.update_ui_mode_toggle()
-        # Only the deck list's bottom row depends on the mode, so it is
-        # redrawn from the data already on screen. A full reset() would
-        # recompute the RWKV due counts (slow, and "..." meanwhile) for a
-        # change that does not affect dueness (spec ui.mode-switch).
+        # Only the deck list's bottom row and tree columns, and the
+        # overview's counts table (spec ui.simple-mode-deck-counts), depend
+        # on the mode, so only those are redrawn from the data already on
+        # screen. A full reset() would recompute the RWKV due counts (slow,
+        # and "..." meanwhile) for a change that does not affect dueness
+        # (spec ui.mode-switch).
         if self.state == "deckBrowser":
             self.deckBrowser.redraw_for_ui_mode()
-        # The overview's bottom row (Custom Study) depends on the mode; redraw
-        # it the same cheap, in-place way (spec ui.simple-mode-tools-hidden).
+        # The overview's bottom row (Custom Study, spec
+        # ui.simple-mode-tools-hidden) and counts table (spec
+        # ui.simple-mode-deck-counts) both depend on the mode; redraw them
+        # the same cheap, in-place way.
         elif self.state == "overview":
             self.overview.redraw_for_ui_mode()
 

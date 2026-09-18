@@ -106,12 +106,15 @@ class DeckBrowser:
 
     def redraw_for_ui_mode(self) -> None:
         """Redraw after a Simple/Advanced switch without touching the due
-        counts (spec ui.mode-switch). Of the deck list, only the bottom bar
-        reads the mode (the Import button), so only it is drawn again; the
-        page with the tree already on screen stays as it is."""
+        counts (spec ui.mode-switch). Of the deck list, the bottom bar (the
+        Import button) and the deck tree's New/Learn/Due columns
+        (spec ui.simple-mode-deck-counts) read the mode; both are redrawn
+        from the tree already on screen, so no count is recomputed."""
         if hasattr(self, "_render_data"):
             if not self._redraw_buttons_in_place():
                 self._drawButtons()
+            if not self._redraw_tree_in_place():
+                self._renderPage(reuse=True)
         else:
             self.refresh()
 
@@ -384,6 +387,7 @@ class DeckBrowser:
 
     def _render_rwkv_deck_counts(self) -> None:
         rows: list[tuple[int, int, int, int | None]] = []
+        advanced = self.mw.advanced_ui()
 
         def collect(node: DeckTreeNode) -> None:
             rows.append(
@@ -394,7 +398,13 @@ class DeckBrowser:
                     (
                         None
                         if node.deck_id in self._rwkv_pending_deck_ids
+                        # Simple mode folds Learn into Due for display only
+                        # (spec ui.simple-mode-deck-counts); the "learn"
+                        # element this also sends does not exist in Simple
+                        # mode's DOM, so updating it is a no-op.
                         else node.review_count
+                        if advanced
+                        else node.review_count + node.learn_count
                     ),
                 )
             )
@@ -477,17 +487,18 @@ class DeckBrowser:
         )
 
     def _renderDeckTree(self, top: DeckTreeNode) -> str:
-        buf = """
-<tr><th colspan=5 align=start>{}</th>
-<th class=count>{}</th>
-<th class=count>{}</th>
-<th class=count>{}</th>
-<th class=optscol></th></tr>""".format(
-            tr.decks_deck(),
-            tr.actions_new(),
-            tr.decks_learn_header(),
-            tr.decks_review_header(),
-        )
+        # Simple mode has no Learn column: Learn is folded into Due (spec
+        # ui.simple-mode-deck-counts).
+        count_header_args: list[str] = [tr.actions_new()]
+        if self.mw.advanced_ui():
+            count_header_args.append(tr.decks_learn_header())
+        count_header_args.append(tr.decks_review_header())
+        count_headers = "<th class=count>{}</th>" * len(count_header_args)
+        buf = (
+            "<tr><th colspan=5 align=start>{}</th>"
+            + count_headers
+            + "<th class=optscol></th></tr>"
+        ).format(tr.decks_deck(), *count_header_args)
         buf += self._topLevelDragRow()
 
         ctx = RenderDeckNodeContext(
@@ -551,6 +562,13 @@ class DeckBrowser:
                 klass = "zero-count"
             return f'<span id="{count_id}" class="{klass}">{cnt}</span>'
 
+        advanced = self.mw.advanced_ui()
+        # Simple mode shows one Due count that already includes Learn
+        # (spec ui.simple-mode-deck-counts); the stored counts themselves are
+        # untouched, only what is displayed is summed.
+        due_count = (
+            node.review_count if advanced else node.review_count + node.learn_count
+        )
         if node.deck_id in self._rwkv_pending_deck_ids:
             review = (
                 f'<span id="deck-{node.deck_id}-review-count" '
@@ -558,7 +576,7 @@ class DeckBrowser:
             )
         else:
             review = nonzeroColour(
-                node.review_count,
+                due_count,
                 "review-count",
                 f"deck-{node.deck_id}-review-count",
             )
@@ -567,21 +585,21 @@ class DeckBrowser:
             f'<span id="deck-{node.deck_id}-review-limit" class="review-limit" '
             f'title="{html.escape(limit_title, quote=True)}">{html.escape(limit_text)}</span>'
         )
-        learn = nonzeroColour(
-            node.learn_count,
-            "learn-count",
-            f"deck-{node.deck_id}-learn-count",
+        new_cell = nonzeroColour(
+            node.new_count,
+            "new-count",
+            f"deck-{node.deck_id}-new-count",
         )
 
-        buf += ("<td align=end>%s</td>" * 3) % (
-            nonzeroColour(
-                node.new_count,
-                "new-count",
-                f"deck-{node.deck_id}-new-count",
-            ),
-            learn,
-            review,
-        )
+        if advanced:
+            learn = nonzeroColour(
+                node.learn_count,
+                "learn-count",
+                f"deck-{node.deck_id}-learn-count",
+            )
+            buf += ("<td align=end>%s</td>" * 3) % (new_cell, learn, review)
+        else:
+            buf += ("<td align=end>%s</td>" * 2) % (new_cell, review)
         # options
         buf += (
             "<td align=center class=opts><a onclick='return pycmd(\"opts:%d\");'>"
