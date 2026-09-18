@@ -659,7 +659,10 @@ value is recorded by the same replay that records RWKV-Instant's: the
 warm-up already computes the curve head at every review, and its prediction
 of a review is the curve the replay had stored at that card's PREVIOUS
 answered review, at that review's own elapsed time. A card's first review
-has no such curve and gets no row; nothing is substituted for it.
+has no such curve and gets no row; nothing is substituted for it. RWKV-Curve's
+value goes to RWKV-Curve's own recorder, and a replay that cannot report that
+value does not run at all: the pass stops before it starts and says why,
+rather than walking the whole history and recording nothing.
 
 Each algorithm's rows live under its own name. RWKV-Curve's are in the
 generic `review_predictions` table, which is keyed by algorithm as well as
@@ -809,7 +812,13 @@ user's own rebuild, never to opening a page.
 (`rslib/src/rwkv/mod.rs`),
 `the_same_reviews_always_give_the_same_interval`,
 `the_parallel_bootstrap_draws_what_one_thread_drew`
-(`rslib/src/stats/review_metrics.rs`); `qt/tests/test_stats_metrics.py`;
+(`rslib/src/stats/review_metrics.rs`);
+`test_rwkv_calibration_recompute_records_the_curve_of_every_review`,
+`test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve`,
+`test_bulk_warm_up_is_handed_the_curve_recorder`,
+`test_bulk_warm_up_without_a_curve_recorder_keyword_says_so`,
+`test_a_query_with_no_prediction_is_skipped_not_reported`
+(`qt/tests/test_rwkv_scheduler.py`); `qt/tests/test_stats_metrics.py`;
 `ts/routes/graphs/roc.test.ts`; `ts/routes/graphs/calibration.test.ts`;
 `ts/routes/graphs/um-plus.test.ts`.
 
