@@ -321,6 +321,28 @@ entity and a point lookup is exact.
 `test_rwkv_delta_store_prune_removes_unreachable_entity_states`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-lazy-state-upgrade-window
+
+Given a saved RWKV state cache in the old format, when a profile opens, the
+start-up progress window is titled "One-time update" and reads "Clanki is
+reorganising its saved review data so it can start faster. This happens once
+and can take some time." The conversion runs once, inside that wait; every
+later start-up of the same profile shows the ordinary "Starting" window
+again. A profile with a converted store, and a profile with no store at all,
+never show the one-time words.
+
+**Why:** Andrew, 2026-09-16, wrote both strings himself. The conversion is the
+only start-up wait long enough to need its own words: it takes 15.6 seconds on
+his 3.51 GB store, against 0.171 seconds for an ordinary lazy restore, so a
+window that says "Starting" for fifteen seconds once would look like a fault.
+It names what the user waits for, not the format it converts, and it promises
+"once" because the converted store is never converted again. The promise is
+safe to print because the conversion builds a new file and renames it into
+place: ending the wait early loses nothing.
+
+**Pinned by:** `test_only_the_one_time_upgrade_gets_the_one_time_words`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-no-intervals
 
 Given a card whose home preset runs RWKV-Instant (`rwkv_review_instant_order_enabled`

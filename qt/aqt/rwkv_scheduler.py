@@ -190,6 +190,8 @@ _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 5
 # converts such a store to schema 5 the first time it reads it, and the
 # tables this module touches are the same in both, so both are readable.
 _RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS = (4, 5)
+# the old schema, the one the first profile open after the update converts
+_RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
@@ -11316,6 +11318,29 @@ def _finish_rwkv_state_cache_operation(
     )
 
 
+def rwkv_state_cache_store_needs_upgrade(mw: object) -> bool:
+    """Whether the saved store is still in the old serialized format.
+
+    The conversion happens once, inside the restore, so the start-up window
+    says a one-time update is running instead of the ordinary "Starting"
+    (spec sched.rwkv-lazy-state-upgrade-window).
+    """
+
+    cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+    if cache_dir is None:
+        return False
+    path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
+    if not path.is_file():
+        return False
+    try:
+        with _rwkv_state_cache_connection(path) as connection:
+            row = connection.execute("pragma user_version").fetchone()
+    except Exception:
+        logger.debug("failed to read the RWKV state-cache store schema version")
+        return False
+    return bool(row) and row[0] == _RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION
+
+
 def load_rwkv_state_cache_with_progress(
     mw: object,
     *,
@@ -11392,15 +11417,29 @@ def load_rwkv_state_cache_with_progress(
 
         from aqt.utils import tr
 
+        # the one-time conversion runs inside this restore, and it is the
+        # only wait long enough to need its own words
+        upgrading = rwkv_state_cache_store_needs_upgrade(mw)
+        label = (
+            tr.qt_misc_rwkv_state_upgrade_label()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_label()
+        )
+        title = (
+            tr.qt_misc_rwkv_state_upgrade_title()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_title()
+        )
+
         try:
             with_progress(
                 load,
                 done,
                 parent=parent,
-                label=tr.qt_misc_rwkv_startup_label(),
+                label=label,
                 immediate=True,
                 uses_collection=True,
-                title=tr.qt_misc_rwkv_startup_title(),
+                title=title,
             )
         except Exception:
             finish(False)
