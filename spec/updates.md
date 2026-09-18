@@ -22,17 +22,28 @@ would replace Clanki with a different program.
 
 ## updates.dev-build-always-offered
 
-A build made from source is always told an update is available, whatever its
-version string.
+`_release_is_newer` (`qt/aqt/update.py`) offers an update only when the
+release's version is a strict improvement over the installed one: either its
+base version is higher, or (same base version) its full version compares
+higher under the historical `+build.N` local-version scheme. A build whose
+version is not older than the newest release is never offered an update,
+even when its buildhash does not match the release's commit — a different
+commit is not, by itself, evidence of being older. (A commit that IS an exact
+match to the release's pinned commit is still short-circuited to "not
+newer" earlier in the function, before the version comparison runs.)
 
-`_release_is_newer` (`qt/aqt/update.py`) ends with
-`return release_version > installed_version or len(target) >= 8`. A source
-build's buildhash is the local git commit, which never matches a published
-release's commit, so the check falls through to `len(target) >= 8`, which is
-true for any full-length SHA.
+**Why:** the removed `... or len(target) >= 8` fallback treated "the
+release's `target_commitish` is a full commit SHA I don't match" as proof
+that the release was newer. Clanki's own release workflow
+(`.github/workflows/release.yml`, `gh release create --target "$RELEASE_SHA"`)
+always pins `target_commitish` to the full build SHA, so that condition was
+true for every real release, always. A dev/source build's own buildhash is
+essentially never a match for some past release's commit either (that is the
+ordinary state of active development between releases, not an edge case), so
+the fallback made every dev/source build - and any two builds sharing a
+version but not a commit - report an update as available whether or not one
+was actually older.
 
-**Why:** recorded because it looks like a version-numbering bug and is not one.
-Removing `+fsrs7` from the version did not cause it and did not change it.
-
-**Pinned by:** nothing yet. This entry documents current behavior; it is not a
-decision to keep it.
+**Pinned by:** `test_release_is_newer_requires_a_strictly_newer_version`,
+`test_release_is_newer_uses_version_and_release_commit`
+(`qt/tests/test_update.py`)

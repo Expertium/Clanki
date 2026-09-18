@@ -38,7 +38,18 @@ def _release_is_newer(
     if target and installed_hash and target.startswith(installed_hash):
         return False
 
-    return release_version > installed_version or len(target) >= 8
+    # NOTE: this used to also return True whenever `len(target) >= 8`, on the
+    # theory that a release whose target_commitish is a real commit SHA
+    # (rather than a short branch name like "main") is definitely a
+    # different, newer build than ours if the hash didn't match above. That
+    # reasoning doesn't hold: our own release workflow always pins
+    # target_commitish to the full build SHA (.github/workflows/release.yml,
+    # `--target "$RELEASE_SHA"`), so the clause was true for every release,
+    # always. A dev/source build's own buildhash never matches a past
+    # release's commit either, so every dev build was told an update was
+    # available even when its version was not older than the latest release.
+    # Only a version-number comparison is real evidence of being older.
+    return release_version > installed_version
 
 
 def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
