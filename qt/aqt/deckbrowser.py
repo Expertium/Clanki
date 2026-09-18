@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aqt
+import aqt.addons
 import aqt.advance_postpone
 import aqt.operations
 import aqt.review_heatmap
@@ -167,6 +168,8 @@ class DeckBrowser:
             self._showOptions(arg)
         elif cmd == "shared":
             self._onShared()
+        elif cmd == "get_addons":
+            self._on_get_addons()
         elif cmd == "import":
             self.mw.onImport()
         elif cmd == "create":
@@ -724,6 +727,7 @@ class DeckBrowser:
 
     drawLinks = [
         ["", "shared", tr.decks_get_shared()],
+        ["", "get_addons", tr.addons_get_addons()],
         ["", "create", tr.decks_create_deck()],
         ["Ctrl+Shift+I", "import", tr.decks_import_file()],
     ]
@@ -738,10 +742,12 @@ class DeckBrowser:
     def _buttons_html(self) -> str:
         buf = ""
         # Simple mode keeps Find Decks Online and Create Deck (spec
-        # ui.mode-switch); Import stays in the File menu.
+        # ui.mode-switch); Import stays in the File menu, and Get Add-ons is
+        # Advanced-only, the same split as the Tools menu's own Add-ons entry
+        # (spec ui.get-decks-and-get-addons).
         drawLinks = deepcopy(self.drawLinks)
         if not self.mw.advanced_ui():
-            drawLinks = [b for b in drawLinks if b[1] != "import"]
+            drawLinks = [b for b in drawLinks if b[1] not in ("import", "get_addons")]
         for b in drawLinks:
             if b[0]:
                 b[0] = tr.actions_shortcut_key(val=shortcut(b[0]))
@@ -754,6 +760,19 @@ class DeckBrowser:
 
     def _onShared(self) -> None:
         openLink(f"{aqt.appShared}decks/")
+
+    def _on_get_addons(self) -> None:
+        """Advanced-mode-only button (spec ui.get-decks-and-get-addons): the
+        same Install add-on dialog Tools > Add-ons > Get Add-ons opens."""
+        obj = aqt.addons.GetAddons(self.mw, self.mw.addonManager)
+        if obj.ids:
+            aqt.addons.download_addons(
+                self.mw,
+                self.mw.addonManager,
+                obj.ids,
+                lambda log: aqt.addons.show_log_to_user(self.mw, log) if log else None,
+                force_enable=True,
+            )
 
     def _on_create(self) -> None:
         if op := add_deck_dialog(

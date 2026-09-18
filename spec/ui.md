@@ -33,7 +33,8 @@ full main-window reset (which would rebuild the RWKV counts, slowly and
 with "…" placeholders meanwhile) is not done. In
 Simple mode the deck list's bottom row shows Find Decks Online (the button
 formerly named "Get Shared") and Create Deck but not Import File (Import
-stays under File); these buttons share one width in both modes, the
+stays under File) or Get Add-ons (`ui.get-decks-and-get-addons`); these
+buttons share one width in both modes, the
 deck menu (the gear next to a deck) has no RWKV submenu (Reschedule this
 deck, Reschedule all decks) and no Advance or Postpone entries
 (`ui.advance-postpone`), nor has the Browser's Cards menu, Tools > Add-ons
@@ -79,6 +80,28 @@ once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 "Simple mode shows only the Simple editor buttons, in toolbar order"
 (`ts/routes/editor/ui-mode.test.ts`).
+
+## ui.get-decks-and-get-addons
+
+Given the deck list's bottom row, "Find Decks Online" opens
+`https://ankiweb.net/shared/decks/` as before (upstream calls the
+equivalent button "Get Shared"); a second button, "Get Add-ons...", shown in
+Advanced mode only, opens the same Install add-on dialog as Tools > Add-ons
+> Get Add-ons, unchanged. Simple mode does not show "Get Add-ons...".
+
+**Why:** upstream issue https://github.com/ankitects/anki/issues/5649: a
+single "Get Shared" (here, "Find Decks Online") button covers both decks and
+add-ons, which is unclear ("shared what?"). Splitting it in two, one action
+each, removes the ambiguity; the second button is Advanced-only because
+installing add-ons is a power-user action and Tools > Add-ons already
+reaches it in both modes, so Simple mode is not losing capability
+(`CLAUDE.md`, "Simple mode is a subset of Advanced" — this button set is a
+strict superset in Advanced, a strict subset in Simple, of the same two
+actions).
+
+**Pinned by:** `test_deck_list_shows_get_addons_in_advanced_mode_only`,
+`test_get_addons_button_opens_the_existing_install_dialog`
+(`qt/tests/test_deckbrowser.py`).
 
 ## ui.editor-simple-view
 

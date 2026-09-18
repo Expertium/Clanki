@@ -100,13 +100,15 @@ def test_deck_browser_bottom_row_has_no_import_in_simple_mode() -> None:
     )
     browser._buttons_html = lambda: DeckBrowser._buttons_html(browser)
     DeckBrowser._drawButtons(browser)
-    assert drawn[0].count("<button") == 2
     assert 'pycmd("shared")' in drawn[0] and 'pycmd("create")' in drawn[0]
-    assert "import" not in drawn[0]
+    assert 'pycmd("import")' not in drawn[0]
+    assert 'pycmd("get_addons")' not in drawn[0]
 
     browser.mw = SimpleNamespace(advanced_ui=lambda: True)
     DeckBrowser._drawButtons(browser)
-    assert drawn[1].count("<button") == 3
+    assert 'pycmd("shared")' in drawn[1] and 'pycmd("create")' in drawn[1]
+    assert 'pycmd("import")' in drawn[1]
+    assert 'pycmd("get_addons")' in drawn[1]
 
 
 def test_deck_menu_rwkv_submenu_is_advanced_only() -> None:
@@ -217,7 +219,7 @@ def test_mode_switch_swaps_the_deck_list_buttons_in_place() -> None:
     web.stdHtml.assert_not_called()
     script = web.eval.call_args.args[0]
     assert ".deck-buttons" in script and 'pycmd(\\"import\\")' in script
-    assert script.count("<button") == 3
+    assert 'pycmd(\\"get_addons\\")' in script
     web.adjustHeightToFit.assert_called_once()
 
     # the bar shows another screen's buttons: it is drawn
@@ -225,7 +227,8 @@ def test_mode_switch_swaps_the_deck_list_buttons_in_place() -> None:
     web._bridge_context = object()
     browser.redraw_for_ui_mode()
     web.stdHtml.assert_called_once()
-    assert web.stdHtml.call_args.args[0].count("<button") == 2
+    assert 'pycmd("import")' not in web.stdHtml.call_args.args[0]
+    assert 'pycmd("get_addons")' not in web.stdHtml.call_args.args[0]
 
     # an add-on decorates freshly drawn pages: the bar is drawn
     def addon_handler(web_content: Any, context: Any) -> None:
