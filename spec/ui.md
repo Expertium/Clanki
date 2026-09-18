@@ -53,7 +53,8 @@ order; Advanced mode shows every graph. The note editor has the same control
 at the right end of its toolbar row, and Simple mode there hides a part of
 the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
 mode when it loads and from its own switch. Hidden settings keep their stored values and
-keep taking effect.
+keep taking effect. The control keeps its size when the mouse is over either
+side: hovering changes only the background.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
@@ -66,7 +67,8 @@ reload before cleared the sync button's colour and spinner until the next
 redraw. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
-installed).
+installed). 2026-09-16, Andrew: hovering the switch on the Stats page and in
+deck options made it "pop out" by a pixel, which he reported as a bug.
 
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
@@ -79,7 +81,8 @@ once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 "Simple mode shows only the Simple editor buttons, in toolbar order"
-(`ts/routes/editor/ui-mode.test.ts`).
+(`ts/routes/editor/ui-mode.test.ts`); "the Simple | Advanced switch keeps its
+size under the mouse" (`ts/tests/e2e/ui-mode-switch-hover.spec.ts`).
 
 ## ui.get-decks-and-get-addons
 
