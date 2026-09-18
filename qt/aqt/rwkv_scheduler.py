@@ -185,7 +185,13 @@ _RWKV_STATE_CACHE_SNAPSHOT_FILE = "snapshot-v1.bin"
 _RWKV_STATE_CACHE_STORE_FILE = "state-v12.sqlite3"
 _RWKV_STATE_CACHE_STORE_TEMP_FILE = ".state-v12-building.sqlite3"
 _RWKV_STATE_CACHE_STORE_KIND = "delta-sqlite-v1"
-_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 4
+_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION = 5
+# Schema 4 kept one serialized delta stream per segment. The backend
+# converts such a store to schema 5 the first time it reads it, and the
+# tables this module touches are the same in both, so both are readable.
+_RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS = (4, 5)
+# the old schema, the one the first profile open after the update converts
+_RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION = 4
 _RWKV_STATE_CACHE_REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 _RWKV_STATE_CACHE_DELTAS_FILE = "deltas-v1.log"
 _RWKV_STATE_CACHE_META_FILE = "state-v1.meta.json"
@@ -11400,6 +11406,29 @@ def _finish_rwkv_state_cache_operation(
     )
 
 
+def rwkv_state_cache_store_needs_upgrade(mw: object) -> bool:
+    """Whether the saved store is still in the old serialized format.
+
+    The conversion happens once, inside the restore, so the start-up window
+    says a one-time update is running instead of the ordinary "Starting"
+    (spec sched.rwkv-lazy-state-upgrade-window).
+    """
+
+    cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+    if cache_dir is None:
+        return False
+    path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
+    if not path.is_file():
+        return False
+    try:
+        with _rwkv_state_cache_connection(path) as connection:
+            row = connection.execute("pragma user_version").fetchone()
+    except Exception:
+        logger.debug("failed to read the RWKV state-cache store schema version")
+        return False
+    return bool(row) and row[0] == _RWKV_STATE_CACHE_STORE_LEGACY_SCHEMA_VERSION
+
+
 def load_rwkv_state_cache_with_progress(
     mw: object,
     *,
@@ -11476,15 +11505,29 @@ def load_rwkv_state_cache_with_progress(
 
         from aqt.utils import tr
 
+        # the one-time conversion runs inside this restore, and it is the
+        # only wait long enough to need its own words
+        upgrading = rwkv_state_cache_store_needs_upgrade(mw)
+        label = (
+            tr.qt_misc_rwkv_state_upgrade_label()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_label()
+        )
+        title = (
+            tr.qt_misc_rwkv_state_upgrade_title()
+            if upgrading
+            else tr.qt_misc_rwkv_startup_title()
+        )
+
         try:
             with_progress(
                 load,
                 done,
                 parent=parent,
-                label=tr.qt_misc_rwkv_startup_label(),
+                label=label,
                 immediate=True,
                 uses_collection=True,
-                title=tr.qt_misc_rwkv_startup_title(),
+                title=title,
             )
         except Exception:
             finish(False)
@@ -14092,7 +14135,7 @@ def _prune_rwkv_state_cache_store(
     placeholders = ",".join("?" for _ in reachable_segment_ids)
     with _rwkv_state_cache_connection(path) as connection:
         connection.execute(
-            f"delete from segment_state_chunks where segment_id not in ({placeholders})",
+            f"delete from entity_states where segment_id not in ({placeholders})",
             reachable_segment_ids,
         )
         connection.execute(
@@ -14925,7 +14968,7 @@ def _read_rwkv_state_cache_store_segment_history(
         raise FileNotFoundError(path)
     with _rwkv_state_cache_connection(path) as connection:
         schema_version = connection.execute("pragma user_version").fetchone()
-        if schema_version != (_RWKV_STATE_CACHE_STORE_SCHEMA_VERSION,):
+        if schema_version[0] not in _RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS:
             raise ValueError("unsupported RWKV state-cache store schema")
         generation_row = connection.execute(
             "select value from store_metadata where key = 'generation'"
@@ -15001,9 +15044,8 @@ def _rwkv_state_cache_store_segment_chain(
         generation_row = connection.execute(
             "select value from store_metadata where key = 'generation'"
         ).fetchone()
-        if schema_version != (
-            _RWKV_STATE_CACHE_STORE_SCHEMA_VERSION,
-        ) or generation_row != (store_generation,):
+        readable = schema_version[0] in _RWKV_STATE_CACHE_STORE_READABLE_SCHEMA_VERSIONS
+        if not readable or generation_row != (store_generation,):
             raise ValueError("RWKV state-cache store identity mismatch")
         current_segment_id: int | None = segment_id
         while current_segment_id is not None:

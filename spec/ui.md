@@ -86,8 +86,9 @@ graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 Given the deck list's bottom row, "Find Decks Online" opens
 `https://ankiweb.net/shared/decks/` as before (upstream calls the
 equivalent button "Get Shared"); a second button, "Get Add-ons...", shown in
-Advanced mode only, opens the same Install add-on dialog as Tools > Add-ons
-> Get Add-ons, unchanged. Simple mode does not show "Get Add-ons...".
+Advanced mode only, opens the same Install add-on dialog as the existing
+Tools menu path (Add-ons, then Get Add-ons), unchanged. Simple mode does not
+show "Get Add-ons...".
 
 **Why:** upstream issue https://github.com/ankitects/anki/issues/5649: a
 single "Get Shared" (here, "Find Decks Online") button covers both decks and

@@ -89,6 +89,11 @@ qt-misc-rwkv-curve-no-interval = RWKV-Curve has no interval for this card. The a
 qt-misc-rwkv-curve-intervals-timed-out = RWKV-Curve did not give the intervals of this card in { $seconds } seconds. Clanki could not load the RWKV-Curve state. Try again, or restart Clanki, or choose FSRS-7 for this deck in deck options. FSRS-7 intervals never stand in.
 # Button in the message above. It waits for RWKV-Curve again, on the same card.
 qt-misc-rwkv-curve-intervals-try-again = Try again
+# The progress window shown ONCE, at the first start-up after the update,
+# while Clanki converts a saved RWKV state cache that an older version
+# wrote. Andrew chose this wording himself (2026-09-16); keep it as written.
+qt-misc-rwkv-state-upgrade-title = One-time update
+qt-misc-rwkv-state-upgrade-label = Clanki is reorganising its saved review data so it can start faster. This happens once and can take some time.
 # The progress window while Clanki loads the saved RWKV state at start-up.
 # It says what the user waits for, not which file is read (Andrew,
 # 2026-09-16).

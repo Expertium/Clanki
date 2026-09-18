@@ -116,5 +116,8 @@ unicode-normalization.workspace = true
 zip.workspace = true
 zstd.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
