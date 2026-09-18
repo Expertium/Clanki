@@ -14,10 +14,10 @@ import { expect, test } from "vitest";
 
 import {
     chosenPair,
+    PAIR_FLOOR,
     pairKey,
     pairOptions,
     renderUmPlus,
-    PAIR_FLOOR,
     SMALL_GROUP,
     thinPairNotes,
     umPlusBounds,
@@ -119,7 +119,7 @@ test("a pair with too few shared reviews is named, not drawn", () => {
                 second: tr.deckConfigSchedulerChoiceRwkvInstant(),
             }),
             reviews: 23,
-            needed: PAIR_FLOOR,
+            needed: String(PAIR_FLOOR),
         }),
     );
 

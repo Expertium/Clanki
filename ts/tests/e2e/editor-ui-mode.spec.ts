@@ -57,9 +57,7 @@ async function expectAdvancedToolbar(page: Page): Promise<void> {
     }
 }
 
-test("the editor switch changes the toolbar at once and keeps the typed text", async ({
-    editor: page,
-}) => {
+test("the editor switch changes the toolbar at once and keeps the typed text", async ({ editor: page }) => {
     await chooseEditorMode(page, "Simple");
     await expectSimpleToolbar(page);
 

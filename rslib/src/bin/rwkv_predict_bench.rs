@@ -86,8 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let recall_labels = recall_labels(&metric_reviews);
         let recall_bins = recall_bins(&metric_reviews);
         let reviews = warmup_reviews.take().unwrap();
+        // #137 changed `warm_up_reviews` to return `WarmUpPrediction`, which
+        // carries RWKV-Curve's value beside RWKV-Instant's. This bench scores
+        // RWKV-Instant only, so it takes that field and keeps its old shape.
         let predictions = remap_prediction_indices(
-            inference.warm_up_reviews(reviews, true)?,
+            inference
+                .warm_up_reviews(reviews, true)?
+                .into_iter()
+                .map(|prediction| (prediction.index, prediction.retrievability))
+                .collect(),
             &warmup_original_indices,
         );
         if let Some(output) = &args.prediction_output {

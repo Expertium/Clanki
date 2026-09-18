@@ -139,8 +139,11 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
                 state=state,
                 advanced_ui=lambda: False,
                 _sync_advanced_ui_action=lambda: None,
+                _sync_tools_menu_for_ui_mode=lambda: None,
                 toolbar=MagicMock(),
                 deckBrowser=MagicMock(),
+                overview=MagicMock(),
+                form=MagicMock(),
                 reset=MagicMock(),
             ),
         )
@@ -267,6 +270,95 @@ def test_filtered_deck_failure_avoids_retrievability_in_simple_mode() -> None:
 
     advanced = _filtered_deck_preparation_failed_message(col(True))
     assert "retrievability" in advanced.lower()
+
+
+def _tools_form(advanced: bool) -> Any:
+    form = MagicMock()
+    mw = SimpleNamespace(form=form, advanced_ui=lambda: advanced)
+    AnkiQt._sync_tools_menu_for_ui_mode(cast(Any, mw))
+    return form
+
+
+def test_tools_menu_hides_power_user_items_in_simple_mode() -> None:
+    """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
+    form = _tools_form(False)
+    form.actionCreateFiltered.setVisible.assert_called_once_with(False)
+    form.actionFullDatabaseCheck.setVisible.assert_called_once_with(False)
+    form.actionCheckMediaDatabase.setVisible.assert_called_once_with(False)
+    form.actionEmptyCards.setVisible.assert_called_once_with(False)
+    form.actionNoteTypes.setVisible.assert_called_once_with(False)
+
+
+def test_tools_menu_shows_power_user_items_in_advanced_mode() -> None:
+    """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
+    form = _tools_form(True)
+    form.actionCreateFiltered.setVisible.assert_called_once_with(True)
+    form.actionFullDatabaseCheck.setVisible.assert_called_once_with(True)
+    form.actionCheckMediaDatabase.setVisible.assert_called_once_with(True)
+    form.actionEmptyCards.setVisible.assert_called_once_with(True)
+    form.actionNoteTypes.setVisible.assert_called_once_with(True)
+
+
+def test_tools_menu_keeps_shared_items_in_both_modes() -> None:
+    """Study Deck..., Add-ons, Check for Updates and Preferences are never
+    touched by the Simple/Advanced sync, in either mode (spec
+    ui.simple-mode-tools-hidden)."""
+    for advanced in (False, True):
+        form = _tools_form(advanced)
+        form.actionStudyDeck.setVisible.assert_not_called()
+        form.actionAdd_ons.setVisible.assert_not_called()
+        form.action_check_for_updates.setVisible.assert_not_called()
+        form.actionPreferences.setVisible.assert_not_called()
+
+
+def test_switching_the_mode_updates_the_tools_menu() -> None:
+    """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
+    # advanced_ui() must reflect the just-written mode, like the real
+    # collection-backed one does, since _sync_tools_menu_for_ui_mode (below)
+    # reads it again after set_config_bool runs.
+    state = {"advanced": False}
+    col = MagicMock()
+    col.set_config_bool.side_effect = lambda _key, val: state.update(advanced=val)
+    mw = cast(
+        Any,
+        SimpleNamespace(
+            col=col,
+            state="deckBrowser",
+            advanced_ui=lambda: state["advanced"],
+            _sync_advanced_ui_action=lambda: None,
+            toolbar=MagicMock(),
+            deckBrowser=MagicMock(),
+            form=MagicMock(),
+            reset=MagicMock(),
+        ),
+    )
+    # real method, not stubbed: this test checks what it actually does
+    mw._sync_tools_menu_for_ui_mode = lambda: AnkiQt._sync_tools_menu_for_ui_mode(mw)
+    AnkiQt.set_advanced_ui(mw, True)
+    mw.form.actionCreateFiltered.setVisible.assert_called_once_with(True)
+
+
+def test_switching_the_mode_on_the_overview_redraws_its_bottom_bar() -> None:
+    """Pins spec/ui.md#ui.simple-mode-tools-hidden: the overview's Custom
+    Study button depends on the mode the same way the deck list's bottom row
+    does (spec ui.mode-switch), so it is redrawn in place too."""
+    mw = cast(
+        Any,
+        SimpleNamespace(
+            col=MagicMock(),
+            state="overview",
+            advanced_ui=lambda: False,
+            _sync_advanced_ui_action=lambda: None,
+            _sync_tools_menu_for_ui_mode=lambda: None,
+            toolbar=MagicMock(),
+            overview=MagicMock(),
+            form=MagicMock(),
+            reset=MagicMock(),
+        ),
+    )
+    AnkiQt.set_advanced_ui(mw, True)
+    mw.overview.redraw_for_ui_mode.assert_called_once()
+    mw.reset.assert_not_called()
 
 
 def test_deck_options_mode_switch_sets_the_main_window_mode(

@@ -45,6 +45,15 @@ pub(crate) enum RoleChoice {
 
 /// Whether the algorithm can give its prediction of a review that has
 /// already been answered.
+///
+/// LIMITATION, not a decision: this property is DECLARED but not yet read.
+/// All three algorithms currently say `Recorded`, and nothing consumes the
+/// field, so `NotRecordedYet` is never constructed. It exists to replace the
+/// hardcoded `UNSUPPORTED` that told Andrew RWKV-Curve "cannot compute its
+/// prediction for a past review", which was false. The `allow(dead_code)`
+/// below must be REMOVED by whichever change first makes a series read this
+/// field; do not treat the allow as permanent.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PastReview {
     /// It can, and these rows are how.
@@ -72,6 +81,8 @@ pub(crate) struct PredictsRecall {
     /// any other role is never used, not even labelled.
     pub honest_roles: &'static [&'static str],
     pub role_choice: RoleChoice,
+    /// Declared, not yet read: see `PastReview`.
+    #[allow(dead_code)]
     pub past_review: PastReview,
     pub store: PredictionStore,
 }
@@ -81,6 +92,10 @@ impl PredictsRecall {
         self.algorithm as i32
     }
 
+    /// LIMITATION, not a decision: no caller yet, because the two legacy
+    /// tables are still addressed directly. The reader that moves them onto
+    /// the generic table is what will use this; remove the allow then.
+    #[allow(dead_code)]
     pub(crate) fn table(&self) -> &'static str {
         match self.store {
             PredictionStore::Generic => REVIEW_PREDICTIONS_TABLE,

@@ -16,7 +16,7 @@ import { localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, line, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
-import { algorithmName, ALGORITHM_COLOURS } from "./roc";
+import { ALGORITHM_COLOURS, algorithmName } from "./roc";
 
 /** A group with fewer ratings than this is hidden unless asked for. */
 export const SMALL_GROUP = 200;
@@ -110,7 +110,7 @@ export function thinPairNotes(progress: ReviewMetricsProgress | null): string[] 
             tr.statisticsUmPlusTooFew({
                 pair: pairLabel(pair),
                 reviews: pair.reviews,
-                needed: PAIR_FLOOR,
+                needed: String(PAIR_FLOOR),
             })
         );
 }
@@ -235,10 +235,12 @@ export function renderUmPlus(
         return;
     }
     const shape = line<UmPlusPoint>().x((point) => x(point.difference));
-    for (const [colour, error, klass] of [
-        [view.colourA, (point: UmPlusPoint) => point.errorA, "um-plus-a"],
-        [view.colourB, (point: UmPlusPoint) => point.errorB, "um-plus-b"],
-    ] as [string, (point: UmPlusPoint) => number, string][]) {
+    for (
+        const [colour, error, klass] of [
+            [view.colourA, (point: UmPlusPoint) => point.errorA, "um-plus-a"],
+            [view.colourB, (point: UmPlusPoint) => point.errorB, "um-plus-b"],
+        ] as [string, (point: UmPlusPoint) => number, string][]
+    ) {
         drawing
             .append("path")
             .attr("class", klass)

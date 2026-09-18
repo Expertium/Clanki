@@ -376,15 +376,15 @@ after an answer, and an answer is blocked while the buttons wait.
 
 The wait covers every reason RWKV-Curve has no intervals yet:
 
-| Reason | Ends by itself? |
-|---|---|
-| its state still loading | yes |
-| its state not loaded (cold after a queue change, a sync or an undo) | only because the reviewer restores it |
-| another RWKV task holding it | yes |
-| its state changing during the prediction | yes |
-| no prediction | depends on the run |
-| an error, also an error while the answer states are built from RWKV-Curve's intervals after the prediction itself succeeded | depends on the run |
-| a button without an interval | no: see below |
+| Reason                                                                                                                      | Ends by itself?                       |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| its state still loading                                                                                                     | yes                                   |
+| its state not loaded (cold after a queue change, a sync or an undo)                                                         | only because the reviewer restores it |
+| another RWKV task holding it                                                                                                | yes                                   |
+| its state changing during the prediction                                                                                    | yes                                   |
+| no prediction                                                                                                               | depends on the run                    |
+| an error, also an error while the answer states are built from RWKV-Curve's intervals after the prediction itself succeeded | depends on the run                    |
+| a button without an interval                                                                                                | no: see below                         |
 
 After an error no prediction is kept, so an answer stores no RWKV-Curve S90
 with states that are not RWKV-Curve's.
