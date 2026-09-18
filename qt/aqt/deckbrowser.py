@@ -495,7 +495,9 @@ class DeckBrowser:
         count_header_args.append(tr.decks_review_header())
         count_headers = "<th class=count>{}</th>" * len(count_header_args)
         buf = (
-            "<tr><th colspan=5 align=start>{}</th>" + count_headers + "<th class=optscol></th></tr>"
+            "<tr><th colspan=5 align=start>{}</th>"
+            + count_headers
+            + "<th class=optscol></th></tr>"
         ).format(tr.decks_deck(), *count_header_args)
         buf += self._topLevelDragRow()
 
@@ -564,7 +566,9 @@ class DeckBrowser:
         # Simple mode shows one Due count that already includes Learn
         # (spec ui.simple-mode-deck-counts); the stored counts themselves are
         # untouched, only what is displayed is summed.
-        due_count = node.review_count if advanced else node.review_count + node.learn_count
+        due_count = (
+            node.review_count if advanced else node.review_count + node.learn_count
+        )
         if node.deck_id in self._rwkv_pending_deck_ids:
             review = (
                 f'<span id="deck-{node.deck_id}-review-count" '
