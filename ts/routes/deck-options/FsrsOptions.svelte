@@ -47,9 +47,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Item from "$lib/components/Item.svelte";
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
+    import type { Placement } from "./ui-split";
 
     export let state: DeckOptionsState;
     export let openHelpModal: (String) => void;
+    /** Where these rows are drawn (ui-split.ts). */
+    export let placement: Placement = "section";
 
     export function onPresetChange() {
         desiredRetentionTabs[0] = new ValueTab(
@@ -73,7 +76,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const reviewFuzzFactorLong = state.reviewFuzzFactorLong;
     const daysSinceLastOptimization = state.daysSinceLastOptimization;
     const limits = state.deckLimits;
-    const advanced = state.advancedUi;
+    const shown = state.settingShown;
+    // the "Advanced settings" expander shows when one of its parts does
+    $: fsrsAdvancedShown =
+        $shown("fsrsHelpMeDecide", placement) ||
+        $shown("fsrsParams", placement) ||
+        $shown("fsrsSearchFilter", placement) ||
+        $shown("fsrsHealthCheck", placement) ||
+        $shown("fsrsSimulator", placement);
 
     // Which value the Algorithm dropdown holds for this preset (spec
     // deck-options.scheduler-choice). The interval preview and the interval
@@ -723,28 +733,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         : "";
 </script>
 
-<DynamicallySlottable slotHost={Item} api={{}}>
-    <Item>
-        <SpinBoxFloatRow
-            bind:value={effectiveDesiredRetention}
-            defaultValue={defaults.desiredRetention}
-            min={0.1}
-            max={0.99}
-            percentage={true}
-        >
-            <TabbedValue
-                slot="tabs"
-                tabs={desiredRetentionTabs}
+<!-- The value logic stays whether the row shows or not; a hidden row only
+     hides its control. -->
+<div class:hidden-row={!$shown("desiredRetention", placement)}>
+    <DynamicallySlottable slotHost={Item} api={{}}>
+        <Item>
+            <SpinBoxFloatRow
                 bind:value={effectiveDesiredRetention}
-                showTabs={$advanced}
-            />
-            <SettingTitle on:click={() => openHelpModal("desiredRetention")}>
-                {tr.deckConfigDesiredRetention()}
-            </SettingTitle>
-        </SpinBoxFloatRow>
-    </Item>
-</DynamicallySlottable>
-{#if rwkvInstant}
+                defaultValue={defaults.desiredRetention}
+                min={0.1}
+                max={0.99}
+                percentage={true}
+            >
+                <TabbedValue
+                    slot="tabs"
+                    tabs={desiredRetentionTabs}
+                    bind:value={effectiveDesiredRetention}
+                    showTabs={$shown("desiredRetentionTabs", placement)}
+                />
+                <SettingTitle on:click={() => openHelpModal("desiredRetention")}>
+                    {tr.deckConfigDesiredRetention()}
+                </SettingTitle>
+            </SpinBoxFloatRow>
+        </Item>
+    </DynamicallySlottable>
+</div>
+{#if !$shown("desiredRetention", placement)}
+    <!-- the notes, the warnings and the First intervals table belong to
+         Desired retention -->
+{:else if rwkvInstant}
     <Warning
         warning={tr.deckConfigRwkvInstantRetentionInfo()}
         className="alert-info two-line"
@@ -762,7 +779,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <Warning warning={desiredRetentionWarning} className={retentionWarningClass} />
 {/if}
 
-{#if !rwkvMode && newCardIntervals}
+{#if !rwkvMode && newCardIntervals && $shown("desiredRetention", placement)}
     <div class="interval-preview ms-1 me-1">
         <div class="interval-preview-title">
             {tr.deckConfigFirstIntervals()}
@@ -794,7 +811,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
 {/if}
 
-{#if !rwkvMode}
+{#if !rwkvMode && $shown("desiredRetention", placement)}
     <Warning warning={newCardIntervalsError} className={"alert-warning"} />
 {/if}
 <Warning warning={outdatedFsrs7ParamsWarning} className="alert-warning" />
@@ -804,7 +821,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <!-- One optimize action for every preset, shown in both modes (spec
      deck-options.fsrs-only-controls). -->
-{#if !rwkvMode}
+{#if !rwkvMode && $shown("optimizeAllPresets", placement)}
     <div class="ms-1 me-1">
         <button class="btn btn-primary" on:click={() => computeAllParams()}>
             {tr.deckConfigSaveAndOptimize()}
@@ -812,11 +829,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
 {/if}
 
-{#if !rwkvMode && $advanced}
+{#if !rwkvMode && fsrsAdvancedShown}
     <details class="fsrs-advanced m-1">
         <summary>{tr.deckConfigAdvancedSettings()}</summary>
 
-        <div>
+        <div class:hidden-row={!$shown("fsrsHelpMeDecide", placement)}>
             <button
                 class="btn btn-outline-primary"
                 on:click={() => {
@@ -832,66 +849,73 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         <!-- FSRS-7 is the only model (spec sched.fsrs7-only): no version
              selector; empty parameters run the FSRS-7 defaults. -->
-        <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
-            <SettingTitle on:click={() => openHelpModal("modelParams")}>
-                {tr.deckConfigWeights()}
-            </SettingTitle>
-        </ParamsInputRow>
+        {#if $shown("fsrsParams", placement)}
+            <ParamsInputRow bind:value={$config.fsrsParams7} defaultValue={[]}>
+                <SettingTitle on:click={() => openHelpModal("modelParams")}>
+                    {tr.deckConfigWeights()}
+                </SettingTitle>
+            </ParamsInputRow>
+        {/if}
 
-        <ParamsSearchRow
-            bind:value={$config.paramSearch}
-            placeholder={defaultparamSearch}
-        >
-            <SettingTitle>Search Filter</SettingTitle>
-        </ParamsSearchRow>
-
-        <button
-            class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
-            disabled={!checkingHealth && computing}
-            on:click={() => checkHealth()}
-        >
-            {#if checkingHealth}
-                {tr.actionsCancel()}
-            {:else}
-                {tr.deckConfigHealthCheckButton()}
-            {/if}
-        </button>
-        {#if state.legacyEvaluate}
-            <button
-                class="btn {checkingParams ? 'btn-warning' : 'btn-primary'}"
-                disabled={!checkingParams && computing}
-                on:click={() => checkParams()}
+        {#if $shown("fsrsSearchFilter", placement)}
+            <ParamsSearchRow
+                bind:value={$config.paramSearch}
+                placeholder={defaultparamSearch}
             >
-                {#if checkingParams}
+                <SettingTitle>Search Filter</SettingTitle>
+            </ParamsSearchRow>
+        {/if}
+
+        <div class:hidden-row={!$shown("fsrsHealthCheck", placement)}>
+            <button
+                class="btn {checkingHealth ? 'btn-warning' : 'btn-primary'}"
+                disabled={!checkingHealth && computing}
+                on:click={() => checkHealth()}
+            >
+                {#if checkingHealth}
                     {tr.actionsCancel()}
                 {:else}
-                    {tr.deckConfigEvaluateButton()}
+                    {tr.deckConfigHealthCheckButton()}
                 {/if}
             </button>
-        {/if}
-        <div>
-            {#if checkingParams || checkingHealth}
-                {computeParamsProgressString}
-                {#if computeParamsProgressPct !== undefined}
-                    <div
-                        class="progress fsrs-progress"
-                        role="progressbar"
-                        aria-valuenow={computeParamsProgressPct}
-                        aria-valuemin="0"
-                        aria-valuemax="100"
-                    >
-                        <div
-                            class="progress-bar"
-                            style={`width: ${computeParamsProgressPct}%`}
-                        ></div>
-                    </div>
-                {/if}
-            {:else if totalReviews !== undefined}
-                {tr.statisticsReviews({ reviews: totalReviews })}
+            {#if state.legacyEvaluate}
+                <button
+                    class="btn {checkingParams ? 'btn-warning' : 'btn-primary'}"
+                    disabled={!checkingParams && computing}
+                    on:click={() => checkParams()}
+                >
+                    {#if checkingParams}
+                        {tr.actionsCancel()}
+                    {:else}
+                        {tr.deckConfigEvaluateButton()}
+                    {/if}
+                </button>
             {/if}
+            <div>
+                {#if checkingParams || checkingHealth}
+                    {computeParamsProgressString}
+                    {#if computeParamsProgressPct !== undefined}
+                        <div
+                            class="progress fsrs-progress"
+                            role="progressbar"
+                            aria-valuenow={computeParamsProgressPct}
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                        >
+                            <div
+                                class="progress-bar"
+                                style={`width: ${computeParamsProgressPct}%`}
+                            ></div>
+                        </div>
+                    {/if}
+                {:else if totalReviews !== undefined}
+                    {tr.statisticsReviews({ reviews: totalReviews })}
+                {/if}
+            </div>
         </div>
         <button
             class="btn btn-primary"
+            class:hidden-row={!$shown("fsrsSimulator", placement)}
             on:click={() => showSimulatorModal(simulatorModal)}
         >
             {tr.deckConfigFsrsSimulatorExperimental()}
@@ -919,6 +943,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 />
 
 <style>
+    .hidden-row {
+        display: none;
+    }
+
     .btn {
         margin-bottom: 0.375rem;
     }

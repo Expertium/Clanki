@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
 
     $: maximumAnswerSecondsAboveRecommended =
@@ -64,46 +66,50 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SpinBoxRow
-                bind:value={$config.capAnswerTimeToSecs}
-                defaultValue={defaults.capAnswerTimeToSecs}
-                min={1}
-                max={7200}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("maximumAnswerSecs"),
-                        )}
-                >
-                    {settings.maximumAnswerSecs.title}
-                </SettingTitle>
-            </SpinBoxRow>
-        </Item>
-
-        <Item>
-            <Warning warning={maximumAnswerSecondsAboveRecommended} />
-        </Item>
-
-        <Item>
-            <!-- AnkiMobile hides this -->
-            <div class="show-timer-switch" style="display: contents;">
-                <SwitchRow
-                    bind:value={$config.showTimer}
-                    defaultValue={defaults.showTimer}
+        {#if $shown("maximumAnswerSecs", "section")}
+            <Item>
+                <SpinBoxRow
+                    bind:value={$config.capAnswerTimeToSecs}
+                    defaultValue={defaults.capAnswerTimeToSecs}
+                    min={1}
+                    max={7200}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("showAnswerTimer"),
+                                Object.keys(settings).indexOf("maximumAnswerSecs"),
                             )}
                     >
-                        {settings.showAnswerTimer.title}
+                        {settings.maximumAnswerSecs.title}
                     </SettingTitle>
-                </SwitchRow>
-            </div>
-        </Item>
+                </SpinBoxRow>
+            </Item>
+
+            <Item>
+                <Warning warning={maximumAnswerSecondsAboveRecommended} />
+            </Item>
+        {/if}
+
+        {#if $shown("showTimer", "section")}
+            <Item>
+                <!-- AnkiMobile hides this -->
+                <div class="show-timer-switch" style="display: contents;">
+                    <SwitchRow
+                        bind:value={$config.showTimer}
+                        defaultValue={defaults.showTimer}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("showAnswerTimer"),
+                                )}
+                        >
+                            {settings.showAnswerTimer.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                </div>
+            </Item>
+        {/if}
 
         <!-- "Stop on-screen timer on answer" is not shown: the timer keeps
              running when the answer shows (spec review.timer-keeps-running). -->

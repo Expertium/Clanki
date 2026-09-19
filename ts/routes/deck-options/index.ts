@@ -9,6 +9,7 @@ import "$lib/sveltelib/export-runtime";
 import "./deck-options-base.scss";
 
 import { getDeckConfigsForUpdate } from "@generated/backend";
+import { loadSimpleItems } from "@tslib/ui-split";
 import { ModuleName, setupI18n } from "@tslib/i18n";
 import { checkNightMode } from "@tslib/nightmode";
 
@@ -36,7 +37,11 @@ const i18n = setupI18n({
 
 export async function setupDeckOptions(did_: number): Promise<DeckOptionsPage> {
     const did = BigInt(did_);
-    const [info] = await Promise.all([getDeckConfigsForUpdate({ did }), i18n]);
+    const [info, simpleItems] = await Promise.all([
+        getDeckConfigsForUpdate({ did }),
+        loadSimpleItems(),
+        i18n,
+    ]);
 
     checkNightMode();
 
@@ -45,6 +50,7 @@ export async function setupDeckOptions(did_: number): Promise<DeckOptionsPage> {
     context.set(touchDeviceKey, "ontouchstart" in document.documentElement);
 
     const state = new DeckOptionsState(BigInt(did), info);
+    state.simpleItems.set(simpleItems);
     return new DeckOptionsPage({
         target: document.body,
         props: { state },

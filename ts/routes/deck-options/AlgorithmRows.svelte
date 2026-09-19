@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
+    import type { Placement } from "./ui-split";
     import { reviewOrderForAlgorithm } from "./review-order";
     import {
         flagsFromSchedulerChoice,
@@ -31,6 +32,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
      */
     export let state: DeckOptionsState;
     export let openHelp: (key: AlgorithmHelpKey) => void;
+    /** Where these rows are drawn (ui-split.ts). */
+    export let placement: Placement = "section";
 
     let fsrsOptionsComponent: FsrsOptions | undefined;
     export function onPresetChange() {
@@ -41,7 +44,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const fsrs = state.fsrs;
     const config = state.currentConfig;
-    const advancedUi = state.advancedUi;
+    const shown = state.settingShown;
     const schedulingAlgorithm = state.schedulingAlgorithm;
     const settings = algorithmHelpSettings();
 
@@ -95,12 +98,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const choices = schedulerChoices();
 </script>
 
-<!-- Advanced-only. The one global setting on this page, so it carries a
+<!-- Advanced-only by default (ui-split.ts). The one global setting on this page, so it carries a
      "(global)" mark and the globe (spec ui.global-marker). The manual RWKV-Curve
      reschedule action is gone: the "Reschedule cards when desired retention
      changes" Preferences setting covers every algorithm
      (spec deck-options.reschedule-on-change). -->
-{#if $advancedUi}
+{#if $shown("algorithm", placement)}
     <Item>
         <EnumSelectorRow
             bind:value={choice}
@@ -118,6 +121,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <FsrsOptions
         bind:this={fsrsOptionsComponent}
         {state}
+        {placement}
         openHelpModal={(key) => openHelp(key)}
         {onPresetChange}
     />

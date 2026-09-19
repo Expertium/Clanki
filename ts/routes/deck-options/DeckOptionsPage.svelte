@@ -29,6 +29,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SimpleOptions from "./SimpleOptions.svelte";
     import TimerOptions from "./TimerOptions.svelte";
     import EasyDays from "./EasyDays.svelte";
+    import { type Section, sectionShown } from "./ui-split";
 
     export let state: DeckOptionsState;
     const dispatch = createEventDispatcher<{ close: void }>();
@@ -37,6 +38,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // (spec deck-options.simple-view). The mode is the collection flag, set
     // from the main window or from this page's switch (UiModeSwitch).
     const advancedUi = state.advancedUi;
+    // Simple mode draws, below its own section, the Advanced-mode sections
+    // holding a setting the user added to Simple mode (ui-split.ts).
+    const simpleItems = state.simpleItems;
+    $: simpleSection = (section: Section) =>
+        sectionShown(section, $advancedUi, $simpleItems);
 
     export function auxData(): Writable<Record<string, unknown>> {
         return state.currentAuxData;
@@ -173,6 +179,52 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         bind:this={simpleOptionsComponent}
                     />
                 </Row>
+
+                {#if simpleSection("newCards")}
+                    <Row class="row-columns">
+                        <NewOptions {state} api={newOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("lapses")}
+                    <Row class="row-columns">
+                        <LapseOptions {state} api={lapseOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("displayOrder")}
+                    <Row class="row-columns">
+                        <DisplayOrder {state} api={displayOrder} />
+                    </Row>
+                {/if}
+                {#if simpleSection("rwkv")}
+                    <Row class="row-columns">
+                        <RwkvOptions {state} />
+                    </Row>
+                {/if}
+                {#if simpleSection("burying")}
+                    <Row class="row-columns">
+                        <BuryOptions {state} api={buryOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("audio")}
+                    <Row class="row-columns">
+                        <AudioOptions {state} api={audioOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("timers")}
+                    <Row class="row-columns">
+                        <TimerOptions {state} api={timerOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("autoAdvance")}
+                    <Row class="row-columns">
+                        <AutoAdvance {state} api={timerOptions} />
+                    </Row>
+                {/if}
+                {#if simpleSection("advanced")}
+                    <Row class="row-columns">
+                        <AdvancedOptions {state} api={advancedOptions} />
+                    </Row>
+                {/if}
 
                 {#if $addons.length}
                     <Row class="row-columns">

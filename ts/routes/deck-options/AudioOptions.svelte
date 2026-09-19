@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
 
     // "Play audio automatically" is `disableAutoplay` turned the other way
@@ -70,34 +72,42 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SwitchRow
-                bind:value={playAudio}
-                defaultValue={playAudioFromConfig(defaults)}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("disableAutoplay"))}
+        {#if $shown("playAudio", "section")}
+            <Item>
+                <SwitchRow
+                    bind:value={playAudio}
+                    defaultValue={playAudioFromConfig(defaults)}
                 >
-                    {settings.disableAutoplay.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("disableAutoplay"),
+                            )}
+                    >
+                        {settings.disableAutoplay.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.skipQuestionWhenReplayingAnswer}
-                defaultValue={defaults.skipQuestionWhenReplayingAnswer}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("skipQuestionWhenReplaying"),
-                        )}
+        {#if $shown("skipQuestionWhenReplaying", "section")}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.skipQuestionWhenReplayingAnswer}
+                    defaultValue={defaults.skipQuestionWhenReplayingAnswer}
                 >
-                    {settings.skipQuestionWhenReplaying.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "skipQuestionWhenReplaying",
+                                ),
+                            )}
+                    >
+                        {settings.skipQuestionWhenReplaying.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

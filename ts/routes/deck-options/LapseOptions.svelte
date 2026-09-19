@@ -28,6 +28,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api = {};
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
@@ -99,23 +101,27 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <StepsInputRow
-                bind:value={$config.relearnSteps}
-                defaultValue={defaults.relearnSteps}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("relearningSteps"))}
+        {#if $shown("relearningSteps", "section")}
+            <Item>
+                <StepsInputRow
+                    bind:value={$config.relearnSteps}
+                    defaultValue={defaults.relearnSteps}
                 >
-                    {settings.relearningSteps.title}
-                </SettingTitle>
-            </StepsInputRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("relearningSteps"),
+                            )}
+                    >
+                        {settings.relearningSteps.title}
+                    </SettingTitle>
+                </StepsInputRow>
+            </Item>
 
-        <Item>
-            <Warning warning={stepsTooLargeForFsrs} />
-        </Item>
+            <Item>
+                <Warning warning={stepsTooLargeForFsrs} />
+            </Item>
+        {/if}
 
         <!-- Same-day reviews for (re)learning steps are always allowed
              (spec sched.same-day-steps-always-on); there is no switch.
@@ -123,75 +129,85 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
              (spec deck-options.collection-wide-in-preferences). -->
 
         {#if !$fsrs}
-            <Item>
-                <SpinBoxRow
-                    bind:value={$config.minimumLapseInterval}
-                    defaultValue={defaults.minimumLapseInterval}
-                    min={1}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("minimumInterval"),
-                            )}
+            {#if $shown("lapseMinimumInterval", "section")}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={$config.minimumLapseInterval}
+                        defaultValue={defaults.minimumLapseInterval}
+                        min={1}
                     >
-                        {settings.minimumInterval.title}
-                    </SettingTitle>
-                </SpinBoxRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("minimumInterval"),
+                                )}
+                        >
+                            {settings.minimumInterval.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
+            {/if}
         {/if}
 
         <Item>
             <Warning warning={stepsExceedMinimumInterval} />
         </Item>
 
-        <Item>
-            <SpinBoxRow
-                bind:value={$config.leechThreshold}
-                defaultValue={defaults.leechThreshold}
-                min={1}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("leechThreshold"))}
-                >
-                    {settings.leechThreshold.title}
-                </SettingTitle>
-            </SpinBoxRow>
-        </Item>
-
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.leechAction}
-                defaultValue={defaults.leechAction}
-                choices={leechChoices()}
-                breakpoint="md"
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("leechAction"))}
-                >
-                    {settings.leechAction.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
-
-        {#if $config.leechAction === DeckConfig_Config_LeechAction.SUSPEND}
+        {#if $shown("leechThreshold", "section")}
             <Item>
-                <SwitchRow
-                    bind:value={$config.leechOnlyIfYoung}
-                    defaultValue={defaults.leechOnlyIfYoung}
+                <SpinBoxRow
+                    bind:value={$config.leechThreshold}
+                    defaultValue={defaults.leechThreshold}
+                    min={1}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("leechOnlyIfYoung"),
+                                Object.keys(settings).indexOf("leechThreshold"),
                             )}
                     >
-                        {settings.leechOnlyIfYoung.title}
+                        {settings.leechThreshold.title}
                     </SettingTitle>
-                </SwitchRow>
+                </SpinBoxRow>
             </Item>
+        {/if}
+
+        {#if $shown("leechAction", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.leechAction}
+                    defaultValue={defaults.leechAction}
+                    choices={leechChoices()}
+                    breakpoint="md"
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(Object.keys(settings).indexOf("leechAction"))}
+                    >
+                        {settings.leechAction.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
+
+        {#if $config.leechAction === DeckConfig_Config_LeechAction.SUSPEND}
+            {#if $shown("leechOnlyIfYoung", "section")}
+                <Item>
+                    <SwitchRow
+                        bind:value={$config.leechOnlyIfYoung}
+                        defaultValue={defaults.leechOnlyIfYoung}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("leechOnlyIfYoung"),
+                                )}
+                        >
+                            {settings.leechOnlyIfYoung.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                </Item>
+            {/if}
         {/if}
     </DynamicallySlottable>
 </TitledContainer>
