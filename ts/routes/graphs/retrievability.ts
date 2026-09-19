@@ -16,8 +16,8 @@ import type { GraphBounds, SearchDispatch, TableDatum } from "./graph-helpers";
 import { numericMap, setDataAvailable } from "./graph-helpers";
 import { clickableClass } from "./graph-styles";
 import { getAdjustedScaleAndTicks, percentageRangeMinMax } from "./percentageRange";
-import { algorithmName } from "./total-knowledge";
 import { hideTooltip, showTooltip } from "./tooltip-utils.svelte";
+import { algorithmName } from "./total-knowledge";
 
 type CountBin = Bin<[number, number], number>;
 type ProtobufRetrievabilitySeries = NonNullable<

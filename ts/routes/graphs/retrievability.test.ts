@@ -1,16 +1,15 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import {
     GraphsResponse,
     GraphsResponse_Retrievability,
     GraphsResponse_Retrievability_Series,
 } from "@generated/anki/stats_pb";
-import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
-import { algorithmName } from "./total-knowledge";
 import {
     fsrsColour,
     prepareData,
@@ -18,6 +17,7 @@ import {
     rwkvScoresPending,
     shouldShowRetrievabilityGraph,
 } from "./retrievability";
+import { algorithmName } from "./total-knowledge";
 
 test("retrievability graph is shown when RWKV data exists without FSRS", () => {
     const sourceData = new GraphsResponse({
