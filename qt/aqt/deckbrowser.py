@@ -71,6 +71,13 @@ class RenderDeckNodeContext:
     review_limit_labels: dict[int, tuple[str, str]]
 
 
+def _get_addons_label() -> str:
+    """The Add-ons dialog's button shares this string; its "..." says a dialog
+    opens, but the deck list's buttons carry none (spec
+    ui.get-decks-and-get-addons)."""
+    return tr.addons_get_addons().rstrip(" .…")
+
+
 class DeckBrowser:
     _render_data: RenderData
 
@@ -745,7 +752,7 @@ class DeckBrowser:
 
     drawLinks = [
         ["", "shared", tr.decks_get_shared()],
-        ["", "get_addons", tr.addons_get_addons()],
+        ["", "get_addons", _get_addons_label()],
         ["", "create", tr.decks_create_deck()],
         ["Ctrl+Shift+I", "import", tr.decks_import_file()],
     ]

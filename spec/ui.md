@@ -88,10 +88,11 @@ size under the mouse" (`ts/tests/e2e/ui-mode-switch-hover.spec.ts`).
 
 Given the deck list's bottom row, "Find Decks Online" opens
 `https://ankiweb.net/shared/decks/` as before (upstream calls the
-equivalent button "Get Shared"); a second button, "Get Add-ons...", shown in
+equivalent button "Get Shared"); a second button, "Get Add-ons", shown in
 Advanced mode only, opens the same Install add-on dialog as the existing
 Tools menu path (Add-ons, then Get Add-ons), unchanged. Simple mode does not
-show "Get Add-ons...".
+show "Get Add-ons". Like the other deck-list buttons, its label has no
+trailing "..." (the Add-ons dialog's own button keeps it).
 
 **Why:** upstream issue https://github.com/ankitects/anki/issues/5649: a
 single "Get Shared" (here, "Find Decks Online") button covers both decks and
