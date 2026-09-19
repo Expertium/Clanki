@@ -700,6 +700,15 @@ hash of card id and modification time, then card id). Under RWKV no FSRS-7
 or SM-2 value stands in, even when FSRS is switched off. Under FSRS-7 no RWKV
 value is read.
 
+A search term ordered by "Relative overdueness" follows the same rule.
+Under FSRS-7 it is unchanged: elapsed days over FSRS-7's interval at the
+desired retention (SM-2's relative overdueness without a memory state).
+Under RWKV-Curve and RWKV-Instant a card's key is that algorithm's
+retrievability from the same map, divided by the card's desired retention
+(its own, else its preset's), lowest first: the ranking of RWKV's own
+review order of that name. A card with no RWKV value goes last, and the
+FSRS-7 memory state plays no part.
+
 The backend's "RWKV retrievability of a card" call follows the same rule:
 RWKV-Instant's R under RWKV-Instant, the curve value under RWKV-Curve, none
 under FSRS-7.
@@ -711,10 +720,14 @@ rating head, a card outside that search got FSRS-7's or SM-2's value, and a
 card without a memory state got SM-2's. On a copy of his collection
 (RELEASE build) the deck's own scoring takes 10-15 ms for a deck of 198 due
 cards, 1.1-1.4 s for all 25,552 due cards of the collection and 1.7-2.2 s for
-every card, on the build's background thread.
+every card, on the build's background thread. "Relative overdueness" joined
+the rule later the same day, from the approved speed bundle ("Ok to all speed
+suggestions"): it still ranked RWKV cards by FSRS-7's memory state.
 
-**Pinned by:** `filtered_deck_retrievability_order_uses_only_the_collections_algorithm`
+**Pinned by:** `filtered_deck_retrievability_order_uses_only_the_collections_algorithm`,
+`filtered_deck_relative_overdueness_under_rwkv_is_rwkvs_own`
 (`rslib/src/scheduler/filtered/mod.rs`),
+`test_filtered_deck_prepares_rwkv_scores_for_relative_overdueness`,
 `rwkv_retrievability_score_is_the_collections_algorithms`
 (`rslib/src/scheduler/service/mod.rs`),
 `test_filtered_deck_retrievability_order_scores_its_own_cards`,
