@@ -121,12 +121,14 @@ TODAY: dict[str, bool] = {
     "browser.sidebar.note_types": False,
     "browser.sidebar.tags": True,
     **{
-        f"browser.column.{column}": column in ("noteFld", "deck", "cardDue", "cardIvl")
+        f"browser.column.{column}": column
+        in ("noteFld", "deck", "cardDue", "cardIvl", "retrievability")
         for column in [
             "noteFld",
             "deck",
             "cardDue",
             "cardIvl",
+            "retrievability",
             "question",
             "answer",
             "template",
@@ -141,7 +143,6 @@ TODAY: dict[str, bool] = {
             "originalPosition",
             "stability",
             "difficulty",
-            "retrievability",
         ]
     },
     # the note editor (spec ui.editor-simple-view)
@@ -685,6 +686,7 @@ def test_browser_simple_columns_follow_the_split() -> None:
         "noteFld",
         "cardDue",
         "cardIvl",
+        "retrievability",
         "cardEase",
     ]
     # at least one column

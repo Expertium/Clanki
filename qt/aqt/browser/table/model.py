@@ -19,6 +19,7 @@ from anki.errors import BackendError, NotFoundError
 from anki.notes import Note, NoteId
 from aqt import gui_hooks
 from aqt.browser.table import Cell, CellRow, Column, ItemId, SearchContext
+from aqt.browser.table.rwkv_values import RETRIEVABILITY, STABILITY, RwkvColumnValues
 from aqt.browser.table.state import ItemState
 from aqt.qt import *
 from aqt.utils import tr
@@ -61,6 +62,9 @@ class DataModel(QAbstractTableModel):
         self._on_row_state_changed = row_state_changed_callback
         assert aqt.mw is not None
         self._want_tooltips = aqt.mw.pm.show_browser_table_tooltips()
+        # the memory columns' values under RWKV (spec ui.browser-memory-columns)
+        self._rwkv = RwkvColumnValues(aqt.mw, self._rwkv_values_changed)
+        self._rwkv.refresh_algorithm()
 
     # Row Object Interface
     ######################################################################
@@ -75,14 +79,48 @@ class DataModel(QAbstractTableModel):
         if row := self._rows.get(item):
             if not self._block_updates and row.is_stale(self._stale_cutoff):
                 # need to refresh
-                return self._fetch_row_and_update_cache(index, item, row)
+                return self._with_rwkv_values(
+                    item, self._fetch_row_and_update_cache(index, item, row)
+                )
             # return row, even if it's stale
-            return row
+            return self._with_rwkv_values(item, row)
         if self._block_updates:
             # blank row until we unblock
             return CellRow.placeholder(self.len_columns())
         # missing row, need to build
-        return self._fetch_row_and_update_cache(index, item, None)
+        return self._with_rwkv_values(
+            item, self._fetch_row_and_update_cache(index, item, None)
+        )
+
+    def _with_rwkv_values(self, item: ItemId, row: CellRow) -> CellRow:
+        """Under RWKV, the row's Retrievability and Stability cells get
+        RWKV's values, computed in the background for the rows on screen
+        (spec ui.browser-memory-columns). Notes mode keeps them blank."""
+        if not self._rwkv.active or row.is_disabled or self._state.is_notes_mode():
+            return row
+        retrievability = self.active_column_index(RETRIEVABILITY)
+        stability = self.active_column_index(STABILITY)
+        if retrievability is not None or stability is not None:
+            self._rwkv.fill(item, row, retrievability, stability)
+        return row
+
+    def _rwkv_values_changed(self, card_ids: Sequence[int]) -> None:
+        if self.is_empty() or self._state.is_notes_mode():
+            return
+        columns = [
+            column
+            for column in (
+                self.active_column_index(RETRIEVABILITY),
+                self.active_column_index(STABILITY),
+            )
+            if column is not None
+        ]
+        if not columns:
+            return
+        for row in self.get_item_rows([CardId(card_id) for card_id in card_ids]):
+            self.dataChanged.emit(  # type: ignore
+                self.index(row, min(columns)), self.index(row, max(columns))
+            )
 
     def _fetch_row_and_update_cache(
         self, index: QModelIndex, item: ItemId, old_row: CellRow | None
@@ -158,6 +196,12 @@ class DataModel(QAbstractTableModel):
 
     def mark_cache_stale(self) -> None:
         self._stale_cutoff = time.time()
+        # a change of the collection (a review, an undo, a reset, a deck
+        # move) makes RWKV's values stale too (spec sched.rwkv-r-freshness)
+        self._rwkv.collection_changed()
+
+    def cleanup(self) -> None:
+        self._rwkv.close()
 
     def reset(self) -> None:
         self.begin_reset()
@@ -166,6 +210,7 @@ class DataModel(QAbstractTableModel):
     def begin_reset(self) -> None:
         self.beginResetModel()
         self.mark_cache_stale()
+        self._rwkv.refresh_algorithm()
 
     def end_reset(self) -> None:
         self.endResetModel()

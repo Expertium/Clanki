@@ -62,6 +62,12 @@ class Table:
 
     def cleanup(self) -> None:
         self._save_header()
+        self._model.cleanup()
+
+    def sorts_by_retrievability(self) -> bool:
+        """True when the table's cards are sorted by the Retrievability
+        column."""
+        return not self.is_notes_mode() and self._state.sort_column == "retrievability"
 
     # Public Methods
     ######################################################################

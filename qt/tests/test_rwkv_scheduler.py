@@ -13402,10 +13402,13 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         prepare_curve_retrievability: bool = False,
         prepare_instant_retrievability: bool = False,
         publish_as: str | None = None,
+        reuse_kept_scores: bool = True,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
         # the deck's own map (spec sched.filtered-deck-one-algorithm)
         assert publish_as == rwkv_scheduler.FILTERED_DECK_RWKV_SCORES_SEARCH
+        # scored now, never an earlier map (spec sched.rwkv-r-freshness)
+        assert reuse_kept_scores is False
         # outside RWKV-Curve, a retrievability order reads the rating head
         assert prepare_instant_retrievability == (
             order == FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING
@@ -14128,7 +14131,9 @@ def test_prepare_stats_uses_backend_search_review_input_rows(
     ]
 
 
-def test_prepare_stats_reuses_fresh_review_queue_scores(
+# Pins spec/scheduling.md#sched.rwkv-r-freshness: the study queue's scores
+# carry no time, so a Stats map scores every card now instead of reusing them
+def test_prepare_stats_scores_every_card_now_not_from_the_queue_scores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Runtime(_SharedReviewRuntime):
@@ -14212,14 +14217,15 @@ def test_prepare_stats_reuses_fresh_review_queue_scores(
         set_reviewer_backend(previous_backend)
 
     assert [review_input.identity.card_id for review_input in runtime.query_inputs] == [
-        2
+        1,
+        2,
     ]
     scores = rpc.stats_calls[0]["scores"]
     assert [
         (getattr(score, "card_id"), getattr(score, "retrievability"))
         for score in scores
     ] == [
-        (1, pytest.approx(0.42)),
+        (1, pytest.approx(0.69)),
         (2, pytest.approx(0.69)),
     ]
 
@@ -19111,25 +19117,53 @@ def test_prepare_stats_retrievability_scores_scores_again_for_another_search() -
     assert backend.predicted_card_ids == [1, 1, 1]
 
 
-def test_prepare_stats_retrievability_scores_keep_the_scores_however_long_the_wait(
+def test_prepare_stats_retrievability_scores_reuse_ends_with_the_time_tolerance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-r-freshness: a kept map stands
+    only as long as the shortest time tolerance of its cards. The scaffold's
+    collection has no review, so its cards get the longest, an hour."""
     backend, reviewer = _stats_reuse_scaffold()
     previous_backend = set_reviewer_backend(backend)
     rwkv_scheduler.forget_rwkv_stats_scores()
-    clock = [1_000.0]
-    monkeypatch.setattr(rwkv_scheduler.time, "monotonic", lambda: clock[0])
+    clock = [1_000_000.0]
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: clock[0])
     try:
         prepare_stats_retrievability_scores(reviewer, "rated:7")
-        # a week later, with the day and everything else in the key unchanged
-        clock[0] += 7 * 24 * 3600
+        clock[0] += 30 * 60
+        prepare_stats_retrievability_scores(reviewer, "rated:7")
+        assert backend.predicted_card_ids == [1]
+        clock[0] += 31 * 60
         prepare_stats_retrievability_scores(reviewer, "rated:7")
     finally:
         set_reviewer_backend(previous_backend)
         rwkv_scheduler.forget_rwkv_stats_scores()
 
-    # no clock ends the reuse (spec ui.stats-rwkv-scores-kept)
-    assert backend.predicted_card_ids == [1]
+    assert backend.predicted_card_ids == [1, 1]
+
+
+def test_rwkv_scores_fresh_until_takes_the_shortest_tolerance_of_the_cards() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-r-freshness."""
+
+    def inputs(*elapsed_seconds: int) -> list[tuple[int, Any]]:
+        return [
+            (
+                index,
+                replace(
+                    _rwkv_review_input(card_id=index, note_id=index),
+                    current_elapsed_seconds=elapsed,
+                ),
+            )
+            for index, elapsed in enumerate(elapsed_seconds, start=1)
+        ]
+
+    fresh_until = rwkv_scheduler._rwkv_scores_fresh_until
+    day = 86_400
+    assert fresh_until(100.0, inputs(30 * day, 5 * 3600)) == 100.0 + 600
+    assert fresh_until(100.0, inputs(30 * day, 30 * 60)) == 100.0 + 60
+    # a card reviewed under ten minutes ago: the map is never reused
+    assert fresh_until(100.0, inputs(30 * day, 5 * 60)) == 100.0
+    assert fresh_until(100.0, inputs(30 * day, 3 * day)) == 100.0 + 3600
 
 
 def test_prepare_stats_retrievability_scores_scores_again_after_a_new_day() -> None:

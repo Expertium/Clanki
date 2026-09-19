@@ -12,6 +12,7 @@ use strum::IntoEnumIterator;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card_rendering::prettify_av_tags;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::notetype::CardTemplate;
 use crate::notetype::NotetypeKind;
 use crate::prelude::*;
@@ -68,8 +69,11 @@ struct RowContext {
     tr: I18n,
     timing: SchedTimingToday,
     render_context: RenderContext,
+    /// FSRS-7's values; all None under both RWKV algorithms, whose values
+    /// the Browser fills in itself (spec ui.browser-memory-columns)
     fsrs_retrievability: Option<f32>,
     fsrs_stability: Option<f32>,
+    fsrs_difficulty: Option<f32>,
 }
 
 enum RenderContext {
@@ -274,9 +278,22 @@ impl Column {
 impl Collection {
     pub fn all_browser_columns(&self) -> anki_proto::search::BrowserColumns {
         let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
+        // under RWKV, Stability and Difficulty have no values to sort by:
+        // RWKV-Instant has neither, and RWKV-Curve's S90 lives only in RWKV's
+        // own state (spec ui.browser-memory-columns)
+        let rwkv = self
+            .effective_scheduling_algorithm()
+            .is_ok_and(|algorithm| algorithm != SchedulingAlgorithm::Fsrs7);
         let mut columns: Vec<anki_proto::search::browser_columns::Column> = Column::iter()
             .filter(|&c| c != Column::Custom)
-            .map(|c| c.to_pb_column(&self.tr, advanced_ui))
+            .map(|c| {
+                let mut column = c.to_pb_column(&self.tr, advanced_ui);
+                if rwkv && matches!(c, Column::Stability | Column::Difficulty) {
+                    column.sorting_cards =
+                        anki_proto::search::browser_columns::Sorting::None as i32;
+                }
+                column
+            })
             .collect();
         columns.sort_by(|c1, c2| c1.cards_mode_label.cmp(&c2.cards_mode_label));
         anki_proto::search::BrowserColumns { columns }
@@ -394,8 +411,12 @@ impl RowContext {
             None
         };
         let timing = col.timing_today()?;
-        let fsrs_retrievability = cards[0]
-            .memory_state
+        // FSRS-7's memory state stays on a card under RWKV, but no RWKV
+        // collection shows it (spec ui.browser-memory-columns)
+        let memory_state = (col.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7)
+            .then_some(cards[0].memory_state)
+            .flatten();
+        let fsrs_retrievability = memory_state
             .zip(cards[0].seconds_since_last_review(&timing))
             .map(|(state, seconds)| {
                 col.fsrs_current_retrievability_for_card_state(
@@ -405,7 +426,8 @@ impl RowContext {
                 )
             })
             .transpose()?;
-        let fsrs_stability = cards[0].memory_state.map(|state| state.stability);
+        let fsrs_stability = memory_state.map(|state| state.stability);
+        let fsrs_difficulty = memory_state.map(|state| state.difficulty());
         let render_context = if with_card_render {
             RenderContext::new(col, &cards[0], &note, &notetype)
         } else {
@@ -424,6 +446,7 @@ impl RowContext {
             render_context,
             fsrs_retrievability,
             fsrs_stability,
+            fsrs_difficulty,
         })
     }
 
@@ -551,10 +574,8 @@ impl RowContext {
     }
 
     fn fsrs_difficulty_str(&self) -> String {
-        self.cards[0]
-            .memory_state
-            .as_ref()
-            .map(|s| format!("{:.0}%", s.difficulty() * 100.0))
+        self.fsrs_difficulty
+            .map(|difficulty| format!("{:.0}%", difficulty * 100.0))
             .unwrap_or_default()
     }
 
@@ -860,6 +881,70 @@ mod tests {
         );
         let expected = time_span(s90 * 86400.0, &ctx.tr, false);
         assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    /// spec/ui.md, `ui.browser-memory-columns`: the backend fills the
+    /// memory columns with FSRS-7's values under FSRS-7 only. A card keeps
+    /// its FSRS-7 memory state under RWKV, and those cells stay blank there
+    /// (the Browser fills in RWKV's own values); Stability and Difficulty
+    /// cannot be sorted by under RWKV.
+    #[test]
+    fn memory_columns_show_fsrs7_values_under_fsrs7_only() -> Result<()> {
+        let mut col = Collection::new();
+        let params = fsrs7_params_for_retrievability_test();
+        set_selected_fsrs7_params(&mut col, params.clone())?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.search_cards("", SortMode::NoOrder)?[0];
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        let timing = col.timing_today()?;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 42.0,
+            stability_internal: 42.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        card.last_review_time = Some(timing.now.adding_secs(-10 * 86_400));
+        card.decay = Some(params[23]);
+        col.storage.update_card(&card)?;
+        let memory_columns = [
+            Column::Retrievability,
+            Column::Stability,
+            Column::Difficulty,
+        ];
+        let sortable = |col: &Collection, column: Column| {
+            col.all_browser_columns()
+                .columns
+                .into_iter()
+                .find(|c| c.key == column.to_string())
+                .unwrap()
+                .sorting_cards
+                != anki_proto::search::browser_columns::Sorting::None as i32
+        };
+
+        let ctx = RowContext::new(&mut col, cid.0, false, false)?;
+        for column in memory_columns {
+            assert!(!ctx.get_cell_text(column)?.is_empty(), "{column:?}");
+            assert!(sortable(&col, column), "{column:?}");
+        }
+
+        for algorithm in [
+            SchedulingAlgorithm::RwkvCurve,
+            SchedulingAlgorithm::RwkvInstant,
+        ] {
+            col.change_scheduling_algorithm(algorithm)?;
+            // the FSRS-7 state is still on the card
+            assert!(col.storage.get_card(cid)?.unwrap().memory_state.is_some());
+            let ctx = RowContext::new(&mut col, cid.0, false, false)?;
+            for column in memory_columns {
+                assert_eq!(ctx.get_cell_text(column)?, "", "{algorithm:?} {column:?}");
+            }
+            assert!(sortable(&col, Column::Retrievability));
+            assert!(!sortable(&col, Column::Stability));
+            assert!(!sortable(&col, Column::Difficulty));
+        }
         Ok(())
     }
 }

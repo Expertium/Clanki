@@ -18,7 +18,7 @@ from aqt.browser.table import Column, ItemId, ItemList
 
 def simple_card_columns(col: Collection) -> list[str]:
     """Cards mode in Simple UI mode shows the columns the split gives it
-    (by default Sort Field, Deck, Due and Interval), whatever the stored
+    (by default Sort Field, Deck, Due, Interval and Retrievability), whatever the stored
     (Advanced) choice is, and keeps that choice untouched (spec
     ui.browser-simple-view, ui.split-configurable). At least one column
     shows: with none chosen, the sort field."""

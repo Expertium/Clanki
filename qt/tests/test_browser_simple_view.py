@@ -180,7 +180,7 @@ class _Col:
 def test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice():
     from aqt.browser.table.state import CardState
 
-    simple_columns = ["noteFld", "deck", "cardDue", "cardIvl"]
+    simple_columns = ["noteFld", "deck", "cardDue", "cardIvl", "retrievability"]
     col = _Col(advanced=False)
     state = CardState(col)  # type: ignore[arg-type]
 
