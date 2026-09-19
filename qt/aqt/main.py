@@ -1833,6 +1833,10 @@ title="{}" {}>{}</button>""".format(
         # the same cheap, in-place way.
         elif self.state == "overview":
             self.overview.redraw_for_ui_mode()
+        # an open Browser shows or hides its Advanced-only parts in place
+        # (spec ui.browser-simple-view)
+        if browser := aqt.dialogs._dialogs["Browser"][1]:
+            browser.apply_ui_mode()
 
     def _sync_advanced_ui_action(self) -> None:
         action = self.form.actionAdvancedUi

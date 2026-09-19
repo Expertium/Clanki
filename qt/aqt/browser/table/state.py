@@ -8,11 +8,16 @@ from typing import cast
 
 from anki.browser import BrowserConfig
 from anki.cards import Card, CardId
-from anki.collection import Collection
+from anki.collection import Collection, Config
 from anki.errors import NotFoundError
 from anki.notes import Note, NoteId
 from anki.utils import ids2str
 from aqt.browser.table import Column, ItemId, ItemList
+
+# Cards mode in Simple UI mode shows these columns, whatever the stored
+# (Advanced) choice is, and keeps that choice untouched (spec
+# ui.browser-simple-view).
+SIMPLE_CARD_COLUMNS = ["noteFld", "deck", "cardDue", "cardIvl"]
 
 
 class ItemState(ABC):
@@ -134,13 +139,22 @@ class CardState(ItemState):
 
     def __init__(self, col: Collection) -> None:
         super().__init__(col)
-        self._active_columns = self.col.load_browser_card_columns()
+        self.simple = not col.get_config_bool(Config.Bool.ADVANCED_UI)
+        if self.simple:
+            # its own column widths, so Advanced mode's layout survives
+            self.GEOMETRY_KEY_PREFIX = "editorSimple"
+            self._active_columns = list(SIMPLE_CARD_COLUMNS)
+            self.col._backend.set_active_browser_columns(self._active_columns)
+        else:
+            self._active_columns = self.col.load_browser_card_columns()
 
     @property
     def active_columns(self) -> list[str]:
         return self._active_columns
 
     def toggle_active_column(self, column: str) -> None:
+        if self.simple:
+            return
         if column in self._active_columns:
             self._active_columns.remove(column)
         else:

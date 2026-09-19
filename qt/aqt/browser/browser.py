@@ -156,9 +156,16 @@ class Browser(QMainWindow):
         # set if exactly 1 row is selected; used by the previewer
         self.card: Card | None = None
         self.current_card: Card | None = None
+        if not self.mw.advanced_ui() and self.col.get_config_bool(
+            Config.Bool.BROWSER_TABLE_SHOW_NOTES_MODE
+        ):
+            # Simple mode has no Cards/Notes switch, so it shows cards
+            # (spec ui.browser-simple-view)
+            self.col.set_config_bool(Config.Bool.BROWSER_TABLE_SHOW_NOTES_MODE, False)
         self.setupSidebar()
         self.setup_table()
         self.setupMenus()
+        self._setup_ui_mode()
         self.setupEditor()
         self.setupHooks()
         gui_hooks.browser_will_show(self)
@@ -792,6 +799,79 @@ class Browser(QMainWindow):
         self.form.action_Info.setEnabled(self.table.has_current())
         self.form.actionPreviousCard.setEnabled(self.table.has_previous())
         self.form.actionNextCard.setEnabled(self.table.has_next())
+
+    # UI mode (spec ui.browser-simple-view)
+    ######################################################################
+
+    def _advanced_only_menu_actions(self) -> list[tuple[QMenu, QAction]]:
+        f = self.form
+        return [
+            (f.menuEdit, f.actionSelectNotes),
+            (f.menuEdit, f.actionInvertSelection),
+            (f.menuEdit, f.actionCreateFilteredDeck),
+            (f.menu_Notes, f.actionCopy),
+            (f.menu_Notes, f.actionExport),
+            (f.menu_Notes, f.actionChangeModel),
+            (f.menu_Notes, f.actionFindDuplicates),
+            (f.menu_Notes, f.actionFindReplace),
+            (f.menu_Notes, f.actionManage_Note_Types),
+            (f.menu_Cards, f.action_set_due_date),
+            (f.menu_Cards, f.action_grade_now),
+            (f.menu_Cards, f.action_forget),
+            (f.menu_Cards, f.actionReposition),
+            (f.menu_Cards, f.action_toggle_bury),
+            (f.menuqt_accel_view, f.action_toggle_mode),
+        ]
+
+    def _advanced_only_menus(self) -> list[QMenu]:
+        return [self.form.menuJump, self.form.menuLayout]
+
+    def _setup_ui_mode(self) -> None:
+        self._menu_layouts = {
+            menu: list(menu.actions()) for menu, _ in self._advanced_only_menu_actions()
+        }
+        # Simple mode takes these out of the menus, but their shortcuts keep
+        # working: the window holds every one of them.
+        for _, action in self._advanced_only_menu_actions():
+            self.addAction(action)
+        for menu in self._advanced_only_menus():
+            self.addActions(menu.actions())
+        self.addActions(self.sidebar.toolbar.actions())
+        self.apply_ui_mode(initial=True)
+
+    def apply_ui_mode(self, initial: bool = False) -> None:
+        """Show or hide the Advanced-only parts after a mode switch; nothing
+        they do changes (spec ui.browser-simple-view)."""
+        advanced = self.mw.advanced_ui()
+        if not advanced and self.table.is_notes_mode() and not initial:
+            # Simple mode has no Cards/Notes switch, so it shows cards
+            self._switch.setChecked(False)
+        for menu, action in self._advanced_only_menu_actions():
+            self._show_in_menu(menu, action, advanced)
+        for menu in self._advanced_only_menus():
+            if menu_action := menu.menuAction():
+                menu_action.setVisible(advanced)
+        self._switch.setVisible(advanced)
+        self.sidebar.toolbar.apply_ui_mode(advanced)
+        if not initial:
+            self.table.apply_ui_mode()
+            self.sidebar.refresh()
+
+    def _show_in_menu(self, menu: QMenu, action: QAction, shown: bool) -> None:
+        """Remove an action from a menu or put it back at its place; add-on
+        entries in the same menu stay where they are."""
+        present = action in menu.actions()
+        if shown == present:
+            return
+        if not shown:
+            menu.removeAction(action)
+            return
+        layout = self._menu_layouts[menu]
+        for later in layout[layout.index(action) + 1 :]:
+            if later in menu.actions():
+                menu.insertAction(later, action)
+                return
+        menu.addAction(action)
 
     @ensure_editor_saved
     def on_table_state_changed(self, checked: bool) -> None:

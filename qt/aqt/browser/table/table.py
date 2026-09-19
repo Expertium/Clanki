@@ -205,6 +205,16 @@ class Table:
         self._restore_header()
         self._restore_selection(self._toggled_selection)
 
+    def apply_ui_mode(self) -> None:
+        """Cards mode shows a fixed set of columns in Simple mode (spec
+        ui.browser-simple-view); rebuild them after a mode switch."""
+        if self.is_notes_mode():
+            return
+        self._save_header()
+        self._state = CardState(self.col)
+        self._model.set_state(self._state)
+        self._restore_header()
+
     # Move cursor
 
     def to_previous_row(self) -> None:
@@ -462,6 +472,9 @@ class Table:
         menu.exec(QCursor.pos())
 
     def _on_header_context(self, pos: QPoint) -> None:
+        if isinstance(self._state, CardState) and self._state.simple:
+            # Simple mode's columns are fixed (spec ui.browser-simple-view)
+            return
         assert self._view is not None
         gpos = self._view.mapToGlobal(pos)
         m = QMenu()
