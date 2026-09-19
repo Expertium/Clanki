@@ -267,3 +267,18 @@ def test_a_partly_recorded_algorithm_says_how_far_back_it_reaches() -> None:
     assert curve.unavailable == metrics.Unavailable.AVAILABLE
     assert curve.recorded_from_secs == 1_700_000_000
     assert curve.earlier_reviews == 4321
+
+
+# Pins spec/ui.md#ui.stats-model-metrics
+def test_not_recorded_text_does_not_ask_the_user_to_rebuild() -> None:
+    from pathlib import Path
+
+    ftl = Path(__file__).parents[2] / "ftl" / "core" / "statistics.ftl"
+    line = next(
+        line
+        for line in ftl.read_text(encoding="utf-8").splitlines()
+        if line.startswith("statistics-model-metrics-not-recorded =")
+    )
+    # the user never decides to rebuild RWKV's history (Planned direction 9)
+    for instruction in ("deck options", "Read Review History Again", "Use "):
+        assert instruction not in line

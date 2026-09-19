@@ -1157,8 +1157,9 @@ applies to all of them.
 
 An algorithm that could predict these reviews but whose rows nothing has
 written yet is absent for THAT reason: the graph says Clanki has not
-recorded its predictions and what records them. It never says the algorithm
-cannot compute them. When an algorithm's rows begin part way through the
+recorded its predictions yet. It never says the algorithm cannot compute
+them, and it never tells the user to start the recording: the user never
+has to decide to rebuild RWKV's history (CLAUDE.md, Planned direction 9). When an algorithm's rows begin part way through the
 history, the graph says "recorded from &lt;date&gt;; N earlier reviews are not
 recorded", so a series covering days cannot look like one covering years;
 after a full replay records the history, that line is gone. A row counts
