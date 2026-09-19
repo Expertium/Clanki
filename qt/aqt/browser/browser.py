@@ -115,6 +115,10 @@ class MockModel:
         self.browser.end_reset()
 
 
+# the tag the scheduler adds to a leech (rslib LEECH_TAG)
+LEECH_TAG = "leech"
+
+
 class Browser(QMainWindow):
     mw: AnkiQt
     col: Collection
@@ -362,6 +366,7 @@ class Browser(QMainWindow):
         qconnect(f.actionCopy.triggered, self.on_create_copy)
         qconnect(f.actionAdd_Tags.triggered, self.add_tags_to_selected_notes)
         qconnect(f.actionRemove_Tags.triggered, self.remove_tags_from_selected_notes)
+        self._setup_remove_leech_tag_action()
         qconnect(f.actionClear_Unused_Tags.triggered, self.clear_unused_tags)
         qconnect(f.actionToggle_Mark.triggered, self.toggle_mark_of_selected_notes)
         qconnect(f.actionChangeModel.triggered, self.onChangeModel)
@@ -778,6 +783,7 @@ class Browser(QMainWindow):
         self.form.actionExport.setEnabled(has_selection)
         self.form.actionAdd_Tags.setEnabled(has_selection)
         self.form.actionRemove_Tags.setEnabled(has_selection)
+        self.action_remove_leech_tag.setEnabled(has_selection)
         self.form.actionToggle_Mark.setEnabled(has_selection)
         self.form.actionChangeModel.setEnabled(has_selection)
         self.form.actionDelete.setEnabled(has_selection)
@@ -1149,6 +1155,32 @@ class Browser(QMainWindow):
 
         remove_tags_from_notes(
             parent=self, note_ids=self.selected_notes(), space_separated_tags=tags
+        ).run_in_background(initiator=self)
+
+    def _setup_remove_leech_tag_action(self) -> None:
+        """Notes > Remove Leech Tag, after Remove Tags; a tag item, so it is
+        shown in both modes (spec ui.browser-remove-leech-tag)."""
+        self.action_remove_leech_tag = QAction(tr.browsing_remove_leech_tag(), self)
+        self.action_remove_leech_tag.setObjectName("action_remove_leech_tag")
+        menu = self.form.menu_Notes
+        actions = menu.actions()
+        after = actions.index(self.form.actionRemove_Tags) + 1
+        if after < len(actions):
+            menu.insertAction(actions[after], self.action_remove_leech_tag)
+        else:
+            menu.addAction(self.action_remove_leech_tag)
+        qconnect(
+            self.action_remove_leech_tag.triggered,
+            self.remove_leech_tag_from_selected_notes,
+        )
+
+    @skip_if_selection_is_empty
+    @ensure_editor_saved
+    def remove_leech_tag_from_selected_notes(self) -> None:
+        """Removes the tag Anki adds to a leech, from the selected cards'
+        notes; the cards stay suspended or not as they are."""
+        remove_tags_from_notes(
+            parent=self, note_ids=self.selected_notes(), space_separated_tags=LEECH_TAG
         ).run_in_background(initiator=self)
 
     def _prompt_for_tags(self, prompt: str) -> str | None:
