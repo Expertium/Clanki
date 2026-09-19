@@ -46,6 +46,7 @@ import cProfile
 import getpass
 import locale
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -353,8 +354,22 @@ class AnkiApp(QApplication):
     )
     TMOUT = 30000
 
+    # what counts as the user doing something (aqt.fsrs_predictions waits
+    # for a pause in these)
+    _INPUT_EVENTS = frozenset(
+        (
+            QEvent.Type.KeyPress,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonDblClick,
+            QEvent.Type.Wheel,
+            QEvent.Type.TouchBegin,
+        )
+    )
+
     def __init__(self, argv: list[str]) -> None:
         QApplication.__init__(self, argv)
+        # when the user last pressed a key, clicked or scrolled (monotonic)
+        self.last_input_at = time.monotonic()
         self.installEventFilter(self)
         self._argv = argv
         self._native_event_filter = NativeEventFilter()
@@ -446,6 +461,9 @@ class AnkiApp(QApplication):
 
     def eventFilter(self, src: Any, evt: QEvent | None) -> bool:
         assert evt is not None
+
+        if evt.type() in self._INPUT_EVENTS:
+            self.last_input_at = time.monotonic()
 
         # Handle Close shortcut here because modal dialogs disable main-window shortcuts
         if (is_mac or is_lin) and evt.type() == QEvent.Type.KeyPress:

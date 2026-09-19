@@ -1112,7 +1112,17 @@ nothing.
 
 The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
-day, and again at once whenever a preset's FSRS-7 parameters change.
+day, and again whenever a preset's FSRS-7 parameters change.
+
+It waits for a pause in what the user does. It asks which presets are stale,
+and starts each preset, only once ten seconds have passed without a key
+press, a click, a double click, a scroll or a touch anywhere in Clanki. One
+preset holds the collection for up to about five seconds on a large
+collection, and anything the user does meanwhile waits for it; at start-up,
+when the pass began at once, that froze the main window for 2-4 seconds and
+made deck options take 3.5 seconds to open. While it waits for a pause it
+has written nothing. When the collection closes during the wait, the pass
+stops without counting the day as done and without reporting a failure.
 
 It never starts while the RWKV state cache is loading or building. That load
 holds the collection, so a pass in front of it would make the user wait for
@@ -1171,6 +1181,9 @@ rather than while a page is open.
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
+`test_the_pass_waits_for_a_pause_in_what_the_user_does`,
+`test_a_preset_waits_for_the_next_pause`,
+`test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes`,
 `test_the_fake_backend_returns_what_the_real_backend_returns`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,

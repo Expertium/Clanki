@@ -179,6 +179,107 @@ def test_the_collection_is_free_between_presets() -> None:
 
 
 # Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_the_pass_waits_for_a_pause_in_what_the_user_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = _quiet()
+    backend = _Backend(started, release, presets=[11, 22])
+    mw = _mw(backend)
+    monkeypatch.setattr(predictions, "BETWEEN_PRESETS_SECS", 0.0)
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    # the user has just clicked
+    mw.app = SimpleNamespace(last_input_at=time.monotonic())
+
+    predictions.ensure_ready(mw)
+    # not even the question of which presets are stale: that holds the
+    # collection too
+    time.sleep(0.15)
+    assert backend.presets_asked == 0
+    assert predictions.is_running()
+
+    # after the pause it starts by itself
+    assert started.wait(5)
+    while predictions.is_running():
+        pass
+    assert backend.spans[0][0] - mw.app.last_input_at >= predictions.USER_IDLE_SECS
+    assert backend.refreshed == [11, 22]
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_preset_waits_for_the_next_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    backend = _Backend(started, release, presets=[11, 22])
+    mw = _mw(backend)
+    monkeypatch.setattr(predictions, "BETWEEN_PRESETS_SECS", 0.0)
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic() - 1.0)
+
+    predictions.ensure_ready(mw)
+    assert started.wait(5)
+    # the user does something while the first preset is being computed
+    clicked = time.monotonic()
+    mw.app.last_input_at = clicked
+    release.set()
+    while predictions.is_running():
+        pass
+
+    assert backend.refreshed == [11, 22]
+    # the second preset waited for the next pause instead of landing on top
+    # of what the user was doing
+    assert backend.spans[1][0] - clicked >= predictions.USER_IDLE_SECS
+
+
+def test_the_pass_holds_the_collection_only_inside_its_backend_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the deck-options warm-up checks before it reads the collection
+    on the main thread: a pass that only waits for a pause holds nothing."""
+    started = threading.Event()
+    release = threading.Event()
+    backend = _Backend(started, release)
+    mw = _mw(backend)
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic())
+
+    predictions.ensure_ready(mw)
+    time.sleep(0.1)
+    assert predictions.is_running()
+    assert not predictions.is_holding_collection()
+
+    assert started.wait(5)
+    assert predictions.is_holding_collection()
+    release.set()
+    while predictions.is_running():
+        pass
+    assert not predictions.is_holding_collection()
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = _quiet()
+    backend = _Backend(started, release)
+    mw = _mw(backend)
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic())
+
+    predictions.ensure_ready(mw)
+    mw.col = None
+    while predictions.is_running():
+        pass
+
+    # nothing was asked or written, no failure was reported, and the day
+    # is not counted as done
+    assert backend.presets_asked == 0
+    assert backend.calls == 0
+    assert not mw.reported_failures
+    assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
 def test_the_fake_backend_returns_what_the_real_backend_returns() -> None:
     """The fake's shape is checked against the generated backend's own.
 
