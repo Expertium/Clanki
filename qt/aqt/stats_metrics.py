@@ -18,9 +18,11 @@ and a finished result is kept for the session.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import threading
+from array import array
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -118,8 +120,10 @@ def start(mw: Any, search: str, days: int) -> Progress:
     global _job, _next_job_id
 
     col = mw.col
-    card_ids = tuple(sorted(col.find_cards(search)))
-    key = (card_ids, days, col.mod, col.sched.today)
+    card_ids = sorted(col.find_cards(search))
+    # a digest, not the ids: four kept keys of a large search held megabytes
+    cards = hashlib.blake2b(array("q", card_ids).tobytes(), digest_size=16).digest()
+    key = (cards, days, col.mod, col.sched.today)
     with _lock:
         if (cached := _results.get(key)) is not None:
             return cached
@@ -197,7 +201,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         job.newest_scored_secs = data.newest_scored_secs
         job.newer_reviews = data.newer_reviews
         job.shared_ratings = data.shared_ratings
-        job.um_plus = list(data.um_plus)
+        job.um_plus = [_copied(item) for item in data.um_plus]
 
     fsrs = _series(
         FSRS_7,
@@ -244,6 +248,16 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         curve.recorded_from_secs = data.rwkv_curve_oldest_secs
         curve.earlier_reviews = data.rwkv_curve_earlier_reviews
     job.set_series(curve)
+
+
+def _copied(message: Any) -> Any:
+    """A copy that owns its memory. A sub-message taken straight out of a
+    response shares the response's memory, so keeping it keeps the whole
+    response alive: every per-review prediction of the search, hundreds of
+    megabytes on a large collection, held after the Stats window closed."""
+    copy = type(message)()
+    copy.CopyFrom(message)
+    return copy
 
 
 def _series(
