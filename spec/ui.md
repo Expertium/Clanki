@@ -277,6 +277,32 @@ the RWKV reschedule actions.
 
 **Pinned by:** `qt/tests/test_advance_postpone.py`.
 
+## addons.fsrs-helper-blocked
+
+Given the FSRS Helper add-on (AnkiWeb 759844606, a source install in a folder
+named `fsrs4anki-helper`, `fsrs4anki_helper` or `fsrs_helper`, or any add-on
+named FSRS Helper or FSRS4Anki Helper) installed and enabled at start-up,
+Clanki disables it before add-ons load and, the first time only, tells the
+user so once the profile is open (a flag in the profile manager's global
+meta). Given the user enables that add-on in Tools > Add-ons, or installs it
+anew, a message says that the add-on is not compatible with FSRS-7, the
+version of FSRS that Clanki uses, and the add-on stays disabled; an update
+of a copy already installed stays disabled without a message. Other add-ons
+enable and install as before.
+
+**Why:** Andrew, 2026-09-19: "if the user tries to enable the FSRS Helper
+add-on, display a window that says it's not compatible with FSRS-7 and keep
+the add-on disabled. Similar treatment to Heatmap add-on, different reason".
+The add-on is written for the FSRS versions of official Anki. Its Advance and
+Postpone are built in (`sched.advance-postpone-algorithm`).
+
+**Pinned by:** `qt/tests/test_fsrs_helper_addon.py`
+(`test_fsrs_helper_is_recognised_by_id_folder_or_name`,
+`test_an_enabled_fsrs_helper_addon_is_disabled_at_start_up`,
+`test_the_fsrs_helper_notice_is_shown_only_once`,
+`test_enabling_the_fsrs_helper_addon_is_refused_with_a_message`,
+`test_installing_the_fsrs_helper_addon_leaves_it_disabled`).
+
 ## ui.review-heatmap
 
 Given the collection flag `reviewHeatmapEnabled` on — its value in a new

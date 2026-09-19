@@ -803,6 +803,7 @@ class AnkiQt(QMainWindow):
             self._warn_if_outdated_fsrs7_preview_params()
             self._show_review_heatmap_addon_notice()
             self._show_ankiconnect_addon_notice()
+            self._show_fsrs_helper_addon_notice()
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
@@ -838,6 +839,18 @@ class AnkiQt(QMainWindow):
         self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
         self.pm.save()
         showInfo(tr.preferences_ankiconnect_addon_disabled(), parent=self)
+
+    def _show_fsrs_helper_addon_notice(self) -> None:
+        """Once ever: the FSRS Helper add-on was disabled at start-up."""
+
+        if not getattr(self, "_fsrs_helper_addon_notice_pending", False):
+            return
+        from aqt.fsrs_helper_addon import ADDON_NOTICE_SHOWN_KEY
+
+        self._fsrs_helper_addon_notice_pending = False
+        self.pm.meta[ADDON_NOTICE_SHOWN_KEY] = True
+        self.pm.save()
+        showInfo(tr.preferences_fsrs_helper_addon_disabled(), parent=self)
 
     def _warn_if_outdated_fsrs7_preview_params(self) -> None:
         if getattr(self, "_outdated_fsrs7_preview_warning_shown", False):
@@ -1240,6 +1253,16 @@ title="{}" {}>{}</button>""".format(
 
         # Clanki has AnkiConnect built in (spec ankiconnect.addon-blocked)
         self._ankiconnect_addon_notice_pending = self._take_over_ankiconnect_addon()
+
+        # not compatible with FSRS-7 (spec addons.fsrs-helper-blocked)
+        from aqt.fsrs_helper_addon import (
+            ADDON_NOTICE_SHOWN_KEY as FSRS_HELPER_NOTICE_SHOWN_KEY,
+        )
+        from aqt.fsrs_helper_addon import disable_fsrs_helper_addon
+
+        self._fsrs_helper_addon_notice_pending = bool(
+            disable_fsrs_helper_addon(self.addonManager)
+        ) and not self.pm.meta.get(FSRS_HELPER_NOTICE_SHOWN_KEY, False)
 
         if args and args[0] and self._isAddon(args[0]):
             self.installAddon(args[0], startup=True)

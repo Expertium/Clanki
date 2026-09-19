@@ -208,6 +208,12 @@ def _is_ankiconnect_addon(module: str, name: object = None) -> bool:
     return is_ankiconnect_addon(module, name)
 
 
+def _is_fsrs_helper_addon(module: str, name: object = None) -> bool:
+    from aqt.fsrs_helper_addon import is_fsrs_helper_addon
+
+    return is_fsrs_helper_addon(module, name)
+
+
 def _refuse_ankiconnect_addon() -> None:
     """Clanki has AnkiConnect built in (spec ankiconnect.addon-blocked): the
     add-on stays disabled and the built-in one is turned on instead, since
@@ -413,6 +419,12 @@ class AddonManager:
         ):
             _refuse_ankiconnect_addon()
             should_enable = False
+        if should_enable is True and _is_fsrs_helper_addon(
+            module, getattr(addon, "provided_name", None)
+        ):
+            # not compatible with FSRS-7 (spec addons.fsrs-helper-blocked)
+            showInfo(tr.preferences_fsrs_helper_addon_blocked(), textFormat="plain")
+            should_enable = False
         if should_enable is True:
             conflicting = self._disableConflicting(module)
             if conflicting:
@@ -557,6 +569,13 @@ class AddonManager:
             meta["disabled"] = True
             if not previously_installed:
                 _refuse_ankiconnect_addon()
+        if _is_fsrs_helper_addon(package, manifest.get("name")):
+            # installed, but never enabled: not compatible with FSRS-7 (spec
+            # addons.fsrs-helper-blocked); an update of a copy already
+            # installed stays disabled silently
+            meta["disabled"] = True
+            if not previously_installed:
+                showInfo(tr.preferences_fsrs_helper_addon_blocked(), textFormat="plain")
 
         self.writeAddonMeta(package, meta)
 
