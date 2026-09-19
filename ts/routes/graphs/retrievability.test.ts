@@ -6,9 +6,11 @@ import {
     GraphsResponse_Retrievability,
     GraphsResponse_Retrievability_Series,
 } from "@generated/anki/stats_pb";
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
+import { algorithmName } from "./total-knowledge";
 import {
     fsrsColour,
     prepareData,
@@ -49,47 +51,63 @@ test("retrievability graph stays hidden when neither FSRS nor RWKV is active", (
     expect(shouldShowRetrievabilityGraph(new GraphsResponse())).toBe(false);
 });
 
-function graphData(rwkv: boolean): GraphData {
-    const fsrs = {
+function graphData(algorithm: SchedulingAlgorithm): GraphData {
+    const series = {
         retrievability: new Map([[75, 1]]),
         average: 75,
         sumByCard: 0.75,
         sumByNote: 0.75,
     };
+    const rwkv = algorithm !== SchedulingAlgorithm.FSRS7;
 
     return {
-        active: fsrs,
-        fsrs,
-        rwkv: rwkv ? fsrs : null,
+        active: series,
+        fsrs: rwkv ? null : series,
+        rwkv: rwkv ? series : null,
+        algorithm,
     };
 }
 
-function clickQuery(rwkv: boolean, shiftKey: boolean): string {
+function drawn(algorithm: SchedulingAlgorithm): { query: string; label: string } {
     let query = "";
     const [histogram] = prepareData(
-        graphData(rwkv),
+        graphData(algorithm),
         (_type, detail) => {
             query = detail.query;
         },
         true,
     );
     const bin = histogram!.series[0].bins.find((bin) => bin.length)!;
-    histogram!.onClick!(bin, shiftKey);
-    return query;
+    histogram!.onClick!(bin);
+    return { query, label: histogram!.series[0].label };
 }
 
-test("retrievability graph searches RWKV on an ordinary click when available", () => {
-    expect(clickQuery(true, false)).toBe(
+// Pins spec/ui.md#ui.stats-one-algorithm
+test("a bar searches the collection's own algorithm's R, never another's", () => {
+    expect(drawn(SchedulingAlgorithm.FSRS7).query).toBe(
+        "\"prop:r>=0.75\" AND \"prop:r<0.8\"",
+    );
+    expect(drawn(SchedulingAlgorithm.RWKV_CURVE).query).toBe(
+        "\"prop:rwkv-curve:r>=0.75\" AND \"prop:rwkv-curve:r<0.8\"",
+    );
+    expect(drawn(SchedulingAlgorithm.RWKV_INSTANT).query).toBe(
         "\"prop:rwkv:r>=0.75\" AND \"prop:rwkv:r<0.8\"",
     );
 });
 
-test("retrievability graph searches FSRS on shift-click", () => {
-    expect(clickQuery(true, true)).toBe("\"prop:r>=0.75\" AND \"prop:r<0.8\"");
-});
-
-test("retrievability graph searches FSRS on an ordinary click without RWKV", () => {
-    expect(clickQuery(false, false)).toBe("\"prop:r>=0.75\" AND \"prop:r<0.8\"");
+// Pins spec/ui.md#ui.stats-one-algorithm
+test("the series is named after the algorithm, not just RWKV", () => {
+    const labels = [
+        SchedulingAlgorithm.FSRS7,
+        SchedulingAlgorithm.RWKV_CURVE,
+        SchedulingAlgorithm.RWKV_INSTANT,
+    ].map((algorithm) => drawn(algorithm).label);
+    expect(labels).toEqual([
+        algorithmName(SchedulingAlgorithm.FSRS7),
+        algorithmName(SchedulingAlgorithm.RWKV_CURVE),
+        algorithmName(SchedulingAlgorithm.RWKV_INSTANT),
+    ]);
+    expect(new Set(labels).size).toBe(3);
 });
 
 // Pins spec/ui.md#ui.stats-graph-colours

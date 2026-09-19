@@ -22,6 +22,7 @@ import { localizedDate, localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, line, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
+import { drawGrid } from "./graph-helpers";
 
 /** Every tenth: the axes step by 0.1, not 0.2 (spec ui.stats-model-metrics). */
 export const axisTenths = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
@@ -243,6 +244,7 @@ export function renderRoc(
         .y((point) => y(point[1]));
 
     const axes = svg.append("g").attr("class", "roc-axis");
+    drawGrid(axes, bounds, x, y, axisTenths, axisTenths);
     axes.append("g")
         .attr("transform", `translate(0, ${bounds.height - bounds.marginBottom})`)
         .call(axisBottom(x).tickValues(axisTenths).tickFormat((value) => localizedNumber(value as number, 1)))

@@ -9,6 +9,7 @@ import pytest
 
 import aqt.rwkv_scheduler
 from anki.collection import SearchNode
+from anki.lang import without_unicode_isolation
 from aqt.browser.browser import Browser
 from aqt.utils import tr
 
@@ -153,7 +154,13 @@ def test_rwkv_browser_search_waits_without_blocking_the_window(
     # RWKV is still loading its state: no rows are replaced, the title says
     # what the window waits for, and it asks again later
     assert browser.table.searches == []
-    assert browser.titles == [tr.browsing_rwkv_scores_pending()]
+    assert browser.titles == [
+        without_unicode_isolation(
+            tr.browsing_rwkv_scores_pending(
+                algorithm=tr.deck_config_scheduler_choice_rwkv_instant()
+            )
+        )
+    ]
     assert [delay for delay, _ in browser.shots] == [
         browser_module.RWKV_SCORED_SEARCH_RETRY_MS
     ]

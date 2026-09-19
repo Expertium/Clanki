@@ -6,7 +6,7 @@
 @typescript-eslint/ban-ts-comment: "off" */
 
 import type { GraphPreferences } from "@generated/anki/stats_pb";
-import type { Bin, Selection } from "d3";
+import type { Bin, ScaleLinear, Selection } from "d3";
 import { sum } from "d3";
 
 import type { PreferenceStore } from "$lib/sveltelib/preferences";
@@ -104,4 +104,39 @@ export function numericMap<T>(obj: { [k: string]: T }): Map<number, T> {
 
 export function getNumericMapBinValue(d: Bin<Map<number, number>, number>): number {
     return sum(d, (d) => d[1]);
+}
+
+/** Faint grid lines at the axes' ticks, behind the data (like matplotlib's
+ * plt.grid()); `parent` must be drawn before the data. */
+export function drawGrid(
+    parent: Selection<SVGGElement, unknown, null, undefined>,
+    bounds: GraphBounds,
+    x: ScaleLinear<number, number>,
+    y: ScaleLinear<number, number>,
+    xTicks: number[],
+    yTicks: number[],
+): void {
+    const grid = parent.append("g").attr("class", "graph-grid");
+    const left = bounds.marginLeft;
+    const right = bounds.width - bounds.marginRight;
+    const top = bounds.marginTop;
+    const bottom = bounds.height - bounds.marginBottom;
+    for (const tick of xTicks) {
+        grid.append("line")
+            .attr("x1", x(tick))
+            .attr("x2", x(tick))
+            .attr("y1", top)
+            .attr("y2", bottom);
+    }
+    for (const tick of yTicks) {
+        grid.append("line")
+            .attr("x1", left)
+            .attr("x2", right)
+            .attr("y1", y(tick))
+            .attr("y2", y(tick));
+    }
+    grid.selectAll("line")
+        .attr("stroke", "currentColor")
+        .attr("stroke-width", 1)
+        .attr("opacity", 0.12);
 }

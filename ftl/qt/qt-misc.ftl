@@ -74,9 +74,9 @@ qt-misc-second =
 qt-misc-layout-auto-enabled = Responsive layout enabled
 qt-misc-layout-vertical-enabled = Vertical layout enabled
 qt-misc-layout-horizontal-enabled = Horizontal layout enabled
-qt-misc-rwkv-filtered-deck-preparation-failed = RWKV retrievability scores could not be prepared, so the filtered deck was not rebuilt.
+qt-misc-rwkv-filtered-deck-preparation-failed = { $algorithm } retrievability scores could not be prepared, so the filtered deck was not rebuilt.
 # The same message in Simple mode, which never says "retrievability".
-qt-misc-rwkv-filtered-deck-preparation-failed-simple = RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt.
+qt-misc-rwkv-filtered-deck-preparation-failed-simple = { $algorithm } probability of recall scores could not be prepared, so the filtered deck was not rebuilt.
 # Shown instead of the answer buttons until RWKV-Curve has calculated the card's intervals.
 qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
 # RWKV cannot run because its model file is missing or does not load.
