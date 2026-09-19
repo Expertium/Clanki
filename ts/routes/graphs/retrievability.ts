@@ -16,8 +16,8 @@ import type { GraphBounds, SearchDispatch, TableDatum } from "./graph-helpers";
 import { numericMap, setDataAvailable } from "./graph-helpers";
 import { clickableClass } from "./graph-styles";
 import { getAdjustedScaleAndTicks, percentageRangeMinMax } from "./percentageRange";
-import { algorithmName } from "./total-knowledge";
 import { hideTooltip, showTooltip } from "./tooltip-utils.svelte";
+import { algorithmName } from "./total-knowledge";
 
 type CountBin = Bin<[number, number], number>;
 type ProtobufRetrievabilitySeries = NonNullable<
@@ -163,6 +163,7 @@ export function prepareData(
     dispatch: SearchDispatch,
     browserLinksSupported: boolean,
     quantile?: number,
+    advanced = true,
 ): [RetrievabilityHistogramData | null, TableDatum[]] {
     const explicitSeries: NamedSeriesData[] = [
         data.fsrs && {
@@ -218,7 +219,7 @@ export function prepareData(
             .map((series) => {
                 const prefix = series.label ? `${series.label}: ` : "";
                 return `${prefix}${
-                    tr.statisticsRetrievabilityTooltip({
+                    (advanced ? tr.statisticsRetrievabilityTooltip : tr.statisticsRetrievabilityTooltipSimple)({
                         cards: binValue(series.bins[index]),
                         percent,
                     })
@@ -239,7 +240,9 @@ export function prepareData(
     const tableData = displaySeries.flatMap((series) => [
         {
             label: tableLabel(
-                tr.statisticsAverageRetrievability(),
+                advanced
+                    ? tr.statisticsAverageRetrievability()
+                    : tr.statisticsAverageRetrievabilitySimple(),
                 series.label,
                 includeSeriesLabel,
             ),
@@ -371,4 +374,12 @@ export function retrievabilityHistogramGraph(
             .attr("class", clickableClass)
             .on("click", (_event: MouseEvent, { bin }) => data.onClick!(bin));
     }
+}
+
+/** The graph's title; Simple mode never says "retrievability" (spec
+ * ui.simple-recall-wording). */
+export function retrievabilityTitle(advanced: boolean): string {
+    return advanced
+        ? tr.statisticsCardRetrievabilityTitle()
+        : tr.statisticsCardRetrievabilityTitleSimple();
 }

@@ -1,23 +1,25 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import {
     GraphsResponse,
     GraphsResponse_Retrievability,
     GraphsResponse_Retrievability_Series,
 } from "@generated/anki/stats_pb";
-import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
+import * as tr from "@generated/ftl";
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
-import { algorithmName } from "./total-knowledge";
 import {
     fsrsColour,
     prepareData,
+    retrievabilityTitle,
     rwkvColour,
     rwkvScoresPending,
     shouldShowRetrievabilityGraph,
 } from "./retrievability";
+import { algorithmName } from "./total-knowledge";
 
 test("retrievability graph is shown when RWKV data exists without FSRS", () => {
     const sourceData = new GraphsResponse({
@@ -115,4 +117,20 @@ test("the two retrievability series draw green and blue, and neither is amber", 
     expect(fsrsColour).toBe("#2f9e44");
     expect(rwkvColour).toBe("#1c7ed6");
     expect(fsrsColour).not.toBe(rwkvColour);
+});
+
+/** The graph never searches in these tests. */
+function noSearch(): void {
+    return;
+}
+
+// Pins spec/ui.md#ui.simple-recall-wording
+test("in Simple mode the graph says probability of recall, not retrievability", () => {
+    const simple = prepareData(graphData(SchedulingAlgorithm.FSRS7), noSearch, true, undefined, false);
+    const advanced = prepareData(graphData(SchedulingAlgorithm.FSRS7), noSearch, true, undefined, true);
+
+    expect(simple[1][0].label).toBe(tr.statisticsAverageRetrievabilitySimple());
+    expect(advanced[1][0].label).toBe(tr.statisticsAverageRetrievability());
+    expect(retrievabilityTitle(false)).toBe(tr.statisticsCardRetrievabilityTitleSimple());
+    expect(retrievabilityTitle(true)).toBe(tr.statisticsCardRetrievabilityTitle());
 });
