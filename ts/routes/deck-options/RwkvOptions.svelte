@@ -281,9 +281,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         on:click={() => forceBuildRwkvStateCache()}
                     >
                         {#if forceBuildingRwkvStateCache}
-                            Rebuilding RWKV State...
+                            {tr.deckConfigRwkvRereadingHistory()}
                         {:else}
-                            Rebuild RWKV State
+                            {tr.deckConfigRwkvRereadHistory()}
                         {/if}
                     </button>
 
@@ -293,9 +293,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         on:click={() => recomputeRwkvCalibrationData()}
                     >
                         {#if recomputingRwkvCalibrationData}
-                            Calculating Calibration Graph Data...
+                            {tr.deckConfigRwkvPreparingStats()}
                         {:else}
-                            Calculate Calibration Graph Data
+                            {tr.deckConfigRwkvPrepareStats()}
                         {/if}
                     </button>
                 </div>

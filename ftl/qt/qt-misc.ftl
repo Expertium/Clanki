@@ -128,3 +128,46 @@ qt-misc-ui-mode = UI mode
 qt-misc-ui-mode-simple = Simple
 qt-misc-ui-mode-advanced = Advanced
 qt-misc-ui-mode-tooltip = Simple shows the essential settings. Advanced shows everything.
+
+## Progress windows of RWKV's background work, in plain words (spec
+## ui.plain-progress-text): no "cache", "state", "calibration" or "delta".
+
+# Title of the window while Clanki reads the review history into RWKV.
+qt-misc-review-history-title = Getting Ready
+qt-misc-review-history-reading = Reading your review history
+qt-misc-review-history-updating = Updating from your latest reviews
+qt-misc-review-history-loading = Loading your review history
+qt-misc-review-history-repairing = Updating your review history
+qt-misc-review-history-after-sync = Adding the reviews from the sync...
+# A step of the work, then how far it is, e.g.
+# "Reading your review history: 425,984 of 656,459 reviews, about 29s left".
+qt-misc-review-history-progress = { $step }: { $done } of { $total } reviews, about { $remaining } left
+# The same before the first reviews are done, when no time is known yet.
+qt-misc-review-history-progress-start = { $step }: { $done } of { $total } reviews
+# Title and text of the window while Clanki prepares the model-quality graphs.
+qt-misc-stats-data-title = Preparing Stats
+qt-misc-stats-data-preparing = Preparing the Stats graphs
+# Title and text of the window while RWKV-Curve calculates new due dates.
+qt-misc-rwkv-curve-reschedule-title = Reschedule
+qt-misc-rwkv-curve-reschedule-preparing = Calculating new due dates...
+qt-misc-rwkv-curve-reschedule-failed = Rescheduling with RWKV-Curve could not be started.
+qt-misc-stats-data-ready = The Stats graphs are ready.
+qt-misc-stats-data-failed = The Stats graphs could not be prepared.
+qt-misc-review-history-ready = Your review history is ready.
+qt-misc-review-history-failed = Your review history could not be read.
+qt-misc-rwkv-curve-reschedule-error = Rescheduling with RWKV-Curve failed.
+qt-misc-review-history-collecting = Collecting your reviews
+qt-misc-rwkv-curve-rescheduled =
+    { $count ->
+        [one] RWKV-Curve rescheduled { $count } card.
+       *[other] RWKV-Curve rescheduled { $count } cards.
+    }
+# After a sync brought in reviews older than 8 days, which RWKV does not
+# replay on its own. $button is the deck-options button that does.
+qt-misc-review-history-sync-too-old =
+    { $count ->
+        [one] { $count } synced review is older than 8 days, so RWKV has not learned from it.
+       *[other] { $count } synced reviews are older than 8 days, so RWKV has not learned from them.
+    }
+
+    To include them, use "{ $button }" in deck options.
