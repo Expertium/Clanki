@@ -1182,7 +1182,7 @@ mod test {
             HashMap::from([(
                 card_id,
                 crate::collection::RwkvStatsGraphScoreEntry {
-                    retrievability,
+                    retrievability: Some(retrievability),
                     curve_retrievability: Some(retrievability),
                     intervening_reviews: None,
                     target_retention: None,

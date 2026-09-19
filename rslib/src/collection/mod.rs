@@ -225,7 +225,9 @@ pub(crate) struct RwkvReviewQueueScoreEntry {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RwkvStatsGraphScoreEntry {
-    pub(crate) retrievability: f32,
+    /// RWKV-Instant's rating head; None for a card published with only
+    /// RWKV-Curve's value (spec ui.rwkv-curve-r-stored-curve).
+    pub(crate) retrievability: Option<f32>,
     pub(crate) curve_retrievability: Option<f32>,
     pub(crate) intervening_reviews: Option<u32>,
     pub(crate) target_retention: Option<f32>,
@@ -282,7 +284,7 @@ impl RwkvRetrievabilityScores {
         self.stats_graph_score_map(stats_search).map(|scores| {
             scores
                 .iter()
-                .map(|(&card_id, score)| (card_id, score.retrievability))
+                .filter_map(|(&card_id, score)| score.retrievability.map(|r| (card_id, r)))
                 .collect()
         })
     }
@@ -504,7 +506,7 @@ impl RwkvRetrievabilityScoreSource<'_> {
             Self::DeckCounts(scopes) => scopes
                 .values()
                 .find_map(|scores| scores.get(&card_id).map(|entry| entry.retrievability)),
-            Self::Stats(scores) => scores.get(&card_id).map(|entry| entry.retrievability),
+            Self::Stats(scores) => scores.get(&card_id).and_then(|entry| entry.retrievability),
             Self::ReviewQueue(scores) => scores.get(&card_id).map(|entry| entry.retrievability),
             Self::CardInfo(scores) => scores
                 .get(&card_id)
@@ -525,7 +527,7 @@ impl RwkvRetrievabilityScoreSource<'_> {
                 active_scores.extend(
                     scores
                         .iter()
-                        .map(|(&card_id, score)| (card_id, score.retrievability)),
+                        .filter_map(|(&card_id, score)| score.retrievability.map(|r| (card_id, r))),
                 );
             }
             Self::ReviewQueue(scores) => {
@@ -909,7 +911,7 @@ impl Collection {
                 (
                     card_id,
                     RwkvStatsGraphScoreEntry {
-                        retrievability,
+                        retrievability: Some(retrievability),
                         curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: None,
@@ -1055,7 +1057,7 @@ mod test {
                 (
                     card_id,
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.2,
+                        retrievability: Some(0.2),
                         curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: None,

@@ -970,6 +970,7 @@ RwkvStatsPrepareKey = tuple[
     bool,
     bool,
     bool,
+    bool,
 ]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
 RwkvFirstReviewElapsedStateCacheKey = tuple[tuple[object, bool], ...]
@@ -6133,10 +6134,16 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    prepare_instant_retrievability: bool = False,
     cancel_when_stats_closes: bool = False,
     warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
 ) -> RwkvStatsPreparationStatus:
-    """Prepare transient RWKV scores for cards matched by a stats graph search."""
+    """Prepare transient RWKV scores for cards matched by a stats graph search.
+
+    A request for RWKV-Curve's R gets each card's stored curve now; the
+    RWKV-Instant rating head then runs only when the request also reads it
+    (`prepare_instant_retrievability`, `prop:rwkv:r`, `is:rwkv:due`). Any
+    other request gets the rating head."""
 
     if not rwkv_collection_active(reviewer):
         # an FSRS-7 collection has no RWKV values to prepare (spec
@@ -6147,6 +6154,11 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_curve_due = prepare_curve_due or _search_uses_rwkv_curve_due(search)
     prepare_curve_retrievability = (
         prepare_curve_retrievability or _search_uses_rwkv_curve_retrievability(search)
+    )
+    prepare_instant_retrievability = (
+        prepare_instant_retrievability
+        or not prepare_curve_retrievability
+        or _RWKV_INSTANT_R_SEARCH_PATTERN.search(search) is not None
     )
 
     if _reviewer_backend is None:
@@ -6223,6 +6235,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_instant_due=prepare_instant_due,
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
+            prepare_instant_retrievability=prepare_instant_retrievability,
         )
         prepare_generation = state_token.state_generation
         if prepare_key is not None and _rwkv_stats_prepare_memo_is_current(prepare_key):
@@ -6264,6 +6277,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_instant_due=prepare_instant_due,
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
+            prepare_instant_retrievability=prepare_instant_retrievability,
             cancel_generation=cancel_generation,
         )
         search_score_elapsed_ms = (time.monotonic() - search_score_start) * 1000
@@ -6461,6 +6475,11 @@ def prepare_filtered_deck_retrievability_scores(
         prepare_instant_due=prepare_instant_due,
         prepare_curve_due=prepare_curve_due,
         prepare_curve_retrievability=prepare_curve_retrievability,
+        # a retrievability order reads the rating head
+        # (`exact_retrievability_key_for_card`)
+        prepare_instant_retrievability=any(
+            term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS for term in terms
+        ),
     )
 
 
@@ -6679,6 +6698,7 @@ def _rwkv_stats_prepare_key(
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    prepare_instant_retrievability: bool = True,
 ) -> RwkvStatsPrepareKey | None:
     warmup_key = _reviewer_backend_warmup_key(reviewer)
     timing = _timing_today(reviewer)
@@ -6737,6 +6757,7 @@ def _rwkv_stats_prepare_key(
         prepare_instant_due,
         prepare_curve_due,
         prepare_curve_retrievability,
+        prepare_instant_retrievability,
     )
 
 
@@ -19392,8 +19413,13 @@ def _rwkv_stats_graph_scores_for_search(
     prepare_instant_due: bool = False,
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
+    prepare_instant_retrievability: bool = True,
     cancel_generation: int | None = None,
 ) -> RwkvStatsSearchScoreResult | None:
+    """Score the cards of `search` for the published map. The curve value
+    (`prepare_curve_retrievability`) is each card's stored RWKV-Curve curve
+    now (spec ui.rwkv-curve-r-stored-curve); the RWKV-Instant rating head
+    (`prepare_instant_retrievability`) runs only for a request that reads it."""
     start = time.monotonic()
     if not _reviewer_backend_accepts_review_inputs(
         state_token.backend if state_token is not None else None
@@ -19416,20 +19442,16 @@ def _rwkv_stats_graph_scores_for_search(
     queue_score_hits = 0
     score_start = time.monotonic()
 
-    # the Stats Retrievability graph asks for the curve value alone. That
-    # value comes out of the query heads, so the resident query-only route
-    # returns exactly what the full path returns, without the four
-    # simulated-answer passes and without the current-interval crossing
-    # search. Only the curve-due flags need that search, so a request that
-    # asks for them keeps the full path, and so does a runtime too old for
-    # the query-only route.
-    curve_retrievability_only = (
-        prepare_curve_retrievability
-        and not prepare_curve_due
-        and _rwkv_supports_resident_curve_retrievability()
+    curve_input_build = (
+        _rwkv_curve_enabled_input_build(reviewer, input_build)
+        if prepare_curve_retrievability or prepare_curve_due
+        else None
     )
-    if curve_retrievability_only:
-        curve_input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
+    if curve_input_build is not None:
+        # RWKV-Curve's R is the curve stored at each card's last answered
+        # review, now: the Stats graph, the Browser's prop:rwkv-curve:r,
+        # filtered decks and AnkiConnect all read this one value (spec
+        # ui.rwkv-curve-r-stored-curve)
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
@@ -19439,35 +19461,16 @@ def _rwkv_stats_graph_scores_for_search(
                 # Stats request stops here and frees it
                 # (spec ui.stats-scoring-cancelled)
                 _raise_if_stats_scoring_cancelled(cancel_generation)
-                curve_retrievabilities = _rwkv_curve_retrievabilities_for_inputs(
+                stored_curve_scores = _rwkv_stored_curve_retrievabilities_for_inputs(
                     batch,
                     state_token=state_token,
                 )
-                if curve_retrievabilities is None:
+                if stored_curve_scores is None:
                     return None
-                # the map also carries the rating head; the query-only route
-                # for it is the one every other card already takes
-                input_scores = _rwkv_review_scores_for_inputs(
-                    batch,
-                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
-                    state_token=state_token,
-                )
-                if input_scores is None:
-                    return None
-                scores.extend(input_scores)
-                scored_card_ids = {card_id for card_id, _ in input_scores}
-                fully_predicted_card_ids.update(scored_card_ids)
-                for (card_id, _), curve_retrievability in zip(
-                    batch,
-                    curve_retrievabilities,
-                    strict=True,
-                ):
-                    if card_id in scored_card_ids and _valid_probability(
-                        curve_retrievability
-                    ):
-                        curve_scores.append((card_id, curve_retrievability))
-    elif prepare_curve_due or prepare_curve_retrievability:
-        curve_input_build = _rwkv_curve_enabled_input_build(reviewer, input_build)
+                curve_scores.extend(stored_curve_scores)
+    if prepare_curve_due and curve_input_build is not None:
+        # the curve-due flags need the current-interval crossing search, so
+        # that request keeps the full prediction path
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
@@ -19496,13 +19499,6 @@ def _rwkv_stats_graph_scores_for_search(
                         continue
                     scores.append((card_id, retrievability))
                     fully_predicted_card_ids.add(card_id)
-                    curve_retrievability = (
-                        prediction.curve_retrievability
-                        if prediction is not None
-                        else None
-                    )
-                    if _valid_probability(curve_retrievability):
-                        curve_scores.append((card_id, curve_retrievability))
                     elapsed_days = review_input.current_elapsed_days
                     current_interval = prediction.current_interval
                     if (
@@ -19514,7 +19510,12 @@ def _rwkv_stats_graph_scores_for_search(
                     ):
                         curve_due_card_ids.add(card_id)
 
-    for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
+    rating_head_inputs = (
+        input_build.inputs_by_batch_size.items()
+        if prepare_instant_retrievability or prepare_instant_due
+        else ()
+    )
+    for batch_size, inputs_by_card_id in rating_head_inputs:
         inputs_by_card_id = [
             item
             for item in inputs_by_card_id
@@ -20597,59 +20598,124 @@ def _rwkv_review_current_interval_predictions_for_inputs(
         return None
 
 
-def _rwkv_supports_resident_curve_retrievability() -> bool:
-    return bool(
-        getattr(_reviewer_backend, "supports_resident_curve_retrievability", False)
+# RWKV-Curve's forgetting curve is a mix of 128 exponential decays (rslib
+# `predict_curve`): each weight multiplies 0.9 ** (elapsed_seconds / s), with
+# the scales s spread from 0.1 s upwards by `linspace_exp(index, 128, 18.5)`.
+# The decay rates below are ln(0.9) / s, so each term is exp(elapsed * rate).
+_RWKV_CURVE_DECAY_RATES = tuple(
+    math.log(0.9) / (0.1 + (math.exp(18.5 * index / 127) - 1.0) * math.exp(22.0 - 18.5))
+    for index in range(128)
+)
+
+
+def _rwkv_stored_curve_recall(
+    weights: Sequence[float], elapsed_seconds: int
+) -> float | None:
+    """The recall of a stored RWKV-Curve curve `elapsed_seconds` after the
+    review that stored it: rslib's `predict_curve`, with its minimum of one
+    second. None for a curve of an unknown shape."""
+
+    if not weights or len(weights) > len(_RWKV_CURVE_DECAY_RATES):
+        return None
+    elapsed = max(float(elapsed_seconds), 1.0)
+    raw_probability = sum(
+        weight * math.exp(elapsed * rate)
+        for weight, rate in zip(weights, _RWKV_CURVE_DECAY_RATES)
     )
+    return 1e-5 + (1.0 - 2e-5) * raw_probability
 
 
-def _rwkv_curve_retrievabilities_for_inputs(
+def _rwkv_review_input_elapsed_seconds(review_input: RwkvReviewInput) -> int | None:
+    """The time since the card's last answered review, as the query pass
+    reads it (rslib `current_curve_retrievability`): the seconds, else the
+    days in seconds, else None."""
+
+    seconds = review_input.current_elapsed_seconds
+    if isinstance(seconds, int) and seconds >= 0:
+        return seconds
+    days = review_input.current_elapsed_days
+    if isinstance(days, int) and days >= 0:
+        return days * 86_400
+    return None
+
+
+def _unpack_rwkv_stored_curves(
+    card_ids: Sequence[int], packed: bytes
+) -> dict[int, array] | None:
+    """The curves `card_curve_weights` packed (rslib `pack_stored_curves`):
+    per card id, a little-endian u32 weight count and that many f32 weights.
+    None when the bytes do not hold exactly one curve per id."""
+
+    curves: dict[int, array] = {}
+    offset = 0
+    for card_id in card_ids:
+        if offset + 4 > len(packed):
+            return None
+        (count,) = struct.unpack_from("<I", packed, offset)
+        offset += 4
+        end = offset + 4 * count
+        if end > len(packed):
+            return None
+        weights = array("f")
+        weights.frombytes(packed[offset:end])
+        if sys.byteorder != "little":
+            weights.byteswap()
+        curves[int(card_id)] = weights
+        offset = end
+    return curves if offset == len(packed) else None
+
+
+def _rwkv_stored_curve_retrievabilities_for_inputs(
     inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
     *,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
-) -> list[float | None] | None:
-    """Query-only curve retrievability straight from the resident state.
-
-    Used by the Stats Retrievability graph, which needs nothing else. The busy
-    / state-changed outcomes (None, or the abort exception when a state token
-    is held) are the same as `_rwkv_review_predictions_for_inputs`'.
-    """
+) -> list[tuple[int, float]] | None:
+    """RWKV-Curve's R now for each card: the curve RWKV stored at the card's
+    last answered review (the one RWKV-Curve schedules with), at the time
+    since that review (spec ui.rwkv-curve-r-stored-curve). A card with no
+    stored curve, or no elapsed time, gets no value; no other value stands
+    in for it. The busy / state-changed outcomes (None, or the abort
+    exception when a state token is held) are the same as
+    `_rwkv_review_predictions_for_inputs`'."""
 
     with _try_reviewer_backend_prediction_access(
         expected_state_token=state_token,
     ) as backend:
         if backend is None:
-            logger.debug("RWKV curve retrievability prediction skipped: backend busy")
+            logger.debug("RWKV stored curve lookup skipped: backend busy")
             if state_token is not None:
                 _raise_reviewer_backend_prediction_unavailable(state_token)
             return None
-        predict = getattr(
-            backend, "predict_curve_retrievability_inputs_from_warm_up", None
-        )
-        if not callable(predict):
-            return None
+        card_curve_weights = getattr(backend, "card_curve_weights", None)
+        if not callable(card_curve_weights):
+            return []
         state_generation = _reviewer_backend_state_generation(backend)
-        start = time.monotonic()
-        curve_retrievabilities = predict(
-            [review_input for _, review_input in inputs_by_card_id]
-        )
-        if curve_retrievabilities is None:
-            return None
-        logger.debug(
-            "RWKV review inputs predicted from resident state (curve "
-            "retrievability only): inputs=%s elapsed_ms=%.1f",
-            len(inputs_by_card_id),
-            (time.monotonic() - start) * 1000,
-        )
-        if _reviewer_backend_prediction_access_is_current(
+        result = card_curve_weights([card_id for card_id, _ in inputs_by_card_id])
+        if not _reviewer_backend_prediction_access_is_current(
             backend,
             expected_state_generation=state_generation,
             expected_state_token=state_token,
         ):
-            return list(curve_retrievabilities)
-        if state_token is not None:
-            raise _ReviewerBackendPredictionAborted
-        return None
+            if state_token is not None:
+                raise _ReviewerBackendPredictionAborted
+            return None
+    if result is None:
+        return []
+    ids, packed = result
+    curves = _unpack_rwkv_stored_curves(ids, bytes(packed))
+    if curves is None:
+        logger.warning("RWKV stored curves arrived malformed; no curve values")
+        return []
+    retrievabilities: list[tuple[int, float]] = []
+    for card_id, review_input in inputs_by_card_id:
+        weights = curves.get(card_id)
+        elapsed_seconds = _rwkv_review_input_elapsed_seconds(review_input)
+        if weights is None or elapsed_seconds is None:
+            continue
+        retrievability = _rwkv_stored_curve_recall(weights, elapsed_seconds)
+        if _valid_probability(retrievability):
+            retrievabilities.append((card_id, retrievability))
+    return retrievabilities
 
 
 def _rwkv_review_predictions_for_inputs(
@@ -23208,11 +23274,16 @@ def _set_rwkv_stats_graph_scores(
     intervening_reviews_by_card_id = intervening_reviews_by_card_id or {}
     curve_retrievabilities_by_card_id = curve_retrievabilities_by_card_id or {}
     score_messages: list[scheduler_pb2.RwkvStatsGraphScoresRequest.Score] = []
-    for card_id, retrievability in scores:
-        score = scheduler_pb2.RwkvStatsGraphScoresRequest.Score(
-            card_id=card_id,
-            retrievability=retrievability,
-        )
+    retrievabilities_by_card_id: dict[int, float | None] = dict(scores)
+    # a card RWKV-Curve has a curve value for but the rating head did not
+    # score (the head runs only for a request that reads it) is published
+    # with its curve value alone (spec ui.rwkv-curve-r-stored-curve)
+    for card_id in curve_retrievabilities_by_card_id:
+        retrievabilities_by_card_id.setdefault(card_id, None)
+    for card_id, retrievability in retrievabilities_by_card_id.items():
+        score = scheduler_pb2.RwkvStatsGraphScoresRequest.Score(card_id=card_id)
+        if retrievability is not None:
+            score.retrievability = retrievability
         target_retention = target_retentions_by_card_id.get(card_id)
         if _valid_probability(target_retention):
             score.target_retention = target_retention

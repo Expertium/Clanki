@@ -545,10 +545,9 @@ Retrievability graph shows "Calculating…" instead of values, and the page
 asks again every 2 seconds until the scores arrive. The page's other graphs
 do not wait for RWKV's scores: they are drawn first, and the Retrievability
 graph fills in when the scores arrive. Under FSRS-7 no RWKV score is
-prepared at all (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here comes from RWKV's query of
-each card now, while card info evaluates the curve stored at the card's
-last review (`ui.card-info-one-algorithm`); the two differ, on Andrew's
-collection by 0.04 in the median card and by up to 0.33.
+prepared at all (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here is
+each card's stored curve now (`ui.rwkv-curve-r-stored-curve`), the same value
+card info shows (`ui.card-info-one-algorithm`).
 
 **Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
 RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
@@ -564,6 +563,46 @@ Andrew's 159k cards), during which the Stats page showed only its spinner.
 `test_graphs_leave_rwkv_retrievability_for_later_when_asked`
 (`qt/tests/test_mediasrv.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
+
+## ui.rwkv-curve-r-stored-curve
+
+Given a collection that runs RWKV-Curve, a card's RWKV-Curve R is the
+forgetting curve RWKV stored for the card at its last answered review (the
+curve RWKV-Curve schedules the card with), evaluated at the time since that
+review: the seconds since it, at least 1 second, else the whole days since
+it in seconds. This one value is what these places read:
+
+- the Stats Retrievability graph;
+- the Browser's `prop:rwkv-curve:r…` searches, and AnkiConnect's searches
+  with it;
+- filtered decks whose searches use `prop:rwkv-curve:r…`;
+- the RWKV-Curve review order by retrievability (`sched.rwkv-review-order`)
+  for the cards those places scored.
+
+The value does not change when RWKV's shared states (deck, preset, global)
+change after the card's last answer, for example when other cards of the
+deck are answered; only an answer of the card itself stores a new curve. A
+card RWKV stored no curve for gets no value, and no other value (not a new
+query of RWKV, not RWKV-Instant's, not FSRS-7's) stands in for it.
+
+Such a request does not run RWKV-Instant's rating head unless it also reads
+it: a search with `prop:rwkv:r…` or `is:rwkv:due`, or a filtered deck ordered
+by retrievability.
+
+**Why:** Andrew, 2026-09-19: "Ok, switch to using the stored curve", and
+the same day, for the Browser, filtered decks and AnkiConnect too ("option
+A"). Before, these places ran a new query of RWKV for every card, which reads
+the current shared states: on a copy of his collection (38,523 cards) that
+value differed from the stored curve by 0.03 in the median card, 0.21 at the
+99th percentile and up to 0.44, and card info and the graph disagreed. The
+whole-collection scoring took 5.0 s with the query and takes 1.5 s now.
+
+**Pinned by:** `test_rwkv_curve_r_is_the_stored_curve_now`,
+`test_rwkv_curve_r_request_runs_the_rating_head_only_for_its_readers`,
+`test_prepare_stats_scores_asks_for_the_rating_head_only_when_read`,
+`test_rwkv_curve_r_publishes_cards_without_the_rating_head`,
+`test_stats_curve_due_keeps_the_full_prediction_path`
+(`qt/tests/test_rwkv_scheduler.py`)
 
 ## ui.stats-rwkv-scores-kept
 
