@@ -391,6 +391,29 @@ impl RwkvInference {
         Ok(PyBytes::new(py, &packed).unbind())
     }
 
+    /// One Memorised day, from base rows the caller packs once per rating
+    /// rather than once per day. The day's three elapsed fields are derived
+    /// here (spec ui.stats-total-knowledge).
+    fn predict_retrievability_many_from_warm_up_packed_on_day(
+        &mut self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyBytes>,
+        day: i64,
+    ) -> PyResult<Py<PyBytes>> {
+        let parsed_inputs = parse_packed_rwkv_memorised_day_inputs(inputs.as_bytes(), day)?;
+        let outputs = py
+            .detach(|| {
+                self.inner
+                    .predict_retrievability_many_from_warm_up(parsed_inputs)
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let mut packed = Vec::with_capacity(outputs.len() * std::mem::size_of::<f32>());
+        for output in outputs {
+            packed.extend_from_slice(&output.to_le_bytes());
+        }
+        Ok(PyBytes::new(py, &packed).unbind())
+    }
+
     /// Total Knowledge under RWKV-Curve (spec ui.stats-total-knowledge):
     /// `spans` are `(card_id, review_day, first_day, last_day)`; returns the
     /// first day and the per-day sums of the stored curves' recall from it.
@@ -870,6 +893,36 @@ fn parse_packed_rwkv_prediction_requests(
 }
 
 const PACKED_WARM_UP_REVIEW_MAGIC: &[u8; 8] = b"ARWKVWU2";
+
+/// The base rows of a Memorised day, turned into that day's query inputs.
+///
+/// Only three fields differ from one day to the next: `day_offset`,
+/// `current_elapsed_days` and `current_elapsed_seconds`. All three follow
+/// from the query day and the row's own review day, which the row already
+/// carries, so the caller packs a row once per rating instead of once per
+/// day. The arithmetic here is the arithmetic the Python packer did, so the
+/// model sees the same inputs (spec ui.stats-total-knowledge).
+fn parse_packed_rwkv_memorised_day_inputs(
+    reviews: &[u8],
+    day: i64,
+) -> PyResult<Vec<rwkv::ReviewInput>> {
+    let mut inputs = parse_packed_rwkv_review_inputs(reviews)?;
+    for input in &mut inputs {
+        let Some(review_day) = input.day_offset else {
+            return Err(PyException::new_err(
+                "RWKV Memorised query input has no review day",
+            ));
+        };
+        let elapsed_days = (day - review_day).max(0);
+        input.is_query = true;
+        input.ease = None;
+        input.duration_millis = None;
+        input.day_offset = Some(day);
+        input.current_elapsed_days = Some(elapsed_days);
+        input.current_elapsed_seconds = Some(elapsed_days * 86_400);
+    }
+    Ok(inputs)
+}
 
 /// The warm-up's predictions as plain tuples for Python: the review's place
 /// in the batch, RWKV-Instant's value, and RWKV-Curve's value or None.
