@@ -1043,12 +1043,12 @@ data, RWKV-Curve's reschedule), its progress windows, their results and the
 two deck-options buttons that start the work speak in plain words, with no
 "cache", "state", "calibration", "inputs" or "delta" and no elapsed time:
 
-| Work | Window title | Progress text |
-| ---- | ------------ | ------------- |
-| Reading the review history | Getting Ready | Reading your review history: 425,984 of 656,459 reviews, about 29s left |
-| After a sync | Getting Ready | Adding the reviews from the sync... |
-| Stats graphs' data | Preparing Stats | Preparing the Stats graphs |
-| RWKV-Curve reschedule | Reschedule | Calculating new due dates... |
+| Work                       | Window title    | Progress text                                                           |
+| -------------------------- | --------------- | ----------------------------------------------------------------------- |
+| Reading the review history | Getting Ready   | Reading your review history: 425,984 of 656,459 reviews, about 29s left |
+| After a sync               | Getting Ready   | Adding the reviews from the sync...                                     |
+| Stats graphs' data         | Preparing Stats | Preparing the Stats graphs                                              |
+| RWKV-Curve reschedule      | Reschedule      | Calculating new due dates...                                            |
 
 The deck-options buttons are "Read Review History Again" and "Prepare Stats
 Graphs". Before the first review is done the text shows the counts without a
