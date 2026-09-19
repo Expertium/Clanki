@@ -206,9 +206,9 @@ statistics-roc-false-positive-rate = False positive rate
 statistics-roc-true-positive-rate = True positive rate
 # Shown under the graph.
 statistics-roc-description-curve = Each curve plots the true positive rate against the false positive rate, at every prediction threshold; the dashed line is random chance.
-statistics-roc-description-auc = A higher AUC is better: 1.0 puts every remembered review above every forgotten one, and 0.5 is random chance.
+statistics-roc-description-auc = A higher AUC is better. At 1.0, the algorithm always gives a higher probability of recall to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
 # Shown under every model-quality graph; it says which reviews the graph counts.
-statistics-model-metrics-description-reviews = It counts every rating that follows an earlier rating of the same card: Hard, Good and Easy count as remembered, Again counts as forgotten.
+statistics-model-metrics-description-reviews = Hard, Good and Easy count as remembered, Again counts as forgotten.
 # Shown under the graph; $reviews is how many ratings at least one algorithm scored.
 statistics-model-metrics-scored = Scored on { $reviews } reviews.
 # Shown under the graph, once per drawn algorithm; $reviews is how many of those ratings that algorithm scored.
@@ -232,7 +232,7 @@ statistics-calibration-description-line = Each point is a group of reviews with 
 statistics-calibration-description-bars = The grey bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual recall lies with 95% confidence.
 # Shown under the graph when two or more algorithms scored a rating; only these reviews let their scores be compared.
 statistics-model-metrics-shared = Only the { $reviews } reviews every algorithm scored let their scores be compared directly.
-statistics-um-plus-title = UM+ cross-comparison
+statistics-um-plus-title = Universal Metric+ cross-comparison
 statistics-um-plus-subtitle = Where two algorithms disagree, which of them is wrong.
 # Label of the menu that picks the pair of algorithms.
 statistics-um-plus-algorithms = Algorithms
@@ -245,8 +245,10 @@ statistics-um-plus-error = Predicted minus actual
 # Legend entry of one algorithm, with its UM+ and the slope of its line.
 statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }
 # Shown under the graph.
-statistics-um-plus-description-axes = Each group of reviews sits at how far the two algorithms disagreed about it; the height is how far that algorithm was from what really happened, and the size of a bubble is how many reviews are in the group.
-statistics-um-plus-description-score = A line that stays near zero across the whole width is the better algorithm: UM+ closer to zero is better, and a slope closer to zero means the algorithm does not drift as the disagreement grows.
+statistics-um-plus-description-axes = The X axis shows how much the two algorithms disagree, the Y axis shows how far each algorithm was from reality, and the size of a bubble is how many reviews are in the group.
+statistics-um-plus-description-score = A curve that stays near zero on the Y axis is better: UM+ closer to zero is better, and a slope closer to zero is better. The weaker one algorithm is compared with the other, the closer its slope is to 1.
+# Shown in bold under the UM+ graph.
+statistics-um-plus-description-oracle = Disagreeing with the perfect oracle is the same as disagreeing with reality.
 # Shown when small groups are hidden.
 statistics-um-plus-hidden = { $groups } small groups are hidden.
 # Shown under the graph for a pair of algorithms with too few shared reviews to draw.

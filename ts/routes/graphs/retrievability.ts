@@ -5,6 +5,7 @@
 @typescript-eslint/no-explicit-any: "off",
  */
 
+import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import type { GraphsResponse } from "@generated/anki/stats_pb";
 import * as tr from "@generated/ftl";
 import { localizedNumber } from "@tslib/i18n";
@@ -15,6 +16,7 @@ import type { GraphBounds, SearchDispatch, TableDatum } from "./graph-helpers";
 import { numericMap, setDataAvailable } from "./graph-helpers";
 import { clickableClass } from "./graph-styles";
 import { getAdjustedScaleAndTicks, percentageRangeMinMax } from "./percentageRange";
+import { algorithmName } from "./total-knowledge";
 import { hideTooltip, showTooltip } from "./tooltip-utils.svelte";
 
 type CountBin = Bin<[number, number], number>;
@@ -40,6 +42,24 @@ export interface GraphData {
     active: SeriesData;
     fsrs: SeriesData | null;
     rwkv: SeriesData | null;
+    /** The collection's algorithm: it names the series and picks the search
+     * a bar opens (spec ui.stats-one-algorithm). */
+    algorithm: SchedulingAlgorithm;
+}
+
+type RetrievabilityProperty = "r" | "rwkv:r" | "rwkv-curve:r";
+
+/** The search property of the algorithm's own R, never another's: RWKV-Curve's
+ * R is its stored curve, RWKV-Instant's the model's query. */
+export function retrievabilityProperty(algorithm: SchedulingAlgorithm): RetrievabilityProperty {
+    switch (algorithm) {
+        case SchedulingAlgorithm.RWKV_CURVE:
+            return "rwkv-curve:r";
+        case SchedulingAlgorithm.RWKV_INSTANT:
+            return "rwkv:r";
+        default:
+            return "r";
+    }
 }
 
 export interface RetrievabilityHistogramSeries {
@@ -54,7 +74,7 @@ export interface RetrievabilityHistogramData {
     scale: ScaleLinear<number, number>;
     series: RetrievabilityHistogramSeries[];
     hoverText: (index: number) => string;
-    onClick: ((data: CountBin, shiftKey: boolean) => void) | null;
+    onClick: ((data: CountBin) => void) | null;
     xTickFormat: (d: number) => string;
 }
 
@@ -101,10 +121,11 @@ export function gatherData(data: GraphsResponse): GraphData {
         active: gatherSeries(retrievability),
         fsrs: gatherOptionalSeries(retrievability.fsrs),
         rwkv: gatherOptionalSeries(retrievability.rwkv),
+        algorithm: data.schedulingAlgorithm,
     };
 }
 
-function makeQuery(start: number, end: number, property: "r" | "rwkv:r"): string {
+function makeQuery(start: number, end: number, property: RetrievabilityProperty): string {
     const fromQuery = `"prop:${property}>=${start / 100}"`;
     let tillQuery = `"prop:${property}<${(end + 1) / 100}"`;
     if (end === 99) {
@@ -146,13 +167,13 @@ export function prepareData(
     const explicitSeries: NamedSeriesData[] = [
         data.fsrs && {
             key: "fsrs",
-            label: "FSRS",
+            label: algorithmName(SchedulingAlgorithm.FSRS7),
             colour: fsrsColour,
             data: data.fsrs,
         },
         data.rwkv && {
             key: "rwkv",
-            label: "RWKV",
+            label: algorithmName(data.algorithm),
             colour: rwkvColour,
             data: data.rwkv,
         },
@@ -206,11 +227,10 @@ export function prepareData(
             .join("<br>");
     }
 
-    function onClick(bin: CountBin, shiftKey: boolean): void {
+    function onClick(bin: CountBin): void {
         const start = bin.x0!;
         const end = bin.x1! - 1;
-        const property = data.rwkv && !shiftKey ? "rwkv:r" : "r";
-        const query = makeQuery(start, end, property);
+        const query = makeQuery(start, end, retrievabilityProperty(data.algorithm));
         dispatch("search", { query });
     }
 
@@ -349,6 +369,6 @@ export function retrievabilityHistogramGraph(
         hoverzone
             .filter(({ index }) => data.series.some((series) => binValue(series.bins[index]) > 0))
             .attr("class", clickableClass)
-            .on("click", (event: MouseEvent, { bin }) => data.onClick!(bin, event.shiftKey));
+            .on("click", (_event: MouseEvent, { bin }) => data.onClick!(bin));
     }
 }

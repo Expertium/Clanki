@@ -156,7 +156,7 @@ browsing-cards-updated =
 browsing-window-title = Browse ({ $selected } of { $total } cards selected)
 # Window title while a search that asks for RWKV values waits for RWKV to
 # calculate them. The table keeps the rows of the search before it.
-browsing-rwkv-scores-pending = Browse (calculating RWKV values...)
+browsing-rwkv-scores-pending = Browse (calculating { $algorithm } values...)
 browsing-sidebar-expand = Expand
 browsing-sidebar-collapse = Collapse
 browsing-sidebar-expand-children = Expand Children

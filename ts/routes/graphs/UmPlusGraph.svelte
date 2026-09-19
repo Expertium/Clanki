@@ -172,11 +172,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {/if}
     <svg bind:this={svg} viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
         <g class="um-plus" />
-        <NoDataOverlay {bounds} text={overlay} />
+        <!-- only a message: with no text the overlay says "No data" over the graph -->
+        {#if overlay}
+            <NoDataOverlay {bounds} text={overlay} />
+        {/if}
     </svg>
     <div class="description">
         <div>{tr.statisticsUmPlusDescriptionAxes()}</div>
         <div>{tr.statisticsUmPlusDescriptionScore()}</div>
+        <div><strong>{tr.statisticsUmPlusDescriptionOracle()}</strong></div>
         <div>{tr.statisticsModelMetricsDescriptionReviews()}</div>
         {#if view && view.hidden > 0}
             <div>{tr.statisticsUmPlusHidden({ groups: String(view.hidden) })}</div>

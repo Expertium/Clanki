@@ -582,7 +582,11 @@ class Browser(QMainWindow):
         from aqt import rwkv_scheduler
 
         self.setWindowTitle(
-            without_unicode_isolation(tr.browsing_rwkv_scores_pending())
+            without_unicode_isolation(
+                tr.browsing_rwkv_scores_pending(
+                    algorithm=rwkv_scheduler.rwkv_algorithm_name_for_search(search)
+                )
+            )
         )
 
         def is_current() -> bool:
