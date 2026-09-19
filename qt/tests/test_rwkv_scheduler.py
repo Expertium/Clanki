@@ -6037,6 +6037,24 @@ def test_historical_rwkv_inputs_prepare_checkpoint_without_rehashing(
         "_rwkv_history_hash_after_review",
         count_hashes,
     )
+    # the builder hashes through `_RwkvHistoryHasher`, which keeps the digest
+    # as bytes between reviews; it is watched too, so "each review is hashed
+    # once" holds whichever path does the hashing
+    update_hasher = rwkv_scheduler._RwkvHistoryHasher.update
+
+    def count_hasher_updates(
+        hasher: object,
+        review_id: int,
+        review: RwkvReviewInput,
+    ) -> None:
+        hashed_review_ids.append(review_id)
+        update_hasher(hasher, review_id, review)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        rwkv_scheduler._RwkvHistoryHasher,
+        "update",
+        count_hasher_updates,
+    )
 
     history = rwkv_scheduler._historical_rwkv_review_inputs(
         reviewer,
