@@ -182,6 +182,80 @@ TODAY: dict[str, bool] = {
     "stats.hours": False,
     "stats.buttons": False,
     "stats.added": False,
+    # deck options (spec deck-options.simple-view): the Simple section's
+    # settings; every other setting is Advanced-only
+    **{
+        f"deckOptions.{key}": key
+        in (
+            "newLimit",
+            "desiredRetention",
+            "optimizeAllPresets",
+            "burySiblings",
+            "playAudio",
+            "showTimer",
+            "easyDays",
+        )
+        for key in [
+            "newLimit",
+            "desiredRetention",
+            "optimizeAllPresets",
+            "burySiblings",
+            "playAudio",
+            "showTimer",
+            "easyDays",
+            "reviewLimit",
+            "dailyLimitTabs",
+            "learningSteps",
+            "maxSameDayReviews",
+            "graduatingInterval",
+            "easyInterval",
+            "insertionOrder",
+            "relearningSteps",
+            "lapseMinimumInterval",
+            "leechThreshold",
+            "leechAction",
+            "leechOnlyIfYoung",
+            "newGatherPriority",
+            "newCardSortOrder",
+            "newReviewPriority",
+            "interdayStepPriority",
+            "reviewSortOrder",
+            "algorithm",
+            "desiredRetentionTabs",
+            "fsrsHelpMeDecide",
+            "fsrsParams",
+            "fsrsSearchFilter",
+            "fsrsHealthCheck",
+            "fsrsSimulator",
+            "rwkvEnforceGradeOrder",
+            "rwkvAllowSameDayReview",
+            "rwkvMinInterveningReviews",
+            "rwkvMinElapsedSecs",
+            "rwkvMinimumReviewsPerDay",
+            "rwkvCandidateRefresh",
+            "rwkvRefreshInterval",
+            "rwkvRefreshOnExit",
+            "rwkvMaintenance",
+            "buryNew",
+            "buryReviews",
+            "buryInterdayLearning",
+            "skipQuestionWhenReplaying",
+            "maximumAnswerSecs",
+            "secondsToShowQuestion",
+            "secondsToShowAnswer",
+            "waitForAudio",
+            "questionAction",
+            "answerAction",
+            "maximumInterval",
+            "fsrsMinimumInterval",
+            "ignoreReviewsBefore",
+            "startingEase",
+            "easyBonus",
+            "intervalModifier",
+            "hardInterval",
+            "newInterval",
+        ]
+    },
 }
 
 
@@ -269,6 +343,30 @@ def test_the_stats_page_knows_the_same_graphs_in_the_same_order() -> None:
     block = source.split("const graphItems: GraphItem[] = [")[1].split("];")[0]
     names = re.findall(r'id: "(\w+)"', block)
     assert names == [name for name, _, _ in ui_split.STATS_GRAPHS]
+
+
+def test_the_deck_options_page_knows_the_same_settings_in_the_same_order() -> None:
+    """The page's allSettings(): the Simple section's settings, then each
+    section's, without repeats."""
+    import re
+
+    source = _repo_file("ts/routes/deck-options/ui-split.ts")
+    curated_block = source.split("export const CURATED = [")[1].split("]")[0]
+    sections_block = source.split("export const SECTIONS = {")[1].split("} as const;")[
+        0
+    ]
+    names: list[str] = []
+    for name in re.findall(r'"(\w+)"', curated_block) + re.findall(
+        r'"(\w+)"', sections_block
+    ):
+        if name not in names:
+            names.append(name)
+    registry = [
+        item.id.removeprefix("deckOptions.")
+        for item in ui_split.ITEMS
+        if item.area is ui_split.Area.DECK_OPTIONS
+    ]
+    assert names == registry
 
 
 def test_the_web_pages_get_every_item_with_the_choices_applied(

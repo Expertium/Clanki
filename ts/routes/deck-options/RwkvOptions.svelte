@@ -25,7 +25,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const advanced = state.advancedUi;
+    // which settings show (ui-split.ts); in Advanced mode, every one
+    const shown = state.settingShown;
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
@@ -123,7 +124,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <!-- The RWKV-Curve reschedule action lives under Algorithm; this container
      only has content for RWKV-Instant or under advanced options
      (spec deck-options.advanced-view). -->
-{#if $config.rwkvReviewInstantOrderEnabled || ($advanced && $config.rwkvReviewEnabled)}
+{#if $config.rwkvReviewInstantOrderEnabled || $config.rwkvReviewEnabled}
     <TitledContainer title={boxTitle}>
         <HelpModal
             title={boxTitle}
@@ -137,7 +138,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         />
         <DynamicallySlottable slotHost={Item} api={{}}>
             {#if $config.rwkvReviewEnabled}
-                {#if $advanced}
+                {#if $shown("rwkvEnforceGradeOrder", "section")}
                     <Item>
                         <SwitchRow
                             bind:value={$config.rwkvReviewEnforceGradeOrder}
@@ -160,19 +161,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigRwkvReviewInstantOrderRecommended()}
                 </span>
 
-                <SwitchRow
-                    bind:value={$config.rwkvReviewAllowSameDayReview}
-                    defaultValue={defaults.rwkvReviewAllowSameDayReview}
-                >
-                    <SettingTitle
-                        on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
+                {#if $shown("rwkvAllowSameDayReview", "section")}
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewAllowSameDayReview}
+                        defaultValue={defaults.rwkvReviewAllowSameDayReview}
                     >
-                        {tr.deckConfigRwkvReviewAllowSameDayReview()}
-                    </SettingTitle>
-                </SwitchRow>
+                        <SettingTitle
+                            on:click={() => openSettingHelp("rwkvAllowSameDayReview")}
+                        >
+                            {tr.deckConfigRwkvReviewAllowSameDayReview()}
+                        </SettingTitle>
+                    </SwitchRow>
+                {/if}
 
-                {#if $advanced}
-                    {#if $config.rwkvReviewAllowSameDayReview}
+                {#if $config.rwkvReviewAllowSameDayReview}
+                    {#if $shown("rwkvMinInterveningReviews", "section")}
                         <SpinBoxFloatRow
                             bind:value={$config.rwkvReviewMinInterveningReviews}
                             defaultValue={defaults.rwkvReviewMinInterveningReviews}
@@ -187,7 +190,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 {tr.deckConfigRwkvReviewMinInterveningReviews()}
                             </SettingTitle>
                         </SpinBoxFloatRow>
+                    {/if}
 
+                    {#if $shown("rwkvMinElapsedSecs", "section")}
                         <SpinBoxFloatRow
                             bind:value={$config.rwkvReviewMinElapsedSecs}
                             defaultValue={defaults.rwkvReviewMinElapsedSecs}
@@ -202,7 +207,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             </SettingTitle>
                         </SpinBoxFloatRow>
                     {/if}
+                {/if}
 
+                {#if $shown("rwkvMinimumReviewsPerDay", "section")}
                     <SpinBoxFloatRow
                         bind:value={$config.rwkvReviewMinimumReviewsPerDay}
                         defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
@@ -216,7 +223,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
                         </SettingTitle>
                     </SpinBoxFloatRow>
+                {/if}
 
+                {#if $shown("rwkvCandidateRefresh", "section")}
                     <SwitchRow
                         bind:value={$config.rwkvReviewCandidateRefreshEnabled}
                         defaultValue={defaults.rwkvReviewCandidateRefreshEnabled}
@@ -227,7 +236,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             {tr.deckConfigRwkvReviewCandidateRefresh()}
                         </SettingTitle>
                     </SwitchRow>
+                {/if}
 
+                {#if $shown("rwkvRefreshInterval", "section")}
                     <SpinBoxFloatRow
                         bind:value={$config.rwkvReviewRefreshInterval}
                         defaultValue={defaults.rwkvReviewRefreshInterval}
@@ -241,7 +252,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             {tr.deckConfigRwkvReviewRefreshInterval()}
                         </SettingTitle>
                     </SpinBoxFloatRow>
+                {/if}
 
+                {#if $shown("rwkvRefreshOnExit", "section")}
                     <SwitchRow
                         bind:value={$config.rwkvReviewRefreshOnExit}
                         defaultValue={defaults.rwkvReviewRefreshOnExit}
@@ -258,7 +271,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <!-- "Predict R for new cards based on creation time" and "Dynamic
                  Preset Addon Support" are gone; both are fixed at their
                  defaults (spec deck-options.rwkv-fixed-settings). -->
-            {#if $advanced}
+            {#if $shown("rwkvMaintenance", "section")}
                 <h2 class="rwkv-subheading">Maintenance</h2>
 
                 <div class="d-flex flex-wrap gap-2">

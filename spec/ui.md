@@ -127,8 +127,12 @@ The items, per area:
   Reviews, Card Counts and Retention, as before); when the chosen graphs
   draw none of it (each asks for its own data), it asks for Card Counts'
   data only.
+- Deck options: each setting (58), as `deck-options.simple-view` lists
+  them: the Simple section's seven (shown by default) and every other one
+  (Advanced-only by default). Where Simple mode draws an added setting is
+  in that entry.
 
-The editor and the Stats page read the split when they load, from the
+The editor, the Stats page and deck options read the split when they load, from the
 media server (`getUiSplit`: every item id and whether Simple mode shows it,
 the choices applied), as they read the mode; a page that cannot read it
 shows every item. An edit of the split reaches such a page the next time
@@ -173,7 +177,7 @@ Preferences-tab tests, and the checks that the editor and Stats pages list
 the same items in the same order); `test_hidden_tools_items_keep_their_shortcuts`
 (`qt/tests/test_ui_mode.py`); "Simple mode follows the split in both
 directions" (`ts/routes/editor/ui-mode.test.ts`,
-`ts/routes/graphs/ui-mode.test.ts`).
+`ts/routes/graphs/ui-mode.test.ts`, `ts/routes/deck-options/ui-split.test.ts`).
 
 ## ui.get-decks-and-get-addons
 

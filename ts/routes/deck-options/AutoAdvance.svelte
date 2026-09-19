@@ -25,6 +25,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
 
     const settings = {
@@ -72,81 +74,97 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SpinBoxFloatRow
-                bind:value={$config.secondsToShowQuestion}
-                defaultValue={defaults.secondsToShowQuestion}
-                step={0.1}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("secondsToShowQuestion"),
-                        )}
+        {#if $shown("secondsToShowQuestion", "section")}
+            <Item>
+                <SpinBoxFloatRow
+                    bind:value={$config.secondsToShowQuestion}
+                    defaultValue={defaults.secondsToShowQuestion}
+                    step={0.1}
                 >
-                    {settings.secondsToShowQuestion.title}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("secondsToShowQuestion"),
+                            )}
+                    >
+                        {settings.secondsToShowQuestion.title}
+                    </SettingTitle>
+                </SpinBoxFloatRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <SpinBoxFloatRow
-                bind:value={$config.secondsToShowAnswer}
-                defaultValue={defaults.secondsToShowAnswer}
-                step={0.1}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("secondsToShowAnswer"),
-                        )}
+        {#if $shown("secondsToShowAnswer", "section")}
+            <Item>
+                <SpinBoxFloatRow
+                    bind:value={$config.secondsToShowAnswer}
+                    defaultValue={defaults.secondsToShowAnswer}
+                    step={0.1}
                 >
-                    {settings.secondsToShowAnswer.title}
-                </SettingTitle>
-            </SpinBoxFloatRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("secondsToShowAnswer"),
+                            )}
+                    >
+                        {settings.secondsToShowAnswer.title}
+                    </SettingTitle>
+                </SpinBoxFloatRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.waitForAudio}
-                defaultValue={defaults.waitForAudio}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("waitForAudio"))}
+        {#if $shown("waitForAudio", "section")}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.waitForAudio}
+                    defaultValue={defaults.waitForAudio}
                 >
-                    {settings.waitForAudio.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("waitForAudio"),
+                            )}
+                    >
+                        {settings.waitForAudio.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.questionAction}
-                defaultValue={defaults.questionAction}
-                choices={questionActionChoices()}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("questionAction"))}
+        {#if $shown("questionAction", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.questionAction}
+                    defaultValue={defaults.questionAction}
+                    choices={questionActionChoices()}
                 >
-                    {settings.questionAction.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.answerAction}
-                defaultValue={defaults.answerAction}
-                choices={answerChoices()}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("answerAction"))}
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("questionAction"),
+                            )}
+                    >
+                        {settings.questionAction.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
+        {#if $shown("answerAction", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.answerAction}
+                    defaultValue={defaults.answerAction}
+                    choices={answerChoices()}
                 >
-                    {settings.answerAction.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("answerAction"),
+                            )}
+                    >
+                        {settings.answerAction.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

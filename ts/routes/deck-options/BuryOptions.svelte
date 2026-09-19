@@ -22,6 +22,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
 
     const priorityTooltip = "\n\n" + tr.deckConfigBuryPriorityTooltip();
@@ -63,49 +65,57 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SwitchRow bind:value={$config.buryNew} defaultValue={defaults.buryNew}>
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("buryNewSiblings"))}
-                >
-                    {settings.buryNewSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+        {#if $shown("buryNew", "section")}
+            <Item>
+                <SwitchRow bind:value={$config.buryNew} defaultValue={defaults.buryNew}>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("buryNewSiblings"),
+                            )}
+                    >
+                        {settings.buryNewSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.buryReviews}
-                defaultValue={defaults.buryReviews}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("buryReviewSiblings"),
-                        )}
+        {#if $shown("buryReviews", "section")}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.buryReviews}
+                    defaultValue={defaults.buryReviews}
                 >
-                    {settings.buryReviewSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("buryReviewSiblings"),
+                            )}
+                    >
+                        {settings.buryReviewSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.buryInterdayLearning}
-                defaultValue={defaults.buryInterdayLearning}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf(
-                                "buryInterdayLearningSiblings",
-                            ),
-                        )}
+        {#if $shown("buryInterdayLearning", "section")}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.buryInterdayLearning}
+                    defaultValue={defaults.buryInterdayLearning}
                 >
-                    {settings.buryInterdayLearningSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "buryInterdayLearningSiblings",
+                                ),
+                            )}
+                    >
+                        {settings.buryInterdayLearningSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

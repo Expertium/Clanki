@@ -18,16 +18,19 @@ import { updateDeckConfigs } from "@generated/backend";
 import { postProto } from "@generated/post";
 import { localeCompare } from "@tslib/i18n";
 import { promiseWithResolver } from "@tslib/promise";
+import type { SimpleItems } from "@tslib/ui-split";
 import { cloneDeep, isEqual, isEqualWith } from "lodash-es";
 import { tick } from "svelte";
 import type { Readable, Writable } from "svelte/store";
-import { get, readable, writable } from "svelte/store";
+import { derived, get, readable, writable } from "svelte/store";
 
 import type { DynamicSvelteComponent } from "$lib/sveltelib/dynamicComponent";
 
 import { fsrsParamDiagnostics } from "./fsrs-param-diagnostics";
 import type { SchedulingAlgorithm } from "./scheduler-choice";
 import { flagsFromSchedulerChoice } from "./scheduler-choice";
+import type { Placement, SettingKey } from "./ui-split";
+import { settingShown } from "./ui-split";
 
 export type DeckOptionsId = bigint;
 
@@ -90,6 +93,12 @@ export class DeckOptionsState {
     /** The collection-wide Advanced UI mode (spec ui.mode-switch); the page's switch
      * (UiModeSwitch) writes it at once, without Save. */
     readonly advancedUi: Writable<boolean>;
+    /** The Simple | Advanced split (spec ui.split-configurable): which items
+     * Simple mode shows; null = not read, every setting shows. */
+    readonly simpleItems: Writable<SimpleItems | null> = writable(null);
+    /** Whether a setting is drawn at a place, in the current mode and split
+     * (see ui-split.ts). */
+    readonly settingShown: Readable<(key: SettingKey, placement: Placement) => boolean>;
     /**
      * The collection's one algorithm (spec sched.one-global-algorithm); every
      * preset carries it. Change it with setSchedulingAlgorithm().
@@ -149,6 +158,11 @@ export class DeckOptionsState {
         );
         this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
+        this.settingShown = derived(
+            [this.advancedUi, this.simpleItems],
+            ([advanced, simpleItems]) => (key: SettingKey, placement: Placement) =>
+                settingShown(key, placement, advanced, simpleItems),
+        );
         this.schedulingAlgorithm = writable(data.schedulingAlgorithm);
         this.savedSchedulingAlgorithm = data.schedulingAlgorithm;
         this.reviewFuzzEnabled = writable(data.reviewFuzzEnabled);

@@ -38,6 +38,7 @@ class Area(Enum):
     BROWSER = "browser"
     EDITOR = "editor"
     STATS = "stats"
+    DECK_OPTIONS = "deckOptions"
 
 
 def _area_label(area: Area) -> str:
@@ -47,6 +48,7 @@ def _area_label(area: Area) -> str:
         Area.BROWSER: tr.preferences_ui_split_browser,
         Area.EDITOR: tr.preferences_ui_split_editor,
         Area.STATS: tr.preferences_ui_split_stats,
+        Area.DECK_OPTIONS: tr.preferences_ui_split_deck_options,
     }[area]()
 
 
@@ -410,6 +412,189 @@ ITEMS += _items(
     None,
     [(f"stats.{name}", label, simple) for name, label, simple in STATS_GRAPHS],
 )
+
+
+def _rwkv() -> str:
+    """The RWKV section's settings belong to RWKV-Curve and RWKV-Instant;
+    the name says both, never a bare "RWKV" (spec ui.rwkv-algorithm-names)."""
+    return (
+        f"{tr.deck_config_scheduler_choice_rwkv_curve()} / "
+        f"{tr.deck_config_scheduler_choice_rwkv_instant()}"
+    )
+
+
+# The deck-options page, one item per setting (spec deck-options.simple-view),
+# grouped as the Preferences tab shows them: the Simple section's settings,
+# then each Advanced-mode section's. The ids after "deckOptions." are the
+# page's setting keys, in the page's order (allSettings() in
+# ts/routes/deck-options/ui-split.ts).
+DECK_OPTIONS_SETTINGS: list[
+    tuple[Callable[[], str], list[tuple[str, Callable[[], str], bool]]]
+] = [
+    (
+        tr.preferences_ui_split_simple_section,
+        [
+            ("newLimit", tr.scheduling_new_cardsday, True),
+            ("desiredRetention", tr.deck_config_desired_retention, True),
+            ("optimizeAllPresets", tr.deck_config_save_and_optimize, True),
+            ("burySiblings", tr.deck_config_bury_siblings, True),
+            ("playAudio", tr.deck_config_play_audio_automatically, True),
+            ("showTimer", tr.deck_config_on_screen_timer, True),
+            ("easyDays", tr.deck_config_easy_days_title, True),
+        ],
+    ),
+    (
+        tr.deck_config_daily_limits,
+        [
+            ("reviewLimit", tr.scheduling_maximum_reviewsday, False),
+            ("dailyLimitTabs", tr.preferences_ui_split_daily_limit_tabs, False),
+        ],
+    ),
+    (
+        tr.scheduling_new_cards,
+        [
+            ("learningSteps", tr.deck_config_learning_steps, False),
+            ("maxSameDayReviews", tr.deck_config_max_same_day_reviews, False),
+            ("graduatingInterval", tr.scheduling_graduating_interval, False),
+            ("easyInterval", tr.scheduling_easy_interval, False),
+            ("insertionOrder", tr.deck_config_new_insertion_order, False),
+        ],
+    ),
+    (
+        tr.scheduling_lapses,
+        [
+            ("relearningSteps", tr.deck_config_relearning_steps, False),
+            ("lapseMinimumInterval", tr.scheduling_minimum_interval, False),
+            ("leechThreshold", tr.scheduling_leech_threshold, False),
+            ("leechAction", tr.scheduling_leech_action, False),
+            ("leechOnlyIfYoung", tr.deck_config_leech_only_if_young, False),
+        ],
+    ),
+    (
+        tr.deck_config_ordering_title,
+        [
+            ("newGatherPriority", tr.deck_config_new_gather_priority, False),
+            ("newCardSortOrder", tr.deck_config_new_card_sort_order, False),
+            ("newReviewPriority", tr.deck_config_new_review_priority, False),
+            ("interdayStepPriority", tr.deck_config_interday_step_priority, False),
+            ("reviewSortOrder", tr.deck_config_review_sort_order, False),
+        ],
+    ),
+    (
+        tr.deck_config_scheduler,
+        [
+            ("algorithm", tr.deck_config_scheduler, False),
+            (
+                "desiredRetentionTabs",
+                tr.preferences_ui_split_desired_retention_tabs,
+                False,
+            ),
+            (
+                "fsrsHelpMeDecide",
+                tr.deck_config_fsrs_desired_retention_help_me_decide_experimental,
+                False,
+            ),
+            ("fsrsParams", tr.deck_config_weights, False),
+            ("fsrsSearchFilter", tr.preferences_ui_split_fsrs_search_filter, False),
+            ("fsrsHealthCheck", tr.deck_config_health_check_button, False),
+            ("fsrsSimulator", tr.deck_config_fsrs_simulator_experimental, False),
+        ],
+    ),
+    (
+        _rwkv,
+        [
+            (
+                "rwkvEnforceGradeOrder",
+                tr.deck_config_rwkv_review_enforce_grade_order,
+                False,
+            ),
+            (
+                "rwkvAllowSameDayReview",
+                tr.deck_config_rwkv_review_allow_same_day_review,
+                False,
+            ),
+            (
+                "rwkvMinInterveningReviews",
+                tr.deck_config_rwkv_review_min_intervening_reviews,
+                False,
+            ),
+            ("rwkvMinElapsedSecs", tr.deck_config_rwkv_review_min_elapsed_secs, False),
+            (
+                "rwkvMinimumReviewsPerDay",
+                tr.deck_config_rwkv_review_minimum_reviews_per_day,
+                False,
+            ),
+            (
+                "rwkvCandidateRefresh",
+                tr.deck_config_rwkv_review_candidate_refresh,
+                False,
+            ),
+            (
+                "rwkvRefreshInterval",
+                tr.deck_config_rwkv_review_refresh_interval,
+                False,
+            ),
+            ("rwkvRefreshOnExit", tr.deck_config_rwkv_review_refresh_on_exit, False),
+            ("rwkvMaintenance", tr.preferences_ui_split_rwkv_maintenance, False),
+        ],
+    ),
+    (
+        tr.deck_config_bury_title,
+        [
+            ("buryNew", tr.deck_config_bury_new_siblings, False),
+            ("buryReviews", tr.deck_config_bury_review_siblings, False),
+            (
+                "buryInterdayLearning",
+                tr.deck_config_bury_interday_learning_siblings,
+                False,
+            ),
+        ],
+    ),
+    (
+        tr.deck_config_audio_title,
+        [
+            (
+                "skipQuestionWhenReplaying",
+                tr.deck_config_skip_question_when_replaying,
+                False,
+            ),
+        ],
+    ),
+    (
+        tr.deck_config_timer_title,
+        [("maximumAnswerSecs", tr.deck_config_maximum_answer_secs, False)],
+    ),
+    (
+        tr.actions_auto_advance,
+        [
+            ("secondsToShowQuestion", tr.deck_config_seconds_to_show_question, False),
+            ("secondsToShowAnswer", tr.deck_config_seconds_to_show_answer, False),
+            ("waitForAudio", tr.deck_config_wait_for_audio, False),
+            ("questionAction", tr.deck_config_question_action, False),
+            ("answerAction", tr.deck_config_answer_action, False),
+        ],
+    ),
+    (
+        tr.deck_config_advanced_title,
+        [
+            ("maximumInterval", tr.scheduling_maximum_interval, False),
+            ("fsrsMinimumInterval", tr.scheduling_minimum_interval, False),
+            ("ignoreReviewsBefore", tr.deck_config_ignore_before, False),
+            ("startingEase", tr.scheduling_starting_ease, False),
+            ("easyBonus", tr.scheduling_easy_bonus, False),
+            ("intervalModifier", tr.scheduling_interval_modifier, False),
+            ("hardInterval", tr.scheduling_hard_interval, False),
+            ("newInterval", tr.scheduling_new_interval, False),
+        ],
+    ),
+]
+
+for _group, _rows in DECK_OPTIONS_SETTINGS:
+    ITEMS += _items(
+        Area.DECK_OPTIONS,
+        _group,
+        [(f"deckOptions.{key}", label, simple) for key, label, simple in _rows],
+    )
 
 ITEMS_BY_ID: dict[str, UiItem] = {item.id: item for item in ITEMS}
 

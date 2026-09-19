@@ -28,6 +28,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
@@ -171,153 +173,183 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <MaximumIntervalInputRow
-                bind:value={$config.maximumReviewInterval}
-                defaultValue={defaults.maximumReviewInterval}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("maximumInterval"))}
-                >
-                    {settings.maximumInterval.title}
-                </SettingTitle>
-            </MaximumIntervalInputRow>
-        </Item>
-
-        {#if $fsrs}
+        {#if $shown("maximumInterval", "section")}
             <Item>
-                <MinimumIntervalInputRow
-                    bind:value={$config.fsrsMinimumIntervalSecs}
-                    defaultValue={defaults.fsrsMinimumIntervalSecs}
+                <MaximumIntervalInputRow
+                    bind:value={$config.maximumReviewInterval}
+                    defaultValue={defaults.maximumReviewInterval}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("fsrsMinimumInterval"),
+                                Object.keys(settings).indexOf("maximumInterval"),
                             )}
                     >
-                        {settings.fsrsMinimumInterval.title}
+                        {settings.maximumInterval.title}
                     </SettingTitle>
-                </MinimumIntervalInputRow>
+                </MaximumIntervalInputRow>
             </Item>
         {/if}
 
-        <Item>
-            <Warning warning={maxIntervalWarning} className={maxIntervalWarningClass}
-            ></Warning>
-        </Item>
+        {#if $fsrs}
+            {#if $shown("fsrsMinimumInterval", "section")}
+                <Item>
+                    <MinimumIntervalInputRow
+                        bind:value={$config.fsrsMinimumIntervalSecs}
+                        defaultValue={defaults.fsrsMinimumIntervalSecs}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf(
+                                        "fsrsMinimumInterval",
+                                    ),
+                                )}
+                        >
+                            {settings.fsrsMinimumInterval.title}
+                        </SettingTitle>
+                    </MinimumIntervalInputRow>
+                </Item>
+            {/if}
+        {/if}
+
+        {#if $shown("maximumInterval", "section")}
+            <Item>
+                <Warning
+                    warning={maxIntervalWarning}
+                    className={maxIntervalWarningClass}
+                ></Warning>
+            </Item>
+        {/if}
 
         {#if !$fsrs}
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.initialEase}
-                    defaultValue={defaults.initialEase}
-                    min={1.31}
-                    max={5}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("startingEase"),
-                            )}
+            {#if $shown("startingEase", "section")}
+                <Item>
+                    <SpinBoxFloatRow
+                        bind:value={$config.initialEase}
+                        defaultValue={defaults.initialEase}
+                        min={1.31}
+                        max={5}
                     >
-                        {settings.startingEase.title}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("startingEase"),
+                                )}
+                        >
+                            {settings.startingEase.title}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </Item>
+            {/if}
 
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.easyMultiplier}
-                    defaultValue={defaults.easyMultiplier}
-                    min={1}
-                    max={5}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(Object.keys(settings).indexOf("easyBonus"))}
+            {#if $shown("easyBonus", "section")}
+                <Item>
+                    <SpinBoxFloatRow
+                        bind:value={$config.easyMultiplier}
+                        defaultValue={defaults.easyMultiplier}
+                        min={1}
+                        max={5}
                     >
-                        {settings.easyBonus.title}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("easyBonus"),
+                                )}
+                        >
+                            {settings.easyBonus.title}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </Item>
+            {/if}
 
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.intervalMultiplier}
-                    defaultValue={defaults.intervalMultiplier}
-                    min={0.5}
-                    max={2}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("intervalModifier"),
-                            )}
+            {#if $shown("intervalModifier", "section")}
+                <Item>
+                    <SpinBoxFloatRow
+                        bind:value={$config.intervalMultiplier}
+                        defaultValue={defaults.intervalMultiplier}
+                        min={0.5}
+                        max={2}
                     >
-                        {settings.intervalModifier.title}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("intervalModifier"),
+                                )}
+                        >
+                            {settings.intervalModifier.title}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </Item>
+            {/if}
 
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.hardMultiplier}
-                    defaultValue={defaults.hardMultiplier}
-                    min={0.5}
-                    max={1.3}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("hardInterval"),
-                            )}
+            {#if $shown("hardInterval", "section")}
+                <Item>
+                    <SpinBoxFloatRow
+                        bind:value={$config.hardMultiplier}
+                        defaultValue={defaults.hardMultiplier}
+                        min={0.5}
+                        max={1.3}
                     >
-                        {settings.hardInterval.title}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("hardInterval"),
+                                )}
+                        >
+                            {settings.hardInterval.title}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </Item>
+            {/if}
 
-            <Item>
-                <SpinBoxFloatRow
-                    bind:value={$config.lapseMultiplier}
-                    defaultValue={defaults.lapseMultiplier}
-                    max={1}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(Object.keys(settings).indexOf("newInterval"))}
+            {#if $shown("newInterval", "section")}
+                <Item>
+                    <SpinBoxFloatRow
+                        bind:value={$config.lapseMultiplier}
+                        defaultValue={defaults.lapseMultiplier}
+                        max={1}
                     >
-                        {settings.newInterval.title}
-                    </SettingTitle>
-                </SpinBoxFloatRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("newInterval"),
+                                )}
+                        >
+                            {settings.newInterval.title}
+                        </SettingTitle>
+                    </SpinBoxFloatRow>
+                </Item>
+            {/if}
         {:else}
             <!-- Historical retention has no control: it is fixed at 0.9
                  (spec deck-options.historical-retention-fixed). -->
-            <Item>
-                <DateInput
-                    bind:date={$config.ignoreRevlogsBeforeDate}
-                    max={new Date().toLocaleDateString("en-CA")}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("ignoreRevlogsBeforeMs"),
-                            )}
+            {#if $shown("ignoreReviewsBefore", "section")}
+                <Item>
+                    <DateInput
+                        bind:date={$config.ignoreRevlogsBeforeDate}
+                        max={new Date().toLocaleDateString("en-CA")}
                     >
-                        {tr.deckConfigIgnoreBefore()}
-                    </SettingTitle>
-                </DateInput>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf(
+                                        "ignoreRevlogsBeforeMs",
+                                    ),
+                                )}
+                        >
+                            {tr.deckConfigIgnoreBefore()}
+                        </SettingTitle>
+                    </DateInput>
+                </Item>
 
-            <Item>
-                <Warning
-                    warning={ignoreRevlogsBeforeWarning}
-                    className={ignoreRevlogsBeforeWarningClass}
-                ></Warning>
-            </Item>
+                <Item>
+                    <Warning
+                        warning={ignoreRevlogsBeforeWarning}
+                        className={ignoreRevlogsBeforeWarningClass}
+                    ></Warning>
+                </Item>
+            {/if}
         {/if}
 
         <!-- Custom scheduling is a Preferences setting

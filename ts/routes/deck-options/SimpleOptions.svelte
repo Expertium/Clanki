@@ -30,9 +30,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { DeckOptionsState } from "./lib";
 
     /**
-     * The Simple-mode page: one section with the settings listed in
-     * spec/deck-options.md, `deck-options.simple-view`, in that order.
-     * Advanced mode shows the per-topic sections instead (DeckOptionsPage).
+     * The Simple-mode page's own section: by default the settings listed in
+     * spec/deck-options.md, `deck-options.simple-view`, in that order; the
+     * split decides which show, and adds the daily-limit and Algorithm
+     * settings a user moves to Simple mode (ui-split.ts). Advanced mode shows
+     * the per-topic sections instead (DeckOptionsPage).
      */
     export let state: DeckOptionsState;
     export let api: Record<string, never>;
@@ -51,6 +53,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const config = state.currentConfig;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    // which of this section's settings the split shows (ui-split.ts)
+    const shown = state.settingShown;
 
     // One switch stands for the three bury settings. The switch value follows
     // the preset; a toggle writes every setting it stands for; showing a
@@ -152,53 +156,72 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <DailyLimitRows {state} {openHelp} bind:this={dailyLimitRows} />
+        <DailyLimitRows
+            {state}
+            {openHelp}
+            placement="simple"
+            bind:this={dailyLimitRows}
+        />
 
-        <AlgorithmRows {state} {openHelp} bind:this={algorithmRows} />
+        <AlgorithmRows
+            {state}
+            {openHelp}
+            placement="simple"
+            bind:this={algorithmRows}
+        />
 
-        <Item>
-            <SwitchRow
-                bind:value={burySiblings}
-                defaultValue={burySiblingsFromConfig(defaults)}
-            >
-                <SettingTitle on:click={() => openHelp("burySiblings")}>
-                    {settings.burySiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-            {#if burySiblingsPartlyOn($config)}
-                <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
-            {/if}
-        </Item>
-
-        <Item>
-            <SwitchRow
-                bind:value={playAudio}
-                defaultValue={playAudioFromConfig(defaults)}
-            >
-                <SettingTitle on:click={() => openHelp("disableAutoplay")}>
-                    {settings.disableAutoplay.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        <!-- "Skip question when replaying answer" is Advanced-only
-             (spec deck-options.simple-view). -->
-
-        <Item>
-            <!-- AnkiMobile hides this -->
-            <div class="show-timer-switch" style="display: contents;">
+        {#if $shown("burySiblings", "simple")}
+            <Item>
                 <SwitchRow
-                    bind:value={$config.showTimer}
-                    defaultValue={defaults.showTimer}
+                    bind:value={burySiblings}
+                    defaultValue={burySiblingsFromConfig(defaults)}
                 >
-                    <SettingTitle on:click={() => openHelp("onScreenTimer")}>
-                        {settings.onScreenTimer.title}
+                    <SettingTitle on:click={() => openHelp("burySiblings")}>
+                        {settings.burySiblings.title}
                     </SettingTitle>
                 </SwitchRow>
-            </div>
-        </Item>
+                {#if burySiblingsPartlyOn($config)}
+                    <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
+                {/if}
+            </Item>
+        {/if}
 
-        <EasyDaysRows {state} openHelp={() => openHelp("easyDays")} />
+        {#if $shown("playAudio", "simple")}
+            <Item>
+                <SwitchRow
+                    bind:value={playAudio}
+                    defaultValue={playAudioFromConfig(defaults)}
+                >
+                    <SettingTitle on:click={() => openHelp("disableAutoplay")}>
+                        {settings.disableAutoplay.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
+
+        <!-- "Skip question when replaying answer" is Advanced-only by default
+             (spec deck-options.simple-view); added to Simple mode, it shows
+             in its Audio section below this one (ui-split.ts). -->
+
+        {#if $shown("showTimer", "simple")}
+            <Item>
+                <!-- AnkiMobile hides this -->
+                <div class="show-timer-switch" style="display: contents;">
+                    <SwitchRow
+                        bind:value={$config.showTimer}
+                        defaultValue={defaults.showTimer}
+                    >
+                        <SettingTitle on:click={() => openHelp("onScreenTimer")}>
+                            {settings.onScreenTimer.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                </div>
+            </Item>
+        {/if}
+
+        {#if $shown("easyDays", "simple")}
+            <EasyDaysRows {state} openHelp={() => openHelp("easyDays")} />
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>
 

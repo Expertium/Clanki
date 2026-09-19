@@ -34,6 +34,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api = {};
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
@@ -127,102 +129,116 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <StepsInputRow
-                bind:value={$config.learnSteps}
-                defaultValue={defaults.learnSteps}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("learningSteps"))}
-                >
-                    {settings.learningSteps.title}
-                </SettingTitle>
-            </StepsInputRow>
-        </Item>
-
-        <Item>
-            <Warning warning={stepsTooLargeForFsrs} />
-        </Item>
-
-        {#if $fsrs && maxSameDayReviewsShown($config)}
+        {#if $shown("learningSteps", "section")}
             <Item>
-                <SpinBoxRow
-                    bind:value={maxSameDayReviews}
-                    defaultValue={MAX_SAME_DAY_REVIEWS_NO_LIMIT}
+                <StepsInputRow
+                    bind:value={$config.learnSteps}
+                    defaultValue={defaults.learnSteps}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("maxSameDayReviews"),
+                                Object.keys(settings).indexOf("learningSteps"),
                             )}
                     >
-                        {settings.maxSameDayReviews.title}
+                        {settings.learningSteps.title}
                     </SettingTitle>
-                </SpinBoxRow>
+                </StepsInputRow>
             </Item>
+
+            <Item>
+                <Warning warning={stepsTooLargeForFsrs} />
+            </Item>
+        {/if}
+
+        {#if $fsrs && maxSameDayReviewsShown($config)}
+            {#if $shown("maxSameDayReviews", "section")}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={maxSameDayReviews}
+                        defaultValue={MAX_SAME_DAY_REVIEWS_NO_LIMIT}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("maxSameDayReviews"),
+                                )}
+                        >
+                            {settings.maxSameDayReviews.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
+            {/if}
         {/if}
 
         {#if !$fsrs}
-            <Item>
-                <SpinBoxRow
-                    bind:value={$config.graduatingIntervalGood}
-                    defaultValue={defaults.graduatingIntervalGood}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("graduatingInterval"),
-                            )}
+            {#if $shown("graduatingInterval", "section")}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={$config.graduatingIntervalGood}
+                        defaultValue={defaults.graduatingIntervalGood}
                     >
-                        {settings.graduatingInterval.title}
-                    </SettingTitle>
-                </SpinBoxRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("graduatingInterval"),
+                                )}
+                        >
+                            {settings.graduatingInterval.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
 
-            <Item>
-                <Warning warning={stepsExceedGraduatingInterval} />
-            </Item>
+                <Item>
+                    <Warning warning={stepsExceedGraduatingInterval} />
+                </Item>
+            {/if}
 
-            <Item>
-                <SpinBoxRow
-                    bind:value={$config.graduatingIntervalEasy}
-                    defaultValue={defaults.graduatingIntervalEasy}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("easyInterval"),
-                            )}
+            {#if $shown("easyInterval", "section")}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={$config.graduatingIntervalEasy}
+                        defaultValue={defaults.graduatingIntervalEasy}
                     >
-                        {settings.easyInterval.title}
-                    </SettingTitle>
-                </SpinBoxRow>
-            </Item>
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("easyInterval"),
+                                )}
+                        >
+                            {settings.easyInterval.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
 
-            <Item>
-                <Warning warning={goodExceedsEasy} />
-            </Item>
+                <Item>
+                    <Warning warning={goodExceedsEasy} />
+                </Item>
+            {/if}
         {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.newCardInsertOrder}
-                defaultValue={defaults.newCardInsertOrder}
-                choices={newInsertOrderChoices()}
-                breakpoint={"md"}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("insertionOrder"))}
+        {#if $shown("insertionOrder", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newCardInsertOrder}
+                    defaultValue={defaults.newCardInsertOrder}
+                    choices={newInsertOrderChoices()}
+                    breakpoint={"md"}
                 >
-                    {settings.insertionOrder.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("insertionOrder"),
+                            )}
+                    >
+                        {settings.insertionOrder.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
 
-        <Item>
-            <Warning warning={insertionOrderRandom} />
-        </Item>
+            <Item>
+                <Warning warning={insertionOrderRandom} />
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

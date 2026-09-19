@@ -32,6 +32,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
+    // which settings show (ui-split.ts)
+    const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
     $: rwkv = $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled;
@@ -121,90 +123,102 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.newCardGatherPriority}
-                defaultValue={defaults.newCardGatherPriority}
-                choices={newGatherPriorityChoices(
-                    $config.rwkvReviewInstantOrderEnabled,
-                )}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("newGatherPriority"),
-                        )}
+        {#if $shown("newGatherPriority", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newCardGatherPriority}
+                    defaultValue={defaults.newCardGatherPriority}
+                    choices={newGatherPriorityChoices(
+                        $config.rwkvReviewInstantOrderEnabled,
+                    )}
                 >
-                    {settings.newGatherPriority.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("newGatherPriority"),
+                            )}
+                    >
+                        {settings.newGatherPriority.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.newCardSortOrder}
-                defaultValue={defaults.newCardSortOrder}
-                choices={newSortOrderChoices()}
-                disabledChoices={disabledNewSortOrders}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("newCardSortOrder"),
-                        )}
+        {#if $shown("newCardSortOrder", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newCardSortOrder}
+                    defaultValue={defaults.newCardSortOrder}
+                    choices={newSortOrderChoices()}
+                    disabledChoices={disabledNewSortOrders}
                 >
-                    {settings.newCardSortOrder.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("newCardSortOrder"),
+                            )}
+                    >
+                        {settings.newCardSortOrder.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.newMix}
-                defaultValue={defaults.newMix}
-                choices={reviewMixChoices()}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("newReviewPriority"),
-                        )}
+        {#if $shown("newReviewPriority", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newMix}
+                    defaultValue={defaults.newMix}
+                    choices={reviewMixChoices()}
                 >
-                    {settings.newReviewPriority.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("newReviewPriority"),
+                            )}
+                    >
+                        {settings.newReviewPriority.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.interdayLearningMix}
-                defaultValue={defaults.interdayLearningMix}
-                choices={reviewMixChoices()}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("interdayStepPriority"),
-                        )}
+        {#if $shown("interdayStepPriority", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.interdayLearningMix}
+                    defaultValue={defaults.interdayLearningMix}
+                    choices={reviewMixChoices()}
                 >
-                    {settings.interdayStepPriority.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("interdayStepPriority"),
+                            )}
+                    >
+                        {settings.interdayStepPriority.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.reviewOrder}
-                defaultValue={defaults.reviewOrder}
-                choices={reviewOrderChoices($fsrs, rwkv)}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("reviewSortOrder"))}
+        {#if $shown("reviewSortOrder", "section")}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.reviewOrder}
+                    defaultValue={defaults.reviewOrder}
+                    choices={reviewOrderChoices($fsrs, rwkv)}
                 >
-                    {settings.reviewSortOrder.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("reviewSortOrder"),
+                            )}
+                    >
+                        {settings.reviewSortOrder.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

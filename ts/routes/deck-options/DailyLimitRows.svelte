@@ -12,18 +12,21 @@
     import { ValueTab } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import TabbedValue from "./TabbedValue.svelte";
+    import type { Placement } from "./ui-split";
     import Warning from "./Warning.svelte";
 
     /**
      * New cards/day and Maximum reviews/day, with their preset / deck / today
-     * tabs. Maximum reviews/day and the tabs are Advanced-only (spec
-     * deck-options.simple-view). Hosted by the
+     * tabs. Maximum reviews/day and the tabs are Advanced-only by default
+     * (spec deck-options.simple-view); the split decides (ui-split.ts). Hosted by the
      * Advanced-mode Daily Limits section (DailyLimits) and by the Simple-mode
      * page (SimpleOptions), which own the help modal and receive the help key
      * to open.
      */
     export let state: DeckOptionsState;
     export let openHelp: (key: "newLimit" | "reviewLimit") => void;
+    /** Where these rows are drawn (ui-split.ts). */
+    export let placement: Placement = "section";
 
     export function onPresetChange() {
         newTabs[0] = new ValueTab(
@@ -45,7 +48,8 @@
     const config = state.currentConfig;
     const limits = state.deckLimits;
     const defaults = state.defaults;
-    const advancedUi = state.advancedUi;
+    const shown = state.settingShown;
+    $: showTabs = $shown("dailyLimitTabs", placement);
 
     $: reviewsTooLow =
         Math.min(9999, newValue * 10) > reviewsValue
@@ -107,30 +111,27 @@
     let reviewsValue = 0;
 </script>
 
+<!-- The value logic stays whether a row shows or not: a hidden row keeps
+     the stored limit, only its control is hidden. -->
 <Item>
-    <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
-        <TabbedValue
-            slot="tabs"
-            tabs={newTabs}
-            bind:value={newValue}
-            showTabs={$advancedUi}
-        />
-        <SettingTitle on:click={() => openHelp("newLimit")}>
-            {tr.schedulingNewCardsday()}
-        </SettingTitle>
-    </SpinBoxRow>
+    <div class:hidden-row={!$shown("newLimit", placement)}>
+        <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
+            <TabbedValue slot="tabs" tabs={newTabs} bind:value={newValue} {showTabs} />
+            <SettingTitle on:click={() => openHelp("newLimit")}>
+                {tr.schedulingNewCardsday()}
+            </SettingTitle>
+        </SpinBoxRow>
+    </div>
 </Item>
 
-<!-- The value logic stays in both modes: Simple mode keeps the stored
-     limit, it only hides the control. -->
 <Item>
-    <div class:hidden-row={!$advancedUi}>
+    <div class:hidden-row={!$shown("reviewLimit", placement)}>
         <SpinBoxRow bind:value={reviewsValue} defaultValue={defaults.reviewsPerDay}>
             <TabbedValue
                 slot="tabs"
                 tabs={reviewTabs}
                 bind:value={reviewsValue}
-                showTabs={$advancedUi}
+                {showTabs}
             />
             <SettingTitle on:click={() => openHelp("reviewLimit")}>
                 {tr.schedulingMaximumReviewsday()}
@@ -139,7 +140,7 @@
     </div>
 </Item>
 
-{#if $advancedUi}
+{#if $shown("reviewLimit", placement)}
     <Item>
         <Warning warning={reviewsTooLow} />
     </Item>

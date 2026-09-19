@@ -319,6 +319,30 @@ titled "Deck Options", with exactly these controls in this order:
 
 Add-on components render after the section, in both modes.
 
+That list is the default of the split (`spec/ui.md`,
+`ui.split-configurable`), which has one item per setting: the seven above
+(Bury siblings is the one switch, Desired retention includes its notes, the
+First intervals table and the RWKV-Instant box, and Optimize All Presets
+is its own item) and each setting Advanced mode shows (the three bury
+switches each, the limit tabs and the desired-retention tabs as one item
+each, each RWKV setting, the Maintenance buttons as one item, the FSRS
+advanced settings each: Help me decide, the parameters, the search
+filter, the health check with Evaluate, the simulator). In Simple mode a
+setting the user takes out of the Simple section is not drawn (a hidden
+limit or retention box keeps its value logic, as Maximum reviews/day does
+by default). A setting the user adds goes where it belongs:
+
+- Maximum reviews/day, the limit tabs, the Algorithm dropdown, the
+  desired-retention tabs and the FSRS advanced settings go into the Simple
+  section, next to New cards/day and Desired retention, whose controls
+  they share (the FSRS ones in the collapsed "Advanced settings"
+  expander, as in Advanced mode);
+- every other one goes into its Advanced-mode section (New cards, Lapses,
+  Display order, RWKV, Burying, Audio, Timers, Auto advance, Advanced),
+  drawn below the Simple section and above the add-ons, in Advanced
+  mode's order; a section is drawn only when it has such a setting, and
+  it shows only those.
+
 The Bury siblings switch stands for three stored settings: it reads as on
 only while `buryNew`, `buryReviews` and `buryInterdayLearning` are all on;
 turning it on or off writes all three. Showing a preset writes nothing: a
@@ -351,6 +375,10 @@ from both modes (`review.timer-keeps-running`), so the timer switch stands
 for one setting and needs no "Partly on" caption.
 
 **Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined switch);
+`ts/routes/deck-options/ui-split.test.ts` (the default draws the Simple
+section only; added settings go to the Simple section or their own
+section, once; Advanced mode draws every setting) and
+`test_every_default_equals_todays_split` (`qt/tests/test_ui_split.py`);
 `ts/tests/e2e/deck-options.test.ts` (the FSRS parameters, the Algorithm
 dropdown, the limit tabs and Skip question when replaying answer exist only
 in Advanced mode; Desired retention and Bury siblings are visible in Simple
