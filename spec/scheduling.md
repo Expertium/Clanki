@@ -813,6 +813,32 @@ in `rslib/src/scheduler/fsrs/params.rs`;
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
+## sched.fsrs-rs-latest
+
+Given any FSRS-7 computation (memory states, next states, retrievability,
+intervals, optimization, evaluation), Clanki uses the latest fsrs-rs: the
+dependency follows the `main` branch of open-spaced-repetition/fsrs-rs, and
+`Cargo.lock` records the exact commit, which moves only on a deliberate
+`cargo update -p fsrs`. Every FSRS-7 value is the crate's own: Clanki keeps
+no copy of the FSRS-7 curve or interval solver (the retrievability of the
+Browser, Stats, searches, sorts, queue orders and Total Knowledge included).
+
+**Why:** Andrew, 2026-09-16: "don't pin to a specific commit, always use the
+latest version of fsrs-rs (there won't be FSRS-8 for years, if ever)"; the
+move was approved with the speed bundle on 2026-09-19. Moving from c9562d6 to
+c137ee6 removes Burn: FSRS-7 inference is plain `f32` code in the crate, so
+Clanki's own copy of the curve (kept only because Burn was slow) went, and
+with it any chance of two different values. On a copy of Andrew's collection
+(FSRS-7, 46,772 reviewed cards): 17 of 187,088 button intervals move by one
+day (all over 360 days: float rounding), memory states differ by under 1e-4
+relative, and the new optimizer fits his reviews as well (review-weighted
+log loss 0.0003 lower over 9 presets). Measured (120 pairs, RELEASE builds):
+memory states from the history 9.6x faster, next states 15.6x faster,
+optimization unchanged.
+
+**Pinned by:** `the_curve_is_the_crates_own`
+(`rslib/src/scheduler/fsrs/curve.rs`).
+
 ## sched.fsrs7-sm2-conversion
 
 Given a card whose FSRS memory state must be inferred from an interval — a

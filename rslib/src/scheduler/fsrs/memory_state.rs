@@ -101,19 +101,13 @@ pub(crate) fn fsrs_current_retrievability_for_state(
     fsrs_current_retrievability_for_memory_state(params, state.into(), elapsed_days)
 }
 
-/// `FSRS::new(params)?.current_retrievability(..)`, through the bit-identical
-/// scalar curve when it covers the input (see [`Fsrs7Curve`]).
+/// `FSRS::new(params)?.current_retrievability(..)`.
 fn fsrs_current_retrievability_for_memory_state(
     params: &[f32],
     state: MemoryState,
     elapsed_days: f32,
 ) -> Result<f32> {
-    let elapsed_days = elapsed_days.max(0.0);
-    let retrievability =
-        match Fsrs7Curve::new(params).and_then(|curve| curve.retrievability(state, elapsed_days)) {
-            Some(retrievability) => retrievability,
-            None => FSRS::new(params)?.current_retrievability(state, elapsed_days),
-        };
+    let retrievability = FSRS::new(params)?.current_retrievability(state, elapsed_days.max(0.0));
     require!(retrievability.is_finite(), "invalid FSRS parameter values");
     Ok(retrievability)
 }
@@ -2394,11 +2388,13 @@ mod tests {
         Ok(())
     }
 
+    // Upstream's tests of FSRS-6 with its default parameters: fsrs-rs used
+    // to build those from empty parameters, and builds FSRS-7 since #455.
     #[test]
     fn bypassed_learning_is_handled() -> Result<()> {
         // cards without any learning steps due to truncated history still have memory
         // state calculated
-        let fsrs = FSRS::new(&[]).unwrap();
+        let fsrs = FSRS::new(&FSRS6_DEFAULT_PARAMETERS).unwrap();
         let item = fsrs_item_for_memory_state(
             &fsrs,
             &[],
@@ -2477,7 +2473,12 @@ mod tests {
             reps: 1,
             ..Default::default()
         };
-        card.set_memory_state(&FSRS::new(&[]).unwrap(), &[], None, 0.9)?;
+        card.set_memory_state(
+            &FSRS::new(&FSRS6_DEFAULT_PARAMETERS).unwrap(),
+            &[],
+            None,
+            0.9,
+        )?;
         assert_int_eq(
             card.memory_state,
             Some(
