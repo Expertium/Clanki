@@ -92,6 +92,7 @@ browsing-queue-bottom = Queue bottom: { $val }
 browsing-queue-top = Queue top: { $val }
 browsing-randomize-order = Randomize order
 browsing-remove-tags = Remove Tags...
+browsing-remove-leech-tag = Remove Leech Tag
 browsing-replace-with = <b>Replace With</b>:
 browsing-reposition = Reposition...
 browsing-reposition-new-cards = Reposition New Cards

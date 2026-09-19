@@ -243,3 +243,41 @@ def test_a_hidden_item_runs_from_its_shortcut(browser, qapp):
 
     assert fired == [True]
     browser.hide()
+
+
+def test_remove_leech_tag_follows_remove_tags_in_both_modes(browser, monkeypatch):
+    """Pins spec/ui.md#ui.browser-remove-leech-tag: a tag item, so Simple
+    mode shows it too."""
+    from aqt.utils import tr
+
+    monkeypatch.setattr(
+        tr, "browsing_remove_leech_tag", lambda: "Remove Leech Tag", raising=False
+    )
+    browser._setup_remove_leech_tag_action()
+    browser._setup_ui_mode()
+
+    actions = browser.form.menu_Notes.actions()
+    remove_tags = actions.index(browser.form.actionRemove_Tags)
+    assert actions[remove_tags + 1] is browser.action_remove_leech_tag
+    browser.mode["advanced"] = True
+    browser.apply_ui_mode()
+    assert browser.action_remove_leech_tag in browser.form.menu_Notes.actions()
+
+
+def test_remove_leech_tag_removes_only_the_leech_tag(browser, monkeypatch):
+    import aqt.browser.browser as browser_module
+
+    calls: list[tuple] = []
+
+    def fake_remove(*, parent, note_ids, space_separated_tags):
+        calls.append((parent, note_ids, space_separated_tags))
+        return SimpleNamespace(run_in_background=lambda initiator: None)
+
+    monkeypatch.setattr(browser_module, "remove_tags_from_notes", fake_remove)
+    browser.table = SimpleNamespace(len_selection=lambda: 2)
+    browser.editor = SimpleNamespace(call_after_note_saved=lambda f: f())
+    browser.selected_notes = lambda: [11, 12]
+
+    browser.remove_leech_tag_from_selected_notes()
+
+    assert calls == [(browser, [11, 12], "leech")]

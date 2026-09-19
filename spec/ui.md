@@ -220,6 +220,23 @@ fix first).
 `test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice`,
 `test_saved_searches_flags_and_note_types_are_advanced_only`).
 
+## ui.browser-remove-leech-tag
+
+Given one or more selected cards in the Browser, Notes > Remove Leech Tag
+(right after Remove Tags, and in the table's right-click menu) removes the
+tag `leech` from their notes, the tag the scheduler adds when a card becomes
+a leech. It changes nothing else: a card that was suspended as a leech stays
+suspended, and other tags stay. Like every tag item it is shown in both
+Simple and Advanced mode (`ui.browser-simple-view`), and it is disabled when
+no card is selected.
+
+**Why:** Andrew, 2026-09-19, passing on a user's request: "Remove Leech Tag"
+in the card Browser when selecting cards.
+
+**Pinned by:** `qt/tests/test_browser_simple_view.py`
+(`test_remove_leech_tag_follows_remove_tags_in_both_modes`,
+`test_remove_leech_tag_removes_only_the_leech_tag`).
+
 ## ui.reviewer-simple-view
 
 Given Simple mode (`ui.mode-switch`), the reviewer's More menu keeps Suspend
