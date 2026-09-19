@@ -76,17 +76,19 @@ def rwkv_history(monkeypatch: pytest.MonkeyPatch) -> FakeRuntime:
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "_historical_rwkv_review_inputs",
-        lambda reviewer: SimpleNamespace(
+        lambda reviewer, **_kwargs: SimpleNamespace(
             review_ids=[review_id for review_id, _ in reviews],
             reviews=[review for _, review in reviews],
         ),
     )
 
-    def predict(runtime_: object, inputs: Sequence[Any], *, day: int) -> list[float]:
-        runtime.queried[day] = sorted(r.identity.card_id for r in inputs)
-        return [0.5] * len(inputs)
+    def predict(runtime_: object, rows: Any, *, day: int) -> list[float]:
+        runtime.queried[day] = sorted(rows.card_ids())
+        return [0.5] * len(rows)
 
-    monkeypatch.setattr(aqt.rwkv_scheduler, "_predict_rwkv_memorised_day", predict)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "_predict_rwkv_memorised_day_from_rows", predict
+    )
     monkeypatch.setattr(total_knowledge, "new_runtime", lambda: runtime)
     return runtime
 
@@ -318,3 +320,42 @@ def test_the_page_starts_polls_and_cancels_through_mediasrv(
         assert total_knowledge_rwkv_cancel() == b""
     started["release"].set()
     assert wait_until_done(started_progress.job_id).state == Progress.CANCELLED
+
+
+def test_a_closed_page_stops_the_job_while_the_history_is_built(
+    rwkv_history: FakeRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The history build is about ten seconds of Python on a large
+    collection. A page that closes during it stops the job at the build's next
+    progress report, so the main window does not wait for it."""
+    job = total_knowledge._Job(job_id=1, key=(), curve=False)
+    reached_rows = []
+
+    def history(reviewer: Any, *, progress: Any) -> Any:
+        progress("Preparing RWKV review inputs", 0, 2000)
+        job.cancel_event.set()  # the page closes here
+        progress("Preparing RWKV review inputs", 1000, 2000)
+        reached_rows.append(2000)  # never reached
+        raise AssertionError("the build went on after the page closed")
+
+    monkeypatch.setattr(aqt.rwkv_scheduler, "_historical_rwkv_review_inputs", history)
+    with pytest.raises(InterruptedError):
+        total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
+    assert reached_rows == []
+    assert rwkv_history.warmed_up == []
+
+
+def test_a_page_closed_before_the_job_starts_builds_no_history(
+    rwkv_history: FakeRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = total_knowledge._Job(job_id=1, key=(), curve=False)
+    job.cancel_event.set()
+    built = []
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        lambda reviewer, **kwargs: built.append(1),
+    )
+    with pytest.raises(InterruptedError):
+        total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
+    assert built == []

@@ -17,6 +17,7 @@ test = false
 [dependencies]
 anki.workspace = true
 pyo3.workspace = true
+rayon.workspace = true
 
 [features]
 rustls = ["anki/rustls"]

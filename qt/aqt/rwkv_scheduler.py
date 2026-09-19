@@ -31,7 +31,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NamedTuple, Protocol, TypedDict, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NamedTuple,
+    Protocol,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 from typing_extensions import NotRequired
 
@@ -51,6 +59,11 @@ from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
 from aqt.qt import QWidget
+
+if TYPE_CHECKING:
+    # rwkv_srs_benchmark imports from this module, so the import is for
+    # type checking only
+    from aqt.rwkv_srs_benchmark import MemorisedDayRows
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -12130,6 +12143,30 @@ def _predict_rwkv_memorised_day(
     return cast(Sequence[float], predict(query_inputs))
 
 
+def _predict_rwkv_memorised_day_from_rows(
+    runtime: object,
+    rows: MemorisedDayRows,
+    *,
+    day: int,
+) -> Sequence[float]:
+    """One Memorised day, from rows packed once per rating.
+
+    `_predict_rwkv_memorised_day` packs every card again on every day, which
+    is the whole cost of Total Knowledge on a large collection. The rows here
+    are already packed, and the Rust side derives the day and the two elapsed
+    fields (spec ui.stats-total-knowledge).
+    """
+
+    packed_predict = getattr(
+        runtime,
+        "predict_memorised_retrievability_on_day",
+        None,
+    )
+    if callable(packed_predict):
+        return _f32_array_from_little_endian_bytes(packed_predict(rows, day=day))
+    return _predict_rwkv_memorised_day(runtime, rows.review_inputs(), day=day)
+
+
 def _compute_rwkv_memorised_history(
     mw: object,
     job: RwkvMemorisedHistoryJob,
@@ -16351,11 +16388,60 @@ def _read_review_input(reader: _RwkvBinaryReader) -> RwkvReviewInput:
     )
 
 
+_PACK_I64 = struct.Struct("<q").pack
+_PACK_PRESENT_I64 = struct.Struct("<Bq").pack
+_PACK_PRESENT_LENGTH = struct.Struct("<BI").pack
+
+
+def _optional_i64_bytes(value: int | None) -> bytes:
+    """`_write_optional_i64`'s bytes."""
+
+    return b"\0" if value is None else _PACK_PRESENT_I64(1, value)
+
+
+def _optional_string_bytes(value: str | None) -> bytes:
+    """`_write_optional_string`'s bytes."""
+
+    if value is None:
+        return b"\0"
+    encoded = value.encode("utf8")
+    return _PACK_PRESENT_LENGTH(1, len(encoded)) + encoded
+
+
 def _encode_rwkv_delta_record(review_id: int, review_input: RwkvReviewInput) -> bytes:
-    out = bytearray()
-    _write_i64(out, review_id)
-    _write_review_input(out, review_input)
-    return bytes(out)
+    """The review id, then `_write_review_input`'s fields, byte for byte.
+
+    The history hash encodes every review of the collection with this, so it
+    is built in one join rather than twenty writes into a buffer. The bytes
+    must stay those of `_write_review_input`: the hash is the state cache's
+    identity, and a different byte would make every stored cache stale.
+    """
+
+    identity = review_input.identity
+    return b"".join(
+        (
+            _PACK_I64(review_id),
+            _PACK_I64(identity.card_id),
+            _optional_i64_bytes(identity.note_id),
+            _optional_i64_bytes(identity.deck_id),
+            _optional_i64_bytes(identity.preset_id),
+            b"\1" if review_input.is_query else b"\0",
+            _optional_i64_bytes(review_input.ease),
+            _optional_i64_bytes(review_input.duration_millis),
+            _optional_i64_bytes(review_input.card_type),
+            _optional_i64_bytes(review_input.card_queue),
+            _optional_i64_bytes(review_input.card_due),
+            _optional_i64_bytes(review_input.interval_days),
+            _optional_i64_bytes(review_input.ease_factor),
+            _optional_i64_bytes(review_input.reps),
+            _optional_i64_bytes(review_input.lapses),
+            _optional_i64_bytes(review_input.day_offset),
+            _optional_string_bytes(review_input.current_state_kind),
+            _optional_string_bytes(review_input.current_normal_state_kind),
+            _optional_i64_bytes(review_input.current_elapsed_days),
+            _optional_i64_bytes(review_input.current_elapsed_seconds),
+        )
+    )
 
 
 def _rwkv_history_hash_is_valid(value: object) -> bool:
@@ -16379,6 +16465,32 @@ def _rwkv_history_hash_after_review(
     digest.update(bytes.fromhex(previous_hash))
     digest.update(_encode_rwkv_delta_record(review_id, review_input))
     return digest.hexdigest()
+
+
+class _RwkvHistoryHasher:
+    """`_rwkv_history_hash_after_review` applied review after review.
+
+    The chain is the same chain. What differs is that the digest stays bytes
+    between reviews, so a history of 656,000 reviews is not validated with a
+    regular expression, hex-decoded and hex-encoded once per review.
+    """
+
+    __slots__ = ("_digest",)
+
+    def __init__(self, history_hash: str) -> None:
+        if not _rwkv_history_hash_is_valid(history_hash):
+            raise ValueError("invalid RWKV history hash")
+        self._digest = bytes.fromhex(history_hash)
+
+    def update(self, review_id: int, review_input: RwkvReviewInput) -> None:
+        self._digest = hashlib.sha256(
+            _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
+            + self._digest
+            + _encode_rwkv_delta_record(review_id, review_input)
+        ).digest()
+
+    def hexdigest(self) -> str:
+        return self._digest.hex()
 
 
 def _write_rwkv_delta_record_frame(
@@ -16835,9 +16947,13 @@ def _historical_rwkv_review_inputs(
             )
             break
 
+    # each row's state, worked out once: the passes below walk the rows five
+    # times, and the state of a row does not change between them
+    retained_states = [_retained_historical_review_state(row) for row in raw_rows]
+
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
-            historical_state = _retained_historical_review_state(row)
+            historical_state = retained_states[index]
             if historical_state is None:
                 continue
             if after_review_id is not None and (
@@ -16894,8 +17010,11 @@ def _historical_rwkv_review_inputs(
     )
 
     prepared_row_count = 0
+    # the hash chain keeps its digest as bytes through the loop; `history_hash`
+    # is read from it where the loop hands a hash out
+    history_hasher = _RwkvHistoryHasher(history_hash)
     for raw_row_index, row in enumerate(raw_rows):
-        historical_state = _retained_historical_review_state(row)
+        historical_state = retained_states[raw_row_index]
         if historical_state is None:
             raw_rows[raw_row_index] = ()
             continue
@@ -16954,7 +17073,7 @@ def _historical_rwkv_review_inputs(
                     last_review_id=review_ids[-1],
                     review_count=checkpoint_review_count,
                     deck_id=requested_deck_id,
-                    history_hash=history_hash,
+                    history_hash=history_hasher.hexdigest(),
                     replay_key=replay_key,
                     ignored_review_ids=active_ignored_review_ids,
                 )
@@ -17051,11 +17170,7 @@ def _historical_rwkv_review_inputs(
         )
         review_ids.append(review_id)
         reviews.append(review_input)
-        history_hash = _rwkv_history_hash_after_review(
-            history_hash,
-            review_id,
-            review_input,
-        )
+        history_hasher.update(review_id, review_input)
         if (
             prepared_row_count == row_count
             or prepared_row_count % prepare_report_every == 0
@@ -17086,6 +17201,7 @@ def _historical_rwkv_review_inputs(
         (time.monotonic() - start) * 1000,
         requested_deck_id,
     )
+    history_hash = history_hasher.hexdigest()
     return RwkvHistoricalReviewInputs(
         reviews=reviews,
         review_ids=review_ids,

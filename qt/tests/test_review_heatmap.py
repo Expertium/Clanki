@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from anki.collection import Config
 from anki.decks import DeckId
 from anki.utils import ids2str
@@ -799,3 +801,67 @@ def test_forecast_never_reaches_past_five_years() -> None:
     assert forecast_stop(5000, None) == 1826
     assert forecast_stop(0, 3650) == 1826  # the stats screen's period
     assert forecast_stop(0, 365) == 365
+
+
+def test_the_first_deck_list_of_a_collection_warms_the_overview_heatmap() -> None:
+    """The first overview heatmap of a session counts every deck's older
+    reviews; the deck list starts that work in the background, once per
+    collection, 2 s after it is first drawn, so the first deck opened does not
+    wait for it."""
+    heatmap = _heatmap(enabled=True)
+    shots: list[tuple[int, Any]] = []
+    heatmap.mw = cast(
+        Any,
+        SimpleNamespace(
+            col=heatmap.mw.col,
+            pm=None,
+            progress=SimpleNamespace(
+                single_shot=lambda ms, func, *args: shots.append((ms, func))
+            ),
+        ),
+    )
+    heatmap.on_deck_browser_did_render(cast(Any, None))
+    heatmap.on_deck_browser_did_render(cast(Any, None))
+    assert [ms for ms, _ in shots] == [2000]
+
+    # another collection (a profile switch) is warmed again
+    heatmap.mw.col = MagicMock()
+    heatmap.on_deck_browser_did_render(cast(Any, None))
+    assert len(shots) == 2
+
+
+def test_the_warm_up_prepares_the_current_decks_overview_heatmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt.operations
+
+    heatmap = _heatmap(enabled=True)
+    shots: list[Any] = []
+    heatmap.mw = cast(
+        Any,
+        SimpleNamespace(
+            col=heatmap.mw.col,
+            pm=None,
+            progress=SimpleNamespace(
+                single_shot=lambda ms, func, *args: shots.append(func)
+            ),
+        ),
+    )
+    prepared: list[tuple[Any, bool]] = []
+    monkeypatch.setattr(
+        heatmap,
+        "prepare",
+        lambda view, current_deck_only: prepared.append((view, current_deck_only)),
+    )
+
+    class RunsAtOnce:
+        def __init__(self, parent: Any, op: Any, success: Any) -> None:
+            self.op, self.success = op, success
+
+        def run_in_background(self) -> None:
+            self.success(self.op(heatmap.mw.col))
+
+    monkeypatch.setattr(aqt.operations, "QueryOp", RunsAtOnce)
+    heatmap.on_deck_browser_did_render(cast(Any, None))
+    shots[0]()
+    assert prepared == [(HeatmapView.overview, True)]

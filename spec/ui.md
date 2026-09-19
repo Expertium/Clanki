@@ -53,7 +53,8 @@ order; Advanced mode shows every graph. The note editor has the same control
 at the right end of its toolbar row, and Simple mode there hides a part of
 the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
 mode when it loads and from its own switch. Hidden settings keep their stored values and
-keep taking effect.
+keep taking effect. The control keeps its size when the mouse is over either
+side: hovering changes only the background.
 
 **Why:** plan item 2 — the Simplified/Advanced split in the SuperMemo style,
 Simple by default; Andrew, 2026-09-14, chose the toolbar placement with the
@@ -66,7 +67,8 @@ reload before cleared the sync button's colour and spinner until the next
 redraw. The RWKV reschedule actions are power-user tools. A user
 with add-ons must reach them in Simple mode too (Andrew, 2026-09-15: the
 entry is always shown; an earlier rule hid it while no add-on was
-installed).
+installed). 2026-09-16, Andrew: hovering the switch on the Stats page and in
+deck options made it "pop out" by a pixel, which he reported as a bug.
 
 **Pinned by:** `qt/tests/test_ui_mode.py` (toggle markup, click handling,
 deck-browser row, the RWKV submenu, the switch redrawing without a full
@@ -79,7 +81,8 @@ once" (`ts/tests/e2e/deck-options.test.ts`); `graphs_report_the_ui_mode`
 (`rslib/src/stats/graphs/mod.rs`); "Simple mode keeps only the Simple
 graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 "Simple mode shows only the Simple editor buttons, in toolbar order"
-(`ts/routes/editor/ui-mode.test.ts`).
+(`ts/routes/editor/ui-mode.test.ts`); "the Simple | Advanced switch keeps its
+size under the mouse" (`ts/tests/e2e/ui-mode-switch-hover.spec.ts`).
 
 ## ui.get-decks-and-get-addons
 
@@ -276,6 +279,32 @@ the optimal schedule (the add-on's own warning) and are rarely needed, like
 the RWKV reschedule actions.
 
 **Pinned by:** `qt/tests/test_advance_postpone.py`.
+
+## addons.fsrs-helper-blocked
+
+Given the FSRS Helper add-on (AnkiWeb 759844606, a source install in a folder
+named `fsrs4anki-helper`, `fsrs4anki_helper` or `fsrs_helper`, or any add-on
+named FSRS Helper or FSRS4Anki Helper) installed and enabled at start-up,
+Clanki disables it before add-ons load and, the first time only, tells the
+user so once the profile is open (a flag in the profile manager's global
+meta). Given the user enables that add-on in Tools > Add-ons, or installs it
+anew, a message says that the add-on is not compatible with FSRS-7, the
+version of FSRS that Clanki uses, and the add-on stays disabled; an update
+of a copy already installed stays disabled without a message. Other add-ons
+enable and install as before.
+
+**Why:** Andrew, 2026-09-19: "if the user tries to enable the FSRS Helper
+add-on, display a window that says it's not compatible with FSRS-7 and keep
+the add-on disabled. Similar treatment to Heatmap add-on, different reason".
+The add-on is written for the FSRS versions of official Anki. Its Advance and
+Postpone are built in (`sched.advance-postpone-algorithm`).
+
+**Pinned by:** `qt/tests/test_fsrs_helper_addon.py`
+(`test_fsrs_helper_is_recognised_by_id_folder_or_name`,
+`test_an_enabled_fsrs_helper_addon_is_disabled_at_start_up`,
+`test_the_fsrs_helper_notice_is_shown_only_once`,
+`test_enabling_the_fsrs_helper_addon_is_refused_with_a_message`,
+`test_installing_the_fsrs_helper_addon_leaves_it_disabled`).
 
 ## ui.review-heatmap
 
@@ -1163,3 +1192,25 @@ screen is not a refresh.
 `test_refresh_draws_from_the_top_on_another_screen`,
 `test_a_collapse_during_a_refresh_survives_the_refresh`
 (`qt/tests/test_deckbrowser.py`).
+
+## ui.answer-button-focus-visible
+
+Given an answer button in the reviewer (Again/Hard/Good/Easy), its dashed
+focus-indicator border shows only when the button was reached by keyboard
+navigation (for example Tab), and never after a mouse click, whether the
+mouse button is still held down or has already been released. The same rule
+applies to the bottom bar's generic focus indicator (its border colour),
+which is not specific to the answer buttons.
+
+**Why:** Andrew, 2026-09-17: "if I click and hold LMB on the answer button,
+the borders become dashed, but if I release it afterwards, they stay
+dashed". A mouse click also focuses the clicked element, so a plain
+`:focus` rule cannot tell a mouse click from a keyboard tab; `:focus-visible`
+can, and the dashed border is meant to help keyboard users find the
+focused button, not to react to a mouse click. The `.answerIncorrect:focus`
+/ `.answerCorrect:focus` border-COLOR rules are left as plain `:focus`: they
+set the same colour that the button already has at rest and on hover, so
+they draw no distinct focus indicator and cannot exhibit this bug.
+
+**Pinned by:** `answer button focus indicator shows for keyboard focus, not
+for a mouse click` (`ts/tests/e2e/reviewer-focus-visible.spec.ts`).
