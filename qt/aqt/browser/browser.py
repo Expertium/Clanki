@@ -558,7 +558,10 @@ class Browser(QMainWindow):
 
         from aqt import rwkv_scheduler
 
-        if rwkv_scheduler.search_uses_rwkv_retrievability(search):
+        if (
+            rwkv_scheduler.search_uses_rwkv_retrievability(search)
+            or self._sort_reads_rwkv_retrievability()
+        ):
             self._start_rwkv_scored_search(
                 search,
                 generation,
@@ -567,6 +570,17 @@ class Browser(QMainWindow):
             return
 
         self._search_table(search)
+
+    def _sort_reads_rwkv_retrievability(self) -> bool:
+        """Under RWKV, sorting by the Retrievability column reads RWKV's
+        values for the search's cards, so they are prepared first (spec
+        ui.browser-memory-columns)."""
+        from aqt import rwkv_scheduler
+
+        return (
+            self.table.sorts_by_retrievability()
+            and rwkv_scheduler.collection_algorithm(self.col) != "fsrs7"
+        )
 
     def _start_rwkv_scored_search(
         self,
@@ -582,10 +596,16 @@ class Browser(QMainWindow):
         ui.browser-rwkv-search-does-not-block)."""
         from aqt import rwkv_scheduler
 
+        for_sort = self._sort_reads_rwkv_retrievability()
         self.setWindowTitle(
             without_unicode_isolation(
                 tr.browsing_rwkv_scores_pending(
-                    algorithm=rwkv_scheduler.rwkv_algorithm_name_for_search(search)
+                    algorithm=(
+                        rwkv_scheduler.rwkv_algorithm_name(self.col)
+                        if for_sort
+                        and not rwkv_scheduler.search_uses_rwkv_retrievability(search)
+                        else rwkv_scheduler.rwkv_algorithm_name_for_search(search)
+                    )
                 )
             )
         )
@@ -624,6 +644,7 @@ class Browser(QMainWindow):
                 self.mw,
                 search,
                 warmup_wait_secs=0.0,
+                for_sort=for_sort,
             ),
             success=prepared,
         ).run_in_background()

@@ -291,6 +291,9 @@ _rwkv_stats_prepare_in_flight: dict[
 # the key of the last preparation that published a score map
 # (spec ui.stats-rwkv-scores-kept)
 _rwkv_stats_prepare_memo: RwkvStatsPrepareKey | None = None
+# the wall-clock time until which the map of `_rwkv_stats_prepare_memo` is
+# fresh (spec sched.rwkv-r-freshness)
+_rwkv_stats_prepare_memo_fresh_until = 0.0
 # cancel_stats_scoring() raises this counter when the Stats window closes; a
 # Stats request that started at an older value stops at its next batch
 # boundary (spec ui.stats-scoring-cancelled)
@@ -6129,19 +6132,25 @@ def prepare_browser_retrievability_scores(
     search: str,
     *,
     warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
+    for_sort: bool = False,
 ) -> RwkvStatsPreparationStatus:
     """Prepare fresh, search-scoped scores before a Browser query runs.
 
     The Browser passes warmup_wait_secs=0 so that a pending RWKV warm-up
     reports PENDING at once instead of holding the collection for two
     minutes; the Browser asks again on a timer (spec
-    ui.browser-rwkv-search-does-not-block)."""
+    ui.browser-rwkv-search-does-not-block). `for_sort`: the table is sorted
+    by the Retrievability column, which reads the collection's own
+    algorithm's R (spec ui.browser-memory-columns)."""
 
     reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
     return prepare_stats_retrievability_scores(
         reviewer,
         search,
         warmup_wait_secs=warmup_wait_secs,
+        prepare_curve_retrievability=(
+            for_sort and rwkv_curve_collection_active(reviewer)
+        ),
     )
 
 
@@ -6157,6 +6166,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     cancel_when_stats_closes: bool = False,
     warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
     publish_as: str | None = None,
+    reuse_kept_scores: bool = True,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search.
 
@@ -6166,7 +6176,9 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     other request gets the rating head.
 
     The map is published under `search`, or under `publish_as` when given
-    (a filtered deck's own map, spec sched.filtered-deck-one-algorithm)."""
+    (a filtered deck's own map, spec sched.filtered-deck-one-algorithm).
+    `reuse_kept_scores=False` scores the cards now even when a map that is
+    still fresh stands (a filtered deck, spec sched.rwkv-r-freshness)."""
 
     published_search = search if publish_as is None else publish_as
 
@@ -6209,6 +6221,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     state_token: _ReviewerBackendPredictionStateToken | None = None
     owns_prepare = False
     prepare_status = RwkvStatsPreparationStatus.FAILED
+    fresh_until = 0.0
     try:
         logger.debug("RWKV stats preparation started: search=%r", search)
         warmup_start = time.monotonic()
@@ -6264,7 +6277,11 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             publish_as=publish_as,
         )
         prepare_generation = state_token.state_generation
-        if prepare_key is not None and _rwkv_stats_prepare_memo_is_current(prepare_key):
+        if (
+            reuse_kept_scores
+            and prepare_key is not None
+            and _rwkv_stats_prepare_memo_is_current(prepare_key)
+        ):
             # the map this request needs is already published: the Stats page
             # switched mode or changed its period, and RWKV's answer does not
             # depend on either (spec ui.stats-rwkv-scores-kept)
@@ -6296,6 +6313,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                     else RwkvStatsPreparationStatus.FAILED
                 )
         search_score_start = time.monotonic()
+        scored_at = time.time()
         search_score_result = _rwkv_stats_graph_scores_for_search(
             reviewer=reviewer,
             search=search,
@@ -6351,6 +6369,9 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
                 search_score_elapsed_ms,
                 set_elapsed_ms,
                 (time.monotonic() - start) * 1000,
+            )
+            fresh_until = _rwkv_scores_fresh_until(
+                scored_at, _rwkv_review_input_build_inputs(input_build)
             )
             prepare_status = RwkvStatsPreparationStatus.READY
             return prepare_status
@@ -6410,6 +6431,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             set_elapsed_ms,
             (time.monotonic() - start) * 1000,
         )
+        fresh_until = _rwkv_collection_scores_fresh_until(reviewer, scored_at)
         prepare_status = RwkvStatsPreparationStatus.READY
         return prepare_status
     except _ReviewerBackendPredictionBusy:
@@ -6443,7 +6465,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         return RwkvStatsPreparationStatus.FAILED
     finally:
         if owns_prepare and prepare_key is not None and prepare_future is not None:
-            _record_rwkv_stats_prepare_memo(prepare_key, prepare_status)
+            _record_rwkv_stats_prepare_memo(prepare_key, prepare_status, fresh_until)
             _finish_rwkv_stats_prepare(
                 prepare_key,
                 prepare_future,
@@ -6514,6 +6536,8 @@ def prepare_filtered_deck_retrievability_scores(
         ),
         prepare_instant_retrievability=retrievability_order and not curve_collection,
         publish_as=FILTERED_DECK_RWKV_SCORES_SEARCH,
+        # a filtered deck scores its own cards now (spec sched.rwkv-r-freshness)
+        reuse_kept_scores=False,
     )
     if status != RwkvStatsPreparationStatus.READY:
         # no values from an earlier build may stand in for this deck's cards
@@ -6819,30 +6843,72 @@ def _reviewer_backend_state_generation(backend: object | None = None) -> int:
 
 def _rwkv_stats_prepare_memo_is_current(key: RwkvStatsPrepareKey) -> bool:
     """Whether the score map published for `key` still stands (spec
-    ui.stats-rwkv-scores-kept).
+    ui.stats-rwkv-scores-kept, sched.rwkv-r-freshness).
 
-    The key carries everything that makes the map wrong: the backend and the
-    collection, the day, RWKV's state generation, the review-input and
-    study-queue generations, the search and the flags. It does not carry the
-    seconds since each card's last review, and no clock ends the reuse:
-    Andrew, 2026-09-16, "p(recall) doesn't fall that fast for most cards".
+    The key carries everything that makes the map wrong at once: the backend
+    and the collection, the day, RWKV's state generation (so any review,
+    undo or reset), the review-input and study-queue generations, the search
+    and the flags. The clock ends the reuse too: the map is fresh only for
+    the shortest time tolerance of its cards (`_rwkv_scores_fresh_until`).
     """
 
     with _rwkv_stats_prepare_lock:
-        return _rwkv_stats_prepare_memo == key
+        return (
+            _rwkv_stats_prepare_memo == key
+            and time.time() < _rwkv_stats_prepare_memo_fresh_until
+        )
 
 
 def _record_rwkv_stats_prepare_memo(
     key: RwkvStatsPrepareKey | None,
     status: RwkvStatsPreparationStatus,
+    fresh_until: float = 0.0,
 ) -> None:
-    global _rwkv_stats_prepare_memo
+    global _rwkv_stats_prepare_memo, _rwkv_stats_prepare_memo_fresh_until
 
     with _rwkv_stats_prepare_lock:
         if key is not None and status == RwkvStatsPreparationStatus.READY:
             _rwkv_stats_prepare_memo = key
+            _rwkv_stats_prepare_memo_fresh_until = fresh_until
         else:
             _rwkv_stats_prepare_memo = None
+            _rwkv_stats_prepare_memo_fresh_until = 0.0
+
+
+def _rwkv_scores_fresh_until(
+    scored_at: float,
+    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+) -> float:
+    """Until when a map scored at `scored_at` (wall-clock seconds) for these
+    cards is fresh: the shortest time tolerance of its cards, by the time
+    since each card's last review (spec sched.rwkv-r-freshness). A card
+    reviewed under ten minutes before has none, so such a map is never
+    reused."""
+
+    tolerance = _RWKV_R_LONG_TIME_TOLERANCE
+    for _card_id, review_input in inputs_by_card_id:
+        elapsed = _rwkv_review_input_elapsed_seconds(review_input)
+        if elapsed is not None:
+            tolerance = min(tolerance, rwkv_r_time_tolerance_seconds(elapsed))
+            if tolerance <= 0:
+                break
+    return scored_at + tolerance
+
+
+def _rwkv_collection_scores_fresh_until(reviewer: object, scored_at: float) -> float:
+    """`_rwkv_scores_fresh_until` for a map whose cards' elapsed times are
+    not at hand: the collection's newest review stands for them all, which
+    gives the shortest tolerance any card can have."""
+
+    try:
+        rows = _collection(reviewer).db.all("select max(id) from revlog")  # type: ignore[attr-defined]
+    except Exception:
+        return scored_at
+    newest = rows[0][0] if rows and rows[0] else None
+    if not isinstance(newest, int):
+        return scored_at + _RWKV_R_LONG_TIME_TOLERANCE
+    elapsed = max(0.0, scored_at - newest / 1000)
+    return scored_at + rwkv_r_time_tolerance_seconds(elapsed)
 
 
 def forget_rwkv_stats_scores() -> None:
@@ -13245,6 +13311,182 @@ def rwkv_stored_curves_for_cards(
         time.sleep(0.1)
 
 
+# RWKV's R changes with time between reviews, faster for a card reviewed a
+# short while ago. A computed R stays usable for this long while no review
+# happens (spec sched.rwkv-r-freshness): measured on a replay of one day of
+# Andrew's reviews, each of these keeps the 99th percentile of the drift
+# below the half a percentage point the Browser's whole-percent display
+# hides. A review anywhere, and the start of a new day, end it at once.
+_RWKV_R_TIME_TOLERANCES: tuple[tuple[int, float], ...] = (
+    (10 * 60, 0.0),
+    (60 * 60, 60.0),
+    (24 * 60 * 60, 10 * 60.0),
+)
+_RWKV_R_LONG_TIME_TOLERANCE = 60 * 60.0
+
+
+def rwkv_r_time_tolerance_seconds(elapsed_seconds: float) -> float:
+    """How long an RWKV R computed for a card `elapsed_seconds` after its
+    last review stays usable while no review happens: never under ten
+    minutes, a minute up to an hour, ten minutes up to a day, then an hour
+    (spec sched.rwkv-r-freshness)."""
+    for limit, tolerance in _RWKV_R_TIME_TOLERANCES:
+        if elapsed_seconds < limit:
+            return tolerance
+    return _RWKV_R_LONG_TIME_TOLERANCE
+
+
+def collection_algorithm(col: object) -> str:
+    """The collection's one algorithm, as the backend reads it (Rust
+    `effective_scheduling_algorithm`): "fsrs7", "rwkvCurve" or
+    "rwkvInstant" - the `schedulingAlgorithm` key, else the Default
+    preset's flags, else RWKV-Curve."""
+    try:
+        value = col.get_config("schedulingAlgorithm", None)  # type: ignore[attr-defined]
+    except Exception:
+        value = None
+    if value in ("fsrs7", "rwkvCurve", "rwkvInstant"):
+        return cast(str, value)
+    try:
+        default = col.decks.get_config(1)  # type: ignore[attr-defined]
+    except Exception:
+        default = None
+    if not isinstance(default, dict):
+        return "rwkvCurve"
+    if _rwkv_review_config_enabled(default):
+        return "rwkvCurve"
+    if _rwkv_review_instant_order_enabled(default):
+        return "rwkvInstant"
+    return "fsrs7"
+
+
+@dataclass(frozen=True)
+class RwkvBrowserValue:
+    """One card's values for the Browser's memory columns under RWKV: R
+    (RWKV-Curve's stored curve, or RWKV-Instant's rating head), RWKV-Curve's
+    S90 (None under RWKV-Instant), and the seconds since the card's last
+    review they were computed for."""
+
+    retrievability: float | None
+    s90: float | None
+    elapsed_seconds: int
+
+
+def rwkv_browser_values(
+    mw: object, card_ids: Sequence[int]
+) -> dict[int, RwkvBrowserValue] | None:
+    """The Browser's RWKV values of `card_ids`, computed now for the rows on
+    screen (spec ui.browser-memory-columns): under RWKV-Curve the curve RWKV
+    stored at each card's last answered review, at the time since it, and
+    that curve's S90, as card info shows them; under RWKV-Instant the rating
+    head's R from the resident state. A card RWKV has no value for is left
+    out; no FSRS-7 value stands in. Empty for an FSRS-7 collection and
+    without a model. None while RWKV cannot answer yet (state not loaded,
+    another task holds it): the caller asks again later. Runs off the main
+    thread."""
+
+    if not card_ids:
+        return {}
+    col = getattr(mw, "col", None)
+    algorithm = collection_algorithm(col)
+    if algorithm == "fsrs7":
+        return {}
+    reviewer = SimpleNamespace(mw=mw)
+    if _reviewer_backend is None:
+        configure_reviewer_backend_from_environment()
+    if _reviewer_backend is None:
+        # no model: RWKV will never have the values
+        return {}
+    if not _prepare_reviewer_backend_for_card_info(reviewer):
+        return None
+    state_token = _capture_reviewer_backend_prediction_state_token(reviewer)
+    if state_token is None:
+        return None
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search="cid:" + ",".join(str(int(card_id)) for card_id in card_ids),
+        include_suspended_review=True,
+    )
+    if input_build is None:
+        return None
+    try:
+        if algorithm == "rwkvCurve":
+            return _rwkv_browser_curve_values(
+                _rwkv_review_input_build_inputs(
+                    _rwkv_curve_enabled_input_build(reviewer, input_build)
+                ),
+                state_token,
+            )
+        return _rwkv_browser_instant_values(input_build, state_token)
+    except _ReviewerBackendPredictionAborted:
+        return None
+
+
+def _rwkv_browser_curve_values(
+    inputs: Sequence[tuple[int, RwkvReviewInput]],
+    state_token: _ReviewerBackendPredictionStateToken,
+) -> dict[int, RwkvBrowserValue] | None:
+    """RWKV-Curve's values for `rwkv_browser_values`: the stored curve at the
+    time since the last review, and its S90, as card info reads them."""
+    values: dict[int, RwkvBrowserValue] = {}
+    with _try_reviewer_backend_prediction_access(
+        expected_state_token=state_token,
+    ) as backend:
+        if backend is None:
+            return None
+        card_curve = getattr(backend, "card_curve", None)
+        if not callable(card_curve):
+            return {}
+        for card_id, review_input in inputs:
+            elapsed = _rwkv_review_input_elapsed_seconds(review_input)
+            result = (
+                card_curve(card_id, [elapsed / 86_400]) if elapsed is not None else None
+            )
+            if elapsed is None or result is None:
+                continue
+            recall, s90 = result
+            retrievability = float(recall[0]) if recall else None
+            values[card_id] = RwkvBrowserValue(
+                retrievability=(
+                    retrievability if _valid_probability(retrievability) else None
+                ),
+                s90=float(s90) if s90 is not None else None,
+                elapsed_seconds=elapsed,
+            )
+    return values
+
+
+def _rwkv_browser_instant_values(
+    input_build: RwkvReviewInputBatchBuild,
+    state_token: _ReviewerBackendPredictionStateToken,
+) -> dict[int, RwkvBrowserValue] | None:
+    """RWKV-Instant's values for `rwkv_browser_values`: the rating head's R
+    from the resident state; no stability."""
+    values: dict[int, RwkvBrowserValue] = {}
+    for batch_size, inputs in input_build.inputs_by_batch_size.items():
+        scores = _rwkv_review_scores_for_inputs(
+            inputs,
+            batch_size=batch_size,
+            state_token=state_token,
+        )
+        if scores is None:
+            return None
+        elapsed_by_card = {
+            card_id: _rwkv_review_input_elapsed_seconds(review_input)
+            for card_id, review_input in inputs
+        }
+        for card_id, retrievability in scores:
+            elapsed = elapsed_by_card.get(card_id)
+            if elapsed is None or not _valid_probability(retrievability):
+                continue
+            values[card_id] = RwkvBrowserValue(
+                retrievability=retrievability,
+                s90=None,
+                elapsed_seconds=elapsed,
+            )
+    return values
+
+
 def mutate_cards_keeping_rwkv_state(
     mw: object,
     card_ids: Sequence[int],
@@ -19204,19 +19446,10 @@ def _rwkv_stats_graph_prebuilt_input_scores(
         return None, True
 
     input_scores_accum: list[tuple[int, float]] = []
-    queue_score_cache = _fresh_rwkv_review_queue_score_map(reviewer)
-    queue_score_hits = 0
     score_start = time.monotonic()
+    # every card is scored now, not taken from the study queue's scores,
+    # which may be older than RWKV's R may be (spec sched.rwkv-r-freshness)
     for batch_size, inputs_by_card_id in input_build.inputs_by_batch_size.items():
-        cached_scores, inputs_by_card_id = _split_rwkv_queue_score_hits(
-            inputs_by_card_id,
-            queue_score_cache,
-        )
-        queue_score_hits += len(cached_scores)
-        input_scores_accum.extend(cached_scores)
-        if not inputs_by_card_id:
-            continue
-
         input_scores = _rwkv_review_scores_for_inputs(
             inputs_by_card_id,
             batch_size=batch_size,
@@ -19230,7 +19463,7 @@ def _rwkv_stats_graph_prebuilt_input_scores(
     logger.debug(
         "RWKV stats graph inputs scored: card_ids=%s loaded=%s "
         "unsupported_state=%s with_state=%s disabled_config=%s "
-        "enabled=%s scored=%s queue_score_hits=%s deck_configs=%s batches=%s "
+        "enabled=%s scored=%s deck_configs=%s batches=%s "
         "preset_elapsed_ms=%.1f load_elapsed_ms=%.1f "
         "candidate_elapsed_ms=%.1f score_elapsed_ms=%.1f "
         "elapsed_ms=%.1f",
@@ -19241,7 +19474,6 @@ def _rwkv_stats_graph_prebuilt_input_scores(
         input_build.disabled_config_cards,
         input_build.eligible_cards,
         len(input_scores_accum),
-        queue_score_hits,
         input_build.deck_configs,
         {
             batch_size: len(inputs_by_card_id)
@@ -19585,8 +19817,6 @@ def _rwkv_stats_graph_scores_for_search(
     curve_scores: list[tuple[int, float]] = []
     fully_predicted_card_ids: set[int] = set()
     curve_due_card_ids: set[int] = set()
-    queue_score_cache = _fresh_rwkv_review_queue_score_map(reviewer)
-    queue_score_hits = 0
     score_start = time.monotonic()
 
     curve_input_build = (
@@ -19668,12 +19898,8 @@ def _rwkv_stats_graph_scores_for_search(
             for item in inputs_by_card_id
             if item[0] not in fully_predicted_card_ids
         ]
-        cached_scores, inputs_by_card_id = _split_rwkv_queue_score_hits(
-            inputs_by_card_id,
-            queue_score_cache,
-        )
-        queue_score_hits += len(cached_scores)
-        scores.extend(cached_scores)
+        # every card is scored now, not taken from the study queue's scores,
+        # which may be older than RWKV's R may be (spec sched.rwkv-r-freshness)
         if not inputs_by_card_id:
             continue
 
@@ -19691,7 +19917,7 @@ def _rwkv_stats_graph_scores_for_search(
     logger.debug(
         "RWKV stats graph search inputs scored: search=%r loaded=%s "
         "unsupported_state=%s with_state=%s disabled_config=%s enabled=%s "
-        "scored=%s queue_score_hits=%s deck_configs=%s batches=%s "
+        "scored=%s deck_configs=%s batches=%s "
         "load_elapsed_ms=%.1f candidate_elapsed_ms=%.1f "
         "score_elapsed_ms=%.1f elapsed_ms=%.1f",
         search,
@@ -19701,7 +19927,6 @@ def _rwkv_stats_graph_scores_for_search(
         input_build.disabled_config_cards,
         input_build.eligible_cards,
         len(scores),
-        queue_score_hits,
         input_build.deck_configs,
         {
             batch_size: len(inputs_by_card_id)
@@ -19755,25 +19980,6 @@ def _rwkv_filtered_deck_intervening_reviews_by_card_id(
             if card_id in card_ids
         )
     return intervening_reviews_by_card_id
-
-
-def _split_rwkv_queue_score_hits(
-    inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
-    queue_score_cache: dict[int, float],
-) -> tuple[list[tuple[int, float]], list[tuple[int, RwkvReviewInput]]]:
-    if not queue_score_cache:
-        return [], list(inputs_by_card_id)
-
-    cached_scores: list[tuple[int, float]] = []
-    missing_inputs: list[tuple[int, RwkvReviewInput]] = []
-    for card_id, review_input in inputs_by_card_id:
-        score = queue_score_cache.get(card_id)
-        if score is None:
-            missing_inputs.append((card_id, review_input))
-        else:
-            cached_scores.append((card_id, score))
-
-    return cached_scores, missing_inputs
 
 
 def _rwkv_review_queue_score_map_for_deck(

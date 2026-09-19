@@ -1197,3 +1197,63 @@ appears only when the algorithm changes.
 `a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
 (`rslib/src/deckconfig/algorithm.rs`, which also checks that the FSRS-7
 reschedule refuses to run under another algorithm).
+
+## sched.rwkv-r-freshness
+
+Given a collection under RWKV-Curve or RWKV-Instant, an RWKV R that Clanki
+computed and kept is used again only while it is fresh. It stops being fresh
+at once on any change of the collection: a review, an undo or a reset
+anywhere (the review of one card moves the RWKV-Instant R of every other
+card), and the start of a new day. Between changes it stays fresh for a time
+tolerance set by the time since the card's last review:
+
+| Time since the card's last review | Fresh for  |
+| --------------------------------- | ---------- |
+| under 10 minutes                  | never kept |
+| 10 minutes to 1 hour              | 1 minute   |
+| 1 hour to 1 day                   | 10 minutes |
+| 1 day or more                     | 1 hour     |
+
+A kept set of values (a score map) is fresh for the shortest tolerance of
+its cards. No old value is corrected with the stored curve's change over
+time: after it goes stale a value is computed again. What follows:
+
+- the Stats page's kept score map (`ui.stats-rwkv-scores-kept`), which the
+  Browser's `prop:rwkv…` searches and its Retrievability sort share, is
+  scored again once it is no longer fresh;
+- a filtered deck scores its own cards when it is built, never from a kept
+  map, and no score map, Stats or filtered, takes a card's score from the
+  study queue's scores, which carry no time;
+- the Browser's Retrievability and Stability cells are computed again when
+  their row is drawn after they went stale (`ui.browser-memory-columns`);
+- the kept Total Knowledge result (`ui.stats-total-knowledge`) holds each
+  day's R at whole days since each rating, so it depends on no time within a
+  day; it is dropped on any change of the collection and on a new day.
+
+FSRS-7 and RWKV-Curve keep no R of their own: every reader computes it from
+the card's memory state or stored curve at the time it reads.
+
+**Why:** Andrew, 2026-09-19, approving the proposal measured on a replay of
+one day of his reviews (1,090 reviews, 38,522 cards): one review moves the
+RWKV-Instant R of other cards by 0.16 percentage points in the median card
+and up to 38 (siblings 1.4 in the median), so no class of cards can skip a
+recomputation; with no review, the 99th percentile of the drift stays under
+the 0.5 point the whole-percent display hides for the tolerances above; the
+stored curve's change over time does not predict RWKV-Instant's (it was no
+better than keeping the old value). A single-card RWKV query costs about
+0.4 ms and 50 rows about 3 ms, so computing again is cheap; a
+whole-collection map costs about 2 s.
+
+**Pinned by:** `qt/tests/test_browser_memory_columns.py`
+(`test_the_time_tolerance_follows_the_time_since_the_last_review`,
+`test_a_change_of_the_collection_makes_every_value_stale`,
+`test_a_value_is_recomputed_once_its_time_tolerance_has_passed`,
+`test_a_new_day_makes_every_value_stale`);
+`test_prepare_stats_retrievability_scores_reuse_ends_with_the_time_tolerance`,
+`test_rwkv_scores_fresh_until_takes_the_shortest_tolerance_of_the_cards`,
+`test_prepare_stats_scores_every_card_now_not_from_the_queue_scores`,
+`test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`,
+`test_filtered_deck_retrievability_prepares_rwkv_candidate_scores`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_the_page_joins_the_running_job_and_the_result_is_kept`
+(`qt/tests/test_total_knowledge.py`).

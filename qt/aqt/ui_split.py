@@ -108,13 +108,14 @@ _MAIN = Area.MAIN_WINDOW
 _BROWSER = Area.BROWSER
 
 # The Browser's Cards-mode columns, in the order Simple mode shows them: the
-# default four first, in their order, then the rest as the column list has
+# default five first, in their order, then the rest as the column list has
 # them (spec ui.browser-simple-view).
 BROWSER_COLUMNS: list[tuple[str, Callable[[], str], bool]] = [
     ("noteFld", tr.browsing_sort_field, True),
     ("deck", tr.decks_deck, True),
     ("cardDue", tr.statistics_due_date, True),
     ("cardIvl", tr.browsing_interval, True),
+    ("retrievability", _retrievability_column, True),
     ("question", tr.browsing_question, False),
     ("answer", tr.browsing_answer, False),
     ("template", tr.card_stats_card_template, False),
@@ -129,7 +130,6 @@ BROWSER_COLUMNS: list[tuple[str, Callable[[], str], bool]] = [
     ("originalPosition", tr.card_stats_new_card_position, False),
     ("stability", tr.card_stats_fsrs_stability, False),
     ("difficulty", tr.card_stats_fsrs_difficulty, False),
-    ("retrievability", _retrievability_column, False),
 ]
 
 

@@ -117,7 +117,8 @@ The items, per area:
   Layout submenus, Advance/Postpone, the Cards/Notes switch beside the
   search bar, the sidebar's Select tool and its seven sections, and each of
   the 19 Cards-mode columns. Simple mode's columns are the chosen ones, in
-  the registry's order (Sort Field, Deck, Due, Interval, then the others);
+  the registry's order (Sort Field, Deck, Due, Interval, Retrievability,
+  then the others);
   with none chosen, Sort Field shows. Without the Cards/Notes switch, the
   table shows cards (`ui.browser-simple-view`).
 - Note editor: each of its own 17 toolbar buttons (`ui.editor-simple-view`);
@@ -293,8 +294,10 @@ needed to find a card, fix it, and choose whether it is studied:
 - The sidebar has no Saved Searches, Flags or Note Types sections (so no
   note type, card type or field actions); Today, Card State, Decks and Tags
   stay.
-- Cards mode shows a fixed set of columns: Sort Field, Deck, Due and
-  Interval, with their own widths; a right-click on the column header does
+- Cards mode shows a fixed set of columns: Sort Field, Deck, Due, Interval
+  and Retrievability (labelled "Probability of recall",
+  `ui.simple-recall-wording`), with their own widths; a right-click on the
+  column header does
   nothing. Advanced mode keeps the user's own column choice and widths, and
   switching the mode never changes them.
 
@@ -307,9 +310,9 @@ default of `ui.split-configurable`, where the user can change it.
 **Why:** Andrew, 2026-09-19: "There is a lot of stuff that most Anki users
 will never touch", and he approved this list as proposed, with hidden items
 keeping their shortcuts ("Ok"). Tags stay in Simple mode because the users
-he asked voted for it. The Retrievability column is left out of the
-Simple set because under RWKV it shows FSRS-7's value (a separate defect, to
-fix first).
+he asked voted for it. The Retrievability column joined the Simple set once
+it showed the collection's own algorithm's value under RWKV too
+(`ui.browser-memory-columns`; Andrew, 2026-09-19).
 
 **Pinned by:** `qt/tests/test_browser_simple_view.py`
 (`test_simple_mode_takes_the_advanced_only_items_out_of_the_menus`,
@@ -813,7 +816,8 @@ it in seconds. This one value is what these places read:
 
 - the Stats Retrievability graph;
 - the Browser's `prop:rwkv-curve:r…` searches, and AnkiConnect's searches
-  with it;
+  with it; the Browser's Retrievability column and its sort
+  (`ui.browser-memory-columns`);
 - filtered decks whose searches use `prop:rwkv-curve:r…`;
 - the RWKV-Curve review order by retrievability (`sched.rwkv-review-order`)
   for the cards those places scored.
@@ -849,27 +853,21 @@ Given the Stats page asks for the Retrievability graph again while nothing
 RWKV reads has changed — the same collection and RWKV backend, the same
 search, the same day, the same RWKV state generation, the same review inputs
 and study queues — Clanki reuses the score map it published before instead of
-scoring every card again. No clock ends the reuse: the map stands until one
-of those changes. A new day, an answer, any change of the cards or the
-queues, another search or deck, a new RWKV state generation, another backend
-or collection and any other publication of a score map all end it, and the
-next request scores again.
-
-So the numbers the graph shows do not move with the seconds since each card's
-last review: within one day they stay as they were when the map was built.
-The scoring itself takes minutes on a large collection, so the map is already
-minutes old when the page first draws it.
+scoring every card again, while the map is fresh (`sched.rwkv-r-freshness`):
+for the shortest time tolerance of its cards. A new day, an answer, any
+change of the cards or the queues, another search or deck, a new RWKV state
+generation, another backend or collection and any other publication of a
+score map end it at once, and the next request scores again.
 
 **Why:** Andrew, 2026-09-16: switching the Stats page between Simple and
 Advanced mode, or its period between 12 months and all history, must not
 start the RWKV calculation from zero again. RWKV's answer depends on neither
-the mode nor the period. On Andrew's collection one pass costs 230 seconds
-and 229 of them are RWKV scoring the 38,523 cards of the search. Andrew, the
-same day, on dropping the earlier ten-minute limit: "p(recall) doesn't fall
-_that_ fast for most cards, so remove the time limit."
+the mode nor the period. The time limit is the
+freshness rule Andrew approved on 2026-09-19 (`sched.rwkv-r-freshness`); a
+whole-collection pass now costs about 2 seconds.
 
 **Pinned by:** `test_prepare_stats_retrievability_scores_reuses_published_scores`,
-`test_prepare_stats_retrievability_scores_keep_the_scores_however_long_the_wait`,
+`test_prepare_stats_retrievability_scores_reuse_ends_with_the_time_tolerance`,
 `test_prepare_stats_retrievability_scores_scores_again_for_another_search`,
 `test_prepare_stats_retrievability_scores_scores_again_after_a_new_day`
 (`qt/tests/test_rwkv_scheduler.py`)
@@ -1395,6 +1393,48 @@ rather than while a page is open.
 `the_pass_covers_every_preset_with_uncovered_reviews`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
+
+## ui.browser-memory-columns
+
+Given the Browser in cards mode, its Retrievability, Stability and
+Difficulty columns show the collection's own algorithm's values only
+(`sched.one-global-algorithm`):
+
+| Algorithm    | Retrievability                                     | Stability          | Difficulty |
+| ------------ | -------------------------------------------------- | ------------------ | ---------- |
+| FSRS-7       | FSRS-7's R now                                     | FSRS-7's stability | FSRS-7's   |
+| RWKV-Curve   | the stored curve at the time since the last review | that curve's S90   | blank      |
+| RWKV-Instant | RWKV-Instant's R for the card now                  | blank              | blank      |
+
+A card keeps its FSRS-7 memory state under RWKV, and it is never shown
+there. The RWKV values are the ones card info shows
+(`ui.rwkv-curve-r-stored-curve`, `ui.card-info-one-algorithm`). They are
+computed in the background for the rows the table draws, a batch at a time,
+so scrolling never waits for RWKV; a cell is blank until its value arrives,
+and a card RWKV has no value for (a new card, no stored curve, no model)
+stays blank, with no other algorithm's value in its place. A value is
+computed again when its row is drawn after it went stale
+(`sched.rwkv-r-freshness`); until the new one arrives the cell keeps the
+old text. In notes mode the three columns stay blank under RWKV.
+
+Sorting by Retrievability under RWKV sorts by the algorithm's R, which the
+Browser prepares for the search before it runs it, as for a `prop:rwkv…`
+search (`ui.browser-rwkv-search-does-not-block`); cards without a value come
+first in ascending order. Stability and Difficulty cannot be sorted by under
+RWKV.
+
+**Why:** Andrew, 2026-09-19: "All active cards should have retrievability
+values, regardless of which algorithm is being used, including using
+RWKV-Instant", and "Stability should be shown for FSRS-7 and RWKV-Curve,
+difficulty only for FSRS-7". Before, the columns showed FSRS-7's values
+under RWKV, which mixes algorithms.
+
+**Pinned by:** `memory_columns_show_fsrs7_values_under_fsrs7_only`
+(`rslib/src/browser_table.rs`),
+`rwkv_sort_by_retrievability_reads_the_algorithms_published_r`
+(`rslib/src/search/mod.rs`); `qt/tests/test_browser_memory_columns.py`;
+`test_sorting_by_retrievability_under_rwkv_prepares_the_algorithms_scores`
+(`qt/tests/test_browser.py`).
 
 ## ui.browser-rwkv-search-does-not-block
 

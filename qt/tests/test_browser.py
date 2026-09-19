@@ -67,6 +67,9 @@ class TableSearchRecorder:
     def search(self, search: str) -> None:
         self.searches.append(search)
 
+    def sorts_by_retrievability(self) -> bool:
+        return False
+
 
 class ImmediateQueryOp:
     def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
@@ -118,7 +121,7 @@ def test_rwkv_browser_search_prepares_scores_before_searching(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_browser_retrievability_scores",
-        lambda _mw, search, warmup_wait_secs=None: prepared.append(
+        lambda _mw, search, warmup_wait_secs=None, **_kwargs: prepared.append(
             (search, warmup_wait_secs)
         ),
     )
@@ -146,7 +149,7 @@ def test_rwkv_browser_search_waits_without_blocking_the_window(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_browser_retrievability_scores",
-        lambda _mw, search, warmup_wait_secs=None: status[0],
+        lambda _mw, search, warmup_wait_secs=None, **_kwargs: status[0],
     )
 
     browser.search()
@@ -198,7 +201,9 @@ def test_rwkv_browser_search_stops_waiting_after_the_time_limit(
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_browser_retrievability_scores",
-        lambda _mw, search, warmup_wait_secs=None: RwkvStatsPreparationStatus.PENDING,
+        lambda _mw, search, warmup_wait_secs=None, **_kwargs: (
+            RwkvStatsPreparationStatus.PENDING
+        ),
     )
 
     browser.search()
@@ -223,10 +228,51 @@ def test_non_rwkv_browser_search_runs_without_preparation(monkeypatch: Any) -> N
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "prepare_browser_retrievability_scores",
-        lambda _mw, search, warmup_wait_secs=None: prepared.append(search),
+        lambda _mw, search, warmup_wait_secs=None, **_kwargs: prepared.append(search),
     )
 
     browser.search()
 
     assert prepared == []
     assert browser.table.searches == ["prop:r<0.95"]
+
+
+class SortedTableSearchRecorder(TableSearchRecorder):
+    def sorts_by_retrievability(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    "algorithm, prepares",
+    [("rwkvCurve", True), ("rwkvInstant", True), ("fsrs7", False)],
+)
+def test_sorting_by_retrievability_under_rwkv_prepares_the_algorithms_scores(
+    monkeypatch: Any, algorithm: str, prepares: bool
+) -> None:
+    """Pins spec/ui.md#ui.browser-memory-columns: the Retrievability sort
+    reads the collection's own algorithm's R, which RWKV prepares first."""
+    from types import SimpleNamespace
+
+    from aqt.browser import browser as browser_module
+
+    browser = _scored_search_browser("deck:current")
+    browser.table = SortedTableSearchRecorder()
+    browser.col = SimpleNamespace(get_config=lambda key, default=None: algorithm)
+    prepared: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(browser_module, "QueryOp", ImmediateQueryOp)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "rwkv_algorithm_name", lambda col: "RWKV-Curve"
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_browser_retrievability_scores",
+        lambda _mw, search, warmup_wait_secs=None, for_sort=False: prepared.append(
+            (search, for_sort)
+        ),
+    )
+
+    browser.search()
+
+    assert prepared == ([("deck:current", True)] if prepares else [])
+    assert browser.table.searches == ["deck:current"]

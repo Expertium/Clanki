@@ -31,6 +31,7 @@ pub use writer::replace_search_node;
 use crate::browser_table::Column;
 use crate::card::Card;
 use crate::card::CardType;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
@@ -544,14 +545,53 @@ impl Collection {
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let metric_start = Instant::now();
         let mut with_metric = Vec::with_capacity(cards.len());
+        // the collection's own algorithm only (spec ui.browser-memory-columns):
+        // under RWKV, R is the value RWKV published for the search the
+        // Browser prepared just before (its newest map), and Stability has no
+        // value to sort by
+        let rwkv_values = match self.effective_scheduling_algorithm()? {
+            SchedulingAlgorithm::Fsrs7 => None,
+            algorithm => Some(
+                match metric {
+                    ExactFsrsSortMetric::Retrievability => self
+                        .rwkv_stats_graph_score_entries_for_search(
+                            timing.days_elapsed,
+                            stats_search,
+                        ),
+                    ExactFsrsSortMetric::StabilityS90 => None,
+                }
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .filter_map(|(card_id, entry)| {
+                            if algorithm == SchedulingAlgorithm::RwkvCurve {
+                                entry.curve_retrievability
+                            } else {
+                                entry.retrievability
+                            }
+                            .map(|r| (card_id, r))
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+                .unwrap_or_default(),
+            ),
+        };
         for card in cards {
-            let preset = presets_by_card
-                .get(card.id)
-                .or_invalid("missing FSRS preset for card")?;
-            with_metric.push((
-                card.id,
-                self.exact_fsrs_metric_for_card_with_params(&card, timing, &preset.params, metric)?,
-            ));
+            let value = match &rwkv_values {
+                Some(values) => values.get(&card.id).copied(),
+                None => {
+                    let preset = presets_by_card
+                        .get(card.id)
+                        .or_invalid("missing FSRS preset for card")?;
+                    self.exact_fsrs_metric_for_card_with_params(
+                        &card,
+                        timing,
+                        &preset.params,
+                        metric,
+                    )?
+                }
+            };
+            with_metric.push((card.id, value));
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
         let sort_start = Instant::now();
@@ -1703,6 +1743,71 @@ mod test {
             col.search_cards("prop:rwkv-curve:r>0.9", SortMode::NoOrder)?,
             vec![ids[0]]
         );
+        Ok(())
+    }
+
+    /// spec/ui.md, `ui.browser-memory-columns`: under RWKV the Browser's
+    /// Retrievability sort reads the collection's own algorithm's R from the
+    /// map published for the search (never FSRS-7's, which the cards still
+    /// carry), and Stability sorts by nothing.
+    #[test]
+    fn rwkv_sort_by_retrievability_reads_the_algorithms_published_r() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for _ in 0..3 {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+        }
+        let mut ids = col.search_cards("", SortMode::NoOrder)?;
+        ids.sort();
+        let timing = col.timing_today()?;
+        // FSRS-7 states whose R orders the cards 0, 1, 2
+        for (index, card_id) in ids.iter().enumerate() {
+            let mut card = col.storage.get_card(*card_id)?.unwrap();
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 1.0 + 100.0 * index as f32,
+                stability_internal: 1.0 + 100.0 * index as f32,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-10 * 86_400));
+            col.storage.update_card(&card)?;
+        }
+        let entry = |instant: f32, curve: f32| RwkvStatsGraphScoreEntry {
+            retrievability: Some(instant),
+            curve_retrievability: Some(curve),
+            intervening_reviews: None,
+            target_retention: None,
+            curve_due: false,
+        };
+        // card 2 has no RWKV value; Instant orders 1, 0 and Curve 0, 1
+        col.set_rwkv_stats_graph_score_entries(
+            "".into(),
+            HashMap::from([(ids[0], entry(0.8, 0.3)), (ids[1], entry(0.4, 0.6))]),
+        )?;
+        let sorted = |col: &mut Collection, column: Column| {
+            col.search_cards(
+                "",
+                SortMode::Builtin {
+                    column,
+                    reverse: false,
+                },
+            )
+        };
+        assert_eq!(sorted(&mut col, Column::Retrievability)?, ids);
+
+        col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvInstant)?;
+        assert_eq!(
+            sorted(&mut col, Column::Retrievability)?,
+            vec![ids[2], ids[1], ids[0]]
+        );
+        assert_eq!(sorted(&mut col, Column::Stability)?, ids);
+        col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)?;
+        assert_eq!(
+            sorted(&mut col, Column::Retrievability)?,
+            vec![ids[2], ids[0], ids[1]]
+        );
+        assert_eq!(sorted(&mut col, Column::Stability)?, ids);
         Ok(())
     }
 
