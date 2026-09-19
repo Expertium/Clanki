@@ -62,6 +62,19 @@ class SidebarToolbar(QToolBar):
         index = self._action_group.actions().index(action)
         self.sidebar.tool = self._tools[index][0]
 
+    def apply_ui_mode(self, advanced: bool) -> None:
+        """The Select tool is Advanced-only; Simple mode drops its button but
+        keeps its shortcut, which the Browser window holds (spec
+        ui.browser-simple-view)."""
+        search, select = self._action_group.actions()
+        if advanced:
+            if select not in self.actions():
+                self.addAction(select)
+            return
+        if select.isChecked():
+            search.trigger()
+        self.removeAction(select)
+
     def cleanup(self) -> None:
         aqt.gui_hooks.theme_did_change.remove(self._update_icons)
 

@@ -269,6 +269,12 @@ class DataModel(QAbstractTableModel):
     # Table Interface
     ######################################################################
 
+    def set_state(self, state: ItemState) -> None:
+        """Swap in a state for the same items, e.g. with other columns."""
+        self.begin_reset()
+        self._state = state
+        self.end_reset()
+
     def toggle_state(self, context: SearchContext) -> ItemState:
         self.begin_reset()
         self._state = self._state.toggle_state()

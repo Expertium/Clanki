@@ -171,6 +171,53 @@ Advanced (`CLAUDE.md`, "Simple mode is a subset of Advanced").
 `test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar`
 (`qt/tests/test_overview.py`).
 
+## ui.browser-simple-view
+
+Given Simple mode (`ui.mode-switch`), the Browser window shows only what is
+needed to find a card, fix it, and choose whether it is studied:
+
+- Edit keeps Undo, Redo, Select All and Close; Select Notes, Invert
+  Selection and Create Filtered Deck are Advanced-only.
+- Notes keeps Add Notes, Add Tags, Remove Tags and Delete; Create Copy,
+  Export Notes, Clear Unused Tags, Toggle Mark, Change Note Type, Find
+  Duplicates, Find and Replace and Manage Note Types are Advanced-only.
+- Cards keeps Change Deck, Toggle Suspend, Flag and Info; Set Due Date, Grade
+  Now, Forget, Reposition and Toggle Bury are Advanced-only (Advance and
+  Postpone already are, `ui.advance-postpone`).
+- View keeps Full Screen, Toggle Sidebar and the zoom items; the Layout
+  submenu and the Cards/Notes toggle are Advanced-only. The Go menu is
+  Advanced-only as a whole.
+- The table's right-click menu follows the Cards and Notes menus.
+- The Cards/Notes switch beside the search bar and the sidebar's Select tool
+  are Advanced-only; in Simple mode the table shows cards, and a Browser that
+  was left in notes mode switches to cards mode (remembered) when it opens or
+  when the mode becomes Simple.
+- The sidebar has no Saved Searches and no Note Types sections (so no note
+  type, card type or field actions); Today, Flags, Card State, Decks and Tags
+  stay.
+- Cards mode shows a fixed set of columns: Sort Field, Deck, Due and
+  Interval, with their own widths; a right-click on the column header does
+  nothing. Advanced mode keeps the user's own column choice and widths, and
+  switching the mode never changes them.
+
+Every hidden menu item and the Select tool keep their keyboard shortcuts,
+the same rule as `ui.simple-mode-tools-hidden`; the window holds them. An
+add-on's own menu entries are untouched. Switching the mode updates an open
+Browser in place, with the same search and selection.
+
+**Why:** Andrew, 2026-09-19: "There is a lot of stuff that most Anki users
+will never touch", and he approved this list as proposed, with hidden items
+keeping their shortcuts ("Ok"). The Retrievability column is left out of the
+Simple set because under RWKV it shows FSRS-7's value (a separate defect, to
+fix first).
+
+**Pinned by:** `qt/tests/test_browser_simple_view.py`
+(`test_simple_mode_takes_the_advanced_only_items_out_of_the_menus`,
+`test_hidden_items_keep_their_shortcuts`,
+`test_an_addon_menu_entry_stays_through_a_mode_switch`,
+`test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice`,
+`test_saved_searches_and_note_types_are_advanced_only`).
+
 ## ui.editor-simple-view
 
 Given the note editor (Add, Edit Current, the Browser's editing pane) in

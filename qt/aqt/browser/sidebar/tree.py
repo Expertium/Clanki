@@ -517,6 +517,16 @@ class SidebarTreeView(QTreeView):
         return root
 
     def _build_stage(self, root: SidebarItem, stage: SidebarStage) -> None:
+        if (
+            stage
+            in (
+                SidebarStage.SAVED_SEARCHES,
+                SidebarStage.NOTETYPES,
+            )
+            and not self.mw.advanced_ui()
+        ):
+            # Advanced-only sections (spec ui.browser-simple-view)
+            return
         if stage is SidebarStage.SAVED_SEARCHES:
             self._saved_searches_tree(root)
         elif stage is SidebarStage.CARD_STATE:
