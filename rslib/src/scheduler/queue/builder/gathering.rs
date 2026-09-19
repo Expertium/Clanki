@@ -732,6 +732,14 @@ impl QueueBuilder {
             NewCardGatherPriority::HighestPosition => {
                 self.gather_new_cards_sorted(col, NewCardSorting::HighestPosition)
             }
+            // RWKV-Instant only; any other algorithm gathers as Deck does
+            // (spec deck-options.new-retrievability-order-instant-only)
+            NewCardGatherPriority::AscendingRetrievability
+            | NewCardGatherPriority::DescendingRetrievability
+                if self.context.rwkv_review_queue_scores.is_none() =>
+            {
+                self.gather_new_cards_by_deck(col, NewCardSorting::LowestPosition)
+            }
             NewCardGatherPriority::AscendingRetrievability => {
                 self.gather_new_cards_by_retrievability(col, false)
             }
