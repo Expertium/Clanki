@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Sequence
 
@@ -96,6 +97,18 @@ def get_briefcase_output_format() -> list[str]:
     return []
 
 
+def app_formal_name() -> str:
+    """The app's name as Briefcase reads it from the app's pyproject.toml; on
+    macOS it names the bundle (`<formal_name>.app`). Read, not restated, so a
+    rename there (Clanki, spec/branding.md) cannot leave this script looking
+    for a bundle Briefcase never made."""
+    pyproject = (
+        Path(__file__).resolve().parents[1] / "installer" / "app" / "pyproject.toml"
+    )
+    with open(pyproject, "rb") as file:
+        return tomllib.load(file)["tool"]["briefcase"]["app"]["anki"]["formal_name"]
+
+
 def get_briefcase_sources_path(out_dir: Path, portable: bool = False) -> Path:
     """
     Get the directory where Briefcase's `app`/`app_packages` directories are written.
@@ -105,7 +118,7 @@ def get_briefcase_sources_path(out_dir: Path, portable: bool = False) -> Path:
     if sys.platform == "win32":
         path = out_dir / "build" / "anki" / "windows" / "app" / "src"
     elif sys.platform == "darwin":
-        formal_name = PORTABLE_FORMAL_NAME if portable else "Anki"
+        formal_name = PORTABLE_FORMAL_NAME if portable else app_formal_name()
         path = (
             out_dir
             / "build"
