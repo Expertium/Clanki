@@ -12,6 +12,7 @@ import sqlite3
 import struct
 import threading
 import time
+from array import array
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import replace
@@ -13399,8 +13400,13 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         prepare_instant_due: bool = False,
         prepare_curve_due: bool = False,
         prepare_curve_retrievability: bool = False,
+        prepare_instant_retrievability: bool = False,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
+        # a retrievability order reads RWKV-Instant's rating head
+        assert prepare_instant_retrievability == (
+            order == FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING
+        )
         prepared.append(
             (
                 reviewer,
@@ -13528,6 +13534,14 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
         "_rwkv_filtered_deck_intervening_reviews_by_card_id",
         lambda _reviewer, _inputs: {1: 3},
     )
+    # the curve value is the stored curve (spec ui.rwkv-curve-r-stored-curve)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_stored_curve_retrievabilities_for_inputs",
+        lambda inputs, **_kwargs: [
+            (card_id, {1: 0.55, 2: 0.85}[card_id]) for card_id, _ in inputs
+        ],
+    )
 
     backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
     previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
@@ -13544,7 +13558,7 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
 
     assert result is not None
     assert result.scores == [(1, 0.7), (2, 0.9)]
-    assert result.curve_scores == [(1, 0.6), (2, 0.8)]
+    assert result.curve_scores == [(1, 0.55), (2, 0.85)]
     assert result.target_retentions_by_card_id == {1: 0.8, 2: 0.9}
     assert result.intervening_reviews_by_card_id == {1: 3}
     assert result.curve_due_card_ids == frozenset({1})
@@ -14881,6 +14895,10 @@ def test_prepare_stats_retrievability_scores_shares_in_flight_status(
     backend = Backend()
     rpc = _RwkvQueueScoreRpc()
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    # the memo key holds id()s of the backend and the collection: an earlier
+    # parameter's freed objects can hand theirs on, and a kept memo would
+    # then answer READY before the backend is asked at all
+    rwkv_scheduler.forget_rwkv_stats_scores()
     previous_backend = set_reviewer_backend(backend)
     errors: list[BaseException] = []
     statuses: list[rwkv_scheduler.RwkvStatsPreparationStatus] = []
@@ -19095,135 +19113,251 @@ def _patch_stats_search_scaffold(
     )
 
 
-def _patch_resident_curve_route(
+def _patch_stored_curve_route(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    supported: bool,
-    curve_retrievabilities: Callable[[int], list[float | None]] | None = None,
+    curve_retrievabilities: Callable[[int], list[float]],
     on_batch: Callable[[Sequence[tuple[int, RwkvReviewInput]]], None] | None = None,
-) -> None:
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_supports_resident_curve_retrievability",
-        lambda: supported,
-    )
-    if not supported:
-        return
+) -> list[int]:
+    """Stand in for the stored-curve lookup; returns the batch sizes the
+    rating head was asked to score."""
 
     def curve_route(
         inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
         **_kwargs: Any,
-    ) -> list[float | None]:
+    ) -> list[tuple[int, float]]:
         if on_batch is not None:
             on_batch(inputs_by_card_id)
-        assert curve_retrievabilities is not None
-        return curve_retrievabilities(len(inputs_by_card_id))
+        return list(
+            zip(
+                (card_id for card_id, _ in inputs_by_card_id),
+                curve_retrievabilities(len(inputs_by_card_id)),
+            )
+        )
 
     monkeypatch.setattr(
-        rwkv_scheduler, "_rwkv_curve_retrievabilities_for_inputs", curve_route
+        rwkv_scheduler, "_rwkv_stored_curve_retrievabilities_for_inputs", curve_route
     )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_review_scores_for_inputs",
-        lambda inputs_by_card_id, **_kwargs: [
-            (card_id, 0.7) for card_id, _ in inputs_by_card_id
-        ],
+    rating_head_batches: list[int] = []
+
+    def rating_head(
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]], **_kwargs: Any
+    ) -> list[tuple[int, float]]:
+        rating_head_batches.append(len(inputs_by_card_id))
+        return [(card_id, 0.7) for card_id, _ in inputs_by_card_id]
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", rating_head)
+    return rating_head_batches
+
+
+def _rwkv_curve_by_formula(weights: Sequence[float], elapsed_seconds: float) -> float:
+    """rslib's `predict_curve`, written out apart from the code under test:
+    128 decays 0.9 ** (t / s), the scales spread by linspace_exp."""
+
+    elapsed_seconds = max(elapsed_seconds, 1.0)
+    raw = 0.0
+    for index, weight in enumerate(weights):
+        s_space = 0.1 + (math.exp(18.5 * index / 127) - 1.0) * math.exp(22.0 - 18.5)
+        raw += weight * 0.9 ** (elapsed_seconds / s_space)
+    return 1e-5 + (1.0 - 2e-5) * raw
+
+
+def _packed_rwkv_curves(curves: Mapping[int, Sequence[float]]) -> bytes:
+    return b"".join(
+        struct.pack("<I", len(weights)) + struct.pack(f"<{len(weights)}f", *weights)
+        for weights in curves.values()
     )
 
 
-def test_stats_curve_retrievability_uses_the_query_only_route(
+def test_rwkv_curve_r_is_the_stored_curve_now(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Retrievability graph needs only the curve value, so the scoring
-    takes the resident query-only route instead of the full prediction."""
+    """Pins spec/ui.md#ui.rwkv-curve-r-stored-curve: a card's RWKV-Curve R is
+    the curve stored at its last answered review, at the time since that
+    review; RWKV's shared (deck, preset, global) state moving on after that
+    review does not move it; a card with no stored curve gets no value, and
+    no other value stands in for it."""
+
+    build = _stats_curve_input_build(3)
+    # card 1: 7 days; card 2: 90 seconds, so the seconds (not the days) are
+    # the elapsed time; card 3: RWKV stored no curve for it
+    inputs = build.inputs_by_batch_size[512]
+    inputs[1] = (
+        2,
+        replace(inputs[1][1], current_elapsed_days=0, current_elapsed_seconds=90),
+    )
+    _patch_stats_search_scaffold(monkeypatch, build)
+    # float32 weights, exactly as RWKV stores them
+    stored = {
+        1: list(array("f", [0.0] * 60 + [0.5] + [0.0] * 19 + [0.5] + [0.0] * 47)),
+        2: list(array("f", [0.25] * 4 + [0.0] * 124)),
+    }
+    query_pass_value = [0.61]
+
+    def query_pass(*_args: Any, **_kwargs: Any) -> Any:
+        # a fresh query of each card reads the current deck, preset and
+        # global states: the value must not come from it
+        raise AssertionError("RWKV-Curve's R must not come from a query pass")
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", query_pass
+    )
+    rating_head_calls: list[int] = []
+
+    def rating_head(
+        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]], **_kwargs: Any
+    ) -> list[tuple[int, float]]:
+        rating_head_calls.append(len(inputs_by_card_id))
+        return [(card_id, query_pass_value[0]) for card_id, _ in inputs_by_card_id]
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", rating_head)
+
+    def card_curve_weights(card_ids: Sequence[int]) -> tuple[list[int], bytes]:
+        held = {card_id: stored[card_id] for card_id in card_ids if card_id in stored}
+        return list(held), _packed_rwkv_curves(held)
+
+    backend = SimpleNamespace(
+        cached_review_input_predictions=lambda _inputs: None,
+        card_curve_weights=card_curve_weights,
+    )
+    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    try:
+        first = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+            prepare_instant_retrievability=False,
+        )
+        # other cards of the deck are answered: the shared states move on,
+        # and a query pass would now give another value; cards 1 and 2 were
+        # not answered, so their stored curves stay as they were
+        query_pass_value[0] = 0.2
+        second = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+            prepare_instant_retrievability=False,
+        )
+    finally:
+        set_reviewer_backend(previous_backend)
+
+    assert first is not None and second is not None
+    expected = {
+        1: _rwkv_curve_by_formula(stored[1], 7 * 86_400),
+        2: _rwkv_curve_by_formula(stored[2], 90),
+    }
+    assert dict(first.curve_scores) == pytest.approx(expected, rel=1e-12)
+    assert first.curve_scores == second.curve_scores
+    # card 3 has no stored curve: no value at all, not a stand-in
+    assert 3 not in dict(first.curve_scores)
+    # nothing asked for RWKV-Instant's rating head, so it did not run
+    assert rating_head_calls == []
+    assert first.scores == []
+
+
+def test_rwkv_curve_r_publishes_cards_without_the_rating_head() -> None:
+    """The map carries a card RWKV-Curve has a value for even when the rating
+    head did not score it; the rating-head field stays absent."""
+
+    calls: list[dict[str, Any]] = []
+    backend = SimpleNamespace(
+        set_rwkv_stats_graph_scores=lambda **kwargs: calls.append(kwargs)
+    )
+    rwkv_scheduler._set_rwkv_stats_graph_scores(
+        SimpleNamespace(),
+        "deck:current",
+        [(2, 0.7)],
+        curve_retrievabilities_by_card_id={1: 0.8, 2: 0.6},
+        collection_backend=backend,
+    )
+
+    (call,) = calls
+    by_card = {score.card_id: score for score in call["scores"]}
+    assert set(by_card) == {1, 2}
+    assert not by_card[1].HasField("retrievability")
+    assert by_card[1].curve_retrievability == pytest.approx(0.8)
+    assert by_card[2].retrievability == pytest.approx(0.7)
+    assert by_card[2].curve_retrievability == pytest.approx(0.6)
+
+
+def test_rwkv_curve_r_request_runs_the_rating_head_only_for_its_readers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request for RWKV-Curve's R alone (the Stats graph, a Browser
+    prop:rwkv-curve:r search) does not run RWKV-Instant's rating head; a
+    request that also reads the head (prop:rwkv:r, a filtered deck ordered
+    by retrievability) still gets it."""
 
     _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(2))
-    batches: list[int] = []
-    _patch_resident_curve_route(
-        monkeypatch,
-        supported=True,
-        curve_retrievabilities=lambda count: [0.6, 0.8][:count],
-        on_batch=lambda batch: batches.append(len(batch)),
+    rating_head_batches = _patch_stored_curve_route(
+        monkeypatch, curve_retrievabilities=lambda count: [0.6] * count
     )
-
-    def full_path(*_args: Any, **_kwargs: Any) -> list[RwkvReviewPrediction | None]:
-        raise AssertionError("the full prediction path must not run")
-
-    monkeypatch.setattr(
-        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", full_path
-    )
-
     backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
     previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
     try:
-        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+        curve_only = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
             reviewer=SimpleNamespace(),
             search="deck:current",
             prepare_curve_retrievability=True,
+            prepare_instant_retrievability=False,
+        )
+        assert rating_head_batches == []
+        with_head = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="deck:current",
+            prepare_curve_retrievability=True,
+            prepare_instant_retrievability=True,
         )
     finally:
         set_reviewer_backend(previous_backend)
 
-    assert batches == [2]
-    assert result is not None
-    assert result.scores == [(1, 0.7), (2, 0.7)]
-    assert result.curve_scores == [(1, 0.6), (2, 0.8)]
+    assert curve_only is not None and with_head is not None
+    assert curve_only.scores == []
+    assert curve_only.curve_scores == [(1, 0.6), (2, 0.6)]
+    assert rating_head_batches == [2]
+    assert with_head.scores == [(1, 0.7), (2, 0.7)]
+    assert with_head.curve_scores == [(1, 0.6), (2, 0.6)]
 
 
-def test_stats_curve_retrievability_falls_back_to_the_full_path(
+def test_prepare_stats_scores_asks_for_the_rating_head_only_when_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An older runtime has no query-only route, so the full path still runs."""
+    seen: list[bool] = []
 
-    _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(1))
-    _patch_resident_curve_route(monkeypatch, supported=False)
-    full_calls: list[int] = []
+    def scorer(*, prepare_instant_retrievability: bool, **_kwargs: Any) -> None:
+        seen.append(prepare_instant_retrievability)
 
-    def full_path(
-        inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
-        **_kwargs: Any,
-    ) -> list[RwkvReviewPrediction | None]:
-        full_calls.append(len(inputs_by_card_id))
-        return [RwkvReviewPrediction(retrievability=0.7, curve_retrievability=0.6)]
-
-    monkeypatch.setattr(
-        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", full_path
-    )
-
-    backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
-    previous_backend = set_reviewer_backend(backend)  # type: ignore[arg-type]
+    backend, reviewer = _stats_reuse_scaffold()
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_stats_graph_scores_for_search", scorer)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_stats_graph_scores", lambda **_: [])
+    previous_backend = set_reviewer_backend(backend)
     try:
-        result = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
-            reviewer=SimpleNamespace(),
-            search="deck:current",
-            prepare_curve_retrievability=True,
-        )
+        for search, curve in (
+            ("deck:current", True),  # the Stats graph under RWKV-Curve
+            ("prop:rwkv-curve:r<0.9", False),  # a Browser search
+            ("prop:rwkv-curve:r<0.9 prop:rwkv:r>0.5", False),
+            ("deck:current", False),  # RWKV-Instant's Stats graph
+        ):
+            rwkv_scheduler.forget_rwkv_stats_scores()
+            prepare_stats_retrievability_scores(
+                reviewer, search, prepare_curve_retrievability=curve
+            )
     finally:
         set_reviewer_backend(previous_backend)
+        rwkv_scheduler.forget_rwkv_stats_scores()
 
-    assert full_calls == [1]
-    assert result is not None
-    assert result.curve_scores == [(1, 0.6)]
+    assert seen == [False, False, True, True]
 
 
 def test_stats_curve_due_keeps_the_full_prediction_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The curve-due flags need the current interval, so that request keeps
-    the full path."""
+    the full path; the curve value still comes from the stored curve."""
 
     _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(1))
-
-    def curve_route(*_args: Any, **_kwargs: Any) -> list[float | None]:
-        raise AssertionError("the query-only route must not run")
-
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_supports_resident_curve_retrievability",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        rwkv_scheduler, "_rwkv_curve_retrievabilities_for_inputs", curve_route
+    _patch_stored_curve_route(
+        monkeypatch, curve_retrievabilities=lambda count: [0.55] * count
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -19251,6 +19385,7 @@ def test_stats_curve_due_keeps_the_full_prediction_path(
 
     assert result is not None
     assert result.curve_due_card_ids == frozenset({1})
+    assert result.curve_scores == [(1, 0.55)]
 
 
 def test_backend_resident_curve_retrievability_requires_runtime_support() -> None:
@@ -19322,9 +19457,8 @@ def test_cancelled_stats_scoring_stops_at_the_next_batch_and_frees_the_lock(
         # the Stats window closes while the first batch runs
         rwkv_scheduler.cancel_stats_scoring()
 
-    _patch_resident_curve_route(
+    _patch_stored_curve_route(
         monkeypatch,
-        supported=True,
         curve_retrievabilities=lambda count: [0.6] * count,
         on_batch=on_batch,
     )
@@ -19364,9 +19498,8 @@ def test_stats_scoring_without_a_cancel_generation_is_never_cancelled(
         scored_batches.append(len(inputs_by_card_id))
         rwkv_scheduler.cancel_stats_scoring()
 
-    _patch_resident_curve_route(
+    _patch_stored_curve_route(
         monkeypatch,
-        supported=True,
         curve_retrievabilities=lambda count: [0.6] * count,
         on_batch=on_batch,
     )

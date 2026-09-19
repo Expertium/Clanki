@@ -950,10 +950,12 @@ impl crate::services::SchedulerService for Collection {
     fn set_rwkv_stats_graph_scores(&mut self, input: RwkvStatsGraphScoresRequest) -> Result<()> {
         let mut scores = HashMap::with_capacity(input.scores.len());
         for score in input.scores {
-            require!(
-                score.retrievability.is_finite() && (0.0..=1.0).contains(&score.retrievability),
-                "invalid RWKV retrievability"
-            );
+            if let Some(retrievability) = score.retrievability {
+                require!(
+                    retrievability.is_finite() && (0.0..=1.0).contains(&retrievability),
+                    "invalid RWKV retrievability"
+                );
+            }
             if let Some(target_retention) = score.target_retention {
                 require!(
                     target_retention.is_finite() && (0.0..=1.0).contains(&target_retention),

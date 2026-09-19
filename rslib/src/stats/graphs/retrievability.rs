@@ -335,7 +335,7 @@ mod tests {
             HashMap::from([(
                 cid,
                 crate::collection::RwkvStatsGraphScoreEntry {
-                    retrievability: 0.25,
+                    retrievability: Some(0.25),
                     curve_retrievability: Some(0.6),
                     intervening_reviews: None,
                     target_retention: None,

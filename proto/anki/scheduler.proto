@@ -1003,7 +1003,9 @@ message RwkvReviewQueueInterveningReviewsRequest {
 message RwkvStatsGraphScoresRequest {
   message Score {
     int64 card_id = 1;
-    float retrievability = 2;
+    // RWKV-Instant's rating head; absent for a card that carries only
+    // RWKV-Curve's value (the request did not need the rating head)
+    optional float retrievability = 2;
     optional uint32 intervening_reviews = 3;
     optional float target_retention = 4;
     optional bool curve_due = 5;

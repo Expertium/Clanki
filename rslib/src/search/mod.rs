@@ -373,19 +373,22 @@ impl Collection {
                 continue;
             };
 
+            // a card published with only RWKV-Curve's value has no rating head
             if config.inner.rwkv_review_instant_order_enabled
-                && matches!(
-                    rwkv_review_score_eligibility(
-                        score.retrievability,
-                        metadata,
-                        config.inner.rwkv_review_allow_same_day_review,
-                        config.inner.rwkv_review_min_intervening_reviews,
-                        config.inner.rwkv_review_min_elapsed_secs,
-                        score.intervening_reviews,
-                        score.target_retention,
-                    ),
-                    RwkvReviewScoreEligibility::Eligible
-                )
+                && score.retrievability.is_some_and(|retrievability| {
+                    matches!(
+                        rwkv_review_score_eligibility(
+                            retrievability,
+                            metadata,
+                            config.inner.rwkv_review_allow_same_day_review,
+                            config.inner.rwkv_review_min_intervening_reviews,
+                            config.inner.rwkv_review_min_elapsed_secs,
+                            score.intervening_reviews,
+                            score.target_retention,
+                        ),
+                        RwkvReviewScoreEligibility::Eligible
+                    )
+                })
             {
                 rows.push((card_id, 0));
             }
@@ -1672,7 +1675,7 @@ mod test {
                 (
                     ids[0],
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.2,
+                        retrievability: Some(0.2),
                         curve_retrievability: Some(0.95),
                         intervening_reviews: None,
                         target_retention: None,
@@ -1682,7 +1685,7 @@ mod test {
                 (
                     ids[1],
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.95,
+                        retrievability: Some(0.95),
                         curve_retrievability: Some(0.2),
                         intervening_reviews: None,
                         target_retention: None,
@@ -1843,7 +1846,7 @@ mod test {
                 (
                     instant_due.id,
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.7,
+                        retrievability: Some(0.7),
                         curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.8),
@@ -1853,7 +1856,7 @@ mod test {
                 (
                     card_dr_not_due.id,
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.6,
+                        retrievability: Some(0.6),
                         curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.4),
@@ -1863,7 +1866,7 @@ mod test {
                 (
                     curve_due.id,
                     RwkvStatsGraphScoreEntry {
-                        retrievability: 0.9,
+                        retrievability: Some(0.9),
                         curve_retrievability: None,
                         intervening_reviews: None,
                         target_retention: Some(0.8),
