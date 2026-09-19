@@ -74,6 +74,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             cursor: default;
         }
 
+        /* the pages' global `button:not(.btn, .btn-close):hover` rule gives
+           every button a 1px border on hover, and it outranks the `border:
+           none` above, so the pill grew by 2px under the mouse (spec
+           ui.mode-switch) */
+        &:hover {
+            border: none;
+        }
+
         &:not(.active):hover {
             background: var(--canvas-inset);
         }
