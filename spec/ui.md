@@ -421,13 +421,20 @@ The Browser reads the mode when it builds its column list and the
 filtered-deck dialog when it opens, so a mode switch reaches those names the
 next time the window is opened. Only the text
 changes: the search syntax (`prop:r`), the column key `retrievability`, the
-order of the cards, and every API and protobuf name stay as they are. The graphs,
+order of the cards, and every API and protobuf name stay as they are. The
+Stats graphs follow the same rule when Simple mode shows them (the UI split
+can add any graph to Simple mode): the Retrievability graph is "Card
+Probability of Recall", its tooltip says "N cards with X% probability of
+recall" and its table "Average probability of recall", and the Stability
+graph's subtitle says "the probability of recall falls to 90%". The
 deck-options settings and dialogs that name retrievability show in Advanced
-mode only (`ui.mode-switch`, `ui.advance-postpone`,
-`deck-options.simple-view`), so they keep the technical word everywhere.
+mode only by default (`ui.mode-switch`, `ui.advance-postpone`,
+`deck-options.simple-view`).
 
 **Why:** Andrew, 2026-09-16: "don't use the word 'retrievability' in Simple
-mode"; he chose the replacement wording "probability of recall". Simple mode
+mode"; he chose the replacement wording "probability of recall". 2026-09-19,
+once the UI split let the Retrievability graph into Simple mode: the graph
+uses the Simple-mode wording too ("Yes"). Simple mode
 is for users who do not read the FSRS papers. "Probability of recall" states
 what the number is; "memory strength" would be wrong, because that is
 stability.

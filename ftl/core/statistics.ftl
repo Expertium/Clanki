@@ -150,8 +150,12 @@ statistics-card-ease-title = Card Ease
 statistics-card-difficulty-title = Card Difficulty
 statistics-card-stability-title = Card Stability
 statistics-card-stability-subtitle = The delay at which retrievability falls to 90%.
+# Same, in Simple mode, which avoids the word "retrievability".
+statistics-card-stability-subtitle-simple = The delay at which the probability of recall falls to 90%.
 statistics-median-stability = Median stability
 statistics-card-retrievability-title = Card Retrievability
+# Same, in Simple mode, which avoids the word "retrievability".
+statistics-card-retrievability-title-simple = Card Probability of Recall
 statistics-card-ease-subtitle = The lower the ease, the more frequently a card will appear.
 statistics-card-difficulty-subtitle2 = The higher the difficulty, the slower stability will increase.
 statistics-retrievability-subtitle = The probability of recalling a card today.
@@ -170,6 +174,12 @@ statistics-retrievability-tooltip =
     { $cards ->
         [one] { $cards } card with { $percent } retrievability
        *[other] { $cards } cards with { $percent } retrievability
+    }
+# Same, in Simple mode, which avoids the word "retrievability".
+statistics-retrievability-tooltip-simple =
+    { $cards ->
+        [one] { $cards } card with { $percent } probability of recall
+       *[other] { $cards } cards with { $percent } probability of recall
     }
 statistics-total-knowledge-title = Total Knowledge
 statistics-total-knowledge-subtitle = The number of cards you would recall on each day (the sum of their retrievability), over your whole review history.
@@ -388,6 +398,8 @@ statistics-cards-per-day =
 statistics-median-ease = Median ease
 statistics-median-difficulty = Median difficulty
 statistics-average-retrievability = Average retrievability
+# Same, in Simple mode, which avoids the word "retrievability".
+statistics-average-retrievability-simple = Average probability of recall
 statistics-estimated-total-knowledge = Estimated total knowledge
 statistics-save-pdf = Save PDF
 statistics-saved = Saved.

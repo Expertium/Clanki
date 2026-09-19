@@ -5,7 +5,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import type { GraphsResponse } from "@generated/anki/stats_pb";
     import * as tr from "@generated/ftl";
-    import { createEventDispatcher } from "svelte";
+    import { createEventDispatcher, getContext } from "svelte";
+    import type { Readable } from "svelte/store";
+    import { readable } from "svelte/store";
 
     import AxisTicks from "./AxisTicks.svelte";
     import Graph from "./Graph.svelte";
@@ -19,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         prepareData,
         type RetrievabilityHistogramData,
         retrievabilityHistogramGraph,
+        retrievabilityTitle,
         rwkvScoresPending,
         shouldShowRetrievabilityGraph,
     } from "./retrievability";
@@ -30,6 +33,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let prefs: GraphPrefs;
 
     const dispatch = createEventDispatcher<SearchEventMap>();
+    // Simple mode says "probability of recall" (spec ui.simple-recall-wording)
+    const advancedUi =
+        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
 
     const bounds = defaultGraphBounds();
     let svg: HTMLElement | SVGElement | null = null;
@@ -43,12 +49,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             dispatch,
             $prefs.browserLinksSupported,
             PercentageRangeToQuantile(range),
+            $advancedUi,
         );
     }
 
     $: retrievabilityHistogramGraph(svg as SVGElement, bounds, histogramData);
 
-    const title = tr.statisticsCardRetrievabilityTitle();
+    $: title = retrievabilityTitle($advancedUi);
     const subtitle = tr.statisticsRetrievabilitySubtitle();
 </script>
 

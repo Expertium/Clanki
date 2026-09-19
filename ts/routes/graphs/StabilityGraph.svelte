@@ -6,7 +6,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { GraphsResponse } from "@generated/anki/stats_pb";
     import * as tr from "@generated/ftl";
     import { MONTH, timeSpan } from "@tslib/time";
-    import { createEventDispatcher } from "svelte";
+    import { createEventDispatcher, getContext } from "svelte";
+    import type { Readable } from "svelte/store";
+    import { readable } from "svelte/store";
 
     import Graph from "./Graph.svelte";
     import type { GraphPrefs } from "./graph-helpers";
@@ -47,7 +49,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     const title = tr.statisticsCardStabilityTitle();
-    const subtitle = tr.statisticsCardStabilitySubtitle();
+    // Simple mode says "probability of recall" (spec ui.simple-recall-wording)
+    const advancedUi =
+        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
+    $: subtitle = $advancedUi
+        ? tr.statisticsCardStabilitySubtitle()
+        : tr.statisticsCardStabilitySubtitleSimple();
     const month = timeSpan(1 * MONTH);
     const all = tr.statisticsRangeAllTime();
 </script>
