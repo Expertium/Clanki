@@ -4,4 +4,5 @@
   curve for every review when it reads the review history and when you
   answer a card (about 256 bytes per review, in the cache file beside the
   collection; never synced). Reviews recorded before this version, or by
-  another RWKV model, get no segment until the history is read again.
+  another RWKV model, get their segments once Clanki has read the history
+  again, which it does by itself after start-up.

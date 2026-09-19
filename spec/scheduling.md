@@ -284,6 +284,49 @@ and Cancel).
 **Pinned by:** `test_startup_builds_the_state_and_the_calibration_data_without_asking`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-recordings-automatic
+
+Given a collection that runs RWKV-Curve or RWKV-Instant and a usable RWKV
+model, whenever its RWKV state becomes ready (loaded or built at start-up,
+read again, or refreshed after a sync), Clanki itself does the RWKV work
+that would otherwise need a button, without asking and without a message:
+
+- when the state skips synced reviews that are older than the replay window,
+  it reads the whole review history again, in the "Getting Ready" progress
+  window, once the sync has finished;
+- otherwise, when the per-review recordings (the RWKV-Instant and RWKV-Curve
+  rows the Stats graphs read, `ui.stats-model-metrics`, and the curve
+  sources card info draws, `ui.card-info-rwkv-curve`) were not made by a
+  full recording pass with the running model (the SHA-256 of its weights),
+  the running curve-source format and kernel and the current replay
+  semantics, or their rows are gone from the cache file beside the
+  collection, it runs that pass, in the "Preparing Stats" progress window,
+  at most once per profile open. A finished pass remembers what it recorded
+  with (`rwkv-state-cache/recordings.json` in the profile folder), so the
+  next start-up runs none.
+
+Neither starts while a card is on the review screen: it waits until the
+review screen closes. Neither starts while the main window is disabled (a
+sync in progress, or the profile closing); the next time the state becomes
+ready finds the same reason and starts it then. A sync that skipped old
+reviews shows no message. The deck-options buttons "Read Review History
+Again" and "Prepare Stats Graphs" stay, as a manual fallback.
+
+**Why:** Andrew, 2026-09-19 (CLAUDE.md Planned direction 9, "Everything Just
+Works"): the user never decides to rebuild RWKV states; a message or a
+button that asks the user to read the history again or prepare data is a
+design bug. His collection showed "RWKV-Curve is not shown yet: Clanki has
+not recorded its predictions" on AUC-ROC, and a sync warned that "synced
+reviews are older than 8 days" and asked him to press "Read Review History
+Again".
+
+**Pinned by:** `test_missing_or_stale_recordings_start_the_recording_pass_by_itself`,
+`test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
+`test_nothing_starts_while_the_main_window_is_disabled`,
+`test_a_full_recording_pass_marks_the_recordings_current`,
+`test_post_sync_refresh_ignores_reviews_older_than_eight_days`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-lazy-state-load
 
 Given a saved RWKV state cache, when a profile opens, Clanki reads only the

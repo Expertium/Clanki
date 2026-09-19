@@ -383,6 +383,8 @@ class _RustRwkvRuntime:
             max_interval_days,
         )
         self._process_lock = threading.RLock()
+        # a constant of the model: asked once, never under the process lock
+        self._curve_source_tag = self._read_curve_source_tag()
 
     def _locked_process(self) -> Any:
         lock = getattr(self, "_process_lock", None)
@@ -1269,6 +1271,10 @@ class _RustRwkvRuntime:
 
     def curve_source_tag(self) -> tuple[int, int] | None:
         """(format, kernel) of this model's curve sources."""
+        cached = getattr(self, "_curve_source_tag", None)
+        return cached if cached is not None else self._read_curve_source_tag()
+
+    def _read_curve_source_tag(self) -> tuple[int, int] | None:
         tag = getattr(self._process, "curve_source_tag", None)
         if not callable(tag):
             return None
