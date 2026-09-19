@@ -155,6 +155,19 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    ask Andrew instead of removing it. Proto fields and config keys are
    `reserved`, not reused, when removed.
 
+9. **Everything Just Works** (Andrew, 2026-09-19). Neither FSRS nor RWKV may
+   make the user decide to optimize parameters or rebuild states. Clanki
+   does that work automatically.
+   - **FSRS-7:** automatic optimization every N days, as a Deck Options
+     setting.
+   - **RWKV:** if the states are not available for any reason (missing,
+     stale, synced reviews older than the replay window, a new model), Clanki
+     rebuilds them automatically, in the background with a progress window.
+
+   A message or a button that asks the user to optimize, rebuild, read the
+   history again or prepare data is a design bug. Manual buttons may stay
+   in Advanced mode as a fallback only.
+
 ## Changes already made in Clanki
 
 - Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
