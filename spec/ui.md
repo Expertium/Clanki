@@ -1124,3 +1124,25 @@ screen is not a refresh.
 `test_refresh_draws_from_the_top_on_another_screen`,
 `test_a_collapse_during_a_refresh_survives_the_refresh`
 (`qt/tests/test_deckbrowser.py`).
+
+## ui.answer-button-focus-visible
+
+Given an answer button in the reviewer (Again/Hard/Good/Easy), its dashed
+focus-indicator border shows only when the button was reached by keyboard
+navigation (for example Tab), and never after a mouse click, whether the
+mouse button is still held down or has already been released. The same rule
+applies to the bottom bar's generic focus indicator (its border colour),
+which is not specific to the answer buttons.
+
+**Why:** Andrew, 2026-09-17: "if I click and hold LMB on the answer button,
+the borders become dashed, but if I release it afterwards, they stay
+dashed". A mouse click also focuses the clicked element, so a plain
+`:focus` rule cannot tell a mouse click from a keyboard tab; `:focus-visible`
+can, and the dashed border is meant to help keyboard users find the
+focused button, not to react to a mouse click. The `.answerIncorrect:focus`
+/ `.answerCorrect:focus` border-COLOR rules are left as plain `:focus`: they
+set the same colour that the button already has at rest and on hover, so
+they draw no distinct focus indicator and cannot exhibit this bug.
+
+**Pinned by:** `answer button focus indicator shows for keyboard focus, not
+for a mouse click` (`ts/tests/e2e/reviewer-focus-visible.spec.ts`).
