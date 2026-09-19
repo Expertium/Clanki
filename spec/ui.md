@@ -178,9 +178,10 @@ needed to find a card, fix it, and choose whether it is studied:
 
 - Edit keeps Undo, Redo, Select All and Close; Select Notes, Invert
   Selection and Create Filtered Deck are Advanced-only.
-- Notes keeps Add Notes, Add Tags, Remove Tags and Delete; Create Copy,
-  Export Notes, Clear Unused Tags, Toggle Mark, Change Note Type, Find
-  Duplicates, Find and Replace and Manage Note Types are Advanced-only.
+- Notes keeps Add Notes, Delete and every tag item (Add Tags, Remove Tags,
+  Clear Unused Tags, Toggle Mark); Create Copy, Export Notes, Change Note
+  Type, Find Duplicates, Find and Replace and Manage Note Types are
+  Advanced-only.
 - Cards keeps Change Deck, Toggle Suspend, Flag and Info; Set Due Date, Grade
   Now, Forget, Reposition and Toggle Bury are Advanced-only (Advance and
   Postpone already are, `ui.advance-postpone`).
@@ -207,7 +208,8 @@ Browser in place, with the same search and selection.
 
 **Why:** Andrew, 2026-09-19: "There is a lot of stuff that most Anki users
 will never touch", and he approved this list as proposed, with hidden items
-keeping their shortcuts ("Ok"). The Retrievability column is left out of the
+keeping their shortcuts ("Ok"). Tags stay in Simple mode because the users
+he asked voted for it. The Retrievability column is left out of the
 Simple set because under RWKV it shows FSRS-7's value (a separate defect, to
 fix first).
 

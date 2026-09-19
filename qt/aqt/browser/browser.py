@@ -811,8 +811,6 @@ class Browser(QMainWindow):
             (f.menuEdit, f.actionCreateFilteredDeck),
             (f.menu_Notes, f.actionCopy),
             (f.menu_Notes, f.actionExport),
-            (f.menu_Notes, f.actionClear_Unused_Tags),
-            (f.menu_Notes, f.actionToggle_Mark),
             (f.menu_Notes, f.actionChangeModel),
             (f.menu_Notes, f.actionFindDuplicates),
             (f.menu_Notes, f.actionFindReplace),
