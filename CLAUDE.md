@@ -136,6 +136,25 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    spell: don't Goodhart yourself by cutting lines at the expense of
    clarity.
 
+   The same sweep also looks for **dead code** (Andrew, 2026-09-19), of two
+   kinds:
+   1. **Unused**: a variable, function, class, parameter, import, proto
+      field, RPC or config key that is declared but never read or called.
+   2. **Unseen**: code that runs and computes something, but whose result
+      never reaches the user anywhere: a value computed and then thrown
+      away, only logged, or stored where nothing reads it; a branch that no
+      input can reach; a UI element that is never shown.
+
+   Removing dead code must meet the same four rules. Before removing, check
+   the other readers that the behavior contract below names, not only
+   Clanki's own UI: the collection DB and sync (official Anki and AnkiDroid
+   read what we write), add-ons (anything public in `aqt`/`anki` may have
+   callers outside this repo, and hook names are API), AnkiConnect clients,
+   files on disk, and tests that pin a spec entry. Code whose result reaches
+   one of those, even though no screen shows it, is not dead: list it and
+   ask Andrew instead of removing it. Proto fields and config keys are
+   `reserved`, not reused, when removed.
+
 ## Changes already made in Clanki
 
 - Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
