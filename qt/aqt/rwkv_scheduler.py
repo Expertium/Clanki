@@ -3293,6 +3293,8 @@ class _RwkvReviewRetrievabilityCacheWriter:
         self._sample_role_by_review_id = sample_role_by_review_id or {}
         self._fold_index_by_review_id = fold_index_by_review_id or {}
         self._rows: list[tuple[int, float, str, int]] = []
+        # how many rows reached the collection
+        self.written = 0
 
     def __call__(self, review_id: int, retrievability: float) -> None:
         self.record(review_id, retrievability)
@@ -3359,6 +3361,8 @@ class _RwkvReviewRetrievabilityCacheWriter:
             )
         except Exception:
             logger.exception("failed to store RWKV review retrievability cache")
+        else:
+            self.written += len(rows)
 
 
 # every generic prediction row names its algorithm
@@ -10312,7 +10316,9 @@ def _warm_up_reviewer_backend(
         )
         warm_up_start = time.monotonic()
         _require_reviewer_backend_warmup_current(is_current)
-        _warm_up_rwkv_reviews(
+        # what the rows are recorded with, taken before the replay
+        recordings_tag = _rwkv_recordings_tag(getattr(reviewer, "mw", None))
+        recorded_all = _warm_up_rwkv_reviews(
             reviewer,
             backend,
             warm_up,
@@ -10350,6 +10356,11 @@ def _warm_up_reviewer_backend(
             expected_generation=warmup_generation,
         ):
             return False
+        if recorded_all and recordings_tag is not None:
+            # this build replayed the whole history with every recorder, so
+            # it is the recording pass too: none runs after it (spec
+            # sched.rwkv-recordings-automatic)
+            _write_rwkv_recordings_marker(getattr(reviewer, "mw", None), recordings_tag)
         logger.debug(
             "warmed RWKV reviewer state: reviews=%s restore_elapsed_ms=%.1f "
             "history_elapsed_ms=%.1f warm_up_elapsed_ms=%.1f "
@@ -10587,7 +10598,11 @@ def _warm_up_rwkv_reviews(
     snapshot_after_reviews: Sequence[int] = (),
     snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
     is_current: Callable[[], bool] | None = None,
-) -> None:
+) -> bool:
+    """Replays `reviews`. True when it recorded every per-review row the
+    automatic recording pass would (RWKV-Instant's and RWKV-Curve's rows and
+    the curve sources, spec sched.rwkv-recordings-automatic), so that a
+    replay of the whole history can stand in for that pass."""
     started_at = time.monotonic()
 
     def progress_reporter(replay_progress: RwkvWarmUpProgress) -> None:
@@ -10606,6 +10621,7 @@ def _warm_up_rwkv_reviews(
         source_writer = (
             _RwkvCurveSourceWriter(reviewer) if review_ids is not None else None
         )
+        recorded_all = False
         try:
             if not record_retrievability_cache:
                 backend.warm_up(
@@ -10640,10 +10656,13 @@ def _warm_up_rwkv_reviews(
                     writer.flush()
                     if curve_writer is not None:
                         curve_writer.flush()
+                recorded_all = curve_writer is not None and all(
+                    written > 0 for written in (writer.written, curve_writer.written)
+                )
         finally:
             if source_writer is not None:
                 source_writer.flush()
-        return
+        return recorded_all and source_writer is not None and source_writer.written > 0
 
     if callable(warm_up):
         warm_up_callable = cast(Callable[..., Any], warm_up)
@@ -10662,9 +10681,10 @@ def _warm_up_rwkv_reviews(
                 warm_up_callable(reviews, **kwargs)
             finally:
                 writer.flush()
-            return
+            return False
 
         warm_up_callable(reviews, **kwargs)
+    return False
 
 
 def _backend_records_curve_predictions(backend: RwkvStatefulReviewerBackend) -> bool:

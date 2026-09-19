@@ -303,7 +303,10 @@ that would otherwise need a button, without asking and without a message:
   collection, it runs that pass, in the "Preparing Stats" progress window,
   at most once per profile open. A finished pass remembers what it recorded
   with (`rwkv-state-cache/recordings.json` in the profile folder), so the
-  next start-up runs none.
+  next start-up runs none. A state-cache build that replays the whole
+  history and records all three (RWKV-Instant's rows, RWKV-Curve's rows and
+  the curve sources), such as the build on a first start, is that pass too:
+  it remembers the same, and no recording pass runs right after it.
 
 Neither starts while a card is on the review screen: it waits until the
 review screen closes. Neither starts while the main window is disabled (a
@@ -324,6 +327,7 @@ Again".
 `test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
 `test_nothing_starts_while_the_main_window_is_disabled`,
 `test_a_full_recording_pass_marks_the_recordings_current`,
+`test_a_full_recording_build_leaves_no_recording_pass_due`,
 `test_post_sync_refresh_ignores_reviews_older_than_eight_days`
 (`qt/tests/test_rwkv_scheduler.py`).
 
