@@ -9,9 +9,9 @@ import "$lib/sveltelib/export-runtime";
 import "./deck-options-base.scss";
 
 import { getDeckConfigsForUpdate } from "@generated/backend";
-import { loadSimpleItems } from "@tslib/ui-split";
 import { ModuleName, setupI18n } from "@tslib/i18n";
 import { checkNightMode } from "@tslib/nightmode";
+import { loadSimpleItems } from "@tslib/ui-split";
 
 import { modalsKey, touchDeviceKey } from "$lib/components/context-keys";
 import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
