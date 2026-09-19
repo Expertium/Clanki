@@ -1786,6 +1786,10 @@ mod test {
         conf.inner.new_card_gather_priority =
             NewCardGatherPriority::DescendingRetrievability as i32;
         conf.inner.new_card_sort_order = NewCardSortOrder::Template as i32;
+        // the retrievability gather orders are RWKV-Instant's (spec
+        // deck-options.new-retrievability-order-instant-only)
+        conf.inner.rwkv_review_enabled = false;
+        conf.inner.rwkv_review_instant_order_enabled = true;
         col.add_or_update_deck_config(&mut conf)?;
         deck.normal_mut().unwrap().config_id = conf.id.0;
         col.add_or_update_deck(&mut deck)?;
