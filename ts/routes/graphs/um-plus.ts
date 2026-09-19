@@ -16,6 +16,7 @@ import { localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, line, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
+import { drawGrid } from "./graph-helpers";
 import { ALGORITHM_COLOURS, algorithmName } from "./roc";
 
 /** A group with fewer ratings than this is hidden unless asked for. */
@@ -191,6 +192,7 @@ export function renderUmPlus(
     const y = scaleLinear()
         .domain([-reach, reach])
         .range([bounds.height - bounds.marginBottom, bounds.marginTop]);
+    drawGrid(drawing, bounds, x, y, x.ticks(7), y.ticks(5));
 
     drawing
         .append("g")

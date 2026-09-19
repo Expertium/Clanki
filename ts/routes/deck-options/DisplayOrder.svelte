@@ -128,7 +128,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <EnumSelectorRow
                     bind:value={$config.newCardGatherPriority}
                     defaultValue={defaults.newCardGatherPriority}
-                    choices={newGatherPriorityChoices()}
+                    choices={newGatherPriorityChoices(
+                        $config.rwkvReviewInstantOrderEnabled,
+                    )}
                 >
                     <SettingTitle
                         on:click={() =>

@@ -110,6 +110,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    // never a bare "RWKV" (spec ui.rwkv-algorithm-names)
+    $: boxTitle = $config.rwkvReviewInstantOrderEnabled
+        ? tr.deckConfigSchedulerChoiceRwkvInstant()
+        : tr.deckConfigSchedulerChoiceRwkvCurve();
+
     async function saveRwkvDeckOptions(): Promise<void> {
         await commitEditing();
         await state.save(UpdateDeckConfigsMode.NORMAL);
@@ -120,9 +125,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
      only has content for RWKV-Instant or under advanced options
      (spec deck-options.advanced-view). -->
 {#if $config.rwkvReviewInstantOrderEnabled || $config.rwkvReviewEnabled}
-    <TitledContainer title={"RWKV"}>
+    <TitledContainer title={boxTitle}>
         <HelpModal
-            title={"RWKV"}
+            title={boxTitle}
             url=""
             slot="tooltip"
             {helpSections}

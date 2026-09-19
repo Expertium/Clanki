@@ -496,28 +496,6 @@ impl Collection {
         Ok(stored as u32)
     }
 
-    /// The same pass with NO progress handling at all: it neither clears
-    /// the collection's progress nor reports its own, so a background
-    /// backfill cannot wipe or fight the progress the main thread is
-    /// showing (spec ui.stats-fsrs-predictions-ready).
-    pub(crate) fn compute_fsrs_review_retrievability_calibration_cache_quietly(
-        &mut self,
-        params: &[f32],
-        context: &FsrsReviewPredictionContext,
-        include_validation_folds: bool,
-    ) -> Result<u32> {
-        let rows =
-            fsrs_review_retrievability_cache_rows(params, context, include_validation_folds, None)?;
-        let stored = self
-            .storage
-            .set_fsrs_review_retrievability_predictions(&rows, "fsrs_calibration_recompute")?;
-        tracing::debug!(
-            predictions = stored,
-            "stored FSRS review retrievability calibration cache in the background"
-        );
-        Ok(stored as u32)
-    }
-
     fn create_fsrs_review_retrievability_progress_thread(
         &self,
         context: &FsrsReviewPredictionContext,

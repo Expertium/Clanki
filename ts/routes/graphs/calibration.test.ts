@@ -103,6 +103,27 @@ test("a bin's point is its mean prediction against its share remembered", () => 
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics
+test("each count bar spans its own bin, and the bins tile 0 to 1", () => {
+    const points = binPoints(
+        Array.from({ length: 20 }, (_, index) => bin(index, 10, 0.5, 0.5)),
+    );
+
+    expect(points[0].from).toBe(0);
+    expect(points[19].to).toBeCloseTo(1, 12);
+    for (let i = 1; i < 20; i++) {
+        // no overlap and no gap between neighbours
+        expect(points[i].from).toBeCloseTo(points[i - 1].to, 12);
+        // the bins narrow towards 1, as bin_of in review_metrics.rs cuts them
+        expect(points[i].to - points[i].from).toBeLessThan(
+            points[i - 1].to - points[i - 1].from,
+        );
+    }
+    // the same cut as the Rust side: 0.75 falls in bin floor(21^0.75) - 1 = 8
+    expect(points[8].from).toBeLessThanOrEqual(0.75);
+    expect(points[8].to).toBeGreaterThan(0.75);
+});
+
+// Pins spec/ui.md#ui.stats-model-metrics
 test("the tiles give the average predicted, the actual recall and the count", () => {
     const drawn = calibrationSeries(progress(), SchedulingAlgorithm.FSRS7);
 

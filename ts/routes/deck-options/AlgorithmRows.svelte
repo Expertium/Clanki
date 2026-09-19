@@ -15,8 +15,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
+    import {
+        newGatherPriorityForAlgorithm,
+        reviewOrderForAlgorithm,
+    } from "./review-order";
     import type { Placement } from "./ui-split";
-    import { reviewOrderForAlgorithm } from "./review-order";
     import {
         flagsFromSchedulerChoice,
         SchedulingAlgorithm,
@@ -80,6 +83,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (order !== current.reviewOrder) {
             config.update((c) => {
                 c.reviewOrder = order;
+                return c;
+            });
+        }
+        // The retrievability new-card orders read RWKV-Instant's scores; under
+        // another algorithm a stored one reads as the default (spec
+        // deck-options.new-retrievability-order-instant-only).
+        const gather = newGatherPriorityForAlgorithm(
+            current.newCardGatherPriority,
+            flags.rwkvInstant,
+        );
+        if (gather !== current.newCardGatherPriority) {
+            config.update((c) => {
+                c.newCardGatherPriority = gather;
                 return c;
             });
         }

@@ -415,8 +415,12 @@ ITEMS += _items(
 
 
 def _rwkv() -> str:
-    # the RWKV section's title is not translated
-    return "RWKV"
+    """The RWKV section's settings belong to RWKV-Curve and RWKV-Instant;
+    the name says both, never a bare "RWKV" (spec ui.rwkv-algorithm-names)."""
+    return (
+        f"{tr.deck_config_scheduler_choice_rwkv_curve()} / "
+        f"{tr.deck_config_scheduler_choice_rwkv_instant()}"
+    )
 
 
 # The deck-options page, one item per setting (spec deck-options.simple-view),

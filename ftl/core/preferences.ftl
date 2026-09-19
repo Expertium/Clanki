@@ -186,4 +186,4 @@ preferences-ui-split-simple-section = The Simple section
 preferences-ui-split-daily-limit-tabs = Preset / This deck / Today only tabs of the daily limits
 preferences-ui-split-desired-retention-tabs = Preset / This deck tabs of desired retention
 preferences-ui-split-fsrs-search-filter = Search filter of the FSRS parameters
-preferences-ui-split-rwkv-maintenance = Maintenance: Rebuild RWKV State, Calculate Calibration Graph Data
+preferences-ui-split-rwkv-maintenance = Maintenance buttons: rebuild the RWKV model state, calculate the calibration graph data

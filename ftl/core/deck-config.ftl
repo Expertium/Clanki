@@ -221,9 +221,9 @@ deck-config-new-gather-priority-position-lowest-first = Ascending position
 # Gather new cards ordered by position number, descending (highest to lowest).
 deck-config-new-gather-priority-position-highest-first = Descending position
 # Gather new cards ordered by RWKV retrievability percentage, ascending (0% to 100%, least retrievable to most easily retrievable).
-deck-config-new-gather-priority-ascending-retrievability = Ascending retrievability (RWKV)
+deck-config-new-gather-priority-ascending-retrievability = Ascending retrievability (RWKV-Instant)
 # Gather new cards ordered by RWKV retrievability percentage, descending (100% to 0%, most easily retrievable to least retrievable).
-deck-config-new-gather-priority-descending-retrievability = Descending retrievability (RWKV)
+deck-config-new-gather-priority-descending-retrievability = Descending retrievability (RWKV-Instant)
 # Gather the cards ordered by random notes, ensuring all cards of the same note are grouped together.
 deck-config-new-gather-priority-random-notes = Random notes
 # Gather new cards randomly.
@@ -344,7 +344,7 @@ deck-config-rwkv-review-enabled-tooltip =
     Again, Hard, Good, and Easy. This does not enable RWKV-Instant review queue
     ordering; that is controlled by the separate option below. Other devices
     continue to use FSRS or SM-2.
-deck-config-rwkv-review-enforce-grade-order = Keep RWKV intervals in answer order
+deck-config-rwkv-review-enforce-grade-order = Keep RWKV-Curve intervals in answer order
 deck-config-rwkv-review-enforce-grade-order-tooltip =
     Keep Again, Hard, Good, and Easy in a sensible interval order. When RWKV's
     four predictions disagree, Clanki gently balances the conflicting predictions
@@ -374,12 +374,12 @@ deck-config-rwkv-review-candidate-refresh-tooltip =
     appear next. This makes queue updates faster for large decks, but other
     cards keep an older estimate until a later update. Clanki automatically bounds
     the number rechecked at once.
-deck-config-rwkv-review-refresh-interval = Update the RWKV queue every
+deck-config-rwkv-review-refresh-interval = Update the RWKV-Instant queue every
 deck-config-rwkv-review-refresh-interval-tooltip =
     How many answers to wait between RWKV queue updates. 1 updates the queue
     after every answer. Higher values reduce the work RWKV does while you
     review, but the queue may use older estimates between updates.
-deck-config-rwkv-review-refresh-on-exit = Update the RWKV queue after reviewing
+deck-config-rwkv-review-refresh-on-exit = Update the RWKV-Instant queue after reviewing
 deck-config-rwkv-review-refresh-on-exit-tooltip =
     If you answered at least one card, update the RWKV estimates in the
     background when you leave the reviewer. This helps prepare an up-to-date

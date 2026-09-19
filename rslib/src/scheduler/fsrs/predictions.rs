@@ -15,9 +15,39 @@ use std::collections::HashMap;
 
 use crate::deckconfig::DeckConfig;
 use crate::prelude::*;
+use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::search::writer::preset_search;
+use crate::storage::FsrsReviewRetrievabilityCacheRow;
+
+/// One preset's recompute, split so that only reading its reviews and
+/// writing its rows need the collection; the fold fits in [`Self::rows`] run
+/// without it.
+pub(crate) struct FsrsReviewPredictionJob {
+    key: FsrsReviewPredictionJobKey,
+    params: Vec<f32>,
+    context: FsrsReviewPredictionContext,
+}
+
+/// What the rows depend on besides the reviews read: the preset as saved
+/// (its parameters, and anything else a save changes) and the decks that
+/// use it. If either differs at write time the rows are dropped, since a
+/// parameter change deletes the old rows and must not see them come back.
+#[derive(PartialEq, Eq, Debug)]
+struct FsrsReviewPredictionJobKey {
+    preset: DeckConfigId,
+    preset_mtime: TimestampSecs,
+    // as bits; a save within the same second leaves the mtime unchanged
+    params: Vec<u32>,
+    decks: Vec<DeckId>,
+}
+
+impl FsrsReviewPredictionJob {
+    pub(crate) fn rows(&self) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
+        fsrs_review_retrievability_cache_rows(&self.params, &self.context, true, None)
+    }
+}
 
 impl Collection {
     /// The presets whose cards hold rated reviews that no validation fold
@@ -73,28 +103,21 @@ impl Collection {
         self.storage.clear_fsrs_review_predictions_for_decks(&decks)
     }
 
-    /// Recomputes ONE preset's predictions and returns how many rows it
-    /// wrote. One preset per call, so the collection is free between them
-    /// and the main thread is never shut out for the length of a whole
-    /// backfill (spec ui.stats-fsrs-predictions-ready). The rows are
-    /// validation folds, so nothing that produced a row had seen the review
-    /// it predicts (spec ui.stats-model-metrics).
-    pub(crate) fn refresh_fsrs_review_predictions_of(
+    /// Reads what ONE preset's recompute needs; None when the preset is
+    /// gone or has no reviews to predict. One preset per call, so the
+    /// collection is free between them and the main thread is never shut
+    /// out for the length of a whole backfill; the backend also releases it
+    /// while [`FsrsReviewPredictionJob::rows`] runs (spec
+    /// ui.stats-fsrs-predictions-ready). The rows are validation folds, so
+    /// nothing that produced a row had seen the review it predicts (spec
+    /// ui.stats-model-metrics).
+    pub(crate) fn fsrs_review_prediction_job(
         &mut self,
         preset: DeckConfigId,
-    ) -> Result<u32> {
-        let Some(config) = self
-            .storage
-            .all_deck_config()?
-            .into_iter()
-            .find(|config| config.id == preset)
-        else {
-            return Ok(0);
+    ) -> Result<Option<FsrsReviewPredictionJob>> {
+        let Some(config) = self.storage.get_deck_config(preset)? else {
+            return Ok(None);
         };
-        self.refresh_fsrs_review_predictions_of_preset(&config)
-    }
-
-    fn refresh_fsrs_review_predictions_of_preset(&mut self, config: &DeckConfig) -> Result<u32> {
         let search = preset_search(&config.name);
         let params = config.fsrs_params().to_vec();
         let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
@@ -110,13 +133,55 @@ impl Collection {
             enable_scheduling_penalties: true,
         })?;
         if prepared.items.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(FsrsReviewPredictionJob {
+            key: self.fsrs_review_prediction_job_key(&config)?,
+            params,
+            context: FsrsReviewPredictionContext::from_prepared(&prepared),
+        }))
+    }
+
+    /// Writes a job's rows, unless its preset was saved or its decks changed
+    /// since the job read them; then it writes nothing and the preset stays
+    /// stale for the next pass. No progress handling: this runs while the
+    /// user is doing something else, and a background pass must not clear
+    /// or contend with the progress the main thread is showing.
+    pub(crate) fn store_fsrs_review_prediction_rows(
+        &mut self,
+        job: &FsrsReviewPredictionJob,
+        rows: &[FsrsReviewRetrievabilityCacheRow],
+    ) -> Result<u32> {
+        let Some(config) = self.storage.get_deck_config(job.key.preset)? else {
+            return Ok(0);
+        };
+        if self.fsrs_review_prediction_job_key(&config)? != job.key {
             return Ok(0);
         }
-        let context = FsrsReviewPredictionContext::from_prepared(&prepared);
-        // no progress handling: this runs while the user is doing something
-        // else, and a background pass must not clear or contend with the
-        // progress the main thread is showing
-        self.compute_fsrs_review_retrievability_calibration_cache_quietly(&params, &context, true)
+        let stored = self
+            .storage
+            .set_fsrs_review_retrievability_predictions(rows, "fsrs_calibration_recompute")?;
+        Ok(stored as u32)
+    }
+
+    fn fsrs_review_prediction_job_key(
+        &mut self,
+        config: &DeckConfig,
+    ) -> Result<FsrsReviewPredictionJobKey> {
+        let mut decks: Vec<DeckId> = self
+            .storage
+            .get_all_decks()?
+            .into_iter()
+            .filter(|deck| deck.config_id() == Some(config.id))
+            .map(|deck| deck.id)
+            .collect();
+        decks.sort_unstable();
+        Ok(FsrsReviewPredictionJobKey {
+            preset: config.id,
+            preset_mtime: config.mtime_secs,
+            params: config.fsrs_params().iter().map(|p| p.to_bits()).collect(),
+            decks,
+        })
     }
 }
 
@@ -211,6 +276,81 @@ mod test {
             "test",
         )?;
         assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
+        Ok(())
+    }
+
+    fn card_with_reviews(col: &mut Collection) {
+        let note = NoteAdder::basic(col).add(col);
+        let card = col
+            .storage
+            .all_cards_of_note(note.id)
+            .unwrap()
+            .pop()
+            .unwrap();
+        for (days_ago, interval) in [(40, 0), (39, 3), (30, 10)] {
+            col.storage
+                .add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(TimestampMillis::now().0 - days_ago * 86_400_000),
+                        cid: card.id,
+                        button_chosen: 3,
+                        review_kind: if interval == 0 {
+                            RevlogReviewKind::Learning
+                        } else {
+                            RevlogReviewKind::Review
+                        },
+                        interval,
+                        ease_factor: 2500,
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+    }
+
+    fn fold_rows(col: &Collection) -> usize {
+        col.storage
+            .db
+            .query_row(
+                "select count() from search_stats_fsrs_review_retrievability",
+                [],
+                |row| row.get(0),
+            )
+            // the table appears with its first write
+            .unwrap_or(0)
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: the rows are computed
+    // without the collection, so a preset saved meanwhile must not get back
+    // the rows its save deleted.
+    #[test]
+    fn rows_computed_before_a_preset_save_are_not_written() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..4 {
+            card_with_reviews(&mut col);
+        }
+        let preset = DeckConfigId(1);
+
+        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let rows = job.rows()?;
+        assert!(!rows.is_empty());
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        let mut params = config.fsrs_params().to_vec();
+        params[0] *= 1.01;
+        config.inner.fsrs_params_7 = params;
+        col.storage.update_deck_conf(&config)?;
+        assert_eq!(col.store_fsrs_review_prediction_rows(&job, &rows)?, 0);
+        assert_eq!(fold_rows(&col), 0);
+
+        // with nothing saved in between, the same steps write the rows
+        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let rows = job.rows()?;
+        assert_eq!(
+            col.store_fsrs_review_prediction_rows(&job, &rows)? as usize,
+            rows.len()
+        );
+        assert_eq!(fold_rows(&col), rows.len());
         Ok(())
     }
 }

@@ -478,6 +478,25 @@ sorting RWKV cards by it has no meaning.
 
 **Pinned by:** `ts/routes/deck-options/review-order.test.ts`.
 
+## deck-options.new-retrievability-order-instant-only
+
+Given a preset, the new-card gather orders "Ascending retrievability" and
+"Descending retrievability" rank new cards by RWKV-Instant's scores, so they
+are offered only when the collection runs RWKV-Instant. Under FSRS-7 and
+RWKV-Curve the dropdown does not list them, a preset that stores one of them
+reads as "Deck" on the deck-options screen (and saving writes that), and the
+study queue gathers such a preset's new cards as "Deck" does, without reading
+any RWKV-Instant score.
+
+**Why:** Andrew, 2026-09-19: under RWKV-Curve these orders read
+RWKV-Instant's values, which mixes two algorithms (RWKV-Curve has no value
+for a new card); "hide it".
+
+**Pinned by:** `ts/routes/deck-options/review-order.test.ts` ("the
+retrievability new-card orders are offered only under RWKV-Instant"),
+`retrievability_gather_outside_rwkv_instant_ignores_instant_scores`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## deck-options.historical-retention-fixed
 
 Given any preset, historical retention is 0.9. A memory state inferred from

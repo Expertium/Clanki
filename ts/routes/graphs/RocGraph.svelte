@@ -148,7 +148,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <div class="square">
         <svg bind:this={svg} viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
             <g class="roc" />
-            <NoDataOverlay {bounds} text={overlay} />
+            <!-- only a message: with no text the overlay says "No data" over the graph -->
+            {#if overlay}
+                <NoDataOverlay {bounds} text={overlay} />
+            {/if}
         </svg>
     </div>
     <div class="description">

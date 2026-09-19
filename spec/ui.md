@@ -775,6 +775,11 @@ graph fills in when the scores arrive. Under FSRS-7 no RWKV score is
 prepared at all (`ui.fsrs7-no-rwkv-values`). The RWKV-Curve R here is
 each card's stored curve now (`ui.rwkv-curve-r-stored-curve`), the same value
 card info shows (`ui.card-info-one-algorithm`).
+The Retrievability graph names its series after the algorithm (FSRS-7,
+RWKV-Curve or RWKV-Instant, never a bare "RWKV"), and a click on a bar opens
+the Browser on that algorithm's own R: `prop:r`, `prop:rwkv-curve:r` or
+`prop:rwkv:r`. Shift+click does the same; it no longer searches FSRS-7's R
+under RWKV.
 
 **Why:** Andrew, 2026-09-15: never mix two algorithms in one display; while
 RWKV is not ready, show "…" or "Calculating…" rather than FSRS-7's values;
@@ -1025,6 +1030,49 @@ do not change.
 `test_a_changed_old_review_throws_the_kept_days_away`,
 `test_the_kept_days_stop_before_today_and_survive_a_restart`).
 
+## ui.rwkv-algorithm-names
+
+Given anything the user reads about RWKV's values (a graph series or legend,
+a menu, a setting, a progress title, an error message), it names the
+algorithm: "RWKV-Curve" or "RWKV-Instant", never a bare "RWKV". A bare "RWKV"
+names only the model itself (its file, its state, its review history). So the
+Stats Retrievability graph's series is named after the collection's
+algorithm, the deck menu's reschedule submenu is "RWKV-Curve" (it reschedules
+with RWKV-Curve), the deck-options box is named after the collection's RWKV
+algorithm, "Keep RWKV-Curve intervals in answer order" and "Update the
+RWKV-Instant queue" name the algorithm each setting belongs to, the new-card
+orders by retrievability say "(RWKV-Instant)" (they read RWKV-Instant's
+scores), the Browser's "calculating ... values" title names the algorithm its
+search reads, and a filtered deck's failed preparation names the
+collection's.
+
+**Why:** Andrew, 2026-09-19: "make sure it says RWKV-Curve or RWKV-Instant,
+not just RWKV. See if there are any other places with ambiguous naming."
+
+**Pinned by:** `qt/tests/test_rwkv_algorithm_names.py` (a search and a
+collection name their algorithm; no English label about values says a bare
+"RWKV"), `ts/routes/graphs/retrievability.test.ts` ("the series is named after
+the algorithm, not just RWKV").
+
+## ui.stats-model-graph-drawing
+
+Given the AUC-ROC, Calibration and Universal Metric+ graphs, each draws a
+faint grid at its axes' ticks behind the data. The Calibration graph's count
+bars each span their own bin, from its lower edge to its upper edge
+(the bins narrow towards 1: bin i holds predictions from ln(i+1)/ln 21 to
+ln(i+2)/ln 21), so no bar overlaps another and none sits away from its bin.
+A model-quality or Total Knowledge graph that has data shows no "No data"
+text over it; the overlay appears only with a message (calculating, an
+error, or no data at all). The UM+ graph's title is "Universal Metric+
+cross-comparison".
+
+**Why:** Andrew, 2026-09-19: "NO DATA + some bars are overlapping while
+others are far away from each other"; "add grid, plt.grid() kind"; "make
+sure the title says Universal Metric+, not just UM+".
+
+**Pinned by:** `ts/routes/graphs/calibration.test.ts` ("each count bar spans
+its own bin, and the bins tile 0 to 1").
+
 ## ui.stats-model-metrics
 
 Given the Stats page in Advanced mode, the model-quality graphs compare the
@@ -1260,7 +1308,17 @@ nothing.
 
 The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
-day, and again at once whenever a preset's FSRS-7 parameters change.
+day, and again whenever a preset's FSRS-7 parameters change.
+
+It waits for a pause in what the user does. It asks which presets are stale,
+and starts each preset, only once ten seconds have passed without a key
+press, a click, a double click, a scroll or a touch anywhere in Clanki. One
+preset holds the collection for up to about five seconds on a large
+collection, and anything the user does meanwhile waits for it; at start-up,
+when the pass began at once, that froze the main window for 2-4 seconds and
+made deck options take 3.5 seconds to open. While it waits for a pause it
+has written nothing. When the collection closes during the wait, the pass
+stops without counting the day as done and without reporting a failure.
 
 It never starts while the RWKV state cache is loading or building. That load
 holds the collection, so a pass in front of it would make the user wait for
@@ -1319,6 +1377,9 @@ rather than while a page is open.
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
+`test_the_pass_waits_for_a_pause_in_what_the_user_does`,
+`test_a_preset_waits_for_the_next_pause`,
+`test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes`,
 `test_the_fake_backend_returns_what_the_real_backend_returns`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,

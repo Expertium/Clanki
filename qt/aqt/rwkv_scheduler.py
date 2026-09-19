@@ -17870,6 +17870,10 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
+    """Only an RWKV-Instant preset gathers new cards by its scores (spec
+    deck-options.new-retrievability-order-instant-only)."""
+    if not _rwkv_review_instant_order_enabled(deck_config):
+        return False
     value = deck_config.get(
         "newCardGatherPriority",
         deck_config.get("new_card_gather_priority"),
@@ -23789,3 +23793,27 @@ def _review_state_for_interval_override(state: SchedulingState) -> Any | None:
     if normal_kind == "relearning":
         return state.normal.relearning.review
     return None
+
+
+def rwkv_algorithm_name(col: object) -> str:
+    """RWKV-Curve or RWKV-Instant: the collection's RWKV algorithm by name,
+    for a message about its values, never a bare "RWKV" (spec
+    ui.rwkv-algorithm-names)."""
+    from aqt.utils import tr
+
+    if rwkv_curve_collection_active(SimpleNamespace(mw=SimpleNamespace(col=col))):
+        return tr.deck_config_scheduler_choice_rwkv_curve()
+    return tr.deck_config_scheduler_choice_rwkv_instant()
+
+
+def rwkv_algorithm_name_for_search(search: str) -> str:
+    """The RWKV algorithm whose values a search reads: `prop:rwkv:r` and
+    `is:rwkv:due` are RWKV-Instant's, the rest RWKV-Curve's (spec
+    ui.rwkv-algorithm-names)."""
+    from aqt.utils import tr
+
+    if _RWKV_INSTANT_R_SEARCH_PATTERN.search(search) or _search_uses_rwkv_instant_due(
+        search
+    ):
+        return tr.deck_config_scheduler_choice_rwkv_instant()
+    return tr.deck_config_scheduler_choice_rwkv_curve()

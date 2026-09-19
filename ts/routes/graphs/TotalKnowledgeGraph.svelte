@@ -67,7 +67,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             reviewed,
         );
     }
-    $: overlay = loadError ?? overlayText(response, rwkv);
+    $: overlay =
+        loadError ??
+        overlayText(response, rwkv) ??
+        (hasDrawing(response, rwkv) ? undefined : tr.statisticsNoData());
 
     function stopPolling(): void {
         if (pollTimer !== undefined) {
@@ -218,7 +221,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <svg bind:this={svg} viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
         <g class="total-knowledge" />
         <AxisTicks {bounds} />
-        <NoDataOverlay {bounds} text={overlay} />
+        <!-- only a message: with no text the overlay says "No data" over the graph -->
+        {#if overlay}
+            <NoDataOverlay {bounds} text={overlay} />
+        {/if}
     </svg>
     <div class="description">
         {#if $advancedUi}

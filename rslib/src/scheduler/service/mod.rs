@@ -464,15 +464,6 @@ impl crate::services::SchedulerService for Collection {
         })
     }
 
-    fn refresh_fsrs_review_predictions(
-        &mut self,
-        input: scheduler::RefreshFsrsReviewPredictionsRequest,
-    ) -> Result<generic::UInt32> {
-        Ok(generic::UInt32 {
-            val: self.refresh_fsrs_review_predictions_of(DeckConfigId(input.deck_config_id))?,
-        })
-    }
-
     fn compute_fsrs_review_retrievability_calibration(
         &mut self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
@@ -1182,6 +1173,23 @@ fn fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
 }
 
 impl crate::services::BackendSchedulerService for Backend {
+    /// The collection is held to read the preset's reviews and to write the
+    /// rows, never while the folds are fitted, so a user action waits only
+    /// for the short read or write (spec ui.stats-fsrs-predictions-ready).
+    fn refresh_fsrs_review_predictions(
+        &self,
+        input: scheduler::RefreshFsrsReviewPredictionsRequest,
+    ) -> Result<generic::UInt32> {
+        let preset = DeckConfigId(input.deck_config_id);
+        let Some(job) = self.with_col(|col| col.fsrs_review_prediction_job(preset))? else {
+            return Ok(0u32.into());
+        };
+        let rows = job.rows()?;
+        Ok(self
+            .with_col(|col| col.store_fsrs_review_prediction_rows(&job, &rows))?
+            .into())
+    }
+
     fn compute_fsrs_params_from_items(
         &self,
         req: scheduler::ComputeFsrsParamsFromItemsRequest,

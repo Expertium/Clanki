@@ -16,6 +16,7 @@ import { localizedNumber } from "@tslib/i18n";
 import { axisBottom, axisLeft, axisRight, line, max, scaleLinear, select } from "d3";
 
 import type { GraphBounds } from "./graph-helpers";
+import { drawGrid } from "./graph-helpers";
 import { ALGORITHM_COLOURS, algorithmName } from "./roc";
 
 /** Every tenth: the axes step by 0.1, not 0.2 (spec ui.stats-model-metrics). */
@@ -45,6 +46,18 @@ export interface CalibrationPoint {
     count: number;
     low: number;
     high: number;
+    /** The bin's edges on the x axis. */
+    from: number;
+    to: number;
+}
+
+const BIN_COUNT = 20;
+
+/** The lower edge of bin `index`, the inverse of `bin_of` in
+ * rslib/src/stats/review_metrics.rs: bin i holds the predictions from
+ * ln(i+1)/ln(21) up to ln(i+2)/ln(21), so the bins narrow towards 1. */
+export function binEdge(index: number): number {
+    return Math.log(index + 1) / Math.log(BIN_COUNT + 1);
 }
 
 export interface CalibrationSeries {
@@ -66,6 +79,8 @@ export function binPoints(bins: CalibrationBin[]): CalibrationPoint[] {
             count: bin.count,
             low: bin.low,
             high: bin.high,
+            from: binEdge(bin.index),
+            to: binEdge(bin.index + 1),
         }));
 }
 
@@ -162,6 +177,7 @@ export function renderCalibration(
         .domain([0, 1])
         .range([bounds.height - bounds.marginBottom, bounds.marginTop]);
     const drawing = svg.append("g").attr("class", "calibration-drawing");
+    drawGrid(drawing, bounds, x, y, axisTenths, axisTenths);
 
     drawing
         .append("g")
@@ -216,14 +232,12 @@ export function renderCalibration(
     const countScale = scaleLinear()
         .domain([0, top])
         .range([bounds.height - bounds.marginBottom, bounds.marginTop]);
-    const width = Math.max(
-        2,
-        (bounds.width - bounds.marginLeft - bounds.marginRight) / (series.points.length * 1.5),
-    );
+    // each bar spans its own bin, with a 1 px gap to the next one
     for (const point of series.points) {
+        const width = Math.max(1, x(point.to) - x(point.from) - 1);
         counts
             .append("rect")
-            .attr("x", x(point.predicted) - width / 2)
+            .attr("x", x(point.from) + 0.5)
             .attr("y", countScale(point.count))
             .attr("width", width)
             .attr("height", bounds.height - bounds.marginBottom - countScale(point.count))
