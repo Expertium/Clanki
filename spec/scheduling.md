@@ -677,6 +677,51 @@ and the retrievability orders gathered the cards in due-day order.
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
+## sched.filtered-deck-one-algorithm
+
+Given a filtered deck whose search term is ordered by "Retrievability
+ascending" or "Retrievability descending", a build (create, rebuild) orders
+the matching cards by the retrievability of the collection's algorithm only
+(`sched.one-global-algorithm`):
+
+| Algorithm    | A card's key                                                    |
+| ------------ | --------------------------------------------------------------- |
+| FSRS-7       | FSRS-7's R (SM-2's relative overdueness without a memory state) |
+| RWKV-Curve   | its stored curve now (`ui.rwkv-curve-r-stored-curve`)           |
+| RWKV-Instant | RWKV-Instant's R                                                |
+
+Before the build, Clanki scores the cards that the deck's searches match
+with that algorithm and keeps those scores under the deck's own name. The
+build reads only them, never scores that the Stats page, a Browser search or
+another place published. A card with no value from the algorithm (no RWKV
+state, no stored curve, or RWKV not available) goes after every card with a
+value, in both directions; among themselves such cards keep the tie order (a
+hash of card id and modification time, then card id). Under RWKV no FSRS-7
+or SM-2 value stands in, even when FSRS is switched off. Under FSRS-7 no RWKV
+value is read.
+
+The backend's "RWKV retrievability of a card" call follows the same rule:
+RWKV-Instant's R under RWKV-Instant, the curve value under RWKV-Curve, none
+under FSRS-7.
+
+**Why:** Andrew, 2026-09-19: fix the algorithm mixing; "the RWKV-Instant part
+needs fixing, yeah". Before, the order took the newest score any place had
+published, whichever search it scored: under RWKV-Curve that was RWKV-Instant's
+rating head, a card outside that search got FSRS-7's or SM-2's value, and a
+card without a memory state got SM-2's. On a copy of his collection
+(RELEASE build) the deck's own scoring takes 10-15 ms for a deck of 198 due
+cards, 1.1-1.4 s for all 25,552 due cards of the collection and 1.7-2.2 s for
+every card, on the build's background thread.
+
+**Pinned by:** `filtered_deck_retrievability_order_uses_only_the_collections_algorithm`
+(`rslib/src/scheduler/filtered/mod.rs`),
+`rwkv_retrievability_score_is_the_collections_algorithms`
+(`rslib/src/scheduler/service/mod.rs`),
+`test_filtered_deck_retrievability_order_scores_its_own_cards`,
+`test_filtered_deck_key_matches_the_rust_build`,
+`test_filtered_deck_retrievability_prepares_rwkv_candidate_scores`
+(`qt/tests/test_rwkv_scheduler.py`)
+
 ## sched.max-same-day-reviews
 
 Given a card whose preset is scheduled by FSRS (any version, RWKV-Curve and

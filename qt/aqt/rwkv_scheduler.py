@@ -160,6 +160,11 @@ _RWKV_INSTANT_R_SEARCH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])prop:rwkv:r(?=[<>=!])",
     re.IGNORECASE,
 )
+# the name under which a filtered deck's preparation publishes the RWKV
+# scores of its own cards; the Rust build's retrievability order reads only
+# this map (rslib `FILTERED_DECK_RWKV_SCORES_SEARCH`, spec
+# sched.filtered-deck-one-algorithm)
+FILTERED_DECK_RWKV_SCORES_SEARCH = "\x00filtered-deck"
 _RWKV_CURVE_R_SEARCH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])prop:rwkv-curve:r(?=[<>=!])",
     re.IGNORECASE,
@@ -984,6 +989,7 @@ RwkvStatsPrepareKey = tuple[
     bool,
     bool,
     bool,
+    str,
 ]
 RwkvScorePrewarmKey = tuple[int, int, int, int, tuple[int, ...]]
 RwkvFirstReviewElapsedStateCacheKey = tuple[tuple[object, bool], ...]
@@ -6150,18 +6156,24 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
     prepare_instant_retrievability: bool = False,
     cancel_when_stats_closes: bool = False,
     warmup_wait_secs: float | None = _RWKV_STATS_WARMUP_WAIT_TIMEOUT_SECS,
+    publish_as: str | None = None,
 ) -> RwkvStatsPreparationStatus:
     """Prepare transient RWKV scores for cards matched by a stats graph search.
 
     A request for RWKV-Curve's R gets each card's stored curve now; the
     RWKV-Instant rating head then runs only when the request also reads it
     (`prepare_instant_retrievability`, `prop:rwkv:r`, `is:rwkv:due`). Any
-    other request gets the rating head."""
+    other request gets the rating head.
+
+    The map is published under `search`, or under `publish_as` when given
+    (a filtered deck's own map, spec sched.filtered-deck-one-algorithm)."""
+
+    published_search = search if publish_as is None else publish_as
 
     if not rwkv_collection_active(reviewer):
         # an FSRS-7 collection has no RWKV values to prepare (spec
         # ui.fsrs7-no-rwkv-values)
-        _set_rwkv_stats_graph_scores(reviewer, search, [])
+        _set_rwkv_stats_graph_scores(reviewer, published_search, [])
         return RwkvStatsPreparationStatus.READY
     prepare_instant_due = prepare_instant_due or _search_uses_rwkv_instant_due(search)
     prepare_curve_due = prepare_curve_due or _search_uses_rwkv_curve_due(search)
@@ -6184,7 +6196,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             (time.monotonic() - configure_start) * 1000,
         )
     if _reviewer_backend is None:
-        _set_rwkv_stats_graph_scores(reviewer, search, [])
+        _set_rwkv_stats_graph_scores(reviewer, published_search, [])
         return RwkvStatsPreparationStatus.UNAVAILABLE
 
     start = time.monotonic()
@@ -6221,7 +6233,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             warmup_elapsed_ms,
         )
         if not warmed_up:
-            _set_rwkv_stats_graph_scores(reviewer, search, [])
+            _set_rwkv_stats_graph_scores(reviewer, published_search, [])
             logger.debug(
                 "RWKV stats retrievability scoring skipped: warm-up pending search=%r",
                 search,
@@ -6249,6 +6261,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             prepare_curve_due=prepare_curve_due,
             prepare_curve_retrievability=prepare_curve_retrievability,
             prepare_instant_retrievability=prepare_instant_retrievability,
+            publish_as=publish_as,
         )
         prepare_generation = state_token.state_generation
         if prepare_key is not None and _rwkv_stats_prepare_memo_is_current(prepare_key):
@@ -6300,7 +6313,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
             set_start = time.monotonic()
             if not _set_rwkv_stats_graph_scores_if_current(
                 reviewer,
-                search,
+                published_search,
                 scores,
                 state_token=state_token,
                 target_retentions_by_card_id=(
@@ -6367,7 +6380,7 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         set_start = time.monotonic()
         if not _set_rwkv_stats_graph_scores_if_current(
             reviewer,
-            search,
+            published_search,
             scores,
             state_token=state_token,
         ):
@@ -6419,11 +6432,11 @@ def prepare_stats_retrievability_scores(  # noqa: PLR0911
         logger.exception("RWKV stats retrievability scoring failed")
         if state_token is None:
             if _rwkv_stats_prepare_generation_is_current(prepare_generation):
-                _set_rwkv_stats_graph_scores(reviewer, search, [])
+                _set_rwkv_stats_graph_scores(reviewer, published_search, [])
         else:
             _set_rwkv_stats_graph_scores_if_current(
                 reviewer,
-                search,
+                published_search,
                 [],
                 state_token=state_token,
             )
@@ -6481,19 +6494,31 @@ def prepare_filtered_deck_retrievability_scores(
         )
         return RwkvStatsPreparationStatus.FAILED
 
-    return prepare_stats_retrievability_scores(
+    # a retrievability order reads the collection's own algorithm only, from
+    # the map this preparation publishes for the deck's own cards (Rust
+    # `exact_retrievability_key_for_card`, spec
+    # sched.filtered-deck-one-algorithm): RWKV-Curve's stored curves, or
+    # RWKV-Instant's rating head
+    retrievability_order = any(
+        term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS for term in terms
+    )
+    curve_collection = rwkv_curve_collection_active(reviewer)
+    status = prepare_stats_retrievability_scores(
         reviewer,
         search,
         warm_up_if_needed=True,
         prepare_instant_due=prepare_instant_due,
         prepare_curve_due=prepare_curve_due,
-        prepare_curve_retrievability=prepare_curve_retrievability,
-        # a retrievability order reads the rating head
-        # (`exact_retrievability_key_for_card`)
-        prepare_instant_retrievability=any(
-            term.order in _FILTERED_DECK_RETRIEVABILITY_ORDERS for term in terms
+        prepare_curve_retrievability=(
+            prepare_curve_retrievability or (retrievability_order and curve_collection)
         ),
+        prepare_instant_retrievability=retrievability_order and not curve_collection,
+        publish_as=FILTERED_DECK_RWKV_SCORES_SEARCH,
     )
+    if status != RwkvStatsPreparationStatus.READY:
+        # no values from an earlier build may stand in for this deck's cards
+        _set_rwkv_stats_graph_scores(reviewer, FILTERED_DECK_RWKV_SCORES_SEARCH, [])
+    return status
 
 
 def _prepare_reviewer_backend_for_stats(reviewer: object) -> bool:
@@ -6712,6 +6737,7 @@ def _rwkv_stats_prepare_key(
     prepare_curve_due: bool = False,
     prepare_curve_retrievability: bool = False,
     prepare_instant_retrievability: bool = True,
+    publish_as: str | None = None,
 ) -> RwkvStatsPrepareKey | None:
     warmup_key = _reviewer_backend_warmup_key(reviewer)
     timing = _timing_today(reviewer)
@@ -6771,6 +6797,7 @@ def _rwkv_stats_prepare_key(
         prepare_curve_due,
         prepare_curve_retrievability,
         prepare_instant_retrievability,
+        publish_as or "",
     )
 
 

@@ -13401,9 +13401,12 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         prepare_curve_due: bool = False,
         prepare_curve_retrievability: bool = False,
         prepare_instant_retrievability: bool = False,
+        publish_as: str | None = None,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
-        # a retrievability order reads RWKV-Instant's rating head
+        # the deck's own map (spec sched.filtered-deck-one-algorithm)
+        assert publish_as == rwkv_scheduler.FILTERED_DECK_RWKV_SCORES_SEARCH
+        # outside RWKV-Curve, a retrievability order reads the rating head
         assert prepare_instant_retrievability == (
             order == FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING
         )
@@ -13437,6 +13440,85 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
             prepare_curve_retrievability,
         )
     ]
+
+
+def test_filtered_deck_key_matches_the_rust_build() -> None:
+    """The Python preparation and the Rust build name the deck's own map the
+    same way (rslib `FILTERED_DECK_RWKV_SCORES_SEARCH`)."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / "rslib/src/scheduler/filtered/mod.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        'pub const FILTERED_DECK_RWKV_SCORES_SEARCH: &str = "\\u{0}filtered-deck";'
+        in source
+    )
+    assert rwkv_scheduler.FILTERED_DECK_RWKV_SCORES_SEARCH == "\x00filtered-deck"
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "curve", "rating_head"),
+    [("rwkvCurve", True, False), ("rwkvInstant", False, True)],
+)
+def test_filtered_deck_retrievability_order_scores_its_own_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str,
+    curve: bool,
+    rating_head: bool,
+) -> None:
+    """Pins spec/scheduling.md#sched.filtered-deck-one-algorithm: a
+    retrievability order scores the deck's own cards with the collection's
+    algorithm (RWKV-Curve's stored curves, or RWKV-Instant's rating head, not
+    both) and publishes them under the deck's own name, never borrowing
+    another search's map; when that fails, the deck's map is emptied."""
+
+    class Collection:
+        def build_search_string(self, *searches: str, joiner: str) -> str:
+            return "combined search"
+
+        def get_config(self, key: str, default: object = None) -> object:
+            return algorithm if key == "schedulingAlgorithm" else default
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection()))
+    config = FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search="deck:Japan",
+                limit=300,
+                order=FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
+            )
+        ]
+    )
+    calls: list[dict[str, Any]] = []
+    status = [rwkv_scheduler.RwkvStatsPreparationStatus.READY]
+
+    def prepare(
+        _reviewer: object, search: str, **kwargs: Any
+    ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
+        calls.append({"search": search, **kwargs})
+        return status[0]
+
+    published: list[tuple[str, list[object]]] = []
+    monkeypatch.setattr(rwkv_scheduler, "prepare_stats_retrievability_scores", prepare)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_set_rwkv_stats_graph_scores",
+        lambda _reviewer, search, scores, **_kwargs: published.append(
+            (search, list(scores))
+        ),
+    )
+
+    assert prepare_filtered_deck_retrievability_scores(reviewer, config) == status[0]
+    (call,) = calls
+    assert call["search"] == "combined search"
+    assert call["publish_as"] == rwkv_scheduler.FILTERED_DECK_RWKV_SCORES_SEARCH
+    assert call["prepare_curve_retrievability"] is curve
+    assert call["prepare_instant_retrievability"] is rating_head
+    assert published == []
+
+    status[0] = rwkv_scheduler.RwkvStatsPreparationStatus.UNAVAILABLE
+    prepare_filtered_deck_retrievability_scores(reviewer, config)
+    assert published == [(rwkv_scheduler.FILTERED_DECK_RWKV_SCORES_SEARCH, [])]
 
 
 def test_filtered_deck_fsrs_retrievability_does_not_prepare_rwkv_scores() -> None:

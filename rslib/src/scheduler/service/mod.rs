@@ -1008,7 +1008,8 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<RwkvRetrievabilityScoreResponse> {
         let days_elapsed = self.timing_today()?.days_elapsed;
         Ok(RwkvRetrievabilityScoreResponse {
-            retrievability: self.rwkv_retrievability_score_for_day(input.into(), days_elapsed),
+            retrievability: self
+                .rwkv_retrievability_score_of_algorithm(input.into(), days_elapsed)?,
         })
     }
 
@@ -1252,12 +1253,73 @@ fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSR
     }
 }
 
+impl Collection {
+    /// The card's RWKV retrievability today under the collection's own
+    /// algorithm only (spec sched.filtered-deck-one-algorithm): RWKV-Instant's
+    /// rating head, RWKV-Curve's curve value, none under FSRS-7.
+    fn rwkv_retrievability_score_of_algorithm(
+        &mut self,
+        card_id: crate::card::CardId,
+        days_elapsed: u32,
+    ) -> Result<Option<f32>> {
+        use crate::deckconfig::algorithm::SchedulingAlgorithm;
+        Ok(match self.effective_scheduling_algorithm()? {
+            SchedulingAlgorithm::Fsrs7 => None,
+            SchedulingAlgorithm::RwkvInstant => {
+                self.rwkv_retrievability_score_for_day(card_id, days_elapsed)
+            }
+            SchedulingAlgorithm::RwkvCurve => self
+                .rwkv_curve_retrievability_scores_for_day(days_elapsed, None)
+                .and_then(|scores| scores.get(&card_id).copied()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::fsrs_preset_to_proto;
     use super::FsrsVersion;
+    use crate::collection::RwkvStatsGraphScoreEntry;
+    use crate::config::ConfigKey;
+    use crate::deckconfig::algorithm::SchedulingAlgorithm;
+    use crate::prelude::*;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
+
+    /// Pins spec sched.filtered-deck-one-algorithm: the RWKV retrievability
+    /// the backend reports for a card is the collection's algorithm's only.
+    #[test]
+    fn rwkv_retrievability_score_is_the_collections_algorithms() -> Result<()> {
+        let mut col = Collection::new();
+        let card_id = CardId(7);
+        let days_elapsed = col.timing_today()?.days_elapsed;
+        col.set_rwkv_stats_graph_score_entries(
+            "deck:current".to_string(),
+            HashMap::from([(
+                card_id,
+                RwkvStatsGraphScoreEntry {
+                    retrievability: Some(0.2),
+                    curve_retrievability: Some(0.9),
+                    intervening_reviews: None,
+                    target_retention: None,
+                    curve_due: false,
+                },
+            )]),
+        )?;
+        let score = |col: &mut Collection, algorithm| -> Result<Option<f32>> {
+            col.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
+            col.rwkv_retrievability_score_of_algorithm(card_id, days_elapsed)
+        };
+        assert_eq!(
+            score(&mut col, SchedulingAlgorithm::RwkvInstant)?,
+            Some(0.2)
+        );
+        assert_eq!(score(&mut col, SchedulingAlgorithm::RwkvCurve)?, Some(0.9));
+        assert_eq!(score(&mut col, SchedulingAlgorithm::Fsrs7)?, None);
+        Ok(())
+    }
 
     #[test]
     fn fsrs_preset_response_exposes_preset_fields() {

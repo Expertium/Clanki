@@ -5,13 +5,16 @@ mod card;
 mod custom_study;
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::hash::Hasher;
 
 use fnv::FnvHasher;
 
 use crate::card::Card;
+use crate::collection::RwkvStatsGraphScoreEntry;
 use crate::config::ConfigKey;
 use crate::config::SchedulerVersion;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::decks::FilteredDeck;
 use crate::decks::FilteredSearchOrder;
 use crate::decks::FilteredSearchTerm;
@@ -32,6 +35,12 @@ pub struct FilteredDeckForUpdate {
     pub config: FilteredDeck,
     pub allow_empty: bool,
 }
+
+/// The search name under which the filtered-deck preparation publishes the
+/// RWKV scores of the deck's own candidate cards. A retrievability order
+/// reads only this map (spec sched.filtered-deck-one-algorithm). No search a
+/// user types can start with a NUL character.
+pub const FILTERED_DECK_RWKV_SCORES_SEARCH: &str = "\u{0}filtered-deck";
 
 pub(crate) struct DeckFilterContext<'a> {
     pub target_deck: DeckId,
@@ -112,8 +121,9 @@ impl Collection {
         let start = -100_000;
         let mut position = start;
         let fsrs = self.get_config_bool(BoolKey::Fsrs);
+        let algorithm = self.effective_scheduling_algorithm()?;
         for term in ctx.config.search_terms.iter().take(2) {
-            position = self.move_cards_matching_term(&ctx, term, position, fsrs)?;
+            position = self.move_cards_matching_term(&ctx, term, position, fsrs, algorithm)?;
         }
 
         Ok((position - start) as usize)
@@ -127,6 +137,7 @@ impl Collection {
         term: &FilteredSearchTerm,
         mut position: i32,
         fsrs: bool,
+        algorithm: SchedulingAlgorithm,
     ) -> Result<i32> {
         let search = format!(
             "{} -is:suspended -is:buried -deck:filtered",
@@ -137,12 +148,15 @@ impl Collection {
             }
         );
 
-        if fsrs {
-            if let Some(order) = exact_fsrs_search_order(term.order()) {
-                return self.move_cards_matching_term_with_exact_fsrs_order(
-                    ctx, term, &search, position, order,
-                );
-            }
+        // under RWKV a retrievability order is RWKV's own, never the SQL
+        // order's FSRS or SM-2 formula (spec sched.filtered-deck-one-algorithm)
+        let rwkv = algorithm != SchedulingAlgorithm::Fsrs7;
+        if let Some(order) = exact_fsrs_search_order(term.order()).filter(|order| {
+            fsrs || (rwkv && matches!(order, ExactFsrsSearchOrder::Retrievability { .. }))
+        }) {
+            return self.move_cards_matching_term_with_exact_fsrs_order(
+                ctx, term, &search, position, order, algorithm,
+            );
         }
 
         let order = order_and_limit_for_search(term, ctx.timing, fsrs);
@@ -164,18 +178,43 @@ impl Collection {
         search: &str,
         mut position: i32,
         order: ExactFsrsSearchOrder,
+        algorithm: SchedulingAlgorithm,
     ) -> Result<i32> {
         let mut cards_with_keys = Vec::new();
         let mut curves = FsrsCardCurves::default();
+        let rwkv_scores = self
+            .rwkv_stats_graph_score_entries_for_search(
+                ctx.timing.days_elapsed,
+                Some(FILTERED_DECK_RWKV_SCORES_SEARCH),
+            )
+            .unwrap_or_default();
+        let keys = FilteredOrderKeys {
+            algorithm,
+            rwkv_scores: &rwkv_scores,
+        };
         for card in self.all_cards_for_search(search)? {
-            let key = exact_fsrs_search_key_for_card(self, &card, ctx.timing, order, &mut curves)?;
+            let key =
+                exact_fsrs_search_key_for_card(self, &card, ctx.timing, order, &mut curves, &keys)?;
             let hash = fnvhash_card_and_mod(&card);
             cards_with_keys.push((card, key, hash));
         }
 
+        // a card without a value from the collection's algorithm goes to the
+        // end, whichever the direction
         cards_with_keys.sort_unstable_by(|(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
-            let ord = key_a.partial_cmp(key_b).unwrap_or(Ordering::Equal);
-            let ord = if order.reverse() { ord.reverse() } else { ord };
+            let ord = match (key_a, key_b) {
+                (Some(a), Some(b)) => {
+                    let ord = a.partial_cmp(b).unwrap_or(Ordering::Equal);
+                    if order.reverse() {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                }
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            };
             ord.then_with(|| hash_a.cmp(hash_b))
                 .then_with(|| card_a.id.cmp(&card_b.id))
         });
@@ -353,25 +392,46 @@ fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u
     }
 }
 
+/// What a filtered deck's retrievability order reads: the collection's
+/// algorithm, and the RWKV scores the filtered-deck preparation published
+/// for the deck's own cards (`FILTERED_DECK_RWKV_SCORES_SEARCH`).
+struct FilteredOrderKeys<'a> {
+    algorithm: SchedulingAlgorithm,
+    rwkv_scores: &'a HashMap<CardId, RwkvStatsGraphScoreEntry>,
+}
+
+/// The card's retrievability under the collection's algorithm only (spec
+/// sched.filtered-deck-one-algorithm): FSRS-7's (SM-2's relative overdueness
+/// for a card without a memory state, as upstream); under RWKV-Curve the
+/// card's stored curve now, under RWKV-Instant its rating head, both from
+/// the map the preparation published for this deck. None when the
+/// algorithm has no value for the card; no other algorithm's value stands in.
 fn exact_retrievability_key_for_card(
     col: &mut Collection,
     card: &Card,
     timing: SchedTimingToday,
     curves: &mut FsrsCardCurves,
-) -> Result<f32> {
-    if let Some(r) = col.rwkv_retrievability_score_for_day(card.id, timing.days_elapsed) {
-        return Ok(r);
-    }
-
-    if let Some(state) = card.memory_state {
-        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-        curves.current_retrievability(col, card, state, elapsed_days)
-    } else {
-        Ok(sm2_relative_overdueness_key(card, timing))
+    keys: &FilteredOrderKeys,
+) -> Result<Option<f32>> {
+    let entry = keys.rwkv_scores.get(&card.id);
+    match keys.algorithm {
+        SchedulingAlgorithm::RwkvCurve => Ok(entry.and_then(|entry| entry.curve_retrievability)),
+        SchedulingAlgorithm::RwkvInstant => Ok(entry.and_then(|entry| entry.retrievability)),
+        SchedulingAlgorithm::Fsrs7 => {
+            if let Some(state) = card.memory_state {
+                let elapsed_days =
+                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                curves
+                    .current_retrievability(col, card, state, elapsed_days)
+                    .map(Some)
+            } else {
+                Ok(Some(sm2_relative_overdueness_key(card, timing)))
+            }
+        }
     }
 }
 
-/// The card's key in an FSRS retrievability order; `curves` keeps the
+/// The card's key in an exact filtered-deck order; `curves` keeps the
 /// presets and models of the cards seen before.
 fn exact_fsrs_search_key_for_card(
     col: &mut Collection,
@@ -379,18 +439,21 @@ fn exact_fsrs_search_key_for_card(
     timing: SchedTimingToday,
     order: ExactFsrsSearchOrder,
     curves: &mut FsrsCardCurves,
-) -> Result<f32> {
+    keys: &FilteredOrderKeys,
+) -> Result<Option<f32>> {
     match order {
         ExactFsrsSearchOrder::Retrievability { .. } => {
-            exact_retrievability_key_for_card(col, card, timing, curves)
+            exact_retrievability_key_for_card(col, card, timing, curves, keys)
         }
         ExactFsrsSearchOrder::RelativeOverdueness => {
             if let Some(state) = card.memory_state {
                 let elapsed_days =
                     elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-                curves.relative_overdueness(col, card, state, elapsed_days)
+                curves
+                    .relative_overdueness(col, card, state, elapsed_days)
+                    .map(Some)
             } else {
-                Ok(sm2_relative_overdueness_key(card, timing))
+                Ok(Some(sm2_relative_overdueness_key(card, timing)))
             }
         }
     }
@@ -422,6 +485,13 @@ mod test {
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::decks::FilteredSearchOrder;
+
+    fn fsrs7_keys(scores: &HashMap<CardId, RwkvStatsGraphScoreEntry>) -> FilteredOrderKeys<'_> {
+        FilteredOrderKeys {
+            algorithm: SchedulingAlgorithm::Fsrs7,
+            rwkv_scores: scores,
+        }
+    }
 
     fn set_selected_fsrs7_params(col: &mut Collection, params: Vec<f32>) -> Result<()> {
         let output = col.get_deck_configs_for_update(DeckId(1))?;
@@ -492,9 +562,18 @@ mod test {
             ExactFsrsSearchOrder::RelativeOverdueness,
         ] {
             let mut curves = FsrsCardCurves::default();
+            let no_scores = HashMap::new();
+            let keys = fsrs7_keys(&no_scores);
             for card in &cards {
-                let key =
-                    exact_fsrs_search_key_for_card(&mut col, card, timing, order, &mut curves)?;
+                let key = exact_fsrs_search_key_for_card(
+                    &mut col,
+                    card,
+                    timing,
+                    order,
+                    &mut curves,
+                    &keys,
+                )?
+                .unwrap();
                 let preset = col.fsrs_preset_for_card(card)?;
                 let fsrs = fsrs::FSRS::new(&preset.params)?;
                 let state = card.memory_state.unwrap().into();
@@ -567,18 +646,23 @@ mod test {
         card2.decay = Some(2.0);
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
+        let no_scores = HashMap::new();
         let key1 = exact_retrievability_key_for_card(
             &mut col,
             &card1,
             timing,
             &mut FsrsCardCurves::default(),
-        )?;
+            &fsrs7_keys(&no_scores),
+        )?
+        .unwrap();
         let key2 = exact_retrievability_key_for_card(
             &mut col,
             &card2,
             timing,
             &mut FsrsCardCurves::default(),
-        )?;
+            &fsrs7_keys(&no_scores),
+        )?
+        .unwrap();
         assert_ne!(key1, key2);
 
         let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;
@@ -637,6 +721,7 @@ mod test {
 
         // one cache for both: the card's own desired retention is not kept
         let mut curves = FsrsCardCurves::default();
+        let no_scores = HashMap::new();
         card.desired_retention = Some(0.8);
         let first = exact_fsrs_search_key_for_card(
             &mut col,
@@ -644,6 +729,7 @@ mod test {
             timing,
             ExactFsrsSearchOrder::RelativeOverdueness,
             &mut curves,
+            &fsrs7_keys(&no_scores),
         )?;
         card.desired_retention = Some(0.95);
         let second = exact_fsrs_search_key_for_card(
@@ -652,6 +738,7 @@ mod test {
             timing,
             ExactFsrsSearchOrder::RelativeOverdueness,
             &mut curves,
+            &fsrs7_keys(&no_scores),
         )?;
 
         assert_ne!(first, second);
@@ -662,31 +749,129 @@ mod test {
         Ok(())
     }
 
-    #[test]
-    fn filtered_deck_retrievability_order_prefers_rwkv_score() -> Result<()> {
-        let mut col = Collection::new();
-        let timing = col.timing_today()?;
-        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
-        card.ctype = CardType::Review;
-        card.queue = CardQueue::Review;
-        card.interval = 30;
-        card.memory_state = Some(FsrsMemoryState {
-            stability: 30.0,
-            stability_internal: 30.0,
-            stability_fast: None,
-            difficulty: 5.0,
-        });
-        col.add_card(&mut card)?;
-        col.set_rwkv_deck_count_scores(DeckId(1), HashMap::from([(card.id, 0.42)]))?;
+    fn rwkv_entry(rating_head: Option<f32>, curve: Option<f32>) -> RwkvStatsGraphScoreEntry {
+        RwkvStatsGraphScoreEntry {
+            retrievability: rating_head,
+            curve_retrievability: curve,
+            intervening_reviews: None,
+            target_retention: None,
+            curve_due: false,
+        }
+    }
 
+    fn filtered_order(col: &mut Collection, order: FilteredSearchOrder) -> Result<Vec<CardId>> {
+        let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;
+        deck.allow_empty = true;
+        deck.config.search_terms[0].search = "is:review".into();
+        deck.config.search_terms[0].limit = 10;
+        deck.config.search_terms[0].order = order as i32;
+        deck.config.search_terms[1].search = String::new();
+        deck.config.search_terms[1].limit = 0;
+        let filtered_did = col.add_or_update_filtered_deck(deck)?.output;
+        let mut cards = col
+            .storage
+            .all_cards_in_single_deck(filtered_did)?
+            .into_iter()
+            .map(|cid| col.storage.get_card(cid)?.or_not_found(cid))
+            .collect::<Result<Vec<_>>>()?;
+        cards.sort_by_key(|card| card.due);
+        let ids = cards.iter().map(|card| card.id).collect();
+        col.empty_filtered_deck(filtered_did)?;
+        col.remove_decks_and_child_decks(&[filtered_did])?;
+        Ok(ids)
+    }
+
+    /// Pins spec sched.filtered-deck-one-algorithm: a filtered deck's
+    /// retrievability order never uses another algorithm's value. Under
+    /// RWKV-Curve it is the curve value, under RWKV-Instant the rating head,
+    /// both only from the map published for the deck's own cards; a card with
+    /// no value from its algorithm goes to the end in both directions; FSRS-7
+    /// reads no RWKV value at all.
+    #[test]
+    fn filtered_deck_retrievability_order_uses_only_the_collections_algorithm() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        // FSRS-7 alone would order them c, a, b (c waited longest)
+        let mut ids = Vec::new();
+        for days_since_review in [20, 5, 40] {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            // a positive due: the build writes the position there
+            card.due = 100;
+            card.interval = 10;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-days_since_review * 86_400));
+            col.storage.update_card(&card)?;
+            ids.push(card.id);
+        }
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+
+        // the deck's own map: c has no value from either RWKV head
+        col.set_rwkv_stats_graph_score_entries(
+            FILTERED_DECK_RWKV_SCORES_SEARCH.to_string(),
+            HashMap::from([
+                (a, rwkv_entry(Some(0.2), Some(0.9))),
+                (b, rwkv_entry(Some(0.8), Some(0.3))),
+            ]),
+        )?;
+        // values of other places, published later, must not be borrowed
+        col.set_rwkv_stats_graph_score_entries(
+            "deck:current".to_string(),
+            HashMap::from([(c, rwkv_entry(Some(0.01), Some(0.01)))]),
+        )?;
+        col.set_rwkv_deck_count_scores(DeckId(1), HashMap::from([(c, 0.02)]))?;
+
+        col.set_config(
+            ConfigKey::SchedulingAlgorithm,
+            &SchedulingAlgorithm::RwkvCurve,
+        )?;
         assert_eq!(
-            exact_retrievability_key_for_card(
-                &mut col,
-                &card,
-                timing,
-                &mut FsrsCardCurves::default()
-            )?,
-            0.42
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityAscending)?,
+            vec![b, a, c]
+        );
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityDescending)?,
+            vec![a, b, c]
+        );
+
+        col.set_config(
+            ConfigKey::SchedulingAlgorithm,
+            &SchedulingAlgorithm::RwkvInstant,
+        )?;
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityAscending)?,
+            vec![a, b, c]
+        );
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityDescending)?,
+            vec![b, a, c]
+        );
+
+        col.set_config(ConfigKey::SchedulingAlgorithm, &SchedulingAlgorithm::Fsrs7)?;
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityAscending)?,
+            vec![c, a, b]
+        );
+
+        // under RWKV even with FSRS off, the order is RWKV's, not SM-2's
+        col.set_config_bool(BoolKey::Fsrs, false, true)?;
+        col.set_config(
+            ConfigKey::SchedulingAlgorithm,
+            &SchedulingAlgorithm::RwkvCurve,
+        )?;
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityAscending)?,
+            vec![b, a, c]
         );
         Ok(())
     }
