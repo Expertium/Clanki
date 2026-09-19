@@ -795,6 +795,44 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
     assert response.memory_state.stability == 30.0
 
 
+def test_card_info_sends_rwkv_curves_of_the_earlier_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: each earlier answered review
+    with a saved curve reaches card info at its revlog time; the last
+    answered review's segment is the curve RWKV holds now."""
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    curve = rwkv.RwkvCardCurve(
+        elapsed_days=(0.0, 1.0),
+        recall=(1.0, 0.8),
+        s90=0.4,
+        past=(
+            rwkv.RwkvPastCurve(review_id=100_123, recall=(1.0, 0.7), s90=0.3),
+            rwkv.RwkvPastCurve(review_id=200_456, recall=(1.0, 0.8), s90=0.4),
+        ),
+    )
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(
+        rwkv,
+        "rwkv_card_info_curve_result",
+        lambda reviewer, card, *, elapsed_days=None: rwkv.RwkvCardCurveResult(
+            curve=curve
+        ),
+    )
+    response = _card_stats_with_two_reviews()
+
+    _add_rwkv_curve(response, object(), object())
+
+    past = response.rwkv_curve.past
+    assert [segment.review_time for segment in past] == [100]
+    assert list(past[0].recall) == pytest.approx([1.0, 0.7])
+    assert past[0].s90 == pytest.approx(0.3)
+    # still no FSRS-7 memory state on the older review
+    assert not response.revlog[2].HasField("memory_state")
+
+
 def test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -164,35 +164,35 @@ function resetThenNothing(): any {
     ];
 }
 
-// The RULE, not today's symptom. The chart draws one segment only because
-// Clanki stores one RWKV curve per card, which is a limitation and not a
-// decision (spec ui.card-info-rwkv-curve); pinning "the chart starts at the
-// last review" would make drawing the full history look like a regression.
-// What must stay true forever is that no FSRS-7 value reaches the chart, and
-// the sharpest way to say that is: FSRS-7's parameters change nothing.
+// The RULE: no FSRS-7 value reaches an RWKV-Curve card's chart, and the
+// sharpest way to say that is that FSRS-7's parameters change nothing, with
+// or without RWKV's curves after the earlier reviews.
 test("no FSRS-7 value reaches an RWKV-Curve card's chart", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
     try {
-        const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2 };
+        const past = [{ reviewTime: twoReviews()[1].time, recall: [1, 0.8, 0.3], s90: 4 }];
         // params 23 to 33 are the ones FSRS-7's own curve reads
         const otherParams = fsrs7Params().map((value, index) => (index >= 23 ? value * 0.5 : value));
-
-        const drawn = prepareData(
-            chartRevlog(twoReviews(), rwkvCurve),
-            30,
-            fsrs7Params(),
-            rwkvCurve,
-        );
-        const drawnWithOtherParams = prepareData(
-            chartRevlog(twoReviews(), rwkvCurve),
-            30,
-            otherParams,
-            rwkvCurve,
-        );
-        expect(drawn.length).toBeGreaterThan(0);
-        expect(drawnWithOtherParams).toEqual(drawn);
-        expect(drawn.every((point) => point.stabilityS90 === rwkvCurve.s90)).toBe(true);
+        for (const extra of [{}, { past }]) {
+            const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2, ...extra };
+            const drawn = prepareData(
+                chartRevlog(twoReviews(), rwkvCurve),
+                30,
+                fsrs7Params(),
+                rwkvCurve,
+            );
+            const drawnWithOtherParams = prepareData(
+                chartRevlog(twoReviews(), rwkvCurve),
+                30,
+                otherParams,
+                rwkvCurve,
+            );
+            expect(drawn.length).toBeGreaterThan(0);
+            expect(drawnWithOtherParams).toEqual(drawn);
+            // every S90 on the chart is one of RWKV's own
+            expect(drawn.every((point) => [2, 4].includes(point.stabilityS90))).toBe(true);
+        }
 
         // and the two parameter sets really do draw different charts for an
         // FSRS-7 card, so this test can fail
@@ -200,6 +200,74 @@ test("no FSRS-7 value reaches an RWKV-Curve card's chart", () => {
         const fsrsWithOtherParams = prepareData(chartRevlog(twoReviews()), 30, otherParams);
         expect(fsrsWithOtherParams).not.toEqual(fsrs);
         expect(chartRevlog(twoReviews())).toHaveLength(2);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+test("an RWKV-Curve card draws RWKV's curve after every review that has one", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const rwkvCurve = {
+            elapsedDays: [0, 10, 100],
+            recall: [1, 0.5, 0.1],
+            s90: 2,
+            past: [{ reviewTime: BigInt(twoReviews()[1].time), recall: [1, 0.8, 0.3], s90: 4 }],
+        };
+        const revlog = chartRevlog(twoReviews(), rwkvCurve);
+        expect(revlog.map((entry) => entry.time)).toEqual(twoReviews().map((entry: any) => entry.time));
+        const data = prepareData(revlog, 30, fsrs7Params(), rwkvCurve);
+
+        // the chart starts at the first review, on that review's own curve
+        expect(data[0].date.getTime()).toBe(Date.parse("2024-01-01T00:00:00Z"));
+        const target = Date.parse("2024-01-06T00:00:00Z");
+        const fiveDays = data.reduce((best, point) =>
+            Math.abs(point.date.getTime() - target) < Math.abs(best.date.getTime() - target) ? point : best
+        );
+        expect(fiveDays.retrievability).toBeCloseTo(90, 0);
+        expect(fiveDays.stabilityS90).toBe(4);
+        // after the last review, the curve after it
+        const now = data.find((point) => point.date.getTime() === Date.parse("2024-01-16T00:00:00Z"));
+        expect(now?.retrievability).toBeCloseTo(75, 3);
+        expect(now?.stabilityS90).toBe(2);
+        expect(data.some((point) => point.gap)).toBe(false);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+test("a review without a stored RWKV curve gets no segment, and none is invented", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-26T00:00:00Z"));
+    try {
+        const reviews = [
+            {
+                time: Date.parse("2024-01-21T00:00:00Z") / 1000,
+                reviewKind: 1,
+                buttonChosen: 3,
+                ease: 2500,
+            },
+            ...twoReviews(),
+        ];
+        const oldest = { reviewTime: twoReviews()[1].time, recall: [1, 0.8, 0.3], s90: 4 };
+        const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2, past: [oldest] };
+        // the middle review has no curve: its segment is a break in the line
+        const data = prepareData(chartRevlog(reviews as any, rwkvCurve), 30, fsrs7Params(), rwkvCurve);
+        const middle = Date.parse("2024-01-11T00:00:00Z");
+        const next = Date.parse("2024-01-21T00:00:00Z");
+        const inside = data.filter((point) => point.date.getTime() > middle && point.date.getTime() < next);
+        expect(inside).toHaveLength(0);
+        expect(data.filter((point) => point.gap)).toHaveLength(1);
+
+        // reviews older than the oldest stored curve are not charted at all
+        const onlyMiddle = { ...rwkvCurve, past: [{ ...oldest, reviewTime: middle / 1000 }] };
+        expect(chartRevlog(reviews as any, onlyMiddle).map((entry) => entry.time)).toEqual([
+            next / 1000,
+            middle / 1000,
+        ]);
+        // with no stored curve at all, only the last review is charted
+        expect(chartRevlog(reviews as any, { ...rwkvCurve, past: [] })).toHaveLength(1);
     } finally {
         vi.useRealTimers();
     }

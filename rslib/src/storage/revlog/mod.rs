@@ -31,6 +31,10 @@ pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 pub(crate) const REVIEW_PREDICTIONS_TABLE: &str = "review_predictions";
 pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_rwkv_review_retrievability";
+/// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
+/// row per review, and the tags that say which model wrote them.
+const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
+const RWKV_CURVE_SOURCE_TAGS_TABLE: &str = "rwkv_curve_source_tags";
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
     "reviewRetrievabilityCacheCleanupFullSync";
 const REVIEW_RETRIEVABILITY_CACHE_WRITE_SAVEPOINT: &str = "review_retrievability_cache_write";
@@ -105,6 +109,15 @@ pub(crate) struct ReviewPredictionRow {
     pub prediction: f32,
     pub sample_role: &'static str,
     pub fold_index: i32,
+}
+
+/// Who saved an RWKV curve source: the model's identity and the source's
+/// format and kernel versions (spec ui.card-info-rwkv-curve).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RwkvCurveSourceTag {
+    pub model: String,
+    pub format: u32,
+    pub kernel: u32,
 }
 
 pub(crate) struct StudiedToday {
@@ -582,6 +595,127 @@ impl SqliteStorage {
                 Ok((row.get(0)?, row.get(1)?))
             })?
             .collect()
+    }
+
+    /// The curve-source tables live in the cache file beside the
+    /// collection, like the other per-review recordings, so official Anki,
+    /// AnkiDroid and sync never see them.
+    fn ensure_rwkv_curve_sources_schema(&self) -> Result<()> {
+        let tags = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCE_TAGS_TABLE);
+        let sources = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCES_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {tags} (
+                id INTEGER PRIMARY KEY,
+                model TEXT NOT NULL,
+                format INTEGER NOT NULL,
+                kernel INTEGER NOT NULL,
+                UNIQUE (model, format, kernel)
+            );
+            CREATE TABLE IF NOT EXISTS {sources} (
+                revlog_id INTEGER PRIMARY KEY,
+                tag INTEGER NOT NULL,
+                source BLOB NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    fn rwkv_curve_source_tag_id(&self, tag: &RwkvCurveSourceTag) -> Result<Option<i64>> {
+        let tags = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCE_TAGS_TABLE);
+        Ok(self
+            .db
+            .prepare_cached(&format!(
+                "select id from {tags} where model = ? and format = ? and kernel = ?"
+            ))?
+            .query_row(params![tag.model, tag.format, tag.kernel], |row| row.get(0))
+            .optional()?)
+    }
+
+    /// Saves one curve source per review, `width` bytes each, in the order
+    /// of `revlog_ids`. Sources saved under any other tag are stale for
+    /// every reader, so they are dropped first rather than kept beside the
+    /// new ones.
+    pub(crate) fn set_rwkv_curve_sources(
+        &self,
+        tag: &RwkvCurveSourceTag,
+        revlog_ids: &[i64],
+        sources: &[u8],
+        width: usize,
+    ) -> Result<usize> {
+        if revlog_ids.is_empty() {
+            return Ok(0);
+        }
+        self.ensure_rwkv_curve_sources_schema()?;
+        let tags = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCE_TAGS_TABLE);
+        let table = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCES_TABLE);
+        self.with_retrievability_cache_write_batch(|| {
+            let tag_id = match self.rwkv_curve_source_tag_id(tag)? {
+                Some(id) => id,
+                None => {
+                    self.db.execute(
+                        &format!("insert into {tags} (model, format, kernel) values (?, ?, ?)"),
+                        params![tag.model, tag.format, tag.kernel],
+                    )?;
+                    self.db.last_insert_rowid()
+                }
+            };
+            let other_tags: bool = self.db.query_row(
+                &format!("select exists(select 1 from {tags} where id != ?)"),
+                [tag_id],
+                |row| row.get(0),
+            )?;
+            if other_tags {
+                self.db
+                    .execute(&format!("delete from {table} where tag != ?"), [tag_id])?;
+                self.db
+                    .execute(&format!("delete from {tags} where id != ?"), [tag_id])?;
+            }
+            let mut stmt = self.db.prepare_cached(&format!(
+                "insert or replace into {table} (revlog_id, tag, source) values (?, ?, ?)"
+            ))?;
+            for (revlog_id, source) in revlog_ids.iter().zip(sources.chunks_exact(width)) {
+                stmt.execute(params![revlog_id, tag_id, source])?;
+            }
+            Ok(revlog_ids.len())
+        })
+    }
+
+    /// The sources saved under `tag` for the reviews of one card, oldest
+    /// first: (review ids, bytes per source, the sources). A source of
+    /// another length than the first is left out.
+    pub(crate) fn rwkv_curve_sources_for_card(
+        &self,
+        card_id: CardId,
+        tag: &RwkvCurveSourceTag,
+    ) -> Result<(Vec<i64>, usize, Vec<u8>)> {
+        self.ensure_rwkv_curve_sources_schema()?;
+        let Some(tag_id) = self.rwkv_curve_source_tag_id(tag)? else {
+            return Ok((vec![], 0, vec![]));
+        };
+        let table = Self::qualified_retrievability_cache_table(RWKV_CURVE_SOURCES_TABLE);
+        let mut ids = vec![];
+        let mut width = 0;
+        let mut bytes = vec![];
+        let mut stmt = self.db.prepare_cached(&format!(
+            "select s.revlog_id, s.source from main.revlog r
+             join {table} s on s.revlog_id = r.id
+             where r.cid = ? and s.tag = ?
+             order by r.id"
+        ))?;
+        let mut rows = stmt.query(params![card_id, tag_id])?;
+        while let Some(row) = rows.next()? {
+            let source = row.get_ref(1)?.as_blob()?;
+            if width == 0 {
+                width = source.len();
+            }
+            if source.len() == width && width > 0 {
+                ids.push(row.get(0)?);
+                bytes.extend_from_slice(source);
+            }
+        }
+        Ok((ids, width, bytes))
     }
 
     pub(crate) fn set_rwkv_review_retrievability_prediction(
@@ -1085,6 +1219,84 @@ mod tests {
         builder.with_desktop_media_paths();
         let col = builder.build()?;
         Ok((col, tempdir, col_path))
+    }
+
+    fn curve_tag(model: &str) -> RwkvCurveSourceTag {
+        RwkvCurveSourceTag {
+            model: model.into(),
+            format: 1,
+            kernel: 1,
+        }
+    }
+
+    // Pins spec/ui.md#ui.card-info-rwkv-curve: curve sources are saved in
+    // the cache file beside the collection, never in the collection itself;
+    // a card gets its own reviews' sources, oldest first; a source is read
+    // only under the tag that saved it; and saving under a new tag drops the
+    // stale ones.
+    #[test]
+    fn rwkv_curve_sources_are_per_review_cache_rows_read_by_tag() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("curve_sources")?;
+        for (id, cid) in [(10, 1), (20, 2), (30, 1)] {
+            col.storage.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
+                 values (?, ?, 0, 3, 1, 0, 2500, 1000, 1)",
+                params![id, cid],
+            )?;
+        }
+        let tag = curve_tag("model-a");
+        let stored =
+            col.storage
+                .set_rwkv_curve_sources(&tag, &[30, 20, 10], &[3, 3, 2, 2, 1, 1], 2)?;
+        assert_eq!(stored, 3);
+
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag)?,
+            (vec![10, 30], 2, vec![1, 1, 3, 3])
+        );
+        let empty = (vec![], 0, vec![]);
+        assert_eq!(
+            col.storage
+                .rwkv_curve_sources_for_card(CardId(1), &curve_tag("model-b"))?,
+            empty
+        );
+        let other_kernel = RwkvCurveSourceTag {
+            kernel: 2,
+            ..tag.clone()
+        };
+        assert_eq!(
+            col.storage
+                .rwkv_curve_sources_for_card(CardId(1), &other_kernel)?,
+            empty
+        );
+        let in_collection: i64 = col.storage.db.query_row(
+            "select count() from main.sqlite_master where name like 'rwkv_curve_source%'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(in_collection, 0);
+
+        // a new model's sources replace the old model's
+        col.storage
+            .set_rwkv_curve_sources(&curve_tag("model-b"), &[20], &[9, 9, 9], 3)?;
+        let rows: i64 = col.storage.db.query_row(
+            &format!(
+                "select count() from {RETRIEVABILITY_CACHE_DB_SCHEMA}.{RWKV_CURVE_SOURCES_TABLE}"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rows, 1);
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag)?,
+            empty
+        );
+        assert_eq!(
+            col.storage
+                .rwkv_curve_sources_for_card(CardId(2), &curve_tag("model-b"))?,
+            (vec![20], 3, vec![9, 9, 9])
+        );
+        Ok(())
     }
 
     fn fsrs_cache_rows(count: usize, offset: i64) -> Vec<FsrsReviewRetrievabilityCacheRow> {

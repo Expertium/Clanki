@@ -183,6 +183,13 @@ service SchedulerService {
   // persisted state cache.
   rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
       returns (RwkvHistoricalReviewFingerprintResponse);
+  // Saves RWKV-Curve's per-review curve sources in the cache beside the
+  // collection (never synced), replacing sources saved under another tag
+  // (spec ui.card-info-rwkv-curve). Returns how many it saved.
+  rpc SetRwkvCurveSources(RwkvCurveSources) returns (generic.UInt32);
+  // One card's saved curve sources under one tag, oldest review first.
+  rpc GetRwkvCurveSources(GetRwkvCurveSourcesRequest)
+      returns (RwkvCurveSources);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -1036,6 +1043,29 @@ message RwkvCardInfoScoreRequest {
 
 message RwkvRetrievabilityScoreResponse {
   optional float retrievability = 1;
+}
+
+// Who saved a curve source: the model (the SHA-256 of its weights) and the
+// source's format and kernel versions. A source whose tag differs from the
+// running model's is stale (spec ui.card-info-rwkv-curve).
+message RwkvCurveSourceTag {
+  string model = 1;
+  uint32 format = 2;
+  uint32 kernel = 3;
+}
+
+// Curve sources of reviews: `sources` holds one source of `width` bytes per
+// id in `revlog_ids`, in the same order. Their layout is the model's own.
+message RwkvCurveSources {
+  RwkvCurveSourceTag tag = 1;
+  repeated int64 revlog_ids = 2;
+  uint32 width = 3;
+  bytes sources = 4;
+}
+
+message GetRwkvCurveSourcesRequest {
+  int64 card_id = 1;
+  RwkvCurveSourceTag tag = 2;
 }
 
 message ReviewPredictionRowsRequest {
