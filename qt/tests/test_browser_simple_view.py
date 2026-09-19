@@ -98,6 +98,7 @@ def test_simple_mode_takes_the_advanced_only_items_out_of_the_menus(browser):
         assert _in_menu(browser, menu, action), action
     assert not browser.form.menuJump.menuAction().isVisible()
     assert not browser.form.menuLayout.menuAction().isVisible()
+    assert not browser.form.menuFlag.menuAction().isVisible()
     assert browser._switch.isHidden()
     assert browser.toolbar_modes == [False]
 
@@ -109,6 +110,7 @@ def test_simple_mode_takes_the_advanced_only_items_out_of_the_menus(browser):
         assert getattr(browser.form, menu).actions() == actions
     assert browser.form.menuJump.menuAction().isVisible()
     assert browser.form.menuLayout.menuAction().isVisible()
+    assert browser.form.menuFlag.menuAction().isVisible()
     assert not browser._switch.isHidden()
     assert browser.toolbar_modes == [False, True]
 
@@ -117,7 +119,8 @@ def test_hidden_items_keep_their_shortcuts(browser):
     browser._setup_ui_mode()
 
     hidden = [getattr(browser.form, a) for _, a in ADVANCED_ONLY]
-    hidden += browser.form.menuJump.actions() + browser.form.menuLayout.actions()
+    for menu in (browser.form.menuJump, browser.form.menuLayout, browser.form.menuFlag):
+        hidden += menu.actions()
     for action in hidden:
         if action.isSeparator():
             continue
@@ -190,7 +193,7 @@ def test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice():
 
 
 @pytest.mark.parametrize("advanced", [False, True])
-def test_saved_searches_and_note_types_are_advanced_only(advanced):
+def test_saved_searches_flags_and_note_types_are_advanced_only(advanced):
     from aqt.browser.sidebar.item import SidebarItem, SidebarItemType
     from aqt.browser.sidebar.tree import SidebarStage, SidebarTreeView
 
@@ -200,19 +203,24 @@ def test_saved_searches_and_note_types_are_advanced_only(advanced):
     for stage, method in [
         (SidebarStage.SAVED_SEARCHES, "_saved_searches_tree"),
         (SidebarStage.NOTETYPES, "_notetype_tree"),
+        (SidebarStage.FLAGS, "_flags_tree"),
         (SidebarStage.DECKS, "_deck_tree"),
         (SidebarStage.TAGS, "_tag_tree"),
     ]:
         setattr(tree, method, lambda root, stage=stage: built.append(stage))
     root = SidebarItem("", "", item_type=SidebarItemType.ROOT)
     for stage in SidebarStage:
-        if stage in (SidebarStage.CARD_STATE, SidebarStage.TODAY, SidebarStage.FLAGS):
+        if stage in (SidebarStage.CARD_STATE, SidebarStage.TODAY):
             continue
         tree._build_stage(root, stage)
 
     expected = [SidebarStage.DECKS, SidebarStage.TAGS]
     if advanced:
-        expected += [SidebarStage.SAVED_SEARCHES, SidebarStage.NOTETYPES]
+        expected += [
+            SidebarStage.SAVED_SEARCHES,
+            SidebarStage.FLAGS,
+            SidebarStage.NOTETYPES,
+        ]
     assert sorted(built, key=lambda s: s.value) == sorted(
         expected, key=lambda s: s.value
     )
@@ -230,7 +238,7 @@ def test_a_hidden_item_runs_from_its_shortcut(browser, qapp):
     browser.activateWindow()
     qapp.processEvents()
 
-    QTest.keySequence(browser, action.shortcut())
+    QTest.keySequence(browser, action.shortcut())  # type: ignore[call-overload]
     qapp.processEvents()
 
     assert fired == [True]

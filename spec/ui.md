@@ -179,12 +179,12 @@ needed to find a card, fix it, and choose whether it is studied:
 - Edit keeps Undo, Redo, Select All and Close; Select Notes, Invert
   Selection and Create Filtered Deck are Advanced-only.
 - Notes keeps Add Notes, Delete and every tag item (Add Tags, Remove Tags,
-  Clear Unused Tags, Toggle Mark); Create Copy, Export Notes, Change Note
+  Clear Unused Tags, Toggle Tag); Create Copy, Export Notes, Change Note
   Type, Find Duplicates, Find and Replace and Manage Note Types are
   Advanced-only.
-- Cards keeps Change Deck, Toggle Suspend, Flag and Info; Set Due Date, Grade
-  Now, Forget, Reposition and Toggle Bury are Advanced-only (Advance and
-  Postpone already are, `ui.advance-postpone`).
+- Cards keeps Change Deck, Toggle Suspend and Info; the Flag submenu, Set
+  Due Date, Grade Now, Reset, Reposition and Toggle Bury are Advanced-only
+  (Advance and Postpone already are, `ui.advance-postpone`).
 - View keeps Full Screen, Toggle Sidebar and the zoom items; the Layout
   submenu and the Cards/Notes toggle are Advanced-only. The Go menu is
   Advanced-only as a whole.
@@ -193,8 +193,8 @@ needed to find a card, fix it, and choose whether it is studied:
   are Advanced-only; in Simple mode the table shows cards, and a Browser that
   was left in notes mode switches to cards mode (remembered) when it opens or
   when the mode becomes Simple.
-- The sidebar has no Saved Searches and no Note Types sections (so no note
-  type, card type or field actions); Today, Flags, Card State, Decks and Tags
+- The sidebar has no Saved Searches, Flags or Note Types sections (so no
+  note type, card type or field actions); Today, Card State, Decks and Tags
   stay.
 - Cards mode shows a fixed set of columns: Sort Field, Deck, Due and
   Interval, with their own widths; a right-click on the column header does
@@ -218,7 +218,37 @@ fix first).
 `test_hidden_items_keep_their_shortcuts`,
 `test_an_addon_menu_entry_stays_through_a_mode_switch`,
 `test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice`,
-`test_saved_searches_and_note_types_are_advanced_only`).
+`test_saved_searches_flags_and_note_types_are_advanced_only`).
+
+## ui.reviewer-simple-view
+
+Given Simple mode (`ui.mode-switch`), the reviewer's More menu keeps Suspend
+Card, Options, Card Info, Tag Note, Delete Note, Replay Audio and Pause
+Audio. Flag Card, Bury Card, Reset Card, Set Due Date, Previous Card Info,
+Bury Note, Suspend Note, Create Copy, Audio -5s, Audio +5s, Record Own
+Voice, Replay Own Voice and Auto Advance are Advanced-only. Every item keeps
+its keyboard shortcut in both modes, as in `ui.simple-mode-tools-hidden`.
+
+Flags are Advanced-only everywhere (this entry, `ui.browser-simple-view`):
+Simple mode offers no way to set a flag or to list flagged cards except the
+flag shortcuts, but a card's existing flag is still shown (the Browser row
+colour, the reviewer's flag mark), so a flagged card never looks unflagged.
+Tags stay in Simple mode everywhere. Marking a note adds the tag `marked`,
+so the English labels call it tagging: "Tag Note" in the reviewer and
+"Toggle Tag" in the Browser; the tag itself is still named `marked`.
+
+**Why:** Andrew, 2026-09-19, choosing the items from the More menu, and:
+"Make all flag stuff Advanced-mode and all tag stuff Simple mode" (tags
+already do what flags do, so flags are redundant for most users); "Rename
+Mark to Tag and keep it in simple mode"; "Set Due Date should be
+Advanced-only"; "hide Suspend Note"; and he agreed that existing flags stay
+visible.
+
+**Pinned by:** `qt/tests/test_reviewer_simple_view.py`
+(`test_simple_mode_more_menu_keeps_only_the_everyday_items`,
+`test_advanced_mode_more_menu_is_unchanged`,
+`test_marking_is_called_tagging`), and for the Browser's flags
+`qt/tests/test_browser_simple_view.py`.
 
 ## ui.editor-simple-view
 
