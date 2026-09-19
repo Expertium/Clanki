@@ -82,11 +82,13 @@ def rwkv_history(monkeypatch: pytest.MonkeyPatch) -> FakeRuntime:
         ),
     )
 
-    def predict(runtime_: object, inputs: Sequence[Any], *, day: int) -> list[float]:
-        runtime.queried[day] = sorted(r.identity.card_id for r in inputs)
-        return [0.5] * len(inputs)
+    def predict(runtime_: object, rows: Any, *, day: int) -> list[float]:
+        runtime.queried[day] = sorted(rows.card_ids())
+        return [0.5] * len(rows)
 
-    monkeypatch.setattr(aqt.rwkv_scheduler, "_predict_rwkv_memorised_day", predict)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "_predict_rwkv_memorised_day_from_rows", predict
+    )
     monkeypatch.setattr(total_knowledge, "new_runtime", lambda: runtime)
     return runtime
 

@@ -985,6 +985,37 @@ class _RustRwkvRuntime:
             raise ValueError("RWKV packed resident prediction count mismatch")
         return outputs
 
+    def predict_memorised_retrievability_on_day(
+        self,
+        rows: MemorisedDayRows,
+        *,
+        day: int,
+    ) -> bytes:
+        """Predict one Memorised day from rows packed once per rating.
+
+        The rows carry each card's own review day, and the Rust side derives
+        the day and the two elapsed fields from `day`. So a day costs one
+        packed buffer of rows that are already packed, not a fresh pack of
+        every card (spec ui.stats-total-knowledge).
+        """
+
+        predict_many = getattr(
+            self._process,
+            "predict_retrievability_many_from_warm_up_packed_on_day",
+            None,
+        )
+        if not callable(predict_many):
+            raise ValueError(
+                "RWKV packed resident-state prediction by day is unavailable"
+            )
+
+        payload = rows.payload()
+        with self._locked_process():
+            outputs = bytes(predict_many(payload, day))
+        if len(outputs) != len(rows) * 4:
+            raise ValueError("RWKV packed resident prediction count mismatch")
+        return outputs
+
     def curve_retrievability_day_sums_from_warm_up(
         self,
         spans: Sequence[tuple[int, int, int, int]],
@@ -1523,6 +1554,130 @@ def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
     for review_input in reviews:
         payload.extend(_packed_review_input_row(review_input))
     return bytes(payload)
+
+
+class MemorisedDayRows:
+    """The rows of the cards a Memorised day scores.
+
+    Total Knowledge and the Memorised history walk the collection day by day
+    and score every card that has a rating and no later reset. A card's row
+    changes only when the card is rated or reset. Three fields of the packed
+    row change every day - the day and the two elapsed fields - and all three
+    follow from the query day and the row's own review day, so the Rust side
+    derives them. A row is therefore packed once per rating instead of once
+    per day (spec ui.stats-total-knowledge).
+
+    The order of the rows is the order a `dict` keyed by card gives: a card
+    that is rated again keeps its place, and a card that is removed and rated
+    again goes to the end. So the sum over the rows keeps its old order.
+    """
+
+    __slots__ = ("_rows", "_inputs", "_card_ids", "_index", "_unpacked", "_removed")
+
+    def __init__(self) -> None:
+        # a row is None when its card is gone, or when the input is new and
+        # nothing has asked for the payload yet
+        self._rows: list[bytes | None] = []
+        self._inputs: list[RwkvReviewInput | None] = []
+        self._card_ids: list[int | None] = []
+        self._index: dict[int, int] = {}
+        self._unpacked: list[int] = []
+        self._removed = 0
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def set(self, card_id: int, review_input: RwkvReviewInput) -> None:
+        """Make `review_input` the card's row, in its place if it has one."""
+
+        position = self._index.get(card_id)
+        if position is None:
+            self._index[card_id] = len(self._rows)
+            self._rows.append(None)
+            self._inputs.append(review_input)
+            self._card_ids.append(card_id)
+            self._unpacked.append(len(self._rows) - 1)
+        else:
+            self._rows[position] = None
+            self._inputs[position] = review_input
+            self._unpacked.append(position)
+
+    def remove(self, card_id: int) -> None:
+        """Drop the card's row. The later rows keep their places, and the
+        empty places are cleared away once they reach a quarter of the rows,
+        so a removal costs a constant amount of work over a run."""
+
+        position = self._index.pop(card_id, None)
+        if position is None:
+            return
+        self._rows[position] = None
+        self._inputs[position] = None
+        self._card_ids[position] = None
+        self._removed += 1
+        if self._removed * 4 >= len(self._rows):
+            self._compact()
+
+    def _pack_new_rows(self) -> None:
+        for position in self._unpacked:
+            review_input = self._inputs[position]
+            # None here means the card was removed after it was set
+            if review_input is not None:
+                self._rows[position] = _packed_review_input_row(review_input)
+        self._unpacked.clear()
+
+    def _compact(self) -> None:
+        """Close the empty places up, keeping the order. A row that is not
+        packed yet stays unpacked: compaction must not pack, because it can
+        run while the caller is still adding the day's ratings."""
+
+        new_position: dict[int, int] = {}
+        rows: list[bytes | None] = []
+        inputs: list[RwkvReviewInput | None] = []
+        card_ids: list[int | None] = []
+        for position, card_id in enumerate(self._card_ids):
+            if card_id is None:
+                continue
+            new_position[position] = len(card_ids)
+            card_ids.append(card_id)
+            rows.append(self._rows[position])
+            inputs.append(self._inputs[position])
+        self._card_ids = card_ids
+        self._rows = rows
+        self._inputs = inputs
+        self._index = {
+            card_id: position
+            for position, card_id in enumerate(card_ids)
+            if card_id is not None
+        }
+        self._unpacked = [
+            new_position[position]
+            for position in self._unpacked
+            if position in new_position
+        ]
+        self._removed = 0
+
+    def card_ids(self) -> list[int]:
+        """The cards, in the order their predictions come back."""
+
+        return [card_id for card_id in self._card_ids if card_id is not None]
+
+    def review_inputs(self) -> list[RwkvReviewInput]:
+        """The cards' rating inputs, in the order `card_ids` gives."""
+
+        return [
+            review_input for review_input in self._inputs if review_input is not None
+        ]
+
+    def payload(self) -> bytes:
+        """The packed rows, for `predict_memorised_retrievability_on_day`."""
+
+        self._pack_new_rows()
+        # a live row is 1 or more bytes, so only an empty place is dropped
+        rows = list(filter(None, self._rows))
+        return _PACKED_PREDICTION_REQUEST_HEADER.pack(
+            _PACKED_WARM_UP_REVIEW_MAGIC,
+            len(rows),
+        ) + b"".join(rows)
 
 
 def _packed_memorised_query_inputs(
