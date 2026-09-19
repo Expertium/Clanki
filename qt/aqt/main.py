@@ -25,6 +25,7 @@ import aqt.fsrs_predictions
 import aqt.progress
 import aqt.sound
 import aqt.stats_prefetch
+import aqt.ui_split
 from anki import hooks
 from anki._backend import RustBackend as _RustBackend
 from anki._legacy import deprecated
@@ -796,6 +797,11 @@ class AnkiQt(QMainWindow):
             self.update_undo_actions()
             gui_hooks.collection_did_load(self.col)
             self.apply_collection_options()
+            # the menus were set up before there was a collection, so they
+            # show the defaults of Simple mode until the collection's own
+            # mode and split are read (spec ui.split-configurable)
+            self._sync_advanced_ui_action()
+            self._sync_tools_menu_for_ui_mode()
             # the toolbar was first drawn without a collection, so the
             # Simple | Advanced switch (spec ui.mode-switch) was not in it
             self.toolbar.draw()
@@ -1815,16 +1821,22 @@ title="{}" {}>{}</button>""".format(
         with aqt.stats_prefetch.ui_mode_write(self.col):
             self.col.set_config_bool(Config.Bool.ADVANCED_UI, advanced)
         self._sync_advanced_ui_action()
-        self._sync_tools_menu_for_ui_mode()
         # in place: a toolbar reload would clear the sync button's colour and
         # spinner (spec ui.mode-switch)
         self.toolbar.update_ui_mode_toggle()
-        # Only the deck list's bottom row and tree columns, and the
-        # overview's counts table (spec ui.simple-mode-deck-counts), depend
-        # on the mode, so only those are redrawn from the data already on
-        # screen. A full reset() would recompute the RWKV due counts (slow,
-        # and "..." meanwhile) for a change that does not affect dueness
-        # (spec ui.mode-switch).
+        self.redraw_for_ui_split()
+
+    def redraw_for_ui_split(self) -> None:
+        """Show or hide the split's items (aqt.ui_split) in the open windows
+        after a mode switch or an edit of the split, in place.
+
+        Only the deck list's bottom row and tree columns, and the overview's
+        counts table (spec ui.simple-mode-deck-counts), depend on the mode,
+        so only those are redrawn from the data already on screen. A full
+        reset() would recompute the RWKV due counts (slow, and "..."
+        meanwhile) for a change that does not affect dueness (spec
+        ui.mode-switch)."""
+        self._sync_tools_menu_for_ui_mode()
         if self.state == "deckBrowser":
             self.deckBrowser.redraw_for_ui_mode()
         # The overview's bottom row (Custom Study, spec
@@ -1844,18 +1856,35 @@ title="{}" {}>{}</button>""".format(
         action.setChecked(self.advanced_ui())
         action.blockSignals(False)
 
-    def _sync_tools_menu_for_ui_mode(self) -> None:
-        """Hide the power-user Tools items in Simple mode
-        (spec ui.simple-mode-tools-hidden). Study Deck..., Add-ons, Check for
-        Updates and Preferences stay in both modes; add-on-contributed menu
-        entries are untouched."""
+    def _tools_menu_items(self) -> list[tuple[str, QAction]]:
         m = self.form
-        advanced = self.advanced_ui()
-        m.actionCreateFiltered.setVisible(advanced)
-        m.actionFullDatabaseCheck.setVisible(advanced)
-        m.actionCheckMediaDatabase.setVisible(advanced)
-        m.actionEmptyCards.setVisible(advanced)
-        m.actionNoteTypes.setVisible(advanced)
+        return [
+            ("main.tools.study_deck", m.actionStudyDeck),
+            ("main.tools.create_filtered", m.actionCreateFiltered),
+            ("main.tools.check_database", m.actionFullDatabaseCheck),
+            ("main.tools.check_media", m.actionCheckMediaDatabase),
+            ("main.tools.empty_cards", m.actionEmptyCards),
+            ("main.tools.addons", m.actionAdd_ons),
+            ("main.tools.note_types", m.actionNoteTypes),
+            ("main.tools.check_for_updates", m.action_check_for_updates),
+        ]
+
+    def _sync_tools_menu_for_ui_mode(self) -> None:
+        """Show the Tools items the split gives the current mode (spec
+        ui.simple-mode-tools-hidden, ui.split-configurable). A hidden item is
+        taken out of the menu, and the window holds it, so its shortcut keeps
+        working; Preferences always shows, and add-on-contributed menu
+        entries are untouched."""
+        menu = self.form.menuTools
+        if not hasattr(self, "_tools_menu_layout"):
+            self._tools_menu_layout = list(menu.actions())
+            for _, action in self._tools_menu_items():
+                self.addAction(action)
+        shows = aqt.ui_split.visibility(self)
+        for item_id, action in self._tools_menu_items():
+            aqt.ui_split.show_in_menu(
+                menu, action, shows(item_id), self._tools_menu_layout
+            )
 
     def updateTitleBar(self) -> None:
         self.setWindowTitle(aqt.application_name())

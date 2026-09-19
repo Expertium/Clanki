@@ -62,12 +62,12 @@ class SidebarToolbar(QToolBar):
         index = self._action_group.actions().index(action)
         self.sidebar.tool = self._tools[index][0]
 
-    def apply_ui_mode(self, advanced: bool) -> None:
-        """The Select tool is Advanced-only; Simple mode drops its button but
-        keeps its shortcut, which the Browser window holds (spec
-        ui.browser-simple-view)."""
+    def apply_ui_mode(self, show_select: bool) -> None:
+        """The Select tool shows when the split says so (by default Advanced
+        mode only); hidden, its button is dropped but its shortcut kept,
+        which the Browser window holds (spec ui.browser-simple-view)."""
         search, select = self._action_group.actions()
-        if advanced:
+        if show_select:
             if select not in self.actions():
                 self.addAction(select)
             return

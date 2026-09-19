@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
+
+import pytest
 
 import anki.lang
 from anki.config import Config
@@ -149,6 +152,7 @@ def test_switching_the_mode_redraws_without_a_full_reset() -> None:
                 reset=MagicMock(),
             ),
         )
+        mw.redraw_for_ui_split = lambda: AnkiQt.redraw_for_ui_split(mw)
         AnkiQt.set_advanced_ui(mw, True)
         mw.col.set_config_bool.assert_called_once_with(Config.Bool.ADVANCED_UI, True)
         # the toolbar control switches in place: a reload would clear the
@@ -285,70 +289,125 @@ def test_filtered_deck_failure_avoids_retrievability_in_simple_mode() -> None:
     assert "retrievability" in advanced.lower()
 
 
-def _tools_form(advanced: bool) -> Any:
-    form = MagicMock()
-    mw = SimpleNamespace(form=form, advanced_ui=lambda: advanced)
-    AnkiQt._sync_tools_menu_for_ui_mode(cast(Any, mw))
-    return form
+TOOLS_ADVANCED_ONLY = [
+    "actionCreateFiltered",
+    "actionFullDatabaseCheck",
+    "actionCheckMediaDatabase",
+    "actionEmptyCards",
+    "actionNoteTypes",
+]
+TOOLS_SHARED = [
+    "actionStudyDeck",
+    "actionAdd_ons",
+    "action_check_for_updates",
+    "actionPreferences",
+]
 
 
-def test_tools_menu_hides_power_user_items_in_simple_mode() -> None:
+@pytest.fixture(scope="module")
+def qapp() -> Any:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from aqt.qt import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+def _tools_window(
+    qapp: Any, advanced: bool, choices: dict[str, bool] | None = None
+) -> Any:
+    """A window with the main window's real menus, synced to the mode."""
+    import aqt.forms
+    from aqt.qt import QMainWindow
+
+    win: Any = QMainWindow()
+    win.form = aqt.forms.main.Ui_MainWindow()
+    win.form.setupUi(win)
+    mode = {"advanced": advanced}
+    win.mode = mode
+    win.advanced_ui = lambda: mode["advanced"]
+    win.col = SimpleNamespace(
+        get_config=lambda key, default=None: choices if choices is not None else default
+    )
+    win._tools_menu_items = lambda: AnkiQt._tools_menu_items(win)
+    AnkiQt._sync_tools_menu_for_ui_mode(win)
+    return win
+
+
+def _in_tools(win: Any, action: str) -> bool:
+    return getattr(win.form, action) in win.form.menuTools.actions()
+
+
+def test_tools_menu_hides_power_user_items_in_simple_mode(qapp: Any) -> None:
     """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
-    form = _tools_form(False)
-    form.actionCreateFiltered.setVisible.assert_called_once_with(False)
-    form.actionFullDatabaseCheck.setVisible.assert_called_once_with(False)
-    form.actionCheckMediaDatabase.setVisible.assert_called_once_with(False)
-    form.actionEmptyCards.setVisible.assert_called_once_with(False)
-    form.actionNoteTypes.setVisible.assert_called_once_with(False)
+    win = _tools_window(qapp, False)
+    for action in TOOLS_ADVANCED_ONLY:
+        assert not _in_tools(win, action), action
 
 
-def test_tools_menu_shows_power_user_items_in_advanced_mode() -> None:
+def test_tools_menu_shows_power_user_items_in_advanced_mode(qapp: Any) -> None:
     """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
-    form = _tools_form(True)
-    form.actionCreateFiltered.setVisible.assert_called_once_with(True)
-    form.actionFullDatabaseCheck.setVisible.assert_called_once_with(True)
-    form.actionCheckMediaDatabase.setVisible.assert_called_once_with(True)
-    form.actionEmptyCards.setVisible.assert_called_once_with(True)
-    form.actionNoteTypes.setVisible.assert_called_once_with(True)
+    win = _tools_window(qapp, True)
+    for action in TOOLS_ADVANCED_ONLY + TOOLS_SHARED:
+        assert _in_tools(win, action), action
 
 
-def test_tools_menu_keeps_shared_items_in_both_modes() -> None:
-    """Study Deck..., Add-ons, Check for Updates and Preferences are never
-    touched by the Simple/Advanced sync, in either mode (spec
-    ui.simple-mode-tools-hidden)."""
+def test_tools_menu_keeps_shared_items_in_both_modes(qapp: Any) -> None:
+    """Study Deck..., Add-ons, Check for Updates and Preferences stay in the
+    menu in both modes (spec ui.simple-mode-tools-hidden)."""
     for advanced in (False, True):
-        form = _tools_form(advanced)
-        form.actionStudyDeck.setVisible.assert_not_called()
-        form.actionAdd_ons.setVisible.assert_not_called()
-        form.action_check_for_updates.setVisible.assert_not_called()
-        form.actionPreferences.setVisible.assert_not_called()
+        win = _tools_window(qapp, advanced)
+        for action in TOOLS_SHARED:
+            assert _in_tools(win, action), action
 
 
-def test_switching_the_mode_updates_the_tools_menu() -> None:
+def test_hidden_tools_items_keep_their_shortcuts(qapp: Any) -> None:
+    """A hidden Tools item is taken out of the menu, not made invisible, and
+    the window holds it, so its shortcut still runs it (spec
+    ui.split-configurable)."""
+    win = _tools_window(qapp, False)
+    for name in TOOLS_ADVANCED_ONLY:
+        action = getattr(win.form, name)
+        assert action.isVisible(), name
+        assert action in win.actions(), name
+
+
+def test_switching_the_mode_puts_tools_items_back_in_place(qapp: Any) -> None:
+    win = _tools_window(qapp, True)
+    layout = list(win.form.menuTools.actions())
+    win.mode["advanced"] = False
+    AnkiQt._sync_tools_menu_for_ui_mode(win)
+    win.mode["advanced"] = True
+    AnkiQt._sync_tools_menu_for_ui_mode(win)
+    assert win.form.menuTools.actions() == layout
+
+
+def test_switching_the_mode_updates_the_tools_menu(qapp: Any) -> None:
     """Pins spec/ui.md#ui.simple-mode-tools-hidden."""
     # advanced_ui() must reflect the just-written mode, like the real
     # collection-backed one does, since _sync_tools_menu_for_ui_mode (below)
     # reads it again after set_config_bool runs.
-    state = {"advanced": False}
+    win = _tools_window(qapp, False)
+    assert not _in_tools(win, "actionCreateFiltered")
     col = MagicMock()
-    col.set_config_bool.side_effect = lambda _key, val: state.update(advanced=val)
+    col.get_config.side_effect = lambda _key, default=None: default
+    col.set_config_bool.side_effect = lambda _key, val: win.mode.update(advanced=val)
     mw = cast(
         Any,
         SimpleNamespace(
             col=col,
             state="deckBrowser",
-            advanced_ui=lambda: state["advanced"],
+            advanced_ui=win.advanced_ui,
             _sync_advanced_ui_action=lambda: None,
             toolbar=MagicMock(),
             deckBrowser=MagicMock(),
-            form=MagicMock(),
             reset=MagicMock(),
         ),
     )
-    # real method, not stubbed: this test checks what it actually does
-    mw._sync_tools_menu_for_ui_mode = lambda: AnkiQt._sync_tools_menu_for_ui_mode(mw)
+    # real methods, not stubbed: this test checks what they actually do
+    mw._sync_tools_menu_for_ui_mode = lambda: AnkiQt._sync_tools_menu_for_ui_mode(win)
+    mw.redraw_for_ui_split = lambda: AnkiQt.redraw_for_ui_split(mw)
     AnkiQt.set_advanced_ui(mw, True)
-    mw.form.actionCreateFiltered.setVisible.assert_called_once_with(True)
+    assert _in_tools(win, "actionCreateFiltered")
 
 
 def test_switching_the_mode_on_the_overview_redraws_its_bottom_bar() -> None:
@@ -369,6 +428,7 @@ def test_switching_the_mode_on_the_overview_redraws_its_bottom_bar() -> None:
             reset=MagicMock(),
         ),
     )
+    mw.redraw_for_ui_split = lambda: AnkiQt.redraw_for_ui_split(mw)
     AnkiQt.set_advanced_ui(mw, True)
     mw.overview.redraw_for_ui_mode.assert_called_once()
     mw.reset.assert_not_called()

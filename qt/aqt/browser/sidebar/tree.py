@@ -9,6 +9,7 @@ from typing import cast
 import aqt
 import aqt.browser
 import aqt.operations
+import aqt.ui_split
 from anki.collection import (
     Config,
     OpChanges,
@@ -67,6 +68,18 @@ class SidebarStage(Enum):
     DECKS = auto()
     NOTETYPES = auto()
     TAGS = auto()
+
+
+# the sidebar's sections and their items of the split (aqt.ui_split)
+SIDEBAR_SECTIONS = {
+    SidebarStage.SAVED_SEARCHES: "browser.sidebar.saved_searches",
+    SidebarStage.TODAY: "browser.sidebar.today",
+    SidebarStage.FLAGS: "browser.sidebar.flags",
+    SidebarStage.CARD_STATE: "browser.sidebar.card_state",
+    SidebarStage.DECKS: "browser.sidebar.decks",
+    SidebarStage.NOTETYPES: "browser.sidebar.note_types",
+    SidebarStage.TAGS: "browser.sidebar.tags",
+}
 
 
 # fixme: we should have a top-level Sidebar class inheriting from QWidget that
@@ -517,16 +530,11 @@ class SidebarTreeView(QTreeView):
         return root
 
     def _build_stage(self, root: SidebarItem, stage: SidebarStage) -> None:
-        if (
-            stage
-            in (
-                SidebarStage.SAVED_SEARCHES,
-                SidebarStage.FLAGS,
-                SidebarStage.NOTETYPES,
-            )
-            and not self.mw.advanced_ui()
+        if stage in SIDEBAR_SECTIONS and not aqt.ui_split.shown(
+            self.mw, SIDEBAR_SECTIONS[stage]
         ):
-            # Advanced-only sections (spec ui.browser-simple-view)
+            # hidden by the split (spec ui.browser-simple-view,
+            # ui.split-configurable)
             return
         if stage is SidebarStage.SAVED_SEARCHES:
             self._saved_searches_tree(root)

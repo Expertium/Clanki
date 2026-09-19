@@ -17,6 +17,7 @@ import aqt.browser
 import aqt.editor
 import aqt.forms
 import aqt.operations
+import aqt.ui_split
 from anki._legacy import deprecated
 from anki.cards import Card, CardId
 from anki.collection import Collection, Config, ExperimentFlag, OpChanges, SearchNode
@@ -160,11 +161,11 @@ class Browser(QMainWindow):
         # set if exactly 1 row is selected; used by the previewer
         self.card: Card | None = None
         self.current_card: Card | None = None
-        if not self.mw.advanced_ui() and self.col.get_config_bool(
-            Config.Bool.BROWSER_TABLE_SHOW_NOTES_MODE
-        ):
-            # Simple mode has no Cards/Notes switch, so it shows cards
-            # (spec ui.browser-simple-view)
+        if not aqt.ui_split.shown(
+            self.mw, "browser.cards_notes_switch"
+        ) and self.col.get_config_bool(Config.Bool.BROWSER_TABLE_SHOW_NOTES_MODE):
+            # without the Cards/Notes switch the table shows cards (spec
+            # ui.browser-simple-view)
             self.col.set_config_bool(Config.Bool.BROWSER_TABLE_SHOW_NOTES_MODE, False)
         self.setupSidebar()
         self.setup_table()
@@ -809,75 +810,106 @@ class Browser(QMainWindow):
     # UI mode (spec ui.browser-simple-view)
     ######################################################################
 
-    def _advanced_only_menu_actions(self) -> list[tuple[QMenu, QAction]]:
+    def _menu_items(self) -> list[tuple[str, QMenu, QAction]]:
+        """The menu entries of the split (aqt.ui_split), with their menus."""
         f = self.form
         return [
-            (f.menuEdit, f.actionSelectNotes),
-            (f.menuEdit, f.actionInvertSelection),
-            (f.menuEdit, f.actionCreateFilteredDeck),
-            (f.menu_Notes, f.actionCopy),
-            (f.menu_Notes, f.actionExport),
-            (f.menu_Notes, f.actionChangeModel),
-            (f.menu_Notes, f.actionFindDuplicates),
-            (f.menu_Notes, f.actionFindReplace),
-            (f.menu_Notes, f.actionManage_Note_Types),
-            (f.menu_Cards, f.action_set_due_date),
-            (f.menu_Cards, f.action_grade_now),
-            (f.menu_Cards, f.action_forget),
-            (f.menu_Cards, f.actionReposition),
-            (f.menu_Cards, f.action_toggle_bury),
-            (f.menuqt_accel_view, f.action_toggle_mode),
+            ("browser.edit.undo", f.menuEdit, f.actionUndo),
+            ("browser.edit.redo", f.menuEdit, f.actionRedo),
+            ("browser.edit.select_all", f.menuEdit, f.actionSelectAll),
+            ("browser.edit.select_notes", f.menuEdit, f.actionSelectNotes),
+            ("browser.edit.invert_selection", f.menuEdit, f.actionInvertSelection),
+            ("browser.edit.close", f.menuEdit, f.actionClose),
+            ("browser.edit.create_filtered", f.menuEdit, f.actionCreateFilteredDeck),
+            ("browser.notes.add", f.menu_Notes, f.actionAdd),
+            ("browser.notes.create_copy", f.menu_Notes, f.actionCopy),
+            ("browser.notes.export", f.menu_Notes, f.actionExport),
+            ("browser.notes.add_tags", f.menu_Notes, f.actionAdd_Tags),
+            ("browser.notes.remove_tags", f.menu_Notes, f.actionRemove_Tags),
+            (
+                "browser.notes.remove_leech_tag",
+                f.menu_Notes,
+                self.action_remove_leech_tag,
+            ),
+            (
+                "browser.notes.clear_unused_tags",
+                f.menu_Notes,
+                f.actionClear_Unused_Tags,
+            ),
+            ("browser.notes.toggle_tag", f.menu_Notes, f.actionToggle_Mark),
+            ("browser.notes.change_note_type", f.menu_Notes, f.actionChangeModel),
+            ("browser.notes.find_duplicates", f.menu_Notes, f.actionFindDuplicates),
+            ("browser.notes.find_and_replace", f.menu_Notes, f.actionFindReplace),
+            ("browser.notes.note_types", f.menu_Notes, f.actionManage_Note_Types),
+            ("browser.notes.delete", f.menu_Notes, f.actionDelete),
+            ("browser.cards.change_deck", f.menu_Cards, f.actionChange_Deck),
+            ("browser.cards.set_due_date", f.menu_Cards, f.action_set_due_date),
+            ("browser.cards.grade_now", f.menu_Cards, f.action_grade_now),
+            ("browser.cards.reset", f.menu_Cards, f.action_forget),
+            ("browser.cards.reposition", f.menu_Cards, f.actionReposition),
+            ("browser.cards.toggle_suspend", f.menu_Cards, f.actionToggle_Suspend),
+            ("browser.cards.toggle_bury", f.menu_Cards, f.action_toggle_bury),
+            ("browser.cards.info", f.menu_Cards, f.action_Info),
+            (
+                "browser.view.toggle_cards_notes",
+                f.menuqt_accel_view,
+                f.action_toggle_mode,
+            ),
+            ("browser.view.full_screen", f.menuqt_accel_view, f.actionFullScreen),
+            (
+                "browser.view.toggle_sidebar",
+                f.menuqt_accel_view,
+                f.actionToggleSidebar,
+            ),
+            ("browser.view.zoom_in", f.menuqt_accel_view, f.actionZoomIn),
+            ("browser.view.zoom_out", f.menuqt_accel_view, f.actionZoomOut),
+            ("browser.view.reset_zoom", f.menuqt_accel_view, f.actionResetZoom),
         ]
 
-    def _advanced_only_menus(self) -> list[QMenu]:
-        return [self.form.menuJump, self.form.menuLayout, self.form.menuFlag]
+    def _whole_menus(self) -> list[tuple[str, QMenu]]:
+        """Menus the split shows or hides as a whole."""
+        f = self.form
+        return [
+            ("browser.go", f.menuJump),
+            ("browser.view.layout", f.menuLayout),
+            ("browser.cards.flag", f.menuFlag),
+        ]
 
     def _setup_ui_mode(self) -> None:
         self._menu_layouts = {
-            menu: list(menu.actions()) for menu, _ in self._advanced_only_menu_actions()
+            menu: list(menu.actions()) for _, menu, _ in self._menu_items()
         }
-        # Simple mode takes these out of the menus, but their shortcuts keep
+        # A hidden entry is taken out of its menu, but its shortcut keeps
         # working: the window holds every one of them.
-        for _, action in self._advanced_only_menu_actions():
+        for _, _, action in self._menu_items():
             self.addAction(action)
-        for menu in self._advanced_only_menus():
+        for _, menu in self._whole_menus():
             self.addActions(menu.actions())
         self.addActions(self.sidebar.toolbar.actions())
         self.apply_ui_mode(initial=True)
 
     def apply_ui_mode(self, initial: bool = False) -> None:
-        """Show or hide the Advanced-only parts after a mode switch; nothing
-        they do changes (spec ui.browser-simple-view)."""
-        advanced = self.mw.advanced_ui()
-        if not advanced and self.table.is_notes_mode() and not initial:
-            # Simple mode has no Cards/Notes switch, so it shows cards
+        """Show or hide the split's parts after a mode switch or an edit of
+        the split; nothing they do changes (spec ui.browser-simple-view,
+        ui.split-configurable)."""
+        shows = aqt.ui_split.visibility(self.mw)
+        switch_shown = shows("browser.cards_notes_switch")
+        if not switch_shown and self.table.is_notes_mode() and not initial:
+            # without the Cards/Notes switch the table shows cards
             self._switch.setChecked(False)
-        for menu, action in self._advanced_only_menu_actions():
-            self._show_in_menu(menu, action, advanced)
-        for menu in self._advanced_only_menus():
+        for item_id, menu, action in self._menu_items():
+            aqt.ui_split.show_in_menu(
+                menu, action, shows(item_id), self._menu_layouts[menu]
+            )
+        for item_id, menu in self._whole_menus():
             if menu_action := menu.menuAction():
-                menu_action.setVisible(advanced)
-        self._switch.setVisible(advanced)
-        self.sidebar.toolbar.apply_ui_mode(advanced)
+                menu_action.setVisible(shows(item_id))
+        self._switch.setVisible(switch_shown)
+        self.sidebar.toolbar.apply_ui_mode(shows("browser.sidebar.select_tool"))
+        self._update_advance_postpone_actions()
         if not initial:
             self.table.apply_ui_mode()
             self.sidebar.refresh()
-
-    def _show_in_menu(self, menu: QMenu, action: QAction, shown: bool) -> None:
-        """Remove an action from a menu or put it back at its place; add-on
-        entries in the same menu stay where they are."""
-        present = action in menu.actions()
-        if shown == present:
-            return
-        if not shown:
-            menu.removeAction(action)
-            return
-        layout = self._menu_layouts[menu]
-        for later in layout[layout.index(action) + 1 :]:
-            if later in menu.actions():
-                menu.insertAction(later, action)
-                return
-        menu.addAction(action)
 
     @ensure_editor_saved
     def on_table_state_changed(self, checked: bool) -> None:
@@ -1334,7 +1366,9 @@ class Browser(QMainWindow):
         if not hasattr(self, "action_postpone"):
             # the table reports its rows before the menus exist
             return
-        visible = aqt.advance_postpone.advance_postpone_available(self.mw)
+        visible = aqt.advance_postpone.advance_postpone_available(
+            self.mw, "browser.cards.advance_postpone"
+        )
         has_selection = bool(self.table.len_selection())
         for action in (self.action_advance, self.action_postpone):
             action.setVisible(visible)

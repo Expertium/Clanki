@@ -20,6 +20,7 @@ import aqt
 import aqt.browser
 import aqt.operations
 import aqt.rwkv_scheduler
+import aqt.ui_split
 from anki.cards import Card, CardId
 from anki.collection import Config, OpChanges, OpChangesWithCount
 from anki.errors import NotFoundError
@@ -2415,34 +2416,53 @@ timeboxReps = 0;
                 dict(checked=self.auto_advance_enabled),
             ],
         ]
-        if not self.mw.advanced_ui():
-            opts = self._simple_context_menu(opts)
-        return opts
+        return self._menu_for_ui_split(opts)
 
-    def _simple_context_menu(self, opts: list[Any]) -> list[Any]:
-        """Simple mode drops the power-user items from More; their shortcuts
-        keep working, since the reviewer binds them separately (spec
-        ui.reviewer-simple-view)."""
-        advanced_only = [
-            self.bury_current_card,
-            self.forget_current_card,
-            self.on_set_due,
-            self.on_previous_card_info,
-            self.bury_current_note,
-            self.suspend_current_note,
-            self.on_create_copy,
-            self.on_seek_backward,
-            self.on_seek_forward,
-            self.onRecordVoice,
-            self.onReplayRecorded,
-            self.toggle_auto_advance,
-        ]
-        # the only submenu is Flag Card, and flags are Advanced-only
-        return [
-            row
-            for row in opts
-            if row is None or (len(row) > 2 and row[2] not in advanced_only)
-        ]
+    def _menu_for_ui_split(self, opts: list[Any]) -> list[Any]:
+        """Keep the More menu items the split gives the current mode (spec
+        ui.reviewer-simple-view, ui.split-configurable); their shortcuts keep
+        working, since the reviewer binds them separately."""
+        item_ids = {
+            self.bury_current_card: "reviewer.bury_card",
+            self.forget_current_card: "reviewer.reset_card",
+            self.on_set_due: "reviewer.set_due_date",
+            self.suspend_current_card: "reviewer.suspend_card",
+            self.onOptions: "reviewer.options",
+            self.on_card_info: "reviewer.card_info",
+            self.on_previous_card_info: "reviewer.previous_card_info",
+            self.toggle_mark_on_current_note: "reviewer.tag_note",
+            self.bury_current_note: "reviewer.bury_note",
+            self.suspend_current_note: "reviewer.suspend_note",
+            self.on_create_copy: "reviewer.create_copy",
+            self.delete_current_note: "reviewer.delete_note",
+            self.replayAudio: "reviewer.replay_audio",
+            self.on_pause_audio: "reviewer.pause_audio",
+            self.on_seek_backward: "reviewer.audio_back",
+            self.on_seek_forward: "reviewer.audio_forward",
+            self.onRecordVoice: "reviewer.record_voice",
+            self.onReplayRecorded: "reviewer.replay_voice",
+            self.toggle_auto_advance: "reviewer.auto_advance",
+        }
+        shows = aqt.ui_split.visibility(self.mw)
+
+        def kept(row: Any) -> bool:
+            if row is None:
+                return True
+            # the only submenu is Flag Card; a row this code does not know
+            # (an add-on's) is not ours to hide
+            item_id = "reviewer.flag" if len(row) == 2 else item_ids.get(row[2])
+            return item_id is None or shows(item_id)
+
+        rows = [row for row in opts if kept(row)]
+        # no separator at either end or twice in a row
+        tidy: list[Any] = []
+        for row in rows:
+            if row is None and (not tidy or tidy[-1] is None):
+                continue
+            tidy.append(row)
+        while tidy and tidy[-1] is None:
+            tidy.pop()
+        return tidy
 
     def showContextMenu(self) -> None:
         opts = self._contextMenu()

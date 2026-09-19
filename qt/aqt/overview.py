@@ -11,6 +11,7 @@ import aqt
 import aqt.operations
 import aqt.review_heatmap
 import aqt.rwkv_scheduler
+import aqt.ui_split
 from anki.collection import Collection, OpChanges
 from anki.scheduler import UnburyDeck
 from aqt import gui_hooks
@@ -331,7 +332,7 @@ class Overview:
 </tr>
 """
 
-        if self.mw.advanced_ui():
+        if aqt.ui_split.shown(self.mw, "main.learn_count"):
             rows = (
                 number_row(tr.actions_new(), "new-count", counts[0], buried_new)
                 + number_row(
@@ -382,20 +383,25 @@ class Overview:
     ######################################################################
 
     def _renderBottom(self) -> None:
-        links = [
-            ["O", "opts", tr.actions_options()],
-        ]
+        # the split decides which buttons show (spec
+        # ui.simple-mode-tools-hidden, ui.split-configurable); a hidden
+        # button keeps its keyboard shortcut
+        shows = aqt.ui_split.visibility(self.mw)
+        links = []
+        if shows("main.overview.options"):
+            links.append(["O", "opts", tr.actions_options()])
         is_dyn = self.mw.col.decks.current()["dyn"]
         if is_dyn:
-            links.append(["R", "refresh", tr.actions_rebuild()])
-            links.append(["E", "empty", tr.studying_empty()])
-        # Advanced-only (spec ui.simple-mode-tools-hidden)
-        elif self.mw.advanced_ui():
+            if shows("main.overview.rebuild"):
+                links.append(["R", "refresh", tr.actions_rebuild()])
+            if shows("main.overview.empty"):
+                links.append(["E", "empty", tr.studying_empty()])
+        elif shows("main.overview.custom_study"):
             links.append(["C", "studymore", tr.actions_custom_study()])
         # links.append(["F", "cram", _("Filter/Cram")])
-        if self.mw.col.sched.have_buried():
+        if self.mw.col.sched.have_buried() and shows("main.overview.unbury"):
             links.append(["U", "unbury", tr.studying_unbury()])
-        if not is_dyn:
+        if not is_dyn and shows("main.overview.description"):
             links.append(["", "description", tr.scheduling_description()])
         link_handler = gui_hooks.overview_will_render_bottom(
             self._linkHandler,

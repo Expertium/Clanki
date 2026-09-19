@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+import aqt.ui_split
 from anki.collection import Collection
 from anki.scheduler.base import (
     AdvancePostponePreview,
@@ -43,11 +44,14 @@ POSTPONE = AdvancePostponeRequest.POSTPONE
 DEFAULT_COUNT = 10
 
 
-def advance_postpone_available(mw: Any) -> bool:
-    """Whether the actions show: Advanced mode only, and never under
+def advance_postpone_available(
+    mw: Any, item_id: str = "main.deck_menu.advance_postpone"
+) -> bool:
+    """Whether the actions show: when the split shows the item (by default
+    Advanced mode only, spec ui.split-configurable), and never under
     RWKV-Instant, which has no due dates to move (spec ui.advance-postpone)."""
     try:
-        if not mw.advanced_ui():
+        if not aqt.ui_split.shown(mw, item_id):
             return False
         return mw.col.get_config("schedulingAlgorithm", None) != "rwkvInstant"
     except Exception:

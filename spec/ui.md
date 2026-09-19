@@ -84,6 +84,79 @@ graphs, in page order" (`ts/routes/graphs/ui-mode.test.ts`);
 (`ts/routes/editor/ui-mode.test.ts`); "the Simple | Advanced switch keeps its
 size under the mouse" (`ts/tests/e2e/ui-mode-switch-hover.spec.ts`).
 
+## ui.split-configurable
+
+Given a collection, what Simple mode shows is decided item by item: each
+part of the interface that Simple mode may hide is one item of a registry
+(`qt/aqt/ui_split.py`: a stable id, an English name, its area and group, and
+whether Simple mode shows it by default). Advanced mode shows every item,
+whatever the choices. Simple mode shows an item when the user's choice for
+it says so, else by its default. The defaults are the split the other
+entries of this file describe (`ui.simple-mode-tools-hidden`,
+`ui.get-decks-and-get-addons`, `ui.mode-switch`'s deck menu,
+`ui.advance-postpone`, `ui.simple-mode-deck-counts`,
+`ui.reviewer-simple-view`, `ui.browser-simple-view`), so a collection with
+no choices looks exactly as those entries say.
+
+The items, per area:
+
+- Main window: the Tools menu (Study Deck, Create Filtered Deck, Check
+  Database, Check Media, Empty Cards, Add-ons, Manage Note Types, Check for
+  Updates); the deck list's buttons (Find Decks Online, Get Add-ons, Create
+  Deck, Import File); the deck menu (Rename, Options, Advance/Postpone, the
+  RWKV submenu, Export, Delete); the deck screen's buttons (Options,
+  Rebuild, Empty, Custom Study, Unbury, Description); and the Learn count of
+  the deck list and the deck screen (hidden, it is added to Due, as
+  `ui.simple-mode-deck-counts` says).
+- Reviewer: every entry of the More menu (the Flag Card submenu is one
+  item).
+- Browser: every entry of the Edit, Notes, Cards and View menus that
+  `ui.browser-simple-view` names, the Go menu as a whole, the Flag and
+  Layout submenus, Advance/Postpone, the Cards/Notes switch beside the
+  search bar, the sidebar's Select tool and its seven sections, and each of
+  the 19 Cards-mode columns. Simple mode's columns are the chosen ones, in
+  the registry's order (Sort Field, Deck, Due, Interval, then the others);
+  with none chosen, Sort Field shows. Without the Cards/Notes switch, the
+  table shows cards (`ui.browser-simple-view`).
+
+Never items, and so always shown: the Simple | Advanced switch and View >
+Advanced UI, Tools > Preferences, and the UI split tab itself, so no choice
+can lock the user out. Add-on menu entries, buttons and deck-list buttons
+are not items and are never hidden.
+
+The choices are edited in Preferences > UI split: one collapsible group per
+area (and per menu or part within it), one "Show in Simple mode" checkbox
+per item, a search field that keeps the items whose name, group or area
+contain every word typed, and "Reset to defaults" (after a confirmation).
+A change is stored at once and the open main window and Browser update in
+place, the same way as for a mode switch (`ui.mode-switch`); no due count
+is recomputed. The choices live in the collection config under `uiSplit`,
+as a map item id -> true/false holding only the choices that differ from
+the defaults, so they sync with the collection and an item added later
+gets its default. A choice for an id this version does not know is kept,
+also by Reset. On loading a collection the Tools menu and View > Advanced
+UI are set from its mode and choices.
+
+A hidden menu entry is taken out of its menu and held by its window, so its
+keyboard shortcut still runs it (Tools, Browser); the reviewer and the deck
+screen bind their shortcuts apart from the menu and the buttons, so theirs
+work too. A hidden item's feature keeps working.
+
+**Why:** Andrew, 2026-09-19: "Fully modular UI. If someone wants to, they
+can treat Simple mode as 'stuff I use frequently' and treat Advanced mode
+as 'stuff I never use so I just shoved it away'." He chose a Preferences
+tab of its own, defaults equal to the fixed split, choices in both
+directions, storage in the collection config as differences only, and the
+switch, Preferences and the tab always visible. A choice can therefore
+break the subset rule's usual shape only towards Advanced: Advanced still
+shows every item, so Simple stays a subset (`CLAUDE.md`, "Simple mode is a
+subset of Advanced").
+
+**Pinned by:** `qt/tests/test_ui_split.py`
+(`test_every_default_equals_todays_split` and the storage, lookup, area and
+Preferences-tab tests); `test_hidden_tools_items_keep_their_shortcuts`
+(`qt/tests/test_ui_mode.py`).
+
 ## ui.get-decks-and-get-addons
 
 Given the deck list's bottom row, "Find Decks Online" opens
@@ -150,8 +223,10 @@ overview's bottom bar loses the Custom Study button in Simple mode; Options
 and Description stay in both modes. Switching the mode updates both places
 in place, the same cheap way as the deck list's bottom row
 (`ui.mode-switch`): no due-count recompute. A hidden item is hidden, not
-disabled — its keyboard shortcut (`c` for Custom Study) still runs it, same
-as `ui.editor-simple-view`'s hidden editor buttons.
+disabled — its keyboard shortcut (`c` for Custom Study, F for Create
+Filtered Deck, Ctrl+Shift+N for Manage Note Types) still runs it, same as
+`ui.editor-simple-view`'s hidden editor buttons. These are the defaults of
+`ui.split-configurable`.
 
 Check for Updates stays visible in both modes as-is; two known, separate
 defects in the check itself (`spec/updates.md`,
@@ -204,7 +279,8 @@ needed to find a card, fix it, and choose whether it is studied:
 Every hidden menu item and the Select tool keep their keyboard shortcuts,
 the same rule as `ui.simple-mode-tools-hidden`; the window holds them. An
 add-on's own menu entries are untouched. Switching the mode updates an open
-Browser in place, with the same search and selection.
+Browser in place, with the same search and selection. This list is the
+default of `ui.split-configurable`, where the user can change it.
 
 **Why:** Andrew, 2026-09-19: "There is a lot of stuff that most Anki users
 will never touch", and he approved this list as proposed, with hidden items
@@ -245,6 +321,7 @@ Audio. Flag Card, Bury Card, Reset Card, Set Due Date, Previous Card Info,
 Bury Note, Suspend Note, Create Copy, Audio -5s, Audio +5s, Record Own
 Voice, Replay Own Voice and Auto Advance are Advanced-only. Every item keeps
 its keyboard shortcut in both modes, as in `ui.simple-mode-tools-hidden`.
+This split is the default of `ui.split-configurable`.
 
 Flags are Advanced-only everywhere (this entry, `ui.browser-simple-view`):
 Simple mode offers no way to set a flag or to list flagged cards except the
