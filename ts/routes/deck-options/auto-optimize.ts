@@ -2,9 +2,9 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 // "Optimize every N days" (spec deck-options.fsrs-auto-optimize). A preset
-// that stores no value optimizes every 30 days; 0 means never.
+// that stores no value optimizes every 7 days; 0 means never.
 
-export const DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS = 30;
+export const DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS = 7;
 
 export interface AutoOptimizeSettings {
     fsrsAutoOptimizeDays?: number;

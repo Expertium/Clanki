@@ -32,7 +32,7 @@ use crate::search::StateKind;
 use crate::storage::comma_separated_ids;
 
 /// "Optimize every N days" when the preset has never been given a value.
-pub(crate) const DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS: u32 = 30;
+pub(crate) const DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS: u32 = 7;
 
 impl DeckConfig {
     /// Days between two automatic optimizations; 0 means never.
@@ -90,9 +90,9 @@ impl FsrsAutoOptimizeJob {
 }
 
 impl Collection {
-    /// The presets that are due, in id order. None while the collection does
-    /// not schedule with FSRS-7: under RWKV the FSRS-7 parameters schedule
-    /// nothing.
+    /// The presets that are due, in id order. Under RWKV too: the Stats
+    /// graphs compare RWKV with FSRS-7, and FSRS-7 needs current parameters
+    /// for that.
     pub(crate) fn fsrs_presets_due_for_auto_optimize(&mut self) -> Result<Vec<DeckConfigId>> {
         if !self.auto_optimize_applies()? {
             return Ok(vec![]);
@@ -110,8 +110,7 @@ impl Collection {
     }
 
     fn auto_optimize_applies(&mut self) -> Result<bool> {
-        Ok(self.get_config_bool(BoolKey::Fsrs)
-            && self.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7)
+        Ok(self.get_config_bool(BoolKey::Fsrs))
     }
 
     /// Reads one due preset's reviews. None when the preset is gone or no
@@ -202,8 +201,10 @@ impl Collection {
         if decks.is_empty() {
             return Ok(());
         }
-        let reschedule =
-            self.get_config_bool(BoolKey::FsrsReschedule) && !config.inner.rwkv_review_enabled;
+        // FSRS-7 intervals only where FSRS-7 schedules: under RWKV the new
+        // parameters change FSRS-7's memory states, never a due date
+        let reschedule = self.get_config_bool(BoolKey::FsrsReschedule)
+            && self.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7;
         self.update_memory_state(vec![UpdateMemoryStateEntry {
             req: Some(UpdateMemoryStateRequest {
                 params: config.fsrs_params().to_vec(),
@@ -229,8 +230,11 @@ impl Collection {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::card::CardQueue;
+    use crate::card::CardType;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::search::SortMode;
     use crate::tests::NoteAdder;
 
     fn fsrs_collection() -> Collection {
@@ -277,7 +281,7 @@ mod test {
     fn a_preset_is_optimized_again_after_its_days() -> Result<()> {
         let mut col = fsrs_collection();
         let preset = DeckConfigId(1);
-        // never optimized: due at once, every 30 days by default
+        // never optimized: due at once, every 7 days by default
         assert_eq!(col.fsrs_presets_due_for_auto_optimize()?, vec![preset]);
 
         let job = col.fsrs_auto_optimize_job(preset)?.expect("a job");
@@ -292,8 +296,8 @@ mod test {
         let mut config = after;
         config.inner.fsrs_last_optimized_day = Some(100);
         for (days, today, due) in [
-            (None, 129, false),
-            (None, 130, true),
+            (None, 106, false),
+            (None, 107, true),
             (Some(7), 106, false),
             (Some(7), 107, true),
             (Some(0), 10_000, false),
@@ -308,15 +312,45 @@ mod test {
         Ok(())
     }
 
+    fn review_card_due(col: &mut Collection) -> (CardId, i32) {
+        let cid = col.search_cards("", SortMode::NoOrder).unwrap()[0];
+        let mut card = col.storage.get_card(cid).unwrap().unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.due = 5;
+        col.storage.update_card(&card).unwrap();
+        (cid, card.due)
+    }
+
+    fn due_after_optimizing(algorithm: SchedulingAlgorithm) -> Result<(i32, i32)> {
+        let mut col = fsrs_collection();
+        col.set_config_bool(BoolKey::FsrsReschedule, true, false)?;
+        let preset = DeckConfigId(1);
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        algorithm.apply_to(&mut config.inner);
+        col.storage.update_deck_conf(&config)?;
+        let (cid, before) = review_card_due(&mut col);
+        assert_eq!(col.fsrs_presets_due_for_auto_optimize()?, vec![preset]);
+        let job = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        let params = trained(&trained(&trained(config.fsrs_params())));
+        assert!(col.apply_fsrs_auto_optimize(job.key, params, 3)?);
+        Ok((before, col.storage.get_card(cid)?.unwrap().due))
+    }
+
     // Pins spec/deck-options.md#deck-options.fsrs-auto-optimize
     #[test]
-    fn nothing_is_optimized_under_rwkv() -> Result<()> {
-        let mut col = fsrs_collection();
-        let mut config = col.storage.get_deck_config(DeckConfigId(1))?.unwrap();
-        SchedulingAlgorithm::RwkvCurve.apply_to(&mut config.inner);
-        col.storage.update_deck_conf(&config)?;
-        assert!(col.fsrs_presets_due_for_auto_optimize()?.is_empty());
-        assert!(col.fsrs_auto_optimize_job(DeckConfigId(1))?.is_none());
+    fn under_rwkv_it_optimizes_but_never_reschedules() -> Result<()> {
+        // the control: under FSRS-7 the new parameters move the due date
+        let (before, after) = due_after_optimizing(SchedulingAlgorithm::Fsrs7)?;
+        assert_ne!(before, after);
+        for algorithm in [
+            SchedulingAlgorithm::RwkvCurve,
+            SchedulingAlgorithm::RwkvInstant,
+        ] {
+            let (before, after) = due_after_optimizing(algorithm)?;
+            assert_eq!(before, after, "{algorithm:?}");
+        }
         Ok(())
     }
 
