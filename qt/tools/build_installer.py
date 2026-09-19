@@ -10,7 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
-import tomllib
+import tomllib  # type: ignore[import-not-found]  # mypy targets 3.10; the build runs 3.13
 from pathlib import Path
 from typing import Sequence
 
