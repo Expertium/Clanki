@@ -2415,7 +2415,34 @@ timeboxReps = 0;
                 dict(checked=self.auto_advance_enabled),
             ],
         ]
+        if not self.mw.advanced_ui():
+            opts = self._simple_context_menu(opts)
         return opts
+
+    def _simple_context_menu(self, opts: list[Any]) -> list[Any]:
+        """Simple mode drops the power-user items from More; their shortcuts
+        keep working, since the reviewer binds them separately (spec
+        ui.reviewer-simple-view)."""
+        advanced_only = [
+            self.bury_current_card,
+            self.forget_current_card,
+            self.on_set_due,
+            self.on_previous_card_info,
+            self.bury_current_note,
+            self.suspend_current_note,
+            self.on_create_copy,
+            self.on_seek_backward,
+            self.on_seek_forward,
+            self.onRecordVoice,
+            self.onReplayRecorded,
+            self.toggle_auto_advance,
+        ]
+        # the only submenu is Flag Card, and flags are Advanced-only
+        return [
+            row
+            for row in opts
+            if row is None or (len(row) > 2 and row[2] not in advanced_only)
+        ]
 
     def showContextMenu(self) -> None:
         opts = self._contextMenu()

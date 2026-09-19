@@ -824,7 +824,7 @@ class Browser(QMainWindow):
         ]
 
     def _advanced_only_menus(self) -> list[QMenu]:
-        return [self.form.menuJump, self.form.menuLayout]
+        return [self.form.menuJump, self.form.menuLayout, self.form.menuFlag]
 
     def _setup_ui_mode(self) -> None:
         self._menu_layouts = {

@@ -521,6 +521,7 @@ class SidebarTreeView(QTreeView):
             stage
             in (
                 SidebarStage.SAVED_SEARCHES,
+                SidebarStage.FLAGS,
                 SidebarStage.NOTETYPES,
             )
             and not self.mw.advanced_ui()
