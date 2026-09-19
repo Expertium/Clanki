@@ -198,8 +198,19 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
     if not isinstance(today, int) or not isinstance(next_day_at, int):
         raise ValueError("scheduler timing is unavailable")
 
+    def stop_if_cancelled(_label: str, _value: int | None, _max: int | None) -> None:
+        # the history build reports every thousand rows; a page that closed
+        # stops it there instead of after its ten seconds of Python, which
+        # the main window would otherwise wait out
+        if job.cancel_event.is_set():
+            raise InterruptedError()
+
+    # its first step is one long query the collection cannot interrupt, so a
+    # page that is already gone does not start it
+    if job.cancel_event.is_set():
+        raise InterruptedError()
     # RWKV's own history of every card: its state depends on all of them
-    history = rwkv._historical_rwkv_review_inputs(reviewer)
+    history = rwkv._historical_rwkv_review_inputs(reviewer, progress=stop_if_cancelled)
     reviews: list[tuple[int, Any, int]] = [
         (review_id, review, review.day_offset)
         for review_id, review in zip(history.review_ids, history.reviews, strict=True)
