@@ -7,6 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { GraphsRequest_Graph } from "@generated/anki/stats_pb";
     import { getConfigBool } from "@generated/backend";
     import { bridgeCommand } from "@tslib/bridgecommand";
+    import { loadSimpleItems, type SimpleItems } from "@tslib/ui-split";
     import type { Component } from "svelte";
     import { setContext } from "svelte";
     import { writable } from "svelte/store";
@@ -14,7 +15,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { pageTheme } from "$lib/sveltelib/theme";
 
     import RangeBox from "./RangeBox.svelte";
-    import { graphsForMode } from "./ui-mode";
+    import type { GraphItem } from "./ui-mode";
+    import { graphsForMode, simpleDataOf, simpleGraphsOf } from "./ui-mode";
     import UiModeFromData from "./UiModeFromData.svelte";
     import WithGraphData from "./WithGraphData.svelte";
 
@@ -29,12 +31,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     setContext("graphsDays", days);
 
     export let graphs: Component<any>[];
-    /** The graphs Simple mode shows; null = every graph in both modes
-     * (spec ui.mode-switch). */
-    export let simpleGraphs: Component<any>[] | null = null;
-    /** The data the Simple graphs draw: in Simple mode the page asks the
-     * backend for only these. */
-    export let simpleData: GraphsRequest_Graph[] = [];
+    /** Each graph's item of the Simple | Advanced split and the data it
+     * draws, in the order of `graphs`; null = every graph in both modes
+     * (spec ui.mode-switch, ui.split-configurable). */
+    export let graphItems: GraphItem[] | null = null;
     /** See RangeBox */
     export let controller: Component<any> | null = RangeBox;
 
@@ -60,13 +60,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     /** The graphs to ask the backend for: [] = every graph; null = not
      * known yet, until the page knows its mode. */
-    const hasSimpleView = simpleGraphs !== null && simpleData.length > 0;
+    const hasSimpleView = graphItems !== null;
+    /** The graphs Simple mode shows, once the split is read. */
+    let simpleGraphs: Component<any>[] | null = null;
+    let simpleData: GraphsRequest_Graph[] = [];
     const wanted = writable<GraphsRequest_Graph[] | null>(hasSimpleView ? null : []);
-    if (hasSimpleView) {
-        getConfigBool({ key: ConfigKey_Bool.ADVANCED_UI }, { alertOnError: false })
-            .then(({ val }) => advancedUi.set(val))
-            .catch(() => {})
-            .finally(() => wanted.set($advancedUi ? [] : simpleData));
+    if (graphItems !== null) {
+        const items = graphItems;
+        let split: SimpleItems | null = null;
+        Promise.all([
+            getConfigBool({ key: ConfigKey_Bool.ADVANCED_UI }, { alertOnError: false })
+                .then(({ val }) => advancedUi.set(val))
+                .catch(() => {}),
+            loadSimpleItems().then((loaded) => (split = loaded)),
+        ]).finally(() => {
+            simpleGraphs = simpleGraphsOf(graphs, items, split);
+            simpleData = simpleDataOf(items, split);
+            wanted.set($advancedUi ? [] : simpleData);
+        });
     }
     // Advanced mode draws every graph; Simple mode keeps the data it has
     $: if ($advancedUi && $wanted !== null && $wanted.length > 0) {

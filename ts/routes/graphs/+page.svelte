@@ -26,9 +26,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import TrueRetention from "./TrueRetention.svelte";
     import UmPlusGraph from "./UmPlusGraph.svelte";
 
-    // In Simple mode the page asks the backend only for the data the Simple
-    // graphs draw (graphs with their own request need none of it)
-    const simpleData = [Graph.REVIEWS, Graph.CARD_COUNTS, Graph.TRUE_RETENTION];
+    import type { GraphItem } from "./ui-mode";
+
     const graphs = [
         TodayStats,
         FutureDue,
@@ -49,14 +48,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ButtonsGraph,
         AddedGraph,
     ];
-    // Simple mode shows only these (spec ui.mode-switch)
-    const simpleGraphs = [ReviewsGraph, CardCounts, TrueRetention, TotalKnowledgeGraph];
+    // Each graph's item of the Simple | Advanced split (qt/aqt/ui_split.py
+    // lists the same ids, in the same order) and the data it draws: in
+    // Simple mode the page asks the backend only for the data of the graphs
+    // it shows (graphs with their own request need none of it).
+    const graphItems: GraphItem[] = [
+        { id: "today", data: [Graph.TODAY] },
+        { id: "futureDue", data: [Graph.FUTURE_DUE] },
+        { id: "calendar", data: [Graph.REVIEWS] },
+        { id: "reviews", data: [Graph.REVIEWS] },
+        { id: "cardCounts", data: [Graph.CARD_COUNTS] },
+        { id: "intervals", data: [Graph.INTERVALS] },
+        { id: "stability", data: [Graph.STABILITY] },
+        { id: "ease", data: [Graph.EASES] },
+        { id: "difficulty", data: [Graph.DIFFICULTY] },
+        { id: "retrievability", data: [Graph.RETRIEVABILITY] },
+        { id: "totalKnowledge", data: [] },
+        { id: "roc", data: [] },
+        { id: "calibration", data: [] },
+        { id: "umPlus", data: [] },
+        { id: "trueRetention", data: [Graph.TRUE_RETENTION] },
+        { id: "hours", data: [Graph.HOURS] },
+        { id: "buttons", data: [Graph.BUTTONS] },
+        { id: "added", data: [Graph.ADDED] },
+    ];
 </script>
 
 <GraphsPage
     {graphs}
-    {simpleGraphs}
-    {simpleData}
+    {graphItems}
     initialSearch="deck:current"
     initialDays={365}
     controller={RangeBox}

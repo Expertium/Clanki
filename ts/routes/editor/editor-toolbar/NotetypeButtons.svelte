@@ -18,15 +18,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Shortcut from "$lib/components/Shortcut.svelte";
     import { context } from "../NoteEditor.svelte";
     import { openFieldsDialog, openCardsDialog } from "@generated/backend";
-    import { advancedUi } from "../ui-mode";
-    import AdvancedOnly from "./AdvancedOnly.svelte";
+    import { shownButtons } from "../ui-mode";
+    import SplitButtons from "./SplitButtons.svelte";
 
     export let api = {};
     const { isLegacy, saveNow } = context.get();
     const keyCombination = "Control+L";
 </script>
 
-<ButtonGroup class={$advancedUi ? "" : "notetype-buttons-simple"}>
+<ButtonGroup class={$shownButtons.has("cards") ? "" : "notetype-buttons-simple"}>
     <DynamicallySlottable
         slotHost={ButtonGroupItem}
         {createProps}
@@ -35,23 +35,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {api}
     >
         <ButtonGroupItem>
-            <LabelButton
-                tooltip={tr.editingCustomizeFields()}
-                on:click={async () => {
-                    await saveNow();
-                    if (isLegacy) {
-                        bridgeCommand("fields");
-                    } else {
-                        await openFieldsDialog({});
-                    }
-                }}
-            >
-                {tr.editingFields()}...
-            </LabelButton>
+            <SplitButtons buttons={["fields"]}>
+                <LabelButton
+                    tooltip={tr.editingCustomizeFields()}
+                    on:click={async () => {
+                        await saveNow();
+                        if (isLegacy) {
+                            bridgeCommand("fields");
+                        } else {
+                            await openFieldsDialog({});
+                        }
+                    }}
+                >
+                    {tr.editingFields()}...
+                </LabelButton>
+            </SplitButtons>
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <AdvancedOnly buttons={["cards"]}>
+            <SplitButtons buttons={["cards"]}>
                 <LabelButton
                     tooltip="{tr.editingCustomizeCardTemplates()} ({getPlatformString(
                         keyCombination,
@@ -67,7 +69,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 >
                     {tr.editingCards()}...
                 </LabelButton>
-            </AdvancedOnly>
+            </SplitButtons>
             <!-- outside the wrapper: Ctrl+L keeps working in Simple mode
                  (spec ui.editor-simple-view) -->
             <Shortcut
@@ -84,7 +86,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </ButtonGroup>
 
 <style lang="scss">
-    /* Simple mode hides Cards..., so Fields... is on its own and keeps both
+    /* Cards... is hidden (as Simple mode does by default), so Fields... is on its own and keeps both
        rounded ends. */
     :global(.notetype-buttons-simple .button-group-item:first-child) {
         --border-right-radius: 5px !important;

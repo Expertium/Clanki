@@ -144,6 +144,44 @@ TODAY: dict[str, bool] = {
             "retrievability",
         ]
     },
+    # the note editor (spec ui.editor-simple-view)
+    "editor.fields": True,
+    "editor.cards": False,
+    "editor.settings": False,
+    "editor.bold": True,
+    "editor.italic": True,
+    "editor.underline": True,
+    "editor.superscript": False,
+    "editor.subscript": False,
+    "editor.textColor": True,
+    "editor.highlightColor": False,
+    "editor.removeFormat": True,
+    "editor.unorderedList": False,
+    "editor.orderedList": False,
+    "editor.alignment": False,
+    "editor.attachMedia": True,
+    "editor.recordAudio": False,
+    "editor.mathjax": False,
+    # the Stats page (spec ui.mode-switch): Reviews, Card Counts, Retention
+    # and Total Knowledge
+    "stats.today": False,
+    "stats.futureDue": False,
+    "stats.calendar": False,
+    "stats.reviews": True,
+    "stats.cardCounts": True,
+    "stats.intervals": False,
+    "stats.stability": False,
+    "stats.ease": False,
+    "stats.difficulty": False,
+    "stats.retrievability": False,
+    "stats.totalKnowledge": True,
+    "stats.roc": False,
+    "stats.calibration": False,
+    "stats.umPlus": False,
+    "stats.trueRetention": True,
+    "stats.hours": False,
+    "stats.buttons": False,
+    "stats.added": False,
 }
 
 
@@ -207,6 +245,50 @@ def test_the_switch_and_preferences_are_never_items() -> None:
     ids = " ".join(item.id for item in ui_split.ITEMS)
     assert "preferences" not in ids
     assert "advanced_ui" not in ids and "ui_mode" not in ids
+
+
+def _repo_file(path: str) -> str:
+    from pathlib import Path
+
+    return (Path(__file__).parents[2] / path).read_text(encoding="utf-8")
+
+
+def test_the_editor_page_knows_the_same_buttons_in_the_same_order() -> None:
+    import re
+
+    source = _repo_file("ts/routes/editor/ui-mode.ts")
+    block = source.split("export const EDITOR_BUTTONS: EditorButton[] = [")[1]
+    names = re.findall(r'"(\w+)"', block.split("];")[0])
+    assert names == [name for name, _, _ in ui_split.EDITOR_BUTTONS]
+
+
+def test_the_stats_page_knows_the_same_graphs_in_the_same_order() -> None:
+    import re
+
+    source = _repo_file("ts/routes/graphs/+page.svelte")
+    block = source.split("const graphItems: GraphItem[] = [")[1].split("];")[0]
+    names = re.findall(r'id: "(\w+)"', block)
+    assert names == [name for name, _, _ in ui_split.STATS_GRAPHS]
+
+
+def test_the_web_pages_get_every_item_with_the_choices_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import aqt
+    from anki import generic_pb2
+    from aqt import mediasrv
+
+    col = ConfigCol(stored={"editor.mathjax": True, "stats.reviews": False})
+    monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=col), raising=False)
+    reply = generic_pb2.Json()
+    reply.ParseFromString(mediasrv.get_ui_split())
+    items = json.loads(reply.json)
+    assert set(items) == set(TODAY)
+    assert items["editor.mathjax"] is True and items["stats.reviews"] is False
+    assert items["editor.bold"] is True and items["stats.today"] is False
+    assert mediasrv.get_ui_split in mediasrv.post_handler_list
 
 
 # Storage
