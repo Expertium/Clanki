@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import parse_qs, urlparse
+
 import aqt
 import aqt.deckconf
 import aqt.main
@@ -12,6 +15,8 @@ from anki.lang import without_unicode_isolation
 from aqt import gui_hooks
 from aqt.branding import APP_NAME
 from aqt.qt import *
+from aqt.qt import sip
+from aqt.theme import theme_manager
 from aqt.utils import (
     KeyboardModifiersPressed,
     disable_help_button,
@@ -44,17 +49,19 @@ class DeckOptionsDialog(QDialog):
         disable_help_button(self)
         restoreGeom(self, self.TITLE, default_size=(800, 800))
 
-        self.web = AnkiWebView(kind=AnkiWebViewKind.DECK_OPTIONS)
-        self.web.load_sveltekit_page(f"deck-options/{self._deck['id']}")
+        self.web = _web_views.take(self)
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.web)
         self.setLayout(layout)
         self.show()
-        self.web.hide_while_preserving_layout()
         self.setWindowTitle(
             without_unicode_isolation(tr.actions_options_for(val=self._deck["name"]))
         )
+
+    @property
+    def deck_id(self) -> DeckId:
+        return DeckId(self._deck["id"])
 
     def set_ready(self):
         self._ready = True
@@ -74,10 +81,183 @@ class DeckOptionsDialog(QDialog):
 
     def reject(self) -> None:
         self.mw.col.set_wants_abort()
-        self.web.cleanup()
+        _web_views.give_back(self.web)
         self.web = None  # type: ignore
         saveGeom(self, self.TITLE)
         QDialog.reject(self)
+
+
+class _DeckOptionsWebView(AnkiWebView):
+    """A deck-options web view. Until a window takes it, it has no parent
+    and must never appear as a window of its own."""
+
+    def __init__(self) -> None:
+        super().__init__(kind=AnkiWebViewKind.DECK_OPTIONS)
+        # the load or switch whose ready signal this view waits for
+        self.generation = 0
+        self.owner: DeckOptionsDialog | None = None
+        # a switched page already has its styling, so it is shown once ready
+        self.show_on_ready = False
+
+    def setVisible(self, visible: bool) -> None:
+        # every page load ends with show(); a view without a window ignores it
+        if visible and self.parentWidget() is None:
+            return
+        super().setVisible(visible)
+
+
+class _DeckOptionsWebViews:
+    """Keeps one deck-options web view ready in the background, so opening
+    the window does not pay for a new web view (and its QtWebEngine
+    process) and a first page load.
+
+    The spare view is loaded in full and never shown. Opening the window
+    takes it and moves its page to the chosen deck with a client-side
+    navigation that runs the page loader again, so the settings always come
+    fresh from the collection (`anki.deckOptionsSwitch` in
+    ts/routes/deck-options/[deckId]). A spare that has not finished loading
+    gets a full load of the chosen deck instead; with no spare at all, the
+    window makes its own view, as before.
+
+    Each view serves one window and is destroyed when the window closes, as
+    before; a new spare is made a little later. A view is not reused: its
+    renderer grows by about 20 MB with every load or switch and gives the
+    memory back only near 750 MB, and a fresh page is also one no add-on
+    has touched.
+
+    Every load and switch has a new generation number, carried in the page
+    URL; the page's ready signal names it (mediasrv reads it from the
+    request's referrer), so a late signal from an earlier load is ignored.
+
+    The first spare is made WARM_DELAY_MS after the profile opens, once the
+    start-up work is done, never while reviewing; the spare is released when
+    the profile closes."""
+
+    WARM_DELAY_MS = 40_000
+    WARM_RETRY_MS = 10_000
+    REWARM_AFTER_CLOSE_MS = 2_000
+
+    def __init__(self) -> None:
+        self._spare: _DeckOptionsWebView | None = None
+        self._spare_ready = False
+        self._in_use: set[_DeckOptionsWebView] = set()
+        self._generation = 0
+        self._profile = 0
+
+    # profile life cycle
+
+    def on_profile_did_open(self) -> None:
+        self._profile += 1
+        self._warm_later(self.WARM_DELAY_MS)
+
+    def on_profile_will_close(self) -> None:
+        # a pending warm-up belongs to this profile
+        self._profile += 1
+        spare, self._spare = self._spare, None
+        self._spare_ready = False
+        if spare is not None:
+            spare.cleanup()
+            spare.deleteLater()
+
+    def _warm_later(self, delay_ms: int) -> None:
+        profile = self._profile
+        aqt.mw.progress.single_shot(delay_ms, lambda: self._warm(profile))
+
+    def _warm(self, profile: int) -> None:
+        from aqt import rwkv_scheduler
+
+        mw = aqt.mw
+        if profile != self._profile or mw.col is None or self._spare is not None:
+            return
+        # Stay out of the way of start-up work and of reviewing: making the
+        # view costs the main thread a little.
+        if (
+            rwkv_scheduler.rwkv_state_cache_loading(mw)
+            or mw.state not in ("deckBrowser", "overview")
+            or mw.app.activeModalWidget() is not None
+        ):
+            self._warm_later(self.WARM_RETRY_MS)
+            return
+        self._spare = _DeckOptionsWebView()
+        self._spare_ready = False
+        self._load(self._spare, DeckId(mw.col.decks.get_current_id()))
+
+    # opening and closing
+
+    def take(self, dialog: DeckOptionsDialog) -> _DeckOptionsWebView:
+        web, ready = self._spare, self._spare_ready
+        self._spare, self._spare_ready = None, False
+        if web is None:
+            web = _DeckOptionsWebView()
+        web.owner = dialog
+        self._in_use.add(web)
+        web.hide_while_preserving_layout()
+        if ready:
+            self._switch(web, dialog.deck_id)
+        else:
+            self._load(web, dialog.deck_id)
+        return web
+
+    def give_back(self, web: _DeckOptionsWebView) -> None:
+        self._in_use.discard(web)
+        web.owner = None
+        web.cleanup()
+        if not self._in_use:
+            self._warm_later(self.REWARM_AFTER_CLOSE_MS)
+
+    # loads and switches
+
+    def _path(self, web: _DeckOptionsWebView, deck_id: DeckId) -> str:
+        self._generation += 1
+        web.generation = self._generation
+        return f"deck-options/{deck_id}?g={web.generation}"
+
+    def _load(self, web: _DeckOptionsWebView, deck_id: DeckId) -> None:
+        web.load_sveltekit_page(self._path(web, deck_id))
+
+    def _switch(self, web: _DeckOptionsWebView, deck_id: DeckId) -> None:
+        url = "/" + self._path(web, deck_id)
+        if theme_manager.night_mode:
+            url += "#night"
+        web.show_on_ready = True
+        web.eval(f"anki.deckOptionsSwitch({json.dumps(url)});")
+
+    def on_page_ready(self, generation: int | None) -> None:
+        """The page of a deck-options view finished loading or switching.
+        Without a generation (a page from elsewhere, such as the HMR dev
+        server) the ready signal goes to an open window, as before."""
+        for web in self._in_use:
+            if generation is not None and generation != web.generation:
+                continue
+            if sip.isdeleted(web) or web.owner is None:
+                continue
+            if web.show_on_ready:
+                web.show_on_ready = False
+                web.show()
+            web.owner.set_ready()
+            return
+        spare = self._spare
+        if spare is not None and generation == spare.generation:
+            self._spare_ready = True
+
+
+_web_views = _DeckOptionsWebViews()
+
+
+def on_deck_options_page_ready(referrer: str | None) -> None:
+    """Called by mediasrv when a deck-options page says it is ready. The
+    page's URL, which is the request's referrer, holds its generation."""
+    generation: int | None = None
+    if referrer:
+        values = parse_qs(urlparse(referrer).query).get("g")
+        if values and values[0].isdigit():
+            generation = int(values[0])
+    _web_views.on_page_ready(generation)
+
+
+def setup_deck_options_web_views() -> None:
+    gui_hooks.profile_did_open.append(_web_views.on_profile_did_open)
+    gui_hooks.profile_will_close.append(_web_views.on_profile_will_close)
 
 
 def confirm_deck_then_display_options(active_card: Card | None = None) -> None:

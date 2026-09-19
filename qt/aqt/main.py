@@ -2021,6 +2021,9 @@ title="{}" {}>{}</button>""".format(
         from aqt import review_heatmap
 
         review_heatmap.initialize(self)
+        from aqt.deckoptions import setup_deck_options_web_views
+
+        setup_deck_options_web_views()
 
         self._activeWindowOnPlay: QWidget | None = None
 

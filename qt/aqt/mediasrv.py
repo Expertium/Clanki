@@ -71,6 +71,7 @@ from aqt.deckoptions import (
     DeckOptionsDialog,
     after_algorithm_change,
     ask_reschedule_after_algorithm_change,
+    on_deck_options_page_ready,
 )
 from aqt.operations import on_op_finished
 from aqt.operations.deck import update_deck_configs as update_deck_configs_op
@@ -1009,12 +1010,9 @@ def deck_options_require_close() -> bytes:
 
 
 def deck_options_ready() -> bytes:
-    def handle_on_main() -> None:
-        window = aqt.mw.app.activeModalWidget()
-        if isinstance(window, DeckOptionsDialog):
-            window.set_ready()
-
-    aqt.mw.taskman.run_on_main(handle_on_main)
+    # the page's URL, which holds the number of its load or switch
+    referrer = request.referrer
+    aqt.mw.taskman.run_on_main(lambda: on_deck_options_page_ready(referrer))
     return b""
 
 

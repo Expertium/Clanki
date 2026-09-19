@@ -4,7 +4,7 @@
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
-import { setAdvancedUi } from "./helpers";
+import { isRpc, setAdvancedUi } from "./helpers";
 
 /**
  * How many elements with exactly this text the user can see. The help modals
@@ -209,6 +209,31 @@ test("Easy Days is collapsed in Simple mode and open in Advanced mode", async ({
         await page.goto("/deck-options/1");
         await expect(page.locator("details.easy-days")).toHaveCount(0);
         expect(await visibleCount(page, "Mon")).toBeGreaterThan(0);
+    } finally {
+        await setAdvancedUi(page, false);
+    }
+});
+
+// Qt keeps the deck-options page loaded between openings and moves it to the
+// chosen deck with anki.deckOptionsSwitch (qt/aqt/deckoptions.py). The
+// settings must still come fresh from the collection, and the ready signal
+// must carry the new generation number in its referrer, which Qt uses to
+// ignore a late signal from an earlier load.
+test("a kept page switched to a deck shows the collection's current settings", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    await page.goto("/deck-options/1?g=1");
+    await expect.poll(() => visibleCount(page, "Desired retention")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Algorithm (global)")).toBe(0);
+
+    // the collection changes while the page is kept
+    await setAdvancedUi(page, true);
+    try {
+        const ready = page.waitForRequest(isRpc("deckOptionsReady"));
+        await page.evaluate(() => (globalThis as any).anki.deckOptionsSwitch("/deck-options/1?g=2"));
+        const referrer = new URL((await ready).headers()["referer"]);
+        expect(referrer.pathname).toBe("/deck-options/1");
+        expect(referrer.searchParams.get("g")).toBe("2");
+        await expect.poll(() => visibleCount(page, "Algorithm (global)")).toBeGreaterThan(0);
     } finally {
         await setAdvancedUi(page, false);
     }
