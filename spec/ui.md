@@ -1037,6 +1037,32 @@ do not change.
 `test_a_changed_old_review_throws_the_kept_days_away`,
 `test_the_kept_days_stop_before_today_and_survive_a_restart`).
 
+## ui.plain-progress-text
+
+Given RWKV's background work (reading the review history into the model at
+start-up or on request, adding a sync's reviews, preparing the Stats graphs'
+data, RWKV-Curve's reschedule), its progress windows, their results and the
+two deck-options buttons that start the work speak in plain words, with no
+"cache", "state", "calibration", "inputs" or "delta" and no elapsed time:
+
+| Work | Window title | Progress text |
+| ---- | ------------ | ------------- |
+| Reading the review history | Getting Ready | Reading your review history: 425,984 of 656,459 reviews, about 29s left |
+| After a sync | Getting Ready | Adding the reviews from the sync... |
+| Stats graphs' data | Preparing Stats | Preparing the Stats graphs |
+| RWKV-Curve reschedule | Reschedule | Calculating new due dates... |
+
+The deck-options buttons are "Read Review History Again" and "Prepare Stats
+Graphs". Before the first review is done the text shows the counts without a
+time. All the text is translatable.
+
+**Why:** Andrew, 2026-09-19, about "Building RWKV state cache: 425,984/656,459
+reviews | elapsed: 54s | remaining: 29s": "we need more user-friendly, less
+jargon-y message for this" (asked before as well).
+
+**Pinned by:** `test_reviewer_rwkv_warmup_progress_label_says_how_far_and_time_left`
+and the updated progress assertions in `qt/tests/test_rwkv_scheduler.py`.
+
 ## ui.rwkv-algorithm-names
 
 Given anything the user reads about RWKV's values (a graph series or legend,

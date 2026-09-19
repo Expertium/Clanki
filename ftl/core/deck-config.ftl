@@ -804,3 +804,9 @@ deck-config-rwkv-instant-retention-info =
     your workload: a card becomes due when RWKV predicts that its retention
     has dropped to this value. The number of due cards changes after every
     review.
+# Deck-options buttons that redo RWKV's background work (spec
+# ui.plain-progress-text).
+deck-config-rwkv-reread-history = Read Review History Again
+deck-config-rwkv-rereading-history = Reading Review History...
+deck-config-rwkv-prepare-stats = Prepare Stats Graphs
+deck-config-rwkv-preparing-stats = Preparing Stats Graphs...

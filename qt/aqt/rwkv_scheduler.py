@@ -9996,7 +9996,7 @@ def _warm_up_reviewer_backend(
             history.reviews,
             review_ids=history.review_ids,
             progress=progress,
-            label="Building RWKV state cache",
+            label=_tr().qt_misc_review_history_reading(),
             record_retrievability_cache=record_retrievability_cache,
             snapshot_after_reviews=snapshot_review_counts,
             snapshot_recorder=checkpoint_writer,
@@ -10372,6 +10372,13 @@ def _report_rwkv_review_replay_progress(
     )
 
 
+def _tr() -> Any:
+    """aqt.utils.tr, imported late: aqt.utils imports this module's callers."""
+    from aqt.utils import tr
+
+    return tr
+
+
 def _rwkv_replay_progress_label(
     label: str,
     replay_progress: RwkvWarmUpProgress,
@@ -10380,18 +10387,20 @@ def _rwkv_replay_progress_label(
 ) -> str:
     total = max(replay_progress.total_reviews, 0)
     processed = min(max(replay_progress.processed_reviews, 0), total)
-    parts = [
-        f"{label}: {processed:,}/{total:,} reviews",
-        f"elapsed: {_format_rwkv_progress_time(elapsed_seconds)}",
-    ]
-    if processed > 0:
-        remaining = (
-            0
-            if processed >= total
-            else elapsed_seconds * (total - processed) / processed
+    # plain words, no elapsed time (spec ui.plain-progress-text)
+    if processed <= 0:
+        return _tr().qt_misc_review_history_progress_start(
+            step=label, done=f"{processed:,}", total=f"{total:,}"
         )
-        parts.append(f"remaining: {_format_rwkv_progress_time(remaining)}")
-    return " | ".join(parts)
+    remaining = (
+        0 if processed >= total else elapsed_seconds * (total - processed) / processed
+    )
+    return _tr().qt_misc_review_history_progress(
+        step=label,
+        done=f"{processed:,}",
+        total=f"{total:,}",
+        remaining=_format_rwkv_progress_time(remaining),
+    )
 
 
 def _format_rwkv_progress_time(seconds: float) -> str:
@@ -10562,7 +10571,7 @@ def recompute_rwkv_calibration_data(
                 operation.require_current()
                 _report_rwkv_review_replay_progress(
                     progress,
-                    label="Recomputing RWKV calibration data",
+                    label=_tr().qt_misc_stats_data_preparing(),
                     replay_progress=replay_progress,
                     elapsed_seconds=time.monotonic() - started_at,
                 )
@@ -10712,12 +10721,12 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
                 return
             except Exception:
                 logger.exception("RWKV calibration data recompute failed")
-                tooltip("RWKV calibration data recompute failed.", parent=parent)
+                tooltip(_tr().qt_misc_stats_data_failed(), parent=parent)
                 return
 
             elapsed_ms = (time.monotonic() - start) * 1000
             if recomputed:
-                tooltip("RWKV calibration data recomputed.", parent=parent)
+                tooltip(_tr().qt_misc_stats_data_ready(), parent=parent)
                 logger.debug(
                     "RWKV calibration data recompute finished: elapsed_ms=%.1f",
                     elapsed_ms,
@@ -10732,10 +10741,10 @@ def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
             recompute,
             done,
             parent=parent,
-            label="Recomputing RWKV calibration data...",
+            label=_tr().qt_misc_stats_data_preparing() + "...",
             immediate=True,
             uses_collection=True,
-            title="RWKV Calibration Data",
+            title=_tr().qt_misc_stats_data_title(),
         )
 
     _run_on_main(mw, start_recompute)
@@ -10815,7 +10824,7 @@ def compare_rwkv_first_review_elapsed_metrics(
                 reset_cache_snapshot,
                 missing_history,
                 progress=progress,
-                label="Replaying RWKV history with missing first-review elapsed time",
+                label=_tr().qt_misc_review_history_repairing(),
                 is_current=operation.is_current,
             )
             current_progress(
@@ -11692,11 +11701,10 @@ def refresh_rwkv_state_after_sync(
                 ignored_review_count,
             )
             show_warning(
-                f"RWKV kept its previous state and did not incorporate "
-                f"{ignored_review_count} synchronized review"
-                f"{'' if ignored_review_count == 1 else 's'} older than 8 days.\n\n"
-                "Rebuild the RWKV state from deck options if you want "
-                "those reviews included.",
+                _tr().qt_misc_review_history_sync_too_old(
+                    count=ignored_review_count,
+                    button=_tr().deck_config_rwkv_reread_history(),
+                ),
                 parent=cast(QWidget | None, mw),
             )
         on_done()
@@ -11709,10 +11717,10 @@ def refresh_rwkv_state_after_sync(
                 refresh,
                 done,
                 parent=cast(QWidget | None, mw),
-                label="Updating RWKV state after sync...",
+                label=_tr().qt_misc_review_history_after_sync(),
                 immediate=True,
                 uses_collection=True,
-                title="RWKV State Cache",
+                title=_tr().qt_misc_review_history_title(),
             )
         except Exception as exc:
             launch_future: Future[bool] = Future()
@@ -11790,13 +11798,13 @@ def build_rwkv_state_cache_with_progress(
                 elapsed_ms,
             )
         elif result.ready:
-            tooltip("RWKV state cache ready.", parent=parent)
+            tooltip(_tr().qt_misc_review_history_ready(), parent=parent)
             logger.debug(
                 "RWKV state cache build finished: elapsed_ms=%.1f",
                 elapsed_ms,
             )
         else:
-            tooltip("RWKV state cache could not be built.", parent=parent)
+            tooltip(_tr().qt_misc_review_history_failed(), parent=parent)
         _finish_rwkv_state_cache_operation(
             mw,
             ready=result.ready,
@@ -11854,7 +11862,7 @@ def build_rwkv_state_cache_with_progress(
                     prewarm_reason="state cache build",
                 )
                 logger.exception("RWKV state cache build failed")
-                tooltip("RWKV state cache build failed.", parent=parent)
+                tooltip(_tr().qt_misc_review_history_failed(), parent=parent)
                 return
 
             finish(
@@ -11868,10 +11876,10 @@ def build_rwkv_state_cache_with_progress(
                 build_with_progress,
                 done,
                 parent=parent,
-                label="Building RWKV state cache...",
+                label=_tr().qt_misc_review_history_reading() + "...",
                 immediate=True,
                 uses_collection=True,
-                title="RWKV State Cache",
+                title=_tr().qt_misc_review_history_title(),
             )
         except Exception:
             _finish_rwkv_state_cache_operation(
@@ -12853,7 +12861,7 @@ def reschedule_rwkv_review_cards_with_progress(
                 result = future.result()
             except Exception:
                 logger.exception("RWKV review reschedule failed")
-                tooltip("RWKV reschedule failed.", parent=parent)
+                tooltip(_tr().qt_misc_rwkv_curve_reschedule_error(), parent=parent)
                 return
 
             elapsed_ms = (time.monotonic() - start) * 1000
@@ -12861,7 +12869,7 @@ def reschedule_rwkv_review_cards_with_progress(
                 on_op_finished(cast(Any, mw), cast(Any, result.changes), None)
             if result.built:
                 tooltip(
-                    f"RWKV rescheduled {result.updated} cards.",
+                    _tr().qt_misc_rwkv_curve_rescheduled(count=result.updated),
                     parent=parent,
                 )
                 logger.debug(
@@ -12872,16 +12880,16 @@ def reschedule_rwkv_review_cards_with_progress(
                     elapsed_ms,
                 )
             else:
-                tooltip("RWKV reschedule could not be started.", parent=parent)
+                tooltip(_tr().qt_misc_rwkv_curve_reschedule_failed(), parent=parent)
 
         with_progress(
             reschedule,
             done,
             parent=parent,
-            label="Preparing RWKV reschedule...",
+            label=_tr().qt_misc_rwkv_curve_reschedule_preparing(),
             immediate=True,
             uses_collection=True,
-            title="RWKV Reschedule",
+            title=_tr().qt_misc_rwkv_curve_reschedule_title(),
         )
 
     _run_on_main(mw, start_reschedule)
@@ -13117,7 +13125,7 @@ def reschedule_rwkv_review_cards(
 
     _report_rwkv_state_cache_progress(
         progress,
-        "Preparing RWKV state...",
+        _tr().qt_misc_review_history_reading() + "...",
     )
     if not warm_up_rwkv_state(mw, progress=progress):
         return RwkvReviewRescheduleResult(built=False, changes=None)
@@ -13343,7 +13351,7 @@ def _restore_reviewer_backend_cache(
                 warm_up,
                 stored_history.reviews,
                 progress=progress,
-                label="Loading RWKV cache deltas",
+                label=_tr().qt_misc_review_history_loading(),
                 is_current=is_current,
             )
             _require_reviewer_backend_warmup_current(is_current)
@@ -13405,7 +13413,7 @@ def _restore_reviewer_backend_cache(
                 history.reviews,
                 review_ids=history.review_ids,
                 progress=progress,
-                label="Updating RWKV state cache",
+                label=_tr().qt_misc_review_history_updating(),
                 record_retrievability_cache=record_retrievability_cache,
                 snapshot_after_reviews=[
                     *checkpoint_review_counts,
@@ -17235,7 +17243,7 @@ def _report_rwkv_review_input_prepare_progress(
     _report_rwkv_state_cache_progress(
         progress,
         _rwkv_replay_progress_label(
-            "Preparing RWKV review inputs",
+            _tr().qt_misc_review_history_collecting(),
             replay_progress,
             elapsed_seconds=time.monotonic() - started_at,
         ),

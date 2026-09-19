@@ -5982,28 +5982,41 @@ def test_rust_rwkv_calibration_chunk_size_preserves_progress_chunks() -> None:
     assert _rust_warmup_chunk_size(50000, record_predictions=True) == 16_384
 
 
-def test_reviewer_rwkv_warmup_progress_label_includes_elapsed_and_remaining() -> None:
+# Pins spec/ui.md#ui.plain-progress-text
+def test_reviewer_rwkv_warmup_progress_label_says_how_far_and_time_left() -> None:
+    from aqt.utils import tr
+
+    step = tr.qt_misc_review_history_reading()
     label = rwkv_scheduler._rwkv_replay_progress_label(
-        "Building RWKV state cache",
+        step,
         RwkvWarmUpProgress(processed_reviews=2, total_reviews=4),
         elapsed_seconds=6,
     )
 
-    assert (
-        label == "Building RWKV state cache: 2/4 reviews | elapsed: 6s | remaining: 6s"
+    assert label == tr.qt_misc_review_history_progress(
+        step=step, done="2", total="4", remaining="6s"
     )
+    assert "elapsed" not in label and "cache" not in label.lower()
+    # before the first review is done no time is known
+    assert rwkv_scheduler._rwkv_replay_progress_label(
+        step,
+        RwkvWarmUpProgress(processed_reviews=0, total_reviews=4),
+        elapsed_seconds=1,
+    ) == tr.qt_misc_review_history_progress_start(step=step, done="0", total="4")
 
 
 def test_reviewer_rwkv_warmup_progress_label_formats_long_times() -> None:
+    from aqt.utils import tr
+
+    step = tr.qt_misc_review_history_reading()
     label = rwkv_scheduler._rwkv_replay_progress_label(
-        "Building RWKV state cache",
+        step,
         RwkvWarmUpProgress(processed_reviews=1, total_reviews=2),
         elapsed_seconds=3661,
     )
 
-    assert (
-        label == "Building RWKV state cache: 1/2 reviews | "
-        "elapsed: 1h 01m 01s | remaining: 1h 01m 01s"
+    assert label == tr.qt_misc_review_history_progress(
+        step=step, done="1", total="2", remaining="1h 01m 01s"
     )
 
 
@@ -8183,7 +8196,10 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
         (1, 4),
     ]
     assert taskman.with_progress_kwargs is not None
-    assert taskman.with_progress_kwargs["label"] == "Updating RWKV state after sync..."
+    assert (
+        taskman.with_progress_kwargs["label"]
+        == _tr().qt_misc_review_history_after_sync()
+    )
     assert taskman.with_progress_kwargs["uses_collection"] is True
 
 
@@ -8235,7 +8251,9 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
     assert metadata is not None
     assert metadata["ignoredReviewIds"] == [review_ids[7]]
     assert len(warnings) == 1
-    assert "1 synchronized review older than 8 days" in warnings[0]
+    assert _plain(warnings[0]).startswith(
+        "1 synced review is older than 8 days, so RWKV has not learned from it."
+    )
     assert (
         rwkv_scheduler._read_rwkv_state_cache_binary(
             reviewer,
@@ -8409,7 +8427,7 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     assert taskman.with_progress_kwargs is not None
     assert taskman.with_progress_kwargs["immediate"] is True
     assert taskman.with_progress_kwargs["uses_collection"] is True
-    assert taskman.with_progress_kwargs["title"] == "RWKV State Cache"
+    assert taskman.with_progress_kwargs["title"] == _tr().qt_misc_review_history_title()
     assert prewarm_calls == [
         {
             "reason": "state cache build",
@@ -8420,22 +8438,24 @@ def test_rwkv_state_cache_build_uses_modal_progress(
     assert any(
         update["value"] == 0
         and update["max"] == 2
-        and str(update["label"]).startswith("Preparing RWKV review inputs: 0/2 reviews")
-        for update in progress_updates
-    )
-    assert any(
-        update["value"] == 2
-        and update["max"] == 2
-        and str(update["label"]).startswith("Preparing RWKV review inputs: 2/2 reviews")
-        for update in progress_updates
-    )
-    assert any(
-        update["value"] == 2
-        and update["max"] == 2
-        and str(update["label"]).startswith(
-            "Building RWKV state cache: 2/2 reviews | elapsed: "
+        and _plain(update["label"]).startswith(
+            "Collecting your reviews: 0 of 2 reviews"
         )
-        and str(update["label"]).endswith(" | remaining: 0s")
+        for update in progress_updates
+    )
+    assert any(
+        update["value"] == 2
+        and update["max"] == 2
+        and _plain(update["label"]).startswith(
+            "Collecting your reviews: 2 of 2 reviews"
+        )
+        for update in progress_updates
+    )
+    assert any(
+        update["value"] == 2
+        and update["max"] == 2
+        and _plain(update["label"])
+        == "Reading your review history: 2 of 2 reviews, about 0s left"
         for update in progress_updates
     )
 
@@ -9192,7 +9212,7 @@ def test_warmup_capable_backend_records_review_retrievability_cache(tmp_path) ->
         (102, pytest.approx(0.32), "rwkv_state_cache_build"),
     ]
     assert any(
-        label.startswith("Building RWKV state cache: 2/2 reviews")
+        _plain(label).startswith("Building RWKV state cache: 2 of 2 reviews")
         for label in progress_labels
     )
 
@@ -20124,3 +20144,16 @@ def _rwkv_answered_review_input(
         ease=ease,
         duration_millis=1234,
     )
+
+
+def _plain(label: object) -> str:
+    """A progress label without Fluent's invisible direction marks."""
+    from anki.lang import without_unicode_isolation
+
+    return without_unicode_isolation(str(label))
+
+
+def _tr() -> Any:
+    from aqt.utils import tr
+
+    return tr
