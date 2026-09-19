@@ -97,6 +97,16 @@ message CardStatsResponse {
     // thread holds it). The curve arrives in a later request; card info asks
     // again on its own (spec ui.card-info-curve-messages).
     bool pending = 5;
+    // RWKV-Curve's curve after an earlier answered review, rebuilt from the
+    // source saved for it: recall at `elapsed_days`, and its S90. Reviews
+    // without a saved source have none (spec ui.card-info-rwkv-curve).
+    message PastSegment {
+      // seconds, as StatsRevlogEntry.time
+      int64 review_time = 1;
+      repeated float recall = 2;
+      float s90 = 3;
+    }
+    repeated PastSegment past = 6;
   }
   optional RwkvCurve rwkv_curve = 26;
   // The collection's algorithm: card info shows only its values (spec

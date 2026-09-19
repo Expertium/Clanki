@@ -90,10 +90,23 @@ export function stabilityS90(
 }
 
 /**
+ * RWKV-Curve's curve after one earlier answered review of the card (spec
+ * ui.card-info-rwkv-curve): the review's time in seconds, as the revlog entry
+ * has it, and recall on the same elapsed days as the curve after the last
+ * review.
+ */
+export interface RwkvPastSegment {
+    reviewTime: bigint | number;
+    recall: number[];
+    s90: number;
+}
+
+/**
  * RWKV-Curve's forgetting curve after the card's last review, for a card whose
  * preset runs RWKV-Curve (spec ui.card-info-rwkv-curve): recall at each elapsed
  * day (ascending), and the curve's S90. Without points RWKV has no curve for
- * the card yet, and the chart stops at the last review.
+ * the card yet, and the chart stops at the last review. `past` holds the
+ * curves after the earlier reviews that have one stored.
  */
 export interface RwkvCurvePoints {
     elapsedDays: number[];
@@ -101,6 +114,7 @@ export interface RwkvCurvePoints {
     s90?: number;
     /** True while RWKV is not ready; the curve arrives in a later request. */
     pending?: boolean;
+    past?: RwkvPastSegment[];
 }
 
 /** The recall of `curve` at `days`, linear between its points. */
@@ -122,6 +136,8 @@ export interface DataPoint {
     retrievability: number;
     stability: number;
     stabilityS90: number;
+    /** A break in the line: the review before it has no curve to draw. */
+    gap?: boolean;
 }
 
 export enum TimeRange {
@@ -170,18 +186,42 @@ export function latestAnsweredReview(revlog: RevlogEntry[]): RevlogEntry | undef
     return revlog.find((entry) => entry.buttonChosen > 0 && filterRevlogEntryByReviewKind(entry));
 }
 
+/** An RWKV-Curve card's stored curves after its earlier reviews, by review time. */
+function rwkvPastSegments(rwkvCurve: RwkvCurvePoints): Map<number, RwkvPastSegment> {
+    const segments = new Map<number, RwkvPastSegment>();
+    for (const segment of rwkvCurve.past ?? []) {
+        const time = Number(segment.reviewTime);
+        if (!segments.has(time)) {
+            segments.set(time, segment);
+        }
+    }
+    return segments;
+}
+
 /**
- * The reviews the chart starts its segments at: all of them, or for an
- * RWKV-Curve card only the last answered one, because only RWKV's curve after
- * it is known and the chart never mixes two algorithms (spec
- * ui.card-info-rwkv-curve). RWKV's curve needs no FSRS-7 memory state, so the
- * RWKV-Curve chart also draws for a card that FSRS-7 has no memory state for,
- * a card that was reset for example (spec ui.card-info-curve-messages).
+ * The reviews the chart starts its segments at, newest first. For an FSRS-7
+ * card, the reviews FSRS-7 has a memory state for. For an RWKV-Curve card, its
+ * answered reviews from the oldest one that has an RWKV curve stored, and
+ * always the last answered one: only RWKV's own curves are drawn, never
+ * FSRS-7's (spec ui.card-info-rwkv-curve). RWKV's curve needs no FSRS-7 memory
+ * state, so the RWKV-Curve chart also draws for a card that FSRS-7 has no
+ * memory state for, a card that was reset for example (spec
+ * ui.card-info-curve-messages).
  */
 export function chartRevlog(revlog: RevlogEntry[], rwkvCurve?: RwkvCurvePoints): RevlogEntry[] {
     if (rwkvCurve) {
-        const latest = latestAnsweredReview(revlog);
-        return latest ? [latest] : [];
+        const answered = revlog.filter(
+            (entry) => entry.buttonChosen > 0 && filterRevlogEntryByReviewKind(entry),
+        );
+        const segments = rwkvPastSegments(rwkvCurve);
+        // newest first, so the oldest review with a curve has the highest index
+        let oldest = 0;
+        answered.forEach((entry, index) => {
+            if (segments.has(Number(entry.time))) {
+                oldest = index;
+            }
+        });
+        return answered.slice(0, oldest + 1);
     }
     return filterRevlog(revlog);
 }
@@ -218,12 +258,135 @@ export function forgettingCurveMessage(
     return tr.cardStatsForgettingCurveNotEnoughHistory();
 }
 
+/**
+ * The points of an RWKV-Curve card's chart (spec ui.card-info-rwkv-curve):
+ * after each review, RWKV's own curve after that review, up to the next
+ * review; after the last one, up to now and then as a preview. A review with
+ * no stored curve gets no segment, only a break in the line. No FSRS-7 value
+ * is read here.
+ */
+function prepareRwkvData(
+    revlog: RevlogEntry[],
+    maxDays: number,
+    rwkvCurve: RwkvCurvePoints,
+): DataPoint[] {
+    const reviews = revlog.slice().reverse();
+    if (reviews.length === 0) {
+        return [];
+    }
+    const segments = rwkvPastSegments(rwkvCurve);
+    const step = Math.min(maxDays / MIN_POINTS, 1);
+    const data: DataPoint[] = [];
+    const push = (
+        time: number,
+        daysSinceFirstLearn: number,
+        elapsed: number,
+        retrievability: number,
+        s90: number,
+        gap = false,
+    ) => {
+        const point: DataPoint = {
+            date: new Date(time * 1000),
+            daysSinceFirstLearn,
+            elapsedDaysSinceLastReview: elapsed,
+            retrievability,
+            stability: s90,
+            stabilityS90: s90,
+        };
+        if (gap) {
+            point.gap = true;
+        }
+        data.push(point);
+    };
+
+    const firstTime = Number(reviews[0].time);
+    let s90 = segments.get(firstTime)?.s90 ?? rwkvCurve.s90 ?? 0;
+    for (let index = 0; index < reviews.length; index++) {
+        const reviewTime = Number(reviews[index].time);
+        const sinceFirst = (reviewTime - firstTime) / 86400;
+        const last = index === reviews.length - 1;
+        // after the last review, the curve RWKV holds for the card now
+        const lastCurve = rwkvCurve.elapsedDays.length > 0
+            ? { recall: rwkvCurve.recall, s90: rwkvCurve.s90 ?? 0 }
+            : undefined;
+        const segment = last ? lastCurve : segments.get(reviewTime);
+        if (segment) {
+            s90 = segment.s90;
+        }
+        push(reviewTime, sinceFirst, 0, 100, s90);
+        if (last) {
+            if (!segment) {
+                return filterDataByTimeRange(data, maxDays);
+            }
+            break;
+        }
+        const nextTime = Number(reviews[index + 1].time);
+        const totalDaysElapsed = (nextTime - reviewTime) / 86400;
+        if (!segment) {
+            push(reviewTime, sinceFirst, 0, 100, s90, true);
+            continue;
+        }
+        const curve = { elapsedDays: rwkvCurve.elapsedDays, recall: segment.recall };
+        let elapsedDays = 0;
+        while (elapsedDays < totalDaysElapsed - step) {
+            elapsedDays += step;
+            push(
+                reviewTime + elapsedDays * 86400,
+                sinceFirst + elapsedDays,
+                elapsedDays,
+                rwkvRecallAt(curve, elapsedDays) * 100,
+                s90,
+            );
+        }
+    }
+
+    // after the last review, RWKV's curve after it: to now, then a preview
+    const lastReviewTime = Number(reviews[reviews.length - 1].time);
+    const sinceFirst = (lastReviewTime - firstTime) / 86400;
+    const now = Date.now() / 1000;
+    const totalDaysSinceLastReview = (now - lastReviewTime) / 86400;
+    let elapsedDays = 0;
+    while (elapsedDays < totalDaysSinceLastReview - step) {
+        elapsedDays += step;
+        push(
+            lastReviewTime + elapsedDays * 86400,
+            sinceFirst + elapsedDays,
+            elapsedDays,
+            rwkvRecallAt(rwkvCurve, elapsedDays) * 100,
+            s90,
+        );
+    }
+    push(
+        now,
+        sinceFirst + totalDaysSinceLastReview,
+        totalDaysSinceLastReview,
+        rwkvRecallAt(rwkvCurve, totalDaysSinceLastReview) * 100,
+        s90,
+    );
+    const previewDays = maxDays - totalDaysSinceLastReview;
+    let previewDaysElapsed = 0;
+    while (previewDaysElapsed < previewDays) {
+        previewDaysElapsed += step;
+        push(
+            now + previewDaysElapsed * 86400,
+            sinceFirst + totalDaysSinceLastReview + previewDaysElapsed,
+            totalDaysSinceLastReview + previewDaysElapsed,
+            rwkvRecallAt(rwkvCurve, elapsedDays + previewDaysElapsed) * 100,
+            s90,
+        );
+    }
+    return filterDataByTimeRange(data, maxDays);
+}
+
 export function prepareData(
     revlog: RevlogEntry[],
     maxDays: number,
     params: number[],
     rwkvCurve?: RwkvCurvePoints,
 ) {
+    if (rwkvCurve) {
+        return prepareRwkvData(revlog, maxDays, rwkvCurve);
+    }
     const data: DataPoint[] = [];
     let lastReviewTime = 0;
     let lastStability = 0;
@@ -311,17 +474,8 @@ export function prepareData(
     if (data.length === 0) {
         return [];
     }
-    if (rwkvCurve && rwkvCurve.elapsedDays.length === 0) {
-        return filterDataByTimeRange(data, maxDays);
-    }
-    // after the last review, an RWKV-Curve card follows RWKV's own curve
-    const lastSegmentRecall = rwkvCurve
-        ? (days: number) => rwkvRecallAt(rwkvCurve, days)
-        : (days: number) => forgettingCurve(lastStability, lastStabilityFast, lastDifficulty, days, params);
-    if (rwkvCurve?.s90 !== undefined) {
-        lastStabilityS90 = rwkvCurve.s90;
-        data[data.length - 1].stabilityS90 = lastStabilityS90;
-    }
+    const lastSegmentRecall = (days: number) =>
+        forgettingCurve(lastStability, lastStabilityFast, lastDifficulty, days, params);
 
     const now = Date.now() / 1000;
     const totalDaysSinceLastReview = (now - lastReviewTime) / 86400;
@@ -471,7 +625,9 @@ export function renderForgettingCurve(
         .attr("dy", "1.1em")
         .attr("fill", "currentColor");
 
+    // a review without a stored RWKV curve leaves a break in the line
     const lineGenerator = line<DataPoint>()
+        .defined((d) => !d.gap)
         .x((d) => x(d.date))
         .y((d) => y(d.retrievability));
 
@@ -547,7 +703,7 @@ export function renderForgettingCurve(
     svg.append("g")
         .attr("class", "hover-columns")
         .selectAll("rect")
-        .data(data)
+        .data(data.filter((d) => !d.gap))
         .join("rect")
         .attr("x", d => x(d.date) - 1)
         .attr("y", bounds.marginTop)

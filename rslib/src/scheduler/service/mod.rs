@@ -1151,6 +1151,56 @@ impl crate::services::SchedulerService for Collection {
     ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
         Collection::rwkv_historical_review_fingerprint(self, input)
     }
+
+    fn set_rwkv_curve_sources(
+        &mut self,
+        input: scheduler::RwkvCurveSources,
+    ) -> Result<generic::UInt32> {
+        let tag = rwkv_curve_source_tag(input.tag)?;
+        let width = input.width as usize;
+        require!(
+            width > 0 && input.sources.len() == input.revlog_ids.len() * width,
+            "curve sources do not match their review ids"
+        );
+        require!(
+            input.revlog_ids.iter().all(|id| *id > 0),
+            "invalid review id"
+        );
+        let stored =
+            self.storage
+                .set_rwkv_curve_sources(&tag, &input.revlog_ids, &input.sources, width)?;
+        Ok(generic::UInt32 { val: stored as u32 })
+    }
+
+    fn get_rwkv_curve_sources(
+        &mut self,
+        input: scheduler::GetRwkvCurveSourcesRequest,
+    ) -> Result<scheduler::RwkvCurveSources> {
+        let tag = rwkv_curve_source_tag(input.tag.clone())?;
+        let (revlog_ids, width, sources) = self
+            .storage
+            .rwkv_curve_sources_for_card(CardId(input.card_id), &tag)?;
+        Ok(scheduler::RwkvCurveSources {
+            tag: input.tag,
+            revlog_ids,
+            width: width as u32,
+            sources,
+        })
+    }
+}
+
+fn rwkv_curve_source_tag(
+    tag: Option<scheduler::RwkvCurveSourceTag>,
+) -> Result<crate::storage::RwkvCurveSourceTag> {
+    let Some(tag) = tag else {
+        invalid_input!("missing curve source tag");
+    };
+    require!(!tag.model.is_empty(), "missing curve source model");
+    Ok(crate::storage::RwkvCurveSourceTag {
+        model: tag.model,
+        format: tag.format,
+        kernel: tag.kernel,
+    })
 }
 
 fn fsrs_preset_to_proto(preset: FsrsPreset) -> FsrsPresetForCardResponse {

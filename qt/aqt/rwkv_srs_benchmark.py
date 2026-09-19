@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import array
 import importlib.util
 import logging
 import math
@@ -19,6 +20,8 @@ from typing import Any, cast
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
+    RwkvCurveSourceRecorder,
+    RwkvCurveSources,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
@@ -464,6 +467,7 @@ class _RustRwkvRuntime:
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
         curve_recorder: Callable[[int, float], None] | None = None,
+        curve_source_recorder: RwkvCurveSourceRecorder | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
@@ -479,74 +483,122 @@ class _RustRwkvRuntime:
             record_predictions=record_predictions,
         )
         _report_warmup_progress(progress, processed=0, total=total)
-        processed = 0
-        endpoint_index = 0
         warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
+        # each answered review's curve source, for card info (spec
+        # ui.card-info-rwkv-curve): the replay copies it as it goes
+        record_sources = (
+            curve_source_recorder is not None
+            and review_ids is not None
+            and callable(getattr(self._process, "record_curve_sources", None))
+        )
 
         with self._locked_process():
-            while processed < total:
-                chunk_end = min(processed + backend_chunk_size, total)
-                if endpoint_index < len(snapshot_endpoints):
-                    chunk_end = min(chunk_end, snapshot_endpoints[endpoint_index])
-                chunk = reviews[processed:chunk_end]
-                if callable(warm_up_packed):
-                    predictions = warm_up_packed(
-                        _packed_warm_up_reviews(chunk),
-                        record_predictions,
-                    )
-                else:
-                    predictions = self._process.warm_up_reviews(
-                        [_review_input_row(review_input) for review_input in chunk],
-                        record_predictions,
-                    )
-                if (
-                    record_predictions
-                    and review_ids is not None
-                    and prediction_recorder is not None
-                ):
-                    _record_warm_up_predictions(
-                        prediction_recorder,
-                        review_ids,
-                        processed,
-                        predictions,
-                        curve_recorder=curve_recorder,
-                    )
-
-                processed += len(chunk)
-                if (
-                    endpoint_index < len(snapshot_endpoints)
-                    and processed == snapshot_endpoints[endpoint_index]
-                ):
-                    if snapshot_recorder is not None:
-                        write_runtime_checkpoint = getattr(
-                            snapshot_recorder,
-                            "write_runtime_checkpoint",
-                            None,
-                        )
-                        write_runtime_snapshot = getattr(
-                            snapshot_recorder,
-                            "write_runtime_snapshot",
-                            None,
-                        )
-                        if callable(write_runtime_checkpoint):
-                            write_runtime_checkpoint(
-                                processed,
-                                self.write_warm_up_state_checkpoint,
-                            )
-                        elif callable(write_runtime_snapshot):
-                            write_runtime_snapshot(
-                                processed,
-                                self.append_warm_up_snapshot_binary,
-                            )
-                        else:
-                            snapshot_recorder(
-                                processed,
-                                self._warm_up_snapshot_locked(),
-                            )
-                    endpoint_index += 1
-                _report_warmup_progress(progress, processed=processed, total=total)
-
+            if record_sources:
+                self._process.record_curve_sources(True)
+            try:
+                self._warm_up_chunks_locked(
+                    reviews,
+                    review_ids=review_ids,
+                    prediction_recorder=prediction_recorder,
+                    curve_recorder=curve_recorder,
+                    curve_source_recorder=(
+                        curve_source_recorder if record_sources else None
+                    ),
+                    progress=progress,
+                    snapshot_endpoints=snapshot_endpoints,
+                    snapshot_recorder=snapshot_recorder,
+                    backend_chunk_size=backend_chunk_size,
+                    record_predictions=record_predictions,
+                    warm_up_packed=warm_up_packed,
+                )
+            finally:
+                if record_sources:
+                    self._process.record_curve_sources(False)
             return self._warm_up_snapshot_locked() if return_snapshot else None
+
+    def _warm_up_chunks_locked(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None,
+        prediction_recorder: Callable[[int, float], None] | None,
+        curve_recorder: Callable[[int, float], None] | None,
+        curve_source_recorder: RwkvCurveSourceRecorder | None,
+        progress: RwkvWarmUpProgressCallback | None,
+        snapshot_endpoints: Sequence[int],
+        snapshot_recorder: RwkvStateCacheSnapshotCallback | None,
+        backend_chunk_size: int,
+        record_predictions: bool,
+        warm_up_packed: Any,
+    ) -> None:
+        total = len(reviews)
+        processed = 0
+        endpoint_index = 0
+        while processed < total:
+            chunk_end = min(processed + backend_chunk_size, total)
+            if endpoint_index < len(snapshot_endpoints):
+                chunk_end = min(chunk_end, snapshot_endpoints[endpoint_index])
+            chunk = reviews[processed:chunk_end]
+            if callable(warm_up_packed):
+                predictions = warm_up_packed(
+                    _packed_warm_up_reviews(chunk),
+                    record_predictions,
+                )
+            else:
+                predictions = self._process.warm_up_reviews(
+                    [_review_input_row(review_input) for review_input in chunk],
+                    record_predictions,
+                )
+            if (
+                record_predictions
+                and review_ids is not None
+                and prediction_recorder is not None
+            ):
+                _record_warm_up_predictions(
+                    prediction_recorder,
+                    review_ids,
+                    processed,
+                    predictions,
+                    curve_recorder=curve_recorder,
+                )
+            if curve_source_recorder is not None and review_ids is not None:
+                sources = _recorded_curve_sources(self._process, review_ids, processed)
+                if sources is not None:
+                    curve_source_recorder(sources)
+
+            processed += len(chunk)
+            if (
+                endpoint_index < len(snapshot_endpoints)
+                and processed == snapshot_endpoints[endpoint_index]
+            ):
+                if snapshot_recorder is not None:
+                    write_runtime_checkpoint = getattr(
+                        snapshot_recorder,
+                        "write_runtime_checkpoint",
+                        None,
+                    )
+                    write_runtime_snapshot = getattr(
+                        snapshot_recorder,
+                        "write_runtime_snapshot",
+                        None,
+                    )
+                    if callable(write_runtime_checkpoint):
+                        write_runtime_checkpoint(
+                            processed,
+                            self.write_warm_up_state_checkpoint,
+                        )
+                    elif callable(write_runtime_snapshot):
+                        write_runtime_snapshot(
+                            processed,
+                            self.append_warm_up_snapshot_binary,
+                        )
+                    else:
+                        snapshot_recorder(
+                            processed,
+                            self._warm_up_snapshot_locked(),
+                        )
+                endpoint_index += 1
+            _report_warmup_progress(progress, processed=processed, total=total)
 
     def _warm_up_snapshot_locked(self) -> RwkvBackendCacheSnapshot:
         (
@@ -1198,6 +1250,51 @@ class _RustRwkvRuntime:
         with self._locked_process():
             return self._process.card_curve(card_id, list(elapsed_days))
 
+    def record_curve_sources(self, on: bool) -> None:
+        """Starts or stops recording each answered review's curve source."""
+        record = getattr(self._process, "record_curve_sources", None)
+        if callable(record):
+            with self._locked_process():
+                record(on)
+
+    def take_curve_sources(self) -> tuple[list[int], bytes, int] | None:
+        """(each review's index in its call, the sources, bytes per source)
+        recorded since the last call."""
+        take = getattr(self._process, "take_curve_sources", None)
+        if not callable(take):
+            return None
+        with self._locked_process():
+            packed_indices, sources, width = take()
+        return _unpack_u32s(packed_indices), bytes(sources), int(width)
+
+    def curve_source_tag(self) -> tuple[int, int] | None:
+        """(format, kernel) of this model's curve sources."""
+        tag = getattr(self._process, "curve_source_tag", None)
+        if not callable(tag):
+            return None
+        source_format, kernel, _width = tag()
+        return int(source_format), int(kernel)
+
+    def curves_from_sources(
+        self,
+        sources: RwkvCurveSources,
+        elapsed_days: Sequence[float],
+    ) -> list[tuple[list[float], float] | None] | None:
+        """The curves rebuilt from saved `sources` (spec
+        ui.card-info-rwkv-curve): for each, (recall at `elapsed_days`, S90)
+        or None; None when they are not this model's."""
+        rebuild = getattr(self._process, "curves_from_sources", None)
+        if not callable(rebuild):
+            return None
+        with self._locked_process():
+            return rebuild(
+                sources.format,
+                sources.kernel,
+                sources.sources,
+                sources.width,
+                list(elapsed_days),
+            )
+
     def card_curve_weights(self, card_ids: Sequence[int]) -> tuple[list[int], bytes]:
         """The stored RWKV-Curve curves of `card_ids` that have one, packed."""
         with self._locked_process():
@@ -1345,6 +1442,35 @@ def _selected_state_items(
         for state_id in sorted(selected_ids)
         if state_id in states
     ]
+
+
+def _unpack_u32s(packed: bytes) -> list[int]:
+    values = array.array("I")
+    values.frombytes(packed)
+    if sys.byteorder == "big":
+        values.byteswap()
+    return values.tolist()
+
+
+def _recorded_curve_sources(
+    process: Any,
+    review_ids: Sequence[int],
+    processed: int,
+) -> RwkvCurveSources | None:
+    """The curve sources the runtime recorded during the last chunk, with
+    each chunk index turned into its review id."""
+    packed_indices, sources, width = process.take_curve_sources()
+    indices = _unpack_u32s(packed_indices)
+    if not indices:
+        return None
+    source_format, kernel, _width = process.curve_source_tag()
+    return RwkvCurveSources(
+        review_ids=[review_ids[processed + index] for index in indices],
+        sources=bytes(sources),
+        width=int(width),
+        format=int(source_format),
+        kernel=int(kernel),
+    )
 
 
 def _record_warm_up_predictions(
