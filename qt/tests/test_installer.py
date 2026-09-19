@@ -129,6 +129,35 @@ def test_sources_path(monkeypatch, tmp_path: Path, platform: str, root: str) -> 
     assert sources_path.name == root
 
 
+def test_macos_sources_path_uses_the_bundle_briefcase_builds(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Briefcase names the macOS bundle after `formal_name` in the app's
+    pyproject.toml ("Clanki", spec/branding.md); the sources live inside it."""
+    import tomllib
+
+    config = (
+        Path(__file__).resolve().parents[1] / "installer" / "app" / "pyproject.toml"
+    )
+    with open(config, "rb") as file:
+        formal_name = tomllib.load(file)["tool"]["briefcase"]["app"]["anki"][
+            "formal_name"
+        ]
+    assert formal_name == "Clanki"
+    monkeypatch.setattr("sys.platform", "darwin")
+    sources_path = get_briefcase_sources_path(tmp_path)
+    assert sources_path == (
+        tmp_path
+        / "build"
+        / "anki"
+        / "macos"
+        / "app"
+        / f"{formal_name}.app"
+        / "Contents"
+        / "Resources"
+    )
+
+
 def test_portable_sources_path(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("sys.platform", "darwin")
     sources_path = get_briefcase_sources_path(tmp_path, portable=True)
