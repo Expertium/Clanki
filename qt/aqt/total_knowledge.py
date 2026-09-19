@@ -16,8 +16,11 @@ results are kept for the session.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
 import threading
+import time
 from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -31,6 +34,12 @@ logger = logging.getLogger(__name__)
 Progress = TotalKnowledgeRwkvProgress
 
 _MAX_CACHED_RESULTS = 8
+
+# The per-day sums of earlier runs, kept across restarts in a file beside the
+# collection (spec ui.stats-total-knowledge-incremental). Bump the version
+# whenever this module changes what a day's sum is.
+_DAY_SUMS_CACHE_VERSION = 1
+_DAY_SUMS_CACHE_SUFFIX = ".total-knowledge-cache.json"
 
 
 @dataclass
@@ -236,6 +245,13 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
 
     runtime = new_runtime()
     changes_by_day = _changes_by_day(events, today)
+    cache_key = _day_sums_cache_key(job.curve, card_ids)
+    cached = _cached_day_sums(mw, cache_key, first_day, today, reviews, events)
+    # the days up to `cached_through` take their sums from an earlier run: the
+    # model is causal, so a day's sum depends only on the reviews up to it,
+    # and the digest proved those reviews unchanged. They are still warmed up
+    # the same way, so every later day starts from the same state.
+    cached_through = first_day - 1 + len(cached)
     spans_sums = [0.0] * (today - first_day + 1)
     # instant head: each card whose R comes from an earlier rating. The rows
     # are packed once per rating, not once per day: only the day and the two
@@ -257,7 +273,7 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
         for card_id, _event, _until in changes:
             last_rating.remove(card_id)
         total = 0.0
-        if not job.curve and last_rating:
+        if not job.curve and last_rating and day > cached_through:
             predictions = rwkv._predict_rwkv_memorised_day_from_rows(
                 runtime, last_rating, day=day
             )
@@ -273,14 +289,155 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
                     spans.append((card_id, day, day + 1, until - 1))
             else:
                 last_rating.set(card_id, event.review)
+        # a span that starts on a cached day still reaches later days
         if spans:
             start, sums = runtime.curve_retrievability_day_sums_from_warm_up(spans)
             for offset, value in enumerate(sums):
                 spans_sums[start - first_day + offset] += value
         if job.curve:
             total += spans_sums[day - first_day]
+        if day <= cached_through:
+            total = cached[day - first_day]
         with job.lock:
             job.sum_r.append(total)
+
+    with job.lock:
+        day_sums = list(job.sum_r)
+    _store_day_sums(mw, cache_key, first_day, today, reviews, events, day_sums)
+
+
+def _day_sums_cache_key(curve: bool, card_ids: frozenset[int]) -> str:
+    return ("curve-" if curve else "instant-") + _cards_digest(
+        tuple(sorted(card_ids))
+    ).hex()
+
+
+def _day_sums_cache_path(mw: Any) -> str | None:
+    path = getattr(getattr(mw, "col", None), "path", None)
+    if not isinstance(path, str) or not path:
+        return None
+    return os.path.splitext(path)[0] + _DAY_SUMS_CACHE_SUFFIX
+
+
+def _model_identity() -> str:
+    import aqt.rwkv_scheduler
+
+    path = aqt.rwkv_scheduler._current_embedded_rwkv_model_path()
+    if path is None:
+        return ""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return ""
+    return f"{os.path.basename(str(path))}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _history_digest(
+    reviews: Sequence[tuple[int, Any, int]],
+    events: dict[int, list[_Event]],
+    through_day: int,
+) -> str:
+    """What the sums up to `through_day` read: every review RWKV replays up to
+    that day (its whole record, the day included, so a moved day boundary
+    shows too), and the searched cards' ratings and resets."""
+    import aqt.rwkv_scheduler as rwkv
+
+    digest = hashlib.blake2b(digest_size=20)
+    for review_id, review, day in reviews:
+        if day > through_day:
+            break
+        digest.update(rwkv._encode_rwkv_delta_record(review_id, review))
+        digest.update(
+            repr((review.target_retentions, review.enforce_grade_order)).encode()
+        )
+    for card_id in sorted(events):
+        for event in events[card_id]:
+            if event.day <= through_day:
+                digest.update(
+                    f"{card_id}:{event.review_id}:{event.day}:"
+                    f"{event.review is None}".encode()
+                )
+    return digest.hexdigest()
+
+
+def _read_day_sums_cache(mw: Any) -> dict[str, Any]:
+    path = _day_sums_cache_path(mw)
+    if path is None:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != _DAY_SUMS_CACHE_VERSION:
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _cached_day_sums(
+    mw: Any,
+    key: str,
+    first_day: int,
+    today: int,
+    reviews: Sequence[tuple[int, Any, int]],
+    events: dict[int, list[_Event]],
+) -> list[float]:
+    """The sums of the days before today that an earlier run left, or [] when
+    anything they read has changed since."""
+    entry = _read_day_sums_cache(mw).get(key)
+    if not isinstance(entry, dict):
+        return []
+    sums = entry.get("sums")
+    last_day = entry.get("last_day")
+    if (
+        entry.get("first_day") != first_day
+        or not isinstance(last_day, int)
+        or not isinstance(sums, list)
+        or len(sums) != last_day - first_day + 1
+        or last_day >= today
+        or not all(isinstance(value, float) for value in sums)
+        or entry.get("model") != _model_identity()
+        or entry.get("digest") != _history_digest(reviews, events, last_day)
+    ):
+        return []
+    return sums
+
+
+def _store_day_sums(
+    mw: Any,
+    key: str,
+    first_day: int,
+    today: int,
+    reviews: Sequence[tuple[int, Any, int]],
+    events: dict[int, list[_Event]],
+    sums: Sequence[float],
+) -> None:
+    """Keep the sums of the finished days (all but today, whose reviews are
+    not all in yet) for the next run; the newest few searches only."""
+    path = _day_sums_cache_path(mw)
+    last_day = today - 1
+    if path is None or last_day < first_day:
+        return
+    try:
+        entries = _read_day_sums_cache(mw)
+        entries.pop(key, None)
+        entries[key] = {
+            "first_day": first_day,
+            "last_day": last_day,
+            "sums": [float(value) for value in sums[: last_day - first_day + 1]],
+            "model": _model_identity(),
+            "digest": _history_digest(reviews, events, last_day),
+            "written": time.time(),
+        }
+        while len(entries) > _MAX_CACHED_RESULTS:
+            del entries[next(iter(entries))]
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as file:
+            json.dump({"version": _DAY_SUMS_CACHE_VERSION, "entries": entries}, file)
+        os.replace(temporary, path)
+    except OSError:
+        logger.exception("Total Knowledge day sums not kept")
 
 
 def _card_events(

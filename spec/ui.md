@@ -763,7 +763,8 @@ vertical line sweeps from left to right as it goes. RWKV's history of a card
 starts at its latest learning start, as RWKV's scheduling does, so a card
 reset and learned again has R 0 on the days before that start. A second
 request for the same cards and collection state joins the running job; a
-finished result is kept for the session; closing the Stats window or
+finished result is kept for the session, and the finished days across
+restarts (`ui.stats-total-knowledge-incremental`); closing the Stats window or
 leaving the page stops the job. With no usable RWKV model the graph reads
 "RWKV model not found" (`sched.rwkv-no-model-error`).
 
@@ -794,6 +795,37 @@ pinned by `scalar_curve_is_bit_identical_to_the_tensor_path`
 (`ts/routes/graphs/ui-mode.test.ts`);
 "Total Knowledge: the modes differ, and switching does not load it again"
 (`ts/tests/e2e/graphs.test.ts`).
+
+## ui.stats-total-knowledge-incremental
+
+Given the Total Knowledge graph under RWKV (`ui.stats-total-knowledge`), the
+RWKV job keeps the sums of the days before today that it finished, per search
+(the search's cards) and per algorithm, in the file
+`collection.total-knowledge-cache.json` beside the collection, the eight
+newest searches only. The next job for the same cards, in the same session or
+after a restart, takes the kept sum for each of those days instead of scoring
+the cards again. It still replays the whole review history day by day, so the
+days after the kept ones start from the same RWKV state as before, and every
+day's sum is the sum a full run gives, to the last bit. Today is never kept,
+since its reviews are not all in yet.
+
+The kept days are thrown away, and the job computes every day again, when
+anything they read has changed: any review RWKV replays up to the last kept
+day (its record, its day, so a moved day boundary too, and its target
+retentions), a rating or reset of a searched card up to that day, the search's
+cards, the RWKV model file, or the format version of the kept sums.
+
+**Why:** Andrew, 2026-09-19: "Build stage 1 and keep cache across restarts".
+The job reran from scratch on every Stats open after any change to the
+collection: 34 min for his whole collection under RWKV-Instant on all
+threads, 53 min under the background worker cap. RWKV is causal, so a day's
+sum reads only the reviews up to that day, and the days before a new review
+do not change.
+
+**Pinned by:** `qt/tests/test_total_knowledge_cache.py`
+(`test_a_run_that_reuses_the_days_matches_a_full_run_bit_for_bit`,
+`test_a_changed_old_review_throws_the_kept_days_away`,
+`test_the_kept_days_stop_before_today_and_survive_a_restart`).
 
 ## ui.stats-model-metrics
 
