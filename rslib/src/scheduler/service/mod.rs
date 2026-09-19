@@ -1308,7 +1308,7 @@ mod tests {
                 },
             )]),
         )?;
-        let mut score = |col: &mut Collection, algorithm| -> Result<Option<f32>> {
+        let score = |col: &mut Collection, algorithm| -> Result<Option<f32>> {
             col.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
             col.rwkv_retrievability_score_of_algorithm(card_id, days_elapsed)
         };
