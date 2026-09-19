@@ -48,8 +48,9 @@ unsaved changes, and writes the same flag through the main window, which
 redraws as above; it does not wait for Save, and closing without saving
 keeps the new mode. The Stats page has the same control at the top right of
 its top bar, with the same effect: in Simple mode the page shows only the
-Reviews, Card Counts, Retention and Total Knowledge graphs, in their usual
-order; Advanced mode shows every graph. The note editor has the same control
+Reviews, Card Counts, Retention and Total Knowledge graphs (the default of
+`ui.split-configurable`), in their usual order; Advanced mode shows every
+graph. The note editor has the same control
 at the right end of its toolbar row, and Simple mode there hides a part of
 the toolbar buttons (`ui.editor-simple-view`). Each of these pages takes the
 mode when it loads and from its own switch. Hidden settings keep their stored values and
@@ -95,7 +96,8 @@ it says so, else by its default. The defaults are the split the other
 entries of this file describe (`ui.simple-mode-tools-hidden`,
 `ui.get-decks-and-get-addons`, `ui.mode-switch`'s deck menu,
 `ui.advance-postpone`, `ui.simple-mode-deck-counts`,
-`ui.reviewer-simple-view`, `ui.browser-simple-view`), so a collection with
+`ui.reviewer-simple-view`, `ui.browser-simple-view`, `ui.editor-simple-view`,
+and `ui.mode-switch`'s Stats graphs), so a collection with
 no choices looks exactly as those entries say.
 
 The items, per area:
@@ -118,6 +120,19 @@ The items, per area:
   the registry's order (Sort Field, Deck, Due, Interval, then the others);
   with none chosen, Sort Field shows. Without the Cards/Notes switch, the
   table shows cards (`ui.browser-simple-view`).
+- Note editor: each of its own 17 toolbar buttons (`ui.editor-simple-view`);
+  a hidden button is hidden from sight only, so its shortcut still runs it.
+- Stats: each of the 18 graphs. In Simple mode the page asks the backend
+  only for the data its chosen graphs draw, in page order (by default
+  Reviews, Card Counts and Retention, as before); when the chosen graphs
+  draw none of it (each asks for its own data), it asks for Card Counts'
+  data only.
+
+The editor and the Stats page read the split when they load, from the
+media server (`getUiSplit`: every item id and whether Simple mode shows it,
+the choices applied), as they read the mode; a page that cannot read it
+shows every item. An edit of the split reaches such a page the next time
+it is opened.
 
 Never items, and so always shown: the Simple | Advanced switch and View >
 Advanced UI, Tools > Preferences, and the UI split tab itself, so no choice
@@ -154,8 +169,11 @@ subset of Advanced").
 
 **Pinned by:** `qt/tests/test_ui_split.py`
 (`test_every_default_equals_todays_split` and the storage, lookup, area and
-Preferences-tab tests); `test_hidden_tools_items_keep_their_shortcuts`
-(`qt/tests/test_ui_mode.py`).
+Preferences-tab tests, and the checks that the editor and Stats pages list
+the same items in the same order); `test_hidden_tools_items_keep_their_shortcuts`
+(`qt/tests/test_ui_mode.py`); "Simple mode follows the split in both
+directions" (`ts/routes/editor/ui-mode.test.ts`,
+`ts/routes/graphs/ui-mode.test.ts`).
 
 ## ui.get-decks-and-get-addons
 
@@ -351,7 +369,9 @@ Simple mode (`ui.mode-switch`), its toolbar shows Fields..., Bold, Italic,
 Underline, the text colour, Remove formatting and Attach pictures/audio/video,
 and hides Cards..., the editor's own settings gear, Superscript, Subscript,
 the text highlight colour, Unordered list, Ordered list, Alignment, Record
-audio and Equations (MathJax/LaTeX). Advanced mode shows every one of them.
+audio and Equations (MathJax/LaTeX): this is the default of
+`ui.split-configurable`, where the user can move any of these buttons.
+Advanced mode shows every one of them.
 The buttons an add-on adds (`editor_did_init_buttons`,
 `editor_did_init_left_buttons`) show in both modes. The field list, the
 audio play buttons inside the fields and the Tags row show in both modes.

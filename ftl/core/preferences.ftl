@@ -179,3 +179,5 @@ preferences-ui-split-search-bar = Search bar
 preferences-ui-split-cards-notes-switch = Cards/Notes switch
 preferences-ui-split-select-tool = Select tool
 preferences-ui-split-columns = Columns (Cards mode)
+preferences-ui-split-editor = Note editor
+preferences-ui-split-stats = Statistics graphs

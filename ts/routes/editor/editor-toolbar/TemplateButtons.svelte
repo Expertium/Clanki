@@ -32,8 +32,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { promiseWithResolver } from "@tslib/promise";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { registerPackage } from "@tslib/runtime-require";
-    import { advancedUi } from "../ui-mode";
-    import AdvancedOnly from "./AdvancedOnly.svelte";
+    import { shownButtons } from "../ui-mode";
+    import SplitButtons from "./SplitButtons.svelte";
 
     const { focusedInput } = context.get();
 
@@ -99,7 +99,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const { isLegacy } = context.get();
 </script>
 
-<ButtonGroup class={$advancedUi ? "" : "template-buttons-simple"}>
+<ButtonGroup
+    class={$shownButtons.has("recordAudio") || $shownButtons.has("mathjax")
+        ? ""
+        : "template-buttons-simple"}
+>
     <DynamicallySlottable
         slotHost={ButtonGroupItem}
         {createProps}
@@ -108,16 +112,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {api}
     >
         <ButtonGroupItem>
-            <IconButton
-                tooltip="{tr.editingAttachPicturesaudiovideo()} ({getPlatformString(
-                    attachmentCombination,
-                )})"
-                iconSize={70}
-                {disabled}
-                on:click={attachMediaOnFocus}
-            >
-                <Icon icon={paperclipIcon} />
-            </IconButton>
+            <SplitButtons buttons={["attachMedia"]}>
+                <IconButton
+                    tooltip="{tr.editingAttachPicturesaudiovideo()} ({getPlatformString(
+                        attachmentCombination,
+                    )})"
+                    iconSize={70}
+                    {disabled}
+                    on:click={attachMediaOnFocus}
+                >
+                    <Icon icon={paperclipIcon} />
+                </IconButton>
+            </SplitButtons>
             <Shortcut
                 keyCombination={attachmentCombination}
                 on:action={attachMediaOnFocus}
@@ -125,7 +131,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <AdvancedOnly buttons={["recordAudio"]}>
+            <SplitButtons buttons={["recordAudio"]}>
                 <IconButton
                     tooltip="{tr.editingRecordAudio()} ({getPlatformString(
                         recordCombination,
@@ -136,7 +142,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 >
                     <Icon icon={micIcon} />
                 </IconButton>
-            </AdvancedOnly>
+            </SplitButtons>
             <!-- outside the wrapper: F5 keeps working in Simple mode
                  (spec ui.editor-simple-view) -->
             <Shortcut
@@ -146,15 +152,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <AdvancedOnly buttons={["mathjax"]}>
+            <SplitButtons buttons={["mathjax"]}>
                 <LatexButton />
-            </AdvancedOnly>
+            </SplitButtons>
         </ButtonGroupItem>
     </DynamicallySlottable>
 </ButtonGroup>
 
 <style lang="scss">
-    /* Simple mode hides Record audio and the equations button, so the attach
+    /* Record audio and the equations button are hidden (as Simple mode does
+       by default), so the attach
        button is on its own and keeps both rounded ends. */
     :global(.template-buttons-simple .button-group-item:first-child) {
         --border-right-radius: 5px !important;

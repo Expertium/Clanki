@@ -36,6 +36,7 @@ import aqt.rwkv_scheduler
 import aqt.stats_metrics
 import aqt.stats_prefetch
 import aqt.total_knowledge
+import aqt.ui_split
 from anki import (
     decks_pb2,
     frontend_pb2,
@@ -924,6 +925,15 @@ def set_advanced_ui() -> bytes:
     return b""
 
 
+def get_ui_split() -> bytes:
+    """Which items Simple mode shows (spec ui.split-configurable), for the
+    pages that have their own Simple view: every item id -> bool, the
+    user's choices applied."""
+    return generic_pb2.Json(
+        json=aqt.ui_split.simple_items_json(aqt.mw.col).encode()
+    ).SerializeToString()
+
+
 def update_deck_configs() -> bytes:
     return _update_deck_configs(close_on_success=False)
 
@@ -1678,6 +1688,7 @@ def review_metrics_cancel() -> bytes:
 post_handler_list = [
     congrats_info,
     set_advanced_ui,
+    get_ui_split,
     get_deck_configs_for_update,
     update_deck_configs,
     update_deck_configs_and_close,

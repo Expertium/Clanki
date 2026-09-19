@@ -36,6 +36,8 @@ class Area(Enum):
     MAIN_WINDOW = "main"
     REVIEWER = "reviewer"
     BROWSER = "browser"
+    EDITOR = "editor"
+    STATS = "stats"
 
 
 def _area_label(area: Area) -> str:
@@ -43,6 +45,8 @@ def _area_label(area: Area) -> str:
         Area.MAIN_WINDOW: tr.preferences_ui_split_main_window,
         Area.REVIEWER: tr.preferences_ui_split_reviewer,
         Area.BROWSER: tr.preferences_ui_split_browser,
+        Area.EDITOR: tr.preferences_ui_split_editor,
+        Area.STATS: tr.preferences_ui_split_stats,
     }[area]()
 
 
@@ -81,17 +85,21 @@ def _both(first: Callable[[], str], second: Callable[[], str]) -> Callable[[], s
     return lambda: f"{first()} / {second()}"
 
 
-def _retrievability_column() -> str:
-    # Simple mode never says "retrievability" (spec ui.simple-recall-wording)
-    import aqt
+def _recall_wording(technical: Callable[[], str]) -> Callable[[], str]:
+    """Simple mode never says "retrievability" (spec
+    ui.simple-recall-wording): there the name is "Probability of recall"."""
 
-    mw = aqt.mw
-    advanced = bool(mw and mw.col and mw.advanced_ui())
-    return (
-        tr.card_stats_fsrs_retrievability()
-        if advanced
-        else tr.card_stats_recall_probability()
-    )
+    def label() -> str:
+        import aqt
+
+        mw = aqt.mw
+        advanced = bool(mw and mw.col and mw.advanced_ui())
+        return technical() if advanced else tr.card_stats_recall_probability()
+
+    return label
+
+
+_retrievability_column = _recall_wording(tr.card_stats_fsrs_retrievability)
 
 
 _MAIN = Area.MAIN_WINDOW
@@ -342,6 +350,67 @@ ITEMS: list[UiItem] = [
     ),
 ]
 
+# The note editor's own toolbar buttons, in toolbar order (spec
+# ui.editor-simple-view); the ids after "editor." are the page's button names
+# (ts/routes/editor/ui-mode.ts). Add-on buttons are not items.
+EDITOR_BUTTONS: list[tuple[str, Callable[[], str], bool]] = [
+    ("fields", tr.editing_fields, True),
+    ("cards", tr.editing_cards, False),
+    ("settings", tr.actions_options, False),
+    ("bold", tr.editing_bold_text, True),
+    ("italic", tr.editing_italic_text, True),
+    ("underline", tr.editing_underline_text, True),
+    ("superscript", tr.editing_superscript, False),
+    ("subscript", tr.editing_subscript, False),
+    ("textColor", tr.editing_text_color, True),
+    ("highlightColor", tr.editing_text_highlight_color, False),
+    ("removeFormat", tr.editing_remove_formatting, True),
+    ("unorderedList", tr.editing_unordered_list, False),
+    ("orderedList", tr.editing_ordered_list, False),
+    ("alignment", tr.editing_alignment, False),
+    ("attachMedia", tr.editing_attach_picturesaudiovideo, True),
+    ("recordAudio", tr.editing_record_audio, False),
+    ("mathjax", tr.editing_equations, False),
+]
+
+# The Stats page's graphs, in page order (spec ui.mode-switch); the ids after
+# "stats." are the page's graph names (ts/routes/graphs/+page.svelte).
+STATS_GRAPHS: list[tuple[str, Callable[[], str], bool]] = [
+    ("today", tr.statistics_today_title, False),
+    ("futureDue", tr.statistics_future_due_title, False),
+    ("calendar", tr.statistics_calendar_title, False),
+    ("reviews", tr.statistics_reviews_title, True),
+    ("cardCounts", tr.statistics_counts_title, True),
+    ("intervals", tr.statistics_intervals_title, False),
+    ("stability", tr.statistics_card_stability_title, False),
+    ("ease", tr.statistics_card_ease_title, False),
+    ("difficulty", tr.statistics_card_difficulty_title, False),
+    (
+        "retrievability",
+        _recall_wording(tr.statistics_card_retrievability_title),
+        False,
+    ),
+    ("totalKnowledge", tr.statistics_total_knowledge_title, True),
+    ("roc", tr.statistics_roc_title, False),
+    ("calibration", tr.statistics_calibration_title, False),
+    ("umPlus", tr.statistics_um_plus_title, False),
+    ("trueRetention", tr.statistics_true_retention_title, True),
+    ("hours", tr.statistics_hours_title, False),
+    ("buttons", tr.statistics_answer_buttons_title, False),
+    ("added", tr.statistics_added_title, False),
+]
+
+ITEMS += _items(
+    Area.EDITOR,
+    None,
+    [(f"editor.{name}", label, simple) for name, label, simple in EDITOR_BUTTONS],
+)
+ITEMS += _items(
+    Area.STATS,
+    None,
+    [(f"stats.{name}", label, simple) for name, label, simple in STATS_GRAPHS],
+)
+
 ITEMS_BY_ID: dict[str, UiItem] = {item.id: item for item in ITEMS}
 
 
@@ -429,6 +498,17 @@ def col_visibility(col: Any) -> Callable[[str], bool]:
         return _every_item
     choices = overrides(col)
     return lambda item_id: shown_in_simple(None, item_id, choices)
+
+
+def simple_items_json(col: Any) -> str:
+    """For the web pages (editor, Stats, deck options): every item id and
+    whether Simple mode shows it, the user's choices applied."""
+    import json
+
+    choices = overrides(col)
+    return json.dumps(
+        {item.id: shown_in_simple(None, item.id, choices) for item in ITEMS}
+    )
 
 
 # Menus

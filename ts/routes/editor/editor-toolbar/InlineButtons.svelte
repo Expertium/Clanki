@@ -24,8 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SuperscriptButton from "./SuperscriptButton.svelte";
     import TextColorButton from "./TextColorButton.svelte";
     import UnderlineButton from "./UnderlineButton.svelte";
-    import { advancedUi } from "../ui-mode";
-    import AdvancedOnly from "./AdvancedOnly.svelte";
+    import { shownButtons } from "../ui-mode";
+    import SplitButtons from "./SplitButtons.svelte";
 
     let textColor: string = "black";
     let highlightColor: string = "black";
@@ -45,40 +45,62 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <DynamicallySlottable slotHost={Item} {api}>
     <Item>
-        <ButtonGroup>
-            <BoldButton --border-left-radius="5px" />
-            <ItalicButton />
-            <UnderlineButton --border-right-radius="5px" />
-        </ButtonGroup>
-    </Item>
-
-    <Item>
-        <AdvancedOnly buttons={["superscript", "subscript"]}>
+        <SplitButtons buttons={["bold", "italic", "underline"]}>
             <ButtonGroup>
-                <SuperscriptButton --border-left-radius="5px" />
-                <SubscriptButton --border-right-radius="5px" />
+                <SplitButtons buttons={["bold"]}>
+                    <BoldButton --border-left-radius="5px" />
+                </SplitButtons>
+                <SplitButtons buttons={["italic"]}>
+                    <ItalicButton />
+                </SplitButtons>
+                <SplitButtons buttons={["underline"]}>
+                    <UnderlineButton --border-right-radius="5px" />
+                </SplitButtons>
             </ButtonGroup>
-        </AdvancedOnly>
+        </SplitButtons>
     </Item>
 
     <Item>
-        <ButtonGroup class={$advancedUi ? "" : "colour-buttons-simple"}>
-            <TextColorButton color={textColor} />
-            <AdvancedOnly buttons={["highlightColor"]}>
-                <HighlightColorButton color={highlightColor} />
-            </AdvancedOnly>
-        </ButtonGroup>
+        <SplitButtons buttons={["superscript", "subscript"]}>
+            <ButtonGroup>
+                <SplitButtons buttons={["superscript"]}>
+                    <SuperscriptButton --border-left-radius="5px" />
+                </SplitButtons>
+                <SplitButtons buttons={["subscript"]}>
+                    <SubscriptButton --border-right-radius="5px" />
+                </SplitButtons>
+            </ButtonGroup>
+        </SplitButtons>
     </Item>
 
     <Item>
-        <ButtonGroup>
-            <RemoveFormatButton />
-        </ButtonGroup>
+        <SplitButtons buttons={["textColor", "highlightColor"]}>
+            <ButtonGroup
+                class={$shownButtons.has("highlightColor")
+                    ? ""
+                    : "colour-buttons-simple"}
+            >
+                <SplitButtons buttons={["textColor"]}>
+                    <TextColorButton color={textColor} />
+                </SplitButtons>
+                <SplitButtons buttons={["highlightColor"]}>
+                    <HighlightColorButton color={highlightColor} />
+                </SplitButtons>
+            </ButtonGroup>
+        </SplitButtons>
+    </Item>
+
+    <Item>
+        <SplitButtons buttons={["removeFormat"]}>
+            <ButtonGroup>
+                <RemoveFormatButton />
+            </ButtonGroup>
+        </SplitButtons>
     </Item>
 </DynamicallySlottable>
 
 <style lang="scss">
-    /* Simple mode hides the highlight colour, so the text colour's own
+    /* The highlight colour is hidden (as Simple mode does by default), so the text colour's own
        dropdown arrow is the right end of the group. */
     :global(.colour-buttons-simple .icon-button:last-child) {
         --border-right-radius: 5px;

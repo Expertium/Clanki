@@ -58,7 +58,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import UiModeSwitch from "$lib/components/UiModeSwitch.svelte";
 
     import { loadEditorUiMode, modeSwitch } from "../ui-mode";
-    import AdvancedOnly from "./AdvancedOnly.svelte";
+    import SplitButtons from "./SplitButtons.svelte";
     import BlockButtons from "./BlockButtons.svelte";
     import ImageOcclusionButton from "./ImageOcclusionButton.svelte";
     import InlineButtons from "./InlineButtons.svelte";
@@ -112,9 +112,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item id="settings">
-                <AdvancedOnly buttons={["settings"]}>
+                <SplitButtons buttons={["settings"]}>
                     <OptionsButtons api={optionsButtons} />
-                </AdvancedOnly>
+                </SplitButtons>
             </Item>
 
             <Item id="inlineFormatting">
@@ -122,9 +122,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item id="blockFormatting">
-                <AdvancedOnly buttons={["unorderedList", "orderedList", "alignment"]}>
+                <SplitButtons buttons={["unorderedList", "orderedList", "alignment"]}>
                     <BlockButtons api={blockButtons} />
-                </AdvancedOnly>
+                </SplitButtons>
             </Item>
 
             <Item id="template">

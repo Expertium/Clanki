@@ -37,6 +37,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { context } from "../NoteEditor.svelte";
     import { editingInputIsRichText } from "../rich-text-input";
     import CommandIconButton from "./CommandIconButton.svelte";
+    import SplitButtons from "./SplitButtons.svelte";
 
     export let api = {};
 
@@ -99,25 +100,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {api}
     >
         <ButtonGroupItem>
-            <CommandIconButton
-                key="insertUnorderedList"
-                tooltip={tr.editingUnorderedList()}
-                shortcut="Control+,"
-                modeVariantKeys={listKeys}
-            >
-                <Icon icon={ulIcon} />
-            </CommandIconButton>
+            <SplitButtons buttons={["unorderedList"]}>
+                <CommandIconButton
+                    key="insertUnorderedList"
+                    tooltip={tr.editingUnorderedList()}
+                    shortcut="Control+,"
+                    modeVariantKeys={listKeys}
+                >
+                    <Icon icon={ulIcon} />
+                </CommandIconButton>
+            </SplitButtons>
         </ButtonGroupItem>
 
         <ButtonGroupItem>
-            <CommandIconButton
-                key="insertOrderedList"
-                tooltip={tr.editingOrderedList()}
-                shortcut="Control+."
-                modeVariantKeys={listKeys}
-            >
-                <Icon icon={olIcon} />
-            </CommandIconButton>
+            <SplitButtons buttons={["orderedList"]}>
+                <CommandIconButton
+                    key="insertOrderedList"
+                    tooltip={tr.editingOrderedList()}
+                    shortcut="Control+."
+                    modeVariantKeys={listKeys}
+                >
+                    <Icon icon={olIcon} />
+                </CommandIconButton>
+            </SplitButtons>
         </ButtonGroupItem>
 
         <ButtonGroupItem>
@@ -127,15 +132,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 on:close={() => (showFloating = false)}
                 let:asReference
             >
-                <span class="block-buttons" use:asReference>
-                    <IconButton
-                        tooltip={tr.editingAlignment()}
-                        {disabled}
-                        on:click={() => (showFloating = !showFloating)}
-                    >
-                        <Icon icon={listOptionsIcon} />
-                    </IconButton>
-                </span>
+                <SplitButtons buttons={["alignment"]}>
+                    <span class="block-buttons" use:asReference>
+                        <IconButton
+                            tooltip={tr.editingAlignment()}
+                            {disabled}
+                            on:click={() => (showFloating = !showFloating)}
+                        >
+                            <Icon icon={listOptionsIcon} />
+                        </IconButton>
+                    </span>
+                </SplitButtons>
 
                 <Popover slot="floating" --popover-padding-inline="0">
                     <ButtonToolbar wrap={false}>

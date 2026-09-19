@@ -404,4 +404,4 @@ statistics-average-difficulty = Average difficulty
 
 # Tooltip of the Simple | Advanced switch at the top right of the Stats page;
 # the same setting as the main window's switch.
-statistics-ui-mode-tooltip = Simple shows only the main graphs: Reviews, Card Counts, Retention and Total Knowledge. The same switch is in the main window and in deck options.
+statistics-ui-mode-tooltip = Simple shows only the main graphs: by default Reviews, Card Counts, Retention and Total Knowledge (Preferences > UI split chooses them). The same switch is in the main window and in deck options.
