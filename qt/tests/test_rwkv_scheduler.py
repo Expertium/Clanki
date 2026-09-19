@@ -14959,6 +14959,10 @@ def test_prepare_stats_retrievability_scores_shares_in_flight_status(
     backend = Backend()
     rpc = _RwkvQueueScoreRpc()
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=Collection(rpc)))
+    # the memo key holds id()s of the backend and the collection: an earlier
+    # parameter's freed objects can hand theirs on, and a kept memo would
+    # then answer READY before the backend is asked at all
+    rwkv_scheduler.forget_rwkv_stats_scores()
     previous_backend = set_reviewer_backend(backend)
     errors: list[BaseException] = []
     statuses: list[rwkv_scheduler.RwkvStatsPreparationStatus] = []
