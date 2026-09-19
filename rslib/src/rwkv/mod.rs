@@ -289,11 +289,10 @@ fn record_rwkv_scan_step(
     });
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 const MAX_CHANNEL_MIXER_DIM: usize = 256;
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 const MAX_LORA_RANK: usize = 16;
-#[cfg(any(target_os = "macos", test))]
 const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
@@ -648,7 +647,6 @@ struct ReviewPredictionQueryRef<'a> {
 }
 
 impl ReviewPredictionQueryRef<'_> {
-    #[cfg(any(target_os = "macos", test))]
     fn layer_state(&self, module_id: usize, layer_id: usize) -> Option<&LayerState> {
         self.state
             .module(module_id)
@@ -3340,7 +3338,7 @@ struct SrsModel {
     p_linear: Linear,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 struct ReviewRetrievabilityScratch {
     feature_hidden: [f32; HEAD_DIM],
     normalized_features: [f32; HEAD_DIM],
@@ -3351,7 +3349,6 @@ struct ReviewRetrievabilityScratch {
     probabilities: [f32; 4],
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct ReviewRetrievabilityBatchScratch {
     feature_input: Vec<f32>,
@@ -3364,7 +3361,7 @@ struct ReviewRetrievabilityBatchScratch {
     logits: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 impl Default for ReviewRetrievabilityScratch {
     fn default() -> Self {
         Self {
@@ -3451,19 +3448,23 @@ impl SrsModel {
         self.review_retrievability_query_refs(&items)
     }
 
+    /// Queries run in batches, so that each weight load serves many rows.
+    /// Tests run the per-row path, the reference that the bit-exact tests
+    /// pin; `batched_retrievability_matches_scalar_query_path` pins the
+    /// batched path against it.
     fn review_retrievability_query_refs(&self, items: &[ReviewPredictionQueryRef<'_>]) -> Vec<f32> {
-        #[cfg(all(target_os = "macos", not(test)))]
+        #[cfg(not(test))]
         {
             self.review_retrievability_query_refs_batched(items)
         }
 
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(test)]
         {
             self.review_retrievability_query_refs_scalar(items)
         }
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn review_retrievability_query_refs_scalar(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
@@ -3480,15 +3481,24 @@ impl SrsModel {
             .collect()
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn review_retrievability_query_refs_batched(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
     ) -> Vec<f32> {
+        // Off macOS, a smaller batch keeps every thread busy when there are
+        // few items; every row's result is the same for any batch size.
+        #[cfg(not(target_os = "macos"))]
+        let batch_size = items
+            .len()
+            .div_ceil(rayon::current_num_threads())
+            .next_multiple_of(4)
+            .clamp(4, RETRIEVABILITY_GEMM_BATCH_SIZE);
+        #[cfg(target_os = "macos")]
+        let batch_size = RETRIEVABILITY_GEMM_BATCH_SIZE;
         let mut retrievabilities = vec![0.0; items.len()];
         retrievabilities
-            .par_chunks_mut(RETRIEVABILITY_GEMM_BATCH_SIZE)
-            .zip(items.par_chunks(RETRIEVABILITY_GEMM_BATCH_SIZE))
+            .par_chunks_mut(batch_size)
+            .zip(items.par_chunks(batch_size))
             .for_each_init(
                 ReviewRetrievabilityBatchScratch::default,
                 |scratch, (retrievabilities, items)| {
@@ -3498,7 +3508,6 @@ impl SrsModel {
         retrievabilities
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn review_retrievability_query_batch(
         &self,
         items: &[ReviewPredictionQueryRef<'_>],
@@ -3664,7 +3673,7 @@ impl SrsModel {
         heads
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn review_retrievability_features(
         &self,
         features: &[f32],
@@ -3749,7 +3758,6 @@ struct SrsStateRef<'a> {
 }
 
 impl<'a> SrsStateRef<'a> {
-    #[cfg(any(target_os = "macos", test))]
     fn module(self, module_id: usize) -> Option<&'a ModuleState> {
         match module_id {
             0 => self.card,
@@ -5600,7 +5608,7 @@ struct RwkvModule {
     layers: Vec<RwkvLayer>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 struct ModuleQueryScratch {
     current: [f32; D_MODEL],
     next: [f32; D_MODEL],
@@ -5608,7 +5616,6 @@ struct ModuleQueryScratch {
     layer: LayerQueryScratch,
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct ModuleQueryBatchScratch {
     next: Vec<f32>,
@@ -5616,7 +5623,7 @@ struct ModuleQueryBatchScratch {
     layer: LayerQueryBatchScratch,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 impl Default for ModuleQueryScratch {
     fn default() -> Self {
         Self {
@@ -5664,7 +5671,7 @@ impl RwkvModule {
         output
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn run_query(
         &self,
         input: &[f32],
@@ -5691,7 +5698,6 @@ impl RwkvModule {
         *current
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn run_query_batch(
         &self,
         x: &mut Vec<f32>,
@@ -5733,14 +5739,13 @@ struct RwkvLayer {
     channel_mixer: ChannelMixer,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 struct LayerQueryScratch {
     time_output: [f32; D_MODEL],
     time: TimeMixerQueryScratch,
     channel: ChannelMixerQueryScratch,
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct LayerQueryBatchScratch {
     time_output: Vec<f32>,
@@ -5748,7 +5753,7 @@ struct LayerQueryBatchScratch {
     channel: ChannelMixerQueryBatchScratch,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 impl Default for LayerQueryScratch {
     fn default() -> Self {
         Self {
@@ -5789,7 +5794,7 @@ impl RwkvLayer {
         )
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -5813,7 +5818,6 @@ impl RwkvLayer {
         );
     }
 
-    #[cfg(any(target_os = "macos", test))]
     #[allow(clippy::too_many_arguments)]
     fn run_query_batch(
         &self,
@@ -5872,7 +5876,7 @@ struct TimeMixer {
     out_group_norm: Norm,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 struct TimeMixerQueryScratch {
     x: [f32; D_MODEL],
     mixed: [[f32; D_MODEL]; 8],
@@ -5891,7 +5895,6 @@ struct TimeMixerQueryScratch {
     next_row: [f32; HEAD_SIZE],
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct TimeMixerQueryBatchScratch {
     x: Vec<f32>,
@@ -5910,7 +5913,7 @@ struct TimeMixerQueryBatchScratch {
     lora_hidden: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 impl Default for TimeMixerQueryScratch {
     fn default() -> Self {
         Self {
@@ -6148,7 +6151,7 @@ impl TimeMixer {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -6267,7 +6270,6 @@ impl TimeMixer {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
     #[allow(clippy::too_many_arguments)]
     fn run_query_batch(
         &self,
@@ -6468,7 +6470,7 @@ struct ChannelMixer {
     w_v: Linear,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 struct ChannelMixerQueryScratch {
     x: [f32; D_MODEL],
     mixed: [f32; D_MODEL],
@@ -6476,7 +6478,6 @@ struct ChannelMixerQueryScratch {
     projected: [f32; D_MODEL],
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct ChannelMixerQueryBatchScratch {
     x: Vec<f32>,
@@ -6485,7 +6486,7 @@ struct ChannelMixerQueryBatchScratch {
     projected: Vec<f32>,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 impl Default for ChannelMixerQueryScratch {
     fn default() -> Self {
         Self {
@@ -6544,7 +6545,7 @@ impl ChannelMixer {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn run_query_into(
         &self,
         input: &[f32],
@@ -6569,7 +6570,6 @@ impl ChannelMixer {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn run_query_batch(
         &self,
         input: &[f32],
@@ -6632,7 +6632,7 @@ impl LoraSimple {
         out
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn apply_sigmoid_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
         let hidden = &mut hidden[..self.a.output];
         self.a.apply_into(input, hidden);
@@ -6640,7 +6640,6 @@ impl LoraSimple {
         sigmoid_in_place(out);
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn apply_sigmoid_batch(
         &self,
         input: &[f32],
@@ -6687,7 +6686,7 @@ impl LoraSimple {
         self.b.apply_block_into(hidden, outs, rows);
     }
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     fn apply_tanh_into(&self, input: &[f32], hidden: &mut [f32], out: &mut [f32]) {
         let hidden = &mut hidden[..self.a.output];
         self.a.apply_into(input, hidden);
@@ -6697,7 +6696,6 @@ impl LoraSimple {
         self.b.apply_into(hidden, out);
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn apply_tanh_batch(
         &self,
         input: &[f32],
@@ -6748,7 +6746,6 @@ impl Linear {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Linear, profile_started);
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
         let input_len = rows
             .checked_mul(self.input)
@@ -6772,10 +6769,15 @@ impl Linear {
             out,
         );
 
+        // Blocks of rows share each weight load. The caller already runs
+        // batches in parallel, so a batch stays on one thread.
         #[cfg(not(target_os = "macos"))]
-        out.par_chunks_mut(self.output)
-            .zip(input.par_chunks(self.input))
-            .for_each(|(output, input)| self.apply_into(input, output));
+        for (output, input) in out
+            .chunks_mut(LINEAR_BLOCK_ROWS * self.output)
+            .zip(input.chunks(LINEAR_BLOCK_ROWS * self.input))
+        {
+            self.apply_block_into(input, output, input.len() / self.input);
+        }
 
         #[cfg(target_os = "macos")]
         if let Some(bias) = &self.bias {
@@ -7160,9 +7162,54 @@ unsafe fn add_scaled_4_neon(out: *mut f32, weights: std::arch::aarch64::float32x
     vst1q_f32(out, vfmaq_f32(vld1q_f32(out), weights, vdupq_n_f32(scale)));
 }
 
+/// Whether the AVX2/FMA kernels run. Detected at run time, so one binary
+/// serves CPUs with and without AVX2/FMA; the scalar code is the fallback.
+///
+/// Tests run the scalar code unless a test opts in with
+/// `x86_simd_test_switch::with_simd`, so the scalar path stays the reference
+/// that the bit-exact tests pin. The SIMD kernels have their own tests
+/// against the scalar ones.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn x86_avx2_fma_available() -> bool {
+    #[cfg(test)]
+    if !x86_simd_test_switch::enabled() {
+        return false;
+    }
+    x86_avx2_fma_detected()
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod x86_simd_test_switch {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ENABLED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn enabled() -> bool {
+        ENABLED.with(Cell::get)
+    }
+
+    /// Runs `run` with the AVX2/FMA kernels switched on, on a dedicated rayon
+    /// pool of `threads` threads whose workers all have the switch on. Returns
+    /// `None` when the CPU has no AVX2/FMA.
+    pub(super) fn with_simd<R: Send>(threads: usize, run: impl FnOnce() -> R + Send) -> Option<R> {
+        if !super::x86_avx2_fma_detected() {
+            return None;
+        }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .start_handler(|_| ENABLED.with(|enabled| enabled.set(true)))
+            .build()
+            .expect("rayon pool");
+        Some(pool.install(run))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn x86_avx2_fma_detected() -> bool {
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering;
 
@@ -7244,13 +7291,16 @@ unsafe fn add_scaled_in_place_avx2_fma(out: &mut [f32], weights: &[f32], scale: 
     }
 }
 
-/// Exact four-row linear projection microkernel for AVX2/FMA machines.
+/// Four-row, sixteen-output linear projection microkernel for AVX2/FMA.
 ///
-/// Each output accumulator still visits input columns in ascending order and
-/// skips zero scales, matching `Linear::apply_into()`. Changing only the row
-/// and output-vector loop order lets four reviews share each weight load. Two
-/// input columns are handled per inner-loop iteration to reduce loop-control
-/// overhead without changing the per-output accumulation order.
+/// A tile of four rows by sixteen outputs keeps eight accumulators in
+/// registers, so each column costs two weight loads for eight FMAs. Each
+/// output still sums its columns in ascending order with one FMA per column.
+/// A column is skipped only when all four rows have a zero scale; otherwise
+/// every row takes the FMA, also with a zero scale, because a branch per row
+/// mispredicts on the sparse `relu(x)^2` inputs of the channel mixer. Adding
+/// `weight * 0.0` leaves a finite sum unchanged, except that it can turn a
+/// `-0.0` into `+0.0`, so the result equals `Linear::apply_into()`'s.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn linear_apply_block_avx2_fma(
@@ -7263,171 +7313,92 @@ unsafe fn linear_apply_block_avx2_fma(
 ) {
     use std::arch::x86_64::*;
 
+    debug_assert_eq!(inputs.len(), rows * input);
+    debug_assert_eq!(weights.len(), input * output);
+    debug_assert_eq!(outs.len(), rows * output);
+    let weights_ptr = weights.as_ptr();
     let tiled_rows = rows / 4 * 4;
     for row_base in (0..tiled_rows).step_by(4) {
-        let mut output_offset = 0;
-        while output_offset + 8 <= output {
-            let mut acc0 = _mm256_loadu_ps(outs.as_ptr().add(row_base * output + output_offset));
-            let mut acc1 =
-                _mm256_loadu_ps(outs.as_ptr().add((row_base + 1) * output + output_offset));
-            let mut acc2 =
-                _mm256_loadu_ps(outs.as_ptr().add((row_base + 2) * output + output_offset));
-            let mut acc3 =
-                _mm256_loadu_ps(outs.as_ptr().add((row_base + 3) * output + output_offset));
+        let scales = [
+            inputs.as_ptr().add(row_base * input),
+            inputs.as_ptr().add((row_base + 1) * input),
+            inputs.as_ptr().add((row_base + 2) * input),
+            inputs.as_ptr().add((row_base + 3) * input),
+        ];
+        let out = [
+            outs.as_mut_ptr().add(row_base * output),
+            outs.as_mut_ptr().add((row_base + 1) * output),
+            outs.as_mut_ptr().add((row_base + 2) * output),
+            outs.as_mut_ptr().add((row_base + 3) * output),
+        ];
+        let all_zero = |column: usize| {
+            ((*scales[0].add(column)).to_bits()
+                | (*scales[1].add(column)).to_bits()
+                | (*scales[2].add(column)).to_bits()
+                | (*scales[3].add(column)).to_bits())
+                << 1
+                == 0
+        };
 
-            let mut column = 0;
-            while column + 2 <= input {
-                let weight0 =
-                    _mm256_loadu_ps(weights.as_ptr().add(column * output + output_offset));
-                let scale00 = *inputs.get_unchecked(row_base * input + column);
-                let scale10 = *inputs.get_unchecked((row_base + 1) * input + column);
-                let scale20 = *inputs.get_unchecked((row_base + 2) * input + column);
-                let scale30 = *inputs.get_unchecked((row_base + 3) * input + column);
-                if scale00 != 0.0 {
-                    acc0 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale00), acc0);
-                }
-                if scale10 != 0.0 {
-                    acc1 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale10), acc1);
-                }
-                if scale20 != 0.0 {
-                    acc2 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale20), acc2);
-                }
-                if scale30 != 0.0 {
-                    acc3 = _mm256_fmadd_ps(weight0, _mm256_set1_ps(scale30), acc3);
-                }
-
-                let weight1 =
-                    _mm256_loadu_ps(weights.as_ptr().add((column + 1) * output + output_offset));
-                let scale01 = *inputs.get_unchecked(row_base * input + column + 1);
-                let scale11 = *inputs.get_unchecked((row_base + 1) * input + column + 1);
-                let scale21 = *inputs.get_unchecked((row_base + 2) * input + column + 1);
-                let scale31 = *inputs.get_unchecked((row_base + 3) * input + column + 1);
-                if scale01 != 0.0 {
-                    acc0 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale01), acc0);
-                }
-                if scale11 != 0.0 {
-                    acc1 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale11), acc1);
-                }
-                if scale21 != 0.0 {
-                    acc2 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale21), acc2);
-                }
-                if scale31 != 0.0 {
-                    acc3 = _mm256_fmadd_ps(weight1, _mm256_set1_ps(scale31), acc3);
-                }
-
-                column += 2;
+        let mut offset = 0;
+        while offset + 16 <= output {
+            let mut acc = [[_mm256_setzero_ps(); 2]; 4];
+            for row in 0..4 {
+                acc[row][0] = _mm256_loadu_ps(out[row].add(offset));
+                acc[row][1] = _mm256_loadu_ps(out[row].add(offset + 8));
             }
-            if column < input {
-                let weight = _mm256_loadu_ps(weights.as_ptr().add(column * output + output_offset));
-                let scale0 = *inputs.get_unchecked(row_base * input + column);
-                let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
-                let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
-                let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
-                if scale0 != 0.0 {
-                    acc0 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale0), acc0);
+            for column in 0..input {
+                if all_zero(column) {
+                    continue;
                 }
-                if scale1 != 0.0 {
-                    acc1 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale1), acc1);
-                }
-                if scale2 != 0.0 {
-                    acc2 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale2), acc2);
-                }
-                if scale3 != 0.0 {
-                    acc3 = _mm256_fmadd_ps(weight, _mm256_set1_ps(scale3), acc3);
+                let weight = weights_ptr.add(column * output + offset);
+                let weight0 = _mm256_loadu_ps(weight);
+                let weight1 = _mm256_loadu_ps(weight.add(8));
+                for row in 0..4 {
+                    let scale = _mm256_broadcast_ss(&*scales[row].add(column));
+                    acc[row][0] = _mm256_fmadd_ps(weight0, scale, acc[row][0]);
+                    acc[row][1] = _mm256_fmadd_ps(weight1, scale, acc[row][1]);
                 }
             }
-
-            _mm256_storeu_ps(
-                outs.as_mut_ptr().add(row_base * output + output_offset),
-                acc0,
-            );
-            _mm256_storeu_ps(
-                outs.as_mut_ptr()
-                    .add((row_base + 1) * output + output_offset),
-                acc1,
-            );
-            _mm256_storeu_ps(
-                outs.as_mut_ptr()
-                    .add((row_base + 2) * output + output_offset),
-                acc2,
-            );
-            _mm256_storeu_ps(
-                outs.as_mut_ptr()
-                    .add((row_base + 3) * output + output_offset),
-                acc3,
-            );
-            output_offset += 8;
+            for row in 0..4 {
+                _mm256_storeu_ps(out[row].add(offset), acc[row][0]);
+                _mm256_storeu_ps(out[row].add(offset + 8), acc[row][1]);
+            }
+            offset += 16;
         }
-
-        while output_offset < output {
-            let mut acc0 = *outs.get_unchecked(row_base * output + output_offset);
-            let mut acc1 = *outs.get_unchecked((row_base + 1) * output + output_offset);
-            let mut acc2 = *outs.get_unchecked((row_base + 2) * output + output_offset);
-            let mut acc3 = *outs.get_unchecked((row_base + 3) * output + output_offset);
-            let mut column = 0;
-            while column + 2 <= input {
-                let weight0 = *weights.get_unchecked(column * output + output_offset);
-                let scale00 = *inputs.get_unchecked(row_base * input + column);
-                let scale10 = *inputs.get_unchecked((row_base + 1) * input + column);
-                let scale20 = *inputs.get_unchecked((row_base + 2) * input + column);
-                let scale30 = *inputs.get_unchecked((row_base + 3) * input + column);
-                if scale00 != 0.0 {
-                    acc0 += weight0 * scale00;
-                }
-                if scale10 != 0.0 {
-                    acc1 += weight0 * scale10;
-                }
-                if scale20 != 0.0 {
-                    acc2 += weight0 * scale20;
-                }
-                if scale30 != 0.0 {
-                    acc3 += weight0 * scale30;
-                }
-
-                let weight1 = *weights.get_unchecked((column + 1) * output + output_offset);
-                let scale01 = *inputs.get_unchecked(row_base * input + column + 1);
-                let scale11 = *inputs.get_unchecked((row_base + 1) * input + column + 1);
-                let scale21 = *inputs.get_unchecked((row_base + 2) * input + column + 1);
-                let scale31 = *inputs.get_unchecked((row_base + 3) * input + column + 1);
-                if scale01 != 0.0 {
-                    acc0 += weight1 * scale01;
-                }
-                if scale11 != 0.0 {
-                    acc1 += weight1 * scale11;
-                }
-                if scale21 != 0.0 {
-                    acc2 += weight1 * scale21;
-                }
-                if scale31 != 0.0 {
-                    acc3 += weight1 * scale31;
-                }
-
-                column += 2;
+        if offset + 8 <= output {
+            let mut acc = [_mm256_setzero_ps(); 4];
+            for row in 0..4 {
+                acc[row] = _mm256_loadu_ps(out[row].add(offset));
             }
-            if column < input {
-                let weight = *weights.get_unchecked(column * output + output_offset);
-                let scale0 = *inputs.get_unchecked(row_base * input + column);
-                let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
-                let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
-                let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
-                if scale0 != 0.0 {
-                    acc0 += weight * scale0;
+            for column in 0..input {
+                if all_zero(column) {
+                    continue;
                 }
-                if scale1 != 0.0 {
-                    acc1 += weight * scale1;
-                }
-                if scale2 != 0.0 {
-                    acc2 += weight * scale2;
-                }
-                if scale3 != 0.0 {
-                    acc3 += weight * scale3;
+                let weight = _mm256_loadu_ps(weights_ptr.add(column * output + offset));
+                for row in 0..4 {
+                    let scale = _mm256_broadcast_ss(&*scales[row].add(column));
+                    acc[row] = _mm256_fmadd_ps(weight, scale, acc[row]);
                 }
             }
-            *outs.get_unchecked_mut(row_base * output + output_offset) = acc0;
-            *outs.get_unchecked_mut((row_base + 1) * output + output_offset) = acc1;
-            *outs.get_unchecked_mut((row_base + 2) * output + output_offset) = acc2;
-            *outs.get_unchecked_mut((row_base + 3) * output + output_offset) = acc3;
-            output_offset += 1;
+            for row in 0..4 {
+                _mm256_storeu_ps(out[row].add(offset), acc[row]);
+            }
+            offset += 8;
+        }
+        while offset < output {
+            for row in 0..4 {
+                let mut acc = *out[row].add(offset);
+                for column in 0..input {
+                    if all_zero(column) {
+                        continue;
+                    }
+                    // Not fused, like the tail of `add_scaled_in_place_avx2_fma`.
+                    acc += *weights_ptr.add(column * output + offset) * *scales[row].add(column);
+                }
+                *out[row].add(offset) = acc;
+            }
+            offset += 1;
         }
     }
 
@@ -7644,7 +7615,6 @@ impl Norm {
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Norm, profile_started);
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn apply_batch(&self, input: &[f32], rows: usize, out: &mut Vec<f32>) {
         debug_assert_eq!(input.len(), rows * self.dim);
         out.resize(rows * self.dim, 0.0);
@@ -7869,7 +7839,7 @@ unsafe fn update_recurrence_head_avx2(
     }
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn single_timestep_query_into(
     r: &[f32],
@@ -7981,7 +7951,6 @@ fn normalize_heads_in_place(values: &mut [f32]) {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn scale_heads_in_place(values: &mut [f32], scales: &[f32]) {
     debug_assert_eq!(values.len(), D_MODEL);
     debug_assert_eq!(scales.len(), HEADS);
@@ -8038,7 +8007,6 @@ fn sigmoid(value: f32) -> f32 {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn query_decay(value: f32) -> f32 {
     // exp(-exp(-0.5 - softplus(-x))) = exp(-exp(-0.5) * sigmoid(x)).
     // Query-only: recurrent state updates keep their original arithmetic.
@@ -8566,7 +8534,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn add_scaled_in_place_avx2_fma_matches_scalar() {
-        if !x86_avx2_fma_available() {
+        if !x86_avx2_fma_detected() {
             eprintln!("skipping: AVX2/FMA not available");
             return;
         }
@@ -8585,7 +8553,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn dot_product_avx2_fma_matches_scalar() {
-        if !x86_avx2_fma_available() {
+        if !x86_avx2_fma_detected() {
             eprintln!("skipping: AVX2/FMA not available");
             return;
         }
@@ -8607,7 +8575,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn update_recurrence_head_avx2_matches_scalar_bit_exactly() {
-        if !x86_avx2_fma_available() {
+        if !x86_avx2_fma_detected() {
             eprintln!("skipping: AVX2/FMA not available");
             return;
         }
@@ -8653,12 +8621,6 @@ mod tests {
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
     fn linear_apply_block_arch_matches_per_row_path_bit_exactly() {
-        #[cfg(target_arch = "x86_64")]
-        if !x86_avx2_fma_available() {
-            eprintln!("skipping: AVX2/FMA not available");
-            return;
-        }
-
         let input = 13;
         let output = 19;
         let rows = 7;
@@ -8673,17 +8635,23 @@ mod tests {
             inputs[index] = 0.0;
         }
 
-        let mut expected = vec![0.0; rows * output];
-        for (input_row, output_row) in inputs
-            .chunks_exact(input)
-            .zip(expected.chunks_exact_mut(output))
-        {
-            linear.apply_into(input_row, output_row);
+        let check = || {
+            let mut expected = vec![0.0; rows * output];
+            for (input_row, output_row) in inputs
+                .chunks_exact(input)
+                .zip(expected.chunks_exact_mut(output))
+            {
+                linear.apply_into(input_row, output_row);
+            }
+            let mut actual = vec![0.0; rows * output];
+            linear.apply_block_into(&inputs, &mut actual, rows);
+            assert_eq!(actual, expected);
+        };
+        check();
+        #[cfg(target_arch = "x86_64")]
+        if x86_simd_test_switch::with_simd(1, check).is_none() {
+            eprintln!("skipping the AVX2/FMA half: AVX2/FMA not available");
         }
-        let mut actual = vec![0.0; rows * output];
-        linear.apply_block_into(&inputs, &mut actual, rows);
-
-        assert_eq!(actual, expected);
     }
 
     fn sequential_time_mixer_state(steps: &[RwkvScanCapturedStep]) -> Vec<f32> {
@@ -9053,6 +9021,10 @@ order by e.id, e.cid
         let profile = std::env::var("ANKI_RWKV_BULK_BENCH_PROFILE").map_or(true, |value| {
             !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO")
         });
+        // Tests run the scalar kernels; set this to run the AVX2/FMA ones.
+        let simd = std::env::var("ANKI_RWKV_BULK_BENCH_SIMD")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+        let predictions_out = std::env::var("ANKI_RWKV_BULK_BENCH_PREDICTIONS_OUT").ok();
 
         let collection_path = std::path::PathBuf::from(collection_path);
         let weights_path = std::path::PathBuf::from(weights_path);
@@ -9072,54 +9044,68 @@ order by e.id, e.cid
             start_rwkv_warmup_profile();
         }
         let warmup_started = std::time::Instant::now();
-        let predictions = if let Some(call_rows) = call_rows {
-            let mut predictions = Vec::new();
-            for (call_index, call) in reviews.chunks(call_rows).enumerate() {
-                let offset = call_index * call_rows;
-                let call_predictions = if force_fast_query {
-                    bulk::warm_up_reviews_bulk_fast_query_chunked(
-                        &mut inference,
-                        call.to_vec(),
-                        record_predictions,
-                        chunk_rows.unwrap_or(16_384),
-                    )
-                } else if let Some(chunk_rows) = chunk_rows {
-                    bulk::warm_up_reviews_bulk_chunked(
-                        &mut inference,
-                        call.to_vec(),
-                        record_predictions,
-                        chunk_rows,
-                    )
-                } else {
-                    inference.warm_up_reviews(call.to_vec(), record_predictions)
-                }
-                .expect("RWKV warm-up call failed");
-                predictions.extend(call_predictions.into_iter().map(|prediction| {
-                    WarmUpPrediction {
-                        index: prediction.index + offset,
-                        ..prediction
+        let mut run_warmup = || {
+            if let Some(call_rows) = call_rows {
+                let mut predictions = Vec::new();
+                for (call_index, call) in reviews.chunks(call_rows).enumerate() {
+                    let offset = call_index * call_rows;
+                    let call_predictions = if force_fast_query {
+                        bulk::warm_up_reviews_bulk_fast_query_chunked(
+                            &mut inference,
+                            call.to_vec(),
+                            record_predictions,
+                            chunk_rows.unwrap_or(16_384),
+                        )
+                    } else if let Some(chunk_rows) = chunk_rows {
+                        bulk::warm_up_reviews_bulk_chunked(
+                            &mut inference,
+                            call.to_vec(),
+                            record_predictions,
+                            chunk_rows,
+                        )
+                    } else {
+                        inference.warm_up_reviews(call.to_vec(), record_predictions)
                     }
-                }));
+                    .expect("RWKV warm-up call failed");
+                    predictions.extend(call_predictions.into_iter().map(|prediction| {
+                        WarmUpPrediction {
+                            index: prediction.index + offset,
+                            ..prediction
+                        }
+                    }));
+                }
+                Ok::<_, std::io::Error>(predictions)
+            } else if force_fast_query {
+                bulk::warm_up_reviews_bulk_fast_query_chunked(
+                    &mut inference,
+                    reviews.clone(),
+                    record_predictions,
+                    chunk_rows.unwrap_or(16_384),
+                )
+            } else if let Some(chunk_rows) = chunk_rows {
+                bulk::warm_up_reviews_bulk_chunked(
+                    &mut inference,
+                    reviews.clone(),
+                    record_predictions,
+                    chunk_rows,
+                )
+            } else {
+                inference.warm_up_reviews(reviews.clone(), record_predictions)
             }
-            Ok::<_, std::io::Error>(predictions)
-        } else if force_fast_query {
-            bulk::warm_up_reviews_bulk_fast_query_chunked(
-                &mut inference,
-                reviews.clone(),
-                record_predictions,
-                chunk_rows.unwrap_or(16_384),
-            )
-        } else if let Some(chunk_rows) = chunk_rows {
-            bulk::warm_up_reviews_bulk_chunked(
-                &mut inference,
-                reviews.clone(),
-                record_predictions,
-                chunk_rows,
-            )
+            .expect("RWKV warm-up failed")
+        };
+        #[cfg(target_arch = "x86_64")]
+        let predictions = if simd {
+            let threads = std::env::var("RAYON_NUM_THREADS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            x86_simd_test_switch::with_simd(threads, run_warmup).expect("AVX2/FMA not available")
         } else {
-            inference.warm_up_reviews(reviews.clone(), record_predictions)
-        }
-        .expect("RWKV warm-up failed");
+            run_warmup()
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let predictions = run_warmup();
         let warmup_ms = warmup_started.elapsed().as_secs_f64() * 1000.0;
         let warmup_profile = profile.then(stop_rwkv_warmup_profile);
         let single_timestep_profile = profile.then(stop_rwkv_single_timestep_profile);
@@ -9143,7 +9129,28 @@ order by e.id, e.cid
         if let Some(call_rows) = call_rows {
             println!("call_rows={call_rows}");
         }
+        println!("simd={simd}");
         println!("predictions={}", predictions.len());
+        if let Some(path) = &predictions_out {
+            // One line per prediction: the review index, then the RWKV-Instant
+            // and RWKV-Curve values as f32 bits in hex (`-` for no curve value),
+            // so that a comparison sees every bit.
+            let lines = predictions
+                .iter()
+                .map(|prediction| {
+                    format!(
+                        "{} {:08x} {}
+",
+                        prediction.index,
+                        prediction.retrievability.to_bits(),
+                        prediction
+                            .curve_retrievability
+                            .map_or("-".to_string(), |value| format!("{:08x}", value.to_bits()))
+                    )
+                })
+                .collect::<String>();
+            std::fs::write(path, lines).expect("write predictions");
+        }
         if record_predictions {
             let prediction_values = predictions
                 .iter()
@@ -11548,13 +11555,27 @@ create table segment_state_chunks (
         let batched = inference
             .model
             .review_retrievability_query_refs_batched(&items);
-        let max_delta = scalar
-            .iter()
-            .zip(&batched)
-            .map(|(scalar, batched)| (scalar - batched).abs())
-            .fold(0.0_f32, f32::max);
+        let max_delta = |batched: &[f32]| {
+            scalar
+                .iter()
+                .zip(batched)
+                .map(|(scalar, batched)| (scalar - batched).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        let delta = max_delta(&batched);
+        assert!(delta <= 1e-6, "max batch prediction delta: {delta}");
 
-        assert!(max_delta <= 1e-6, "max batch prediction delta: {max_delta}");
+        // The AVX2/FMA kernels change the summation order and fuse
+        // multiply-adds, so they stay within float noise of the scalar path.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = x86_simd_test_switch::with_simd(2, || {
+            inference
+                .model
+                .review_retrievability_query_refs_batched(&items)
+        }) {
+            let delta = max_delta(&simd);
+            assert!(delta <= 1e-5, "max AVX2/FMA prediction delta: {delta}");
+        }
     }
 
     #[test]
