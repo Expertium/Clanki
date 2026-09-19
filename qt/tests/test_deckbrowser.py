@@ -219,6 +219,26 @@ def test_deck_list_shows_get_addons_in_advanced_mode_only(browser):
     assert 'pycmd("get_addons")' in advanced
 
 
+@pytest.mark.parametrize(
+    "text,label",
+    [
+        ("Get Add-ons...", "Get Add-ons"),
+        ("Add-ons holen …", "Add-ons holen"),
+        ("Get Add-ons", "Get Add-ons"),
+    ],
+)
+def test_deck_list_get_addons_label_has_no_trailing_dots(
+    browser, monkeypatch, text, label
+):
+    """The deck list's Get Add-ons button carries no "..."; the Add-ons
+    dialog's button, which shares the string, keeps it."""
+    from aqt import deckbrowser
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "addons_get_addons", lambda: text)
+    assert deckbrowser._get_addons_label() == label
+
+
 def test_get_addons_button_opens_the_existing_install_dialog(browser, monkeypatch):
     """The deck list's Get Add-ons button opens the same GetAddons dialog as
     Tools > Add-ons > Get Add-ons, unchanged (spec
