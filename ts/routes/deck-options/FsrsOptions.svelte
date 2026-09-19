@@ -289,6 +289,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let newCardIntervalsError = "";
     let newCardIntervalRequest = 0;
 
+    interface NewCardIntervalInputs {
+        config: DeckConfig_Config;
+        currentRetention: number;
+        selectedRetention: number;
+        fsrsShortTermWithStepsEnabled: boolean;
+    }
+    let lastNewCardIntervalInputs: NewCardIntervalInputs | undefined;
+
+    function sameNewCardIntervalInputs(
+        a: NewCardIntervalInputs,
+        b: NewCardIntervalInputs,
+    ): boolean {
+        return (
+            a.currentRetention === b.currentRetention &&
+            a.selectedRetention === b.selectedRetention &&
+            a.fsrsShortTermWithStepsEnabled === b.fsrsShortTermWithStepsEnabled &&
+            a.config.equals(b.config)
+        );
+    }
+
     $: simulateFsrsRequest = buildSimulateFsrsRequest({
         config: $config,
         params: $config.fsrsParams7,
@@ -368,6 +388,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         _lapseMultiplier: number,
         _minimumLapseInterval: number,
     ): Promise<void> {
+        const currentConfig = withFsrs7Params($config, params);
+        // This runs again whenever the config store is set, also when
+        // nothing in it changed (twice as the page opens); the answer
+        // already requested for the same inputs stands.
+        const inputs: NewCardIntervalInputs = {
+            config: currentConfig,
+            currentRetention,
+            selectedRetention,
+            fsrsShortTermWithStepsEnabled,
+        };
+        if (
+            lastNewCardIntervalInputs &&
+            sameNewCardIntervalInputs(lastNewCardIntervalInputs, inputs)
+        ) {
+            return;
+        }
+        lastNewCardIntervalInputs = inputs;
         const request = ++newCardIntervalRequest;
         newCardIntervalsError = "";
         const diagnostics = fsrsParamDiagnostics(params);
@@ -376,21 +413,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             newCardIntervalsError = fsrsParamDiagnosticDetails(diagnostics);
             return;
         }
-        const currentConfig = withFsrs7Params($config, params);
+        const intervalsFor = (retention: number) =>
+            getFsrsNewCardIntervals({
+                config: configWithDesiredRetention(currentConfig, retention),
+                fsrsShortTermWithStepsEnabled,
+            });
         try {
-            const [current, selected] = await Promise.all([
-                getFsrsNewCardIntervals({
-                    config: configWithDesiredRetention(currentConfig, currentRetention),
-                    fsrsShortTermWithStepsEnabled,
-                }),
-                getFsrsNewCardIntervals({
-                    config: configWithDesiredRetention(
-                        currentConfig,
-                        selectedRetention,
-                    ),
-                    fsrsShortTermWithStepsEnabled,
-                }),
-            ]);
+            // one request when both retentions are the same
+            const [current, selected] =
+                currentRetention === selectedRetention
+                    ? await intervalsFor(currentRetention).then((r) => [r, r])
+                    : await Promise.all([
+                          intervalsFor(currentRetention),
+                          intervalsFor(selectedRetention),
+                      ]);
             if (request !== newCardIntervalRequest) {
                 return;
             }
@@ -398,6 +434,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             newCardIntervalsError = "";
         } catch (err) {
             if (request === newCardIntervalRequest) {
+                // ask again next time, even for the same inputs
+                lastNewCardIntervalInputs = undefined;
                 newCardIntervals = undefined;
                 newCardIntervalsError =
                     err instanceof Error ? err.message : String(err);
