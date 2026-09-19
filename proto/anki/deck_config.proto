@@ -226,6 +226,12 @@ message DeckConfig {
     // first review that day. Unset means no limit (spec
     // sched.max-same-day-reviews).
     optional uint32 max_same_day_reviews = 85;
+    // Days between two automatic FSRS-7 optimizations of this preset; 0
+    // means never, unset means 30 (spec deck-options.fsrs-auto-optimize).
+    optional uint32 fsrs_auto_optimize_days = 86;
+    // The day (days since the collection's creation) this preset was last
+    // optimized, by hand or automatically; unset means never.
+    optional uint32 fsrs_last_optimized_day = 87;
     FsrsVersion fsrs_version = 53;
     // used for fsrs_reschedule in the past
     reserved 39;

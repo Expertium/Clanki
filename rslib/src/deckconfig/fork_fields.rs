@@ -41,6 +41,10 @@ struct ForkDeckConfigFields {
     review_fuzz_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_same_day_reviews: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fsrs_auto_optimize_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fsrs_last_optimized_day: Option<u32>,
 }
 
 impl ForkDeckConfigFields {
@@ -58,6 +62,8 @@ impl ForkDeckConfigFields {
             review_fuzz_factor_long: config.review_fuzz_factor_long,
             review_fuzz_enabled: config.review_fuzz_enabled,
             max_same_day_reviews: config.max_same_day_reviews,
+            fsrs_auto_optimize_days: config.fsrs_auto_optimize_days,
+            fsrs_last_optimized_day: config.fsrs_last_optimized_day,
         }
     }
 
@@ -88,6 +94,12 @@ impl ForkDeckConfigFields {
         }
         if let Some(value) = self.max_same_day_reviews {
             config.max_same_day_reviews = Some(value);
+        }
+        if let Some(value) = self.fsrs_auto_optimize_days {
+            config.fsrs_auto_optimize_days = Some(value);
+        }
+        if let Some(value) = self.fsrs_last_optimized_day {
+            config.fsrs_last_optimized_day = Some(value);
         }
     }
 
@@ -332,6 +344,8 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.review_fuzz_factor_long = None;
     config.review_fuzz_enabled = None;
     config.max_same_day_reviews = None;
+    config.fsrs_auto_optimize_days = None;
+    config.fsrs_last_optimized_day = None;
     config.rwkv_review_enabled = false;
     config.rwkv_review_batch_size = 0;
     config.rwkv_review_refresh_interval = 0;

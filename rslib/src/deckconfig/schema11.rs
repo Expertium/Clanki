@@ -580,6 +580,8 @@ impl From<DeckConfSchema11> for DeckConfig {
             review_fuzz_factor_long: None,
             review_fuzz_enabled: None,
             max_same_day_reviews: None,
+            fsrs_auto_optimize_days: None,
+            fsrs_last_optimized_day: None,
             desired_retention: c.desired_retention,
             historical_retention: c.sm2_retention,
             param_search: c.param_search,

@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         setWantsAbort,
     } from "@generated/backend";
     import * as tr from "@generated/ftl";
+    import { get } from "svelte/store";
     import { runWithBackendProgress } from "@tslib/progress";
 
     import SettingTitle from "$lib/components/SettingTitle.svelte";
@@ -26,6 +27,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         withFsrs7Params,
     } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
+    import SpinBoxRow from "./SpinBoxRow.svelte";
+    import {
+        applyAutoOptimizeDays,
+        autoOptimizeDaysFromConfig,
+        DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS,
+        timeToOptimizeShown,
+    } from "./auto-optimize";
     import Warning from "./Warning.svelte";
     import ParamsInputRow from "./ParamsInputRow.svelte";
     import ParamsSearchRow from "./ParamsSearchRow.svelte";
@@ -98,8 +106,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: rwkvInstant = $config.rwkvReviewInstantOrderEnabled && !rwkvCurve;
     $: rwkvMode = rwkvCurve || rwkvInstant;
 
-    $: lastOptimizationWarning =
-        $daysSinceLastOptimization > 30 ? tr.deckConfigTimeToOptimize() : "";
+    // "Time to optimize" only where nothing optimizes by itself (spec
+    // deck-options.fsrs-auto-optimize)
+    $: lastOptimizationWarning = timeToOptimizeShown(
+        $config,
+        $daysSinceLastOptimization,
+    )
+        ? tr.deckConfigTimeToOptimize()
+        : "";
+    let autoOptimizeDays = autoOptimizeDaysFromConfig($config);
+    $: autoOptimizeDays = autoOptimizeDaysFromConfig($config);
+    function setAutoOptimizeDays(value: number): void {
+        if (autoOptimizeDaysFromConfig(get(config)) !== value) {
+            config.update((current) => applyAutoOptimizeDays(current, value));
+        }
+    }
+    $: setAutoOptimizeDays(autoOptimizeDays);
     const initialParams = [...$config.fsrsParams7];
 
     let computeParamsProgress: ComputeParamsProgress | undefined;
@@ -855,6 +877,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigWeights()}
                 </SettingTitle>
             </ParamsInputRow>
+        {/if}
+
+        {#if $shown("fsrsAutoOptimizeDays", placement)}
+            <SpinBoxRow
+                bind:value={autoOptimizeDays}
+                defaultValue={DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS}
+                min={0}
+                max={3650}
+            >
+                <SettingTitle>{tr.deckConfigFsrsAutoOptimizeDays()}</SettingTitle>
+            </SpinBoxRow>
         {/if}
 
         {#if $shown("fsrsSearchFilter", placement)}

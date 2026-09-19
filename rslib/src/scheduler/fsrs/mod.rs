@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+pub(crate) mod auto_optimize;
 pub(crate) mod batch;
 pub(crate) mod curve;
 mod error;

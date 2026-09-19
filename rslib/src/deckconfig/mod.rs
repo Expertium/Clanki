@@ -135,6 +135,8 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
     review_fuzz_factor_long: None,
     review_fuzz_enabled: None,
     max_same_day_reviews: None,
+    fsrs_auto_optimize_days: None,
+    fsrs_last_optimized_day: None,
 };
 
 impl Default for DeckConfig {
