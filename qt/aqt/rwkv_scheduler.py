@@ -181,6 +181,9 @@ _FILTERED_DECK_RETRIEVABILITY_ORDERS = frozenset(
     (
         FilteredDeckConfig.SearchTerm.RETRIEVABILITY_ASCENDING,
         FilteredDeckConfig.SearchTerm.RETRIEVABILITY_DESCENDING,
+        # ranked by RWKV's retrievability over the desired retention under
+        # RWKV (spec sched.filtered-deck-one-algorithm)
+        FilteredDeckConfig.SearchTerm.RELATIVE_OVERDUENESS,
     )
 )
 _RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT = "final_fit"

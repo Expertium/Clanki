@@ -21,6 +21,7 @@ use crate::decks::FilteredSearchTerm;
 use crate::error::FilteredDeckError;
 use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::FsrsCardCurves;
+use crate::scheduler::rwkv::relative_overdueness;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::writer::deck_search;
 use crate::search::writer::normalize_search;
@@ -148,12 +149,11 @@ impl Collection {
             }
         );
 
-        // under RWKV a retrievability order is RWKV's own, never the SQL
-        // order's FSRS or SM-2 formula (spec sched.filtered-deck-one-algorithm)
+        // under RWKV a retrievability or relative-overdueness order is
+        // RWKV's own, never the SQL order's FSRS or SM-2 formula (spec
+        // sched.filtered-deck-one-algorithm)
         let rwkv = algorithm != SchedulingAlgorithm::Fsrs7;
-        if let Some(order) = exact_fsrs_search_order(term.order()).filter(|order| {
-            fsrs || (rwkv && matches!(order, ExactFsrsSearchOrder::Retrievability { .. }))
-        }) {
+        if let Some(order) = exact_fsrs_search_order(term.order()).filter(|_| fsrs || rwkv) {
             return self.move_cards_matching_term_with_exact_fsrs_order(
                 ctx, term, &search, position, order, algorithm,
             );
@@ -445,17 +445,31 @@ fn exact_fsrs_search_key_for_card(
         ExactFsrsSearchOrder::Retrievability { .. } => {
             exact_retrievability_key_for_card(col, card, timing, curves, keys)
         }
-        ExactFsrsSearchOrder::RelativeOverdueness => {
-            if let Some(state) = card.memory_state {
-                let elapsed_days =
-                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
-                curves
-                    .relative_overdueness(col, card, state, elapsed_days)
-                    .map(Some)
-            } else {
-                Ok(Some(sm2_relative_overdueness_key(card, timing)))
+        ExactFsrsSearchOrder::RelativeOverdueness => match keys.algorithm {
+            SchedulingAlgorithm::Fsrs7 => {
+                if let Some(state) = card.memory_state {
+                    let elapsed_days =
+                        elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                    curves
+                        .relative_overdueness(col, card, state, elapsed_days)
+                        .map(Some)
+                } else {
+                    Ok(Some(sm2_relative_overdueness_key(card, timing)))
+                }
             }
-        }
+            // under RWKV, RWKV's own retrievability over the desired
+            // retention, as its review order ranks it; never FSRS-7's memory
+            // state (spec sched.filtered-deck-one-algorithm)
+            SchedulingAlgorithm::RwkvCurve | SchedulingAlgorithm::RwkvInstant => {
+                let Some(retrievability) =
+                    exact_retrievability_key_for_card(col, card, timing, curves, keys)?
+                else {
+                    return Ok(None);
+                };
+                let target = curves.desired_retention(col, card)?;
+                Ok(Some(relative_overdueness(retrievability, target)))
+            }
+        },
     }
 }
 
@@ -779,6 +793,71 @@ mod test {
         col.empty_filtered_deck(filtered_did)?;
         col.remove_decks_and_child_decks(&[filtered_did])?;
         Ok(ids)
+    }
+
+    /// Pins spec sched.filtered-deck-one-algorithm: under RWKV, "Relative
+    /// overdueness" is RWKV's retrievability over the desired retention, as
+    /// RWKV's review order ranks it; FSRS-7's memory state plays no part.
+    #[test]
+    fn filtered_deck_relative_overdueness_under_rwkv_is_rwkvs_own() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        // FSRS-7's memory states alone would order them a, b (a waited longer)
+        let mut ids = Vec::new();
+        for (days_since_review, desired_retention) in [(40, None), (5, Some(0.5)), (20, None)] {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.due = 100;
+            card.interval = 10;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.desired_retention = desired_retention;
+            card.last_review_time = Some(timing.now.adding_secs(-days_since_review * 86_400));
+            col.storage.update_card(&card)?;
+            ids.push(card.id);
+        }
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        // b has the lower curve value (0.45 < 0.6) but also a desired
+        // retention of 0.5, so it is less overdue: 0.45/0.5 > 0.6/0.9; c has
+        // no RWKV value and goes last
+        col.set_rwkv_stats_graph_score_entries(
+            FILTERED_DECK_RWKV_SCORES_SEARCH.to_string(),
+            HashMap::from([
+                (a, rwkv_entry(Some(0.9), Some(0.6))),
+                (b, rwkv_entry(Some(0.3), Some(0.45))),
+            ]),
+        )?;
+        col.set_config(
+            ConfigKey::SchedulingAlgorithm,
+            &SchedulingAlgorithm::RwkvCurve,
+        )?;
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RetrievabilityAscending)?,
+            vec![b, a, c]
+        );
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RelativeOverdueness)?,
+            vec![a, b, c]
+        );
+        // under RWKV-Instant the rating head: 0.9/0.9 vs 0.3/0.5
+        col.set_config(
+            ConfigKey::SchedulingAlgorithm,
+            &SchedulingAlgorithm::RwkvInstant,
+        )?;
+        assert_eq!(
+            filtered_order(&mut col, FilteredSearchOrder::RelativeOverdueness)?,
+            vec![b, a, c]
+        );
+        Ok(())
     }
 
     /// Pins spec sched.filtered-deck-one-algorithm: a filtered deck's
