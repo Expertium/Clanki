@@ -73,11 +73,6 @@ service SchedulerService {
   // AT A TIME, so the collection is free between presets.
   rpc StaleFsrsPredictionPresets(generic.Empty)
       returns (StaleFsrsPredictionPresetsResponse);
-  // Recomputes one preset's stored per-review FSRS-7 predictions and
-  // returns how many rows it wrote. The preset's whole card set, over the
-  // whole collection; it never follows the Stats page's own search.
-  rpc RefreshFsrsReviewPredictions(RefreshFsrsReviewPredictionsRequest)
-      returns (generic.UInt32);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);
@@ -188,6 +183,13 @@ service SchedulerService {
 // Implicitly includes any of the above methods that are not listed in the
 // backend service.
 service BackendSchedulerService {
+  // Recomputes one preset's stored per-review FSRS-7 predictions and
+  // returns how many rows it wrote. The preset's whole card set, over the
+  // whole collection; it never follows the Stats page's own search. It
+  // holds the collection only to read the reviews and to write the rows,
+  // not while it computes.
+  rpc RefreshFsrsReviewPredictions(RefreshFsrsReviewPredictionsRequest)
+      returns (generic.UInt32);
   rpc ComputeFsrsParamsFromItems(ComputeFsrsParamsFromItemsRequest)
       returns (ComputeFsrsParamsResponse);
   // Generates parameters used for FSRS's scheduler benchmarks.

@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import aqt
 import aqt.deckconf
+import aqt.fsrs_predictions
 import aqt.main
 from anki.cards import Card
 from anki.decks import DeckConfigsForUpdate, DeckDict, DeckId
@@ -130,7 +131,8 @@ class _DeckOptionsWebViews:
     request's referrer), so a late signal from an earlier load is ignored.
 
     The first spare is made WARM_DELAY_MS after the profile opens, once the
-    start-up work is done, never while reviewing; the spare is released when
+    start-up work is done, never while reviewing or while the FSRS-7
+    prediction pass holds the collection; the spare is released when
     the profile closes."""
 
     WARM_DELAY_MS = 40_000
@@ -170,9 +172,13 @@ class _DeckOptionsWebViews:
         if profile != self._profile or mw.col is None or self._spare is not None:
             return
         # Stay out of the way of start-up work and of reviewing: making the
-        # view costs the main thread a little.
+        # view costs the main thread a little. The FSRS-7 prediction pass
+        # holds the collection for seconds at a time, and the warm-up reads
+        # the current deck on the main thread, which would freeze the window
+        # until the pass let go (4.4 s measured).
         if (
             rwkv_scheduler.rwkv_state_cache_loading(mw)
+            or aqt.fsrs_predictions.is_holding_collection()
             or mw.state not in ("deckBrowser", "overview")
             or mw.app.activeModalWidget() is not None
         ):

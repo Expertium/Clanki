@@ -11,12 +11,17 @@ collection opens if any preset lacks rows, and again whenever a preset's
 FSRS-7 parameters change, because the backend drops that preset's rows in
 the same transaction as the change.
 
-Two rules keep it out of the user's way at start-up. It never begins while
+Three rules keep it out of the user's way at start-up. It never begins while
 the RWKV state cache is loading, because that load already holds the
 collection and a 3.3 GB restore behind a backfill is a stall the user
-watches; it waits and asks again. And it recomputes ONE PRESET PER CALL, so
+watches; it waits and asks again. It recomputes ONE PRESET PER CALL, so
 the collection is free between presets and the main thread is never shut out
-for the length of a whole backfill. It reports no progress of its own and
+for the length of a whole backfill. And it waits for a pause: it asks which
+presets are stale, and starts each preset, only once the user has left
+Clanki alone for USER_IDLE_SECS. One preset holds the collection for up to
+five seconds on a large collection, and at start-up, when the pass used to
+run, that is exactly when the user clicks: deck options took 3.5 s to open
+8 s after the profile opened, and the main window froze for 2-4 s. It reports no progress of its own and
 clears none, so it cannot disturb what the main thread is showing.
 
 A pass that fails says so. It cannot report progress, so a failure left no
@@ -34,6 +39,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -44,9 +51,16 @@ LAST_PASS_DAY_KEY = "lastFsrsPredictionPassDay"
 RWKV_RETRY_SECS = 5.0
 # how long to leave the collection free between two presets
 BETWEEN_PRESETS_SECS = 0.25
+# how long Clanki must go without a key press, click or scroll before the
+# pass starts, and before each preset: one preset holds the collection for
+# up to several seconds, and whatever the user does meanwhile waits for it
+USER_IDLE_SECS = 10.0
 
 _lock = threading.Lock()
 _running = False
+# true only while a backend call of the pass holds the collection, not
+# while the pass waits for a pause
+_holding_collection = False
 _waiting = False
 # a failed pass warns once per session, not once per preset and not once
 # per retry
@@ -72,6 +86,12 @@ def is_running() -> bool:
     showing an algorithm as absent."""
     with _lock:
         return _running
+
+
+def is_holding_collection() -> bool:
+    """True while the pass is inside a backend call, which holds the
+    collection for up to several seconds."""
+    return _holding_collection
 
 
 def ensure_ready(mw: Any, *, force: bool = False) -> None:
@@ -134,22 +154,60 @@ def _record_finished(mw: Any, col: Any) -> None:
         pass
 
 
+def _seconds_since_input(mw: Any) -> float | None:
+    """How long ago the user last pressed a key, clicked or scrolled in
+    Clanki; None where nothing tracks it."""
+    last_input_at = getattr(getattr(mw, "app", None), "last_input_at", None)
+    if not isinstance(last_input_at, float):
+        return None
+    return time.monotonic() - last_input_at
+
+
+def _wait_for_the_user(mw: Any, col: Any) -> bool:
+    """Waits until the user has left Clanki alone for USER_IDLE_SECS. False
+    when the collection closed meanwhile: the pass then stops."""
+    while True:
+        if mw.col is not col:
+            return False
+        since_input = _seconds_since_input(mw)
+        if since_input is None or since_input >= USER_IDLE_SECS:
+            return True
+        time.sleep(USER_IDLE_SECS - since_input)
+
+
+@contextmanager
+def _holding() -> Iterator[None]:
+    global _holding_collection
+    _holding_collection = True
+    try:
+        yield
+    finally:
+        _holding_collection = False
+
+
 def _run(mw: Any, col: Any) -> None:
     global _running
     try:
+        # asking which presets are stale holds the collection too
+        if not _wait_for_the_user(mw, col):
+            return
         # the generated backend method already returns the ids, not the
         # response message; reading a field off them raised AttributeError
         # on the pass's first line and the log was the only place it showed
-        presets = list(col._backend.stale_fsrs_prediction_presets())
+        with _holding():
+            presets = list(col._backend.stale_fsrs_prediction_presets())
         written = 0
         for index, preset in enumerate(presets):
             if index:
                 # the collection is free here, so anything the user does
                 # goes in between two presets instead of behind all of them
                 time.sleep(BETWEEN_PRESETS_SECS)
-            written += col._backend.refresh_fsrs_review_predictions(
-                deck_config_id=preset
-            )
+            if not _wait_for_the_user(mw, col):
+                return
+            with _holding():
+                written += col._backend.refresh_fsrs_review_predictions(
+                    deck_config_id=preset
+                )
         logger.debug(
             "stored %s FSRS review predictions over %s presets", written, len(presets)
         )

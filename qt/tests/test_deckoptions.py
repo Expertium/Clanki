@@ -223,6 +223,20 @@ def warmed_spare(views) -> FakeView:
     return spare
 
 
+def test_the_spare_waits_while_the_fsrs_prediction_pass_holds_the_collection(
+    views,
+) -> None:
+    """The warm-up reads the current deck on the main thread; the pass holds
+    the collection for seconds, so a warm-up then would freeze the window."""
+    views.on_profile_did_open()
+    with patch("aqt.fsrs_predictions.is_holding_collection", return_value=True):
+        views.timers.pop()()
+    assert views._spare is None
+    # it tries again later, by itself
+    views.timers.pop()()
+    assert views._spare is not None
+
+
 def test_without_a_spare_the_window_loads_its_deck(views) -> None:
     dialog = fake_dialog(5)
     web = views.take(dialog)
