@@ -31,6 +31,19 @@ class _Backend:
         self._presets = presets if presets is not None else [1]
         self._started = started
         self._release = release
+        self.due_for_optimize: list[int] = []
+        self.optimized: list[int] = []
+        self.optimize_changes = True
+        # every backend call of a pass, in order
+        self.order: list[str] = []
+
+    def fsrs_presets_due_for_auto_optimize(self) -> list[int]:
+        return list(self.due_for_optimize)
+
+    def auto_optimize_fsrs_preset(self, deck_config_id: int) -> bool:
+        self.order.append("optimize")
+        self.optimized.append(deck_config_id)
+        return self.optimize_changes
 
     def stale_fsrs_prediction_presets(self) -> list[int]:
         """The SHAPE the generated backend really returns: the ids, not a
@@ -45,6 +58,7 @@ class _Backend:
     def refresh_fsrs_review_predictions(self, deck_config_id: int) -> int:
         began = time.monotonic()
         self.calls += 1
+        self.order.append("refresh")
         self.refreshed.append(deck_config_id)
         self._started.set()
         self._release.wait(5)
@@ -336,3 +350,45 @@ def test_a_pass_that_fails_says_so() -> None:
     while predictions.is_running():
         pass
     assert len(mw.reported_failures) == 1
+
+
+# Pins spec/deck-options.md#deck-options.fsrs-auto-optimize
+def test_due_presets_are_optimized_before_the_predictions() -> None:
+    started, release = _quiet()
+    backend = _Backend(started, release, presets=[1, 2])
+    backend.due_for_optimize = [2]
+    mw = _mw(backend)
+
+    predictions.ensure_ready(mw)
+    started.wait(5)
+    while predictions.is_running():
+        pass
+
+    # the predictions come after the optimization they depend on
+    assert backend.optimized == [2]
+    assert backend.refreshed == [1, 2]
+    assert backend.order == ["optimize", "refresh", "refresh"]
+    # new parameters moved the cards, so the screens are asked to show them
+    # again on the main thread
+    assert len(mw.reported_failures) == 1 and callable(mw.reported_failures[0])
+
+    # nothing changed: the screens are left alone
+    backend.optimize_changes = False
+    mw.reported_failures.clear()
+    predictions.ensure_ready(mw, force=True)
+    while predictions.is_running():
+        pass
+    assert mw.reported_failures == []
+
+
+# Pins spec/deck-options.md#deck-options.fsrs-auto-optimize
+def test_the_fake_auto_optimize_matches_the_real_backend() -> None:
+    from anki._backend_generated import RustBackendGenerated as RustBackend
+
+    real = inspect.signature(RustBackend.fsrs_presets_due_for_auto_optimize)
+    assert "Sequence[int]" in str(real.return_annotation)
+    optimize = inspect.signature(RustBackend.auto_optimize_fsrs_preset)
+    assert optimize.return_annotation == "bool"
+    assert list(optimize.parameters) == list(
+        inspect.signature(_Backend.auto_optimize_fsrs_preset).parameters
+    )

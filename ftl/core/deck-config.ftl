@@ -810,3 +810,6 @@ deck-config-rwkv-reread-history = Read Review History Again
 deck-config-rwkv-rereading-history = Reading Review History...
 deck-config-rwkv-prepare-stats = Prepare Stats Graphs
 deck-config-rwkv-preparing-stats = Preparing Stats Graphs...
+# How often Clanki optimizes a preset's FSRS-7 parameters by itself, in the
+# background (spec deck-options.fsrs-auto-optimize). 0 means never.
+deck-config-fsrs-auto-optimize-days = Optimize every N days (0 = never)

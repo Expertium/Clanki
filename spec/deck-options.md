@@ -150,6 +150,47 @@ Simple mode must still be able to optimize.
 ("Optimize All Presets" visible in Simple mode, no "Optimize Current
 Preset" in either mode). The rest of the visibility is markup.
 
+## deck-options.fsrs-auto-optimize
+
+Given a collection with FSRS enabled, whatever its algorithm, Clanki
+optimizes each preset's FSRS-7 parameters by itself: every preset has "Optimize every N
+days" (Advanced mode, in the FSRS advanced section; unset means 7, 0 means
+never). Once a day, after the collection opens and while the user leaves
+Clanki alone, the background pass of `ui.stats-fsrs-predictions-ready`
+first optimizes every preset whose N days have passed since its last
+optimization (a preset never optimized is due at once), one preset per
+call, with the same reviews and settings as "Optimize All Presets". It
+holds the collection only to read the reviews and to save; a preset saved
+in deck options while it trains keeps the saved values and the result is
+dropped. The new parameters are saved as a deck-options save would save
+them: the cards' memory states follow them (their due dates too when
+"Reschedule cards when desired retention changes" is on), and the preset's
+stored per-review predictions go and are written again by the same pass.
+The save is not undoable, so Undo keeps undoing the user's own last action.
+The day is recorded even when the parameters did not change, and "Optimize
+All Presets" records it for every preset. The screens refresh after a
+change. "Time to optimize" shows only for a preset with 0 days. Under
+RWKV-Curve and RWKV-Instant the preset is optimized all the same, because
+the Stats graphs compare RWKV with FSRS-7 and FSRS-7 needs current
+parameters there; the new parameters then change FSRS-7's memory states and
+predictions only, and never a card's due date, whatever the reschedule
+choice.
+
+**Why:** Andrew, 2026-09-19: "neither FSRS nor RWKV should make the user
+decide to optimize parameters/rebuild states. That should be done
+automatically. For FSRS-7 that means automatic optimization every N days as
+a new Deck Options setting." (CLAUDE.md, Planned direction 9.) Every 7
+days because the optimization is fast now. Under RWKV: Andrew would have
+optimized when Stats opens, but not at the cost of lag, so the idle
+background pass does it instead.
+
+**Pinned by:** `a_preset_is_optimized_again_after_its_days`,
+`under_rwkv_it_optimizes_but_never_reschedules`, `a_save_during_training_drops_the_result`
+(rslib/src/scheduler/fsrs/auto_optimize.rs);
+`test_due_presets_are_optimized_before_the_predictions`,
+`test_the_fake_auto_optimize_matches_the_real_backend`
+(qt/tests/test_fsrs_predictions.py); `auto-optimize.test.ts`.
+
 ## deck-options.desired-retention-note
 
 Given the deck-options screen under FSRS-7 or RWKV-Curve, a note box sits

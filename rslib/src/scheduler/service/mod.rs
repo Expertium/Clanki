@@ -452,6 +452,18 @@ impl crate::services::SchedulerService for Collection {
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
     }
 
+    fn fsrs_presets_due_for_auto_optimize(
+        &mut self,
+    ) -> Result<scheduler::StaleFsrsPredictionPresetsResponse> {
+        Ok(scheduler::StaleFsrsPredictionPresetsResponse {
+            deck_config_ids: self
+                .fsrs_presets_due_for_auto_optimize()?
+                .into_iter()
+                .map(|preset| preset.0)
+                .collect(),
+        })
+    }
+
     fn stale_fsrs_prediction_presets(
         &mut self,
     ) -> Result<scheduler::StaleFsrsPredictionPresetsResponse> {
@@ -1187,6 +1199,20 @@ impl crate::services::BackendSchedulerService for Backend {
         let rows = job.rows()?;
         Ok(self
             .with_col(|col| col.store_fsrs_review_prediction_rows(&job, &rows))?
+            .into())
+    }
+
+    fn auto_optimize_fsrs_preset(
+        &self,
+        input: scheduler::RefreshFsrsReviewPredictionsRequest,
+    ) -> Result<generic::Bool> {
+        let preset = DeckConfigId(input.deck_config_id);
+        let Some(job) = self.with_col(|col| col.fsrs_auto_optimize_job(preset))? else {
+            return Ok(false.into());
+        };
+        let (key, params, fsrs_items) = job.params()?;
+        Ok(self
+            .with_col(|col| col.apply_fsrs_auto_optimize(key, params, fsrs_items))?
             .into())
     }
 

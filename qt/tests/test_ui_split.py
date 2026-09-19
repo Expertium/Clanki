@@ -225,6 +225,7 @@ TODAY: dict[str, bool] = {
             "desiredRetentionTabs",
             "fsrsHelpMeDecide",
             "fsrsParams",
+            "fsrsAutoOptimizeDays",
             "fsrsSearchFilter",
             "fsrsHealthCheck",
             "fsrsSimulator",

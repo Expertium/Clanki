@@ -674,6 +674,11 @@ impl Collection {
         }
         let today = self.timing_today()?.days_elapsed as i32;
         self.set_config_i32_inner(I32ConfigKey::LastFsrsOptimize, today)?;
+        // a preset optimized by hand is not due again for its full N days
+        // (spec deck-options.fsrs-auto-optimize)
+        for config in &mut req.configs {
+            config.inner.fsrs_last_optimized_day = Some(today as u32);
+        }
         Ok(())
     }
 }

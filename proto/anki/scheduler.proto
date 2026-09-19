@@ -73,6 +73,11 @@ service SchedulerService {
   // AT A TIME, so the collection is free between presets.
   rpc StaleFsrsPredictionPresets(generic.Empty)
       returns (StaleFsrsPredictionPresetsResponse);
+  // The presets whose "Optimize every N days" is due (spec
+  // deck-options.fsrs-auto-optimize). Empty unless the collection
+  // schedules with FSRS-7.
+  rpc FsrsPresetsDueForAutoOptimize(generic.Empty)
+      returns (StaleFsrsPredictionPresetsResponse);
   rpc ComputeFsrsReviewRetrievabilityCalibration(
       ComputeFsrsReviewRetrievabilityCalibrationRequest)
       returns (generic.UInt32);
@@ -190,6 +195,12 @@ service BackendSchedulerService {
   // not while it computes.
   rpc RefreshFsrsReviewPredictions(RefreshFsrsReviewPredictionsRequest)
       returns (generic.UInt32);
+  // Optimizes one due preset's FSRS-7 parameters and saves them, as a save
+  // in deck options would, without undo. Holds the collection only to read
+  // the reviews and to save, not while it trains; if the preset was saved
+  // meanwhile the result is dropped. True when the parameters changed.
+  rpc AutoOptimizeFsrsPreset(RefreshFsrsReviewPredictionsRequest)
+      returns (generic.Bool);
   rpc ComputeFsrsParamsFromItems(ComputeFsrsParamsFromItemsRequest)
       returns (ComputeFsrsParamsResponse);
   // Generates parameters used for FSRS's scheduler benchmarks.

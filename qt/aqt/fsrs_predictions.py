@@ -28,6 +28,12 @@ A pass that fails says so. It cannot report progress, so a failure left no
 trace at all beyond a log line, and an empty FSRS-7 series looks the same as
 one that is merely still being computed.
 
+Before the predictions, the same pass optimizes the FSRS-7 parameters of
+every preset whose "Optimize every N days" is due (spec
+deck-options.fsrs-auto-optimize), one preset per call under the same idle
+rules. New parameters drop that preset's predictions, so the rest of the
+pass then writes them again for the new parameters.
+
 It runs at most once a day on its own, which is the upkeep the graphs need:
 a stored row is a validation fold, and the per-answer rows written while
 reviewing carry a different sample role that the graph's role order hides
@@ -191,6 +197,8 @@ def _run(mw: Any, col: Any) -> None:
         # asking which presets are stale holds the collection too
         if not _wait_for_the_user(mw, col):
             return
+        if not _auto_optimize(mw, col):
+            return
         # the generated backend method already returns the ids, not the
         # response message; reading a field off them raised AttributeError
         # on the pass's first line and the log was the only place it showed
@@ -218,6 +226,40 @@ def _run(mw: Any, col: Any) -> None:
     finally:
         with _lock:
             _running = False
+
+
+def _auto_optimize(mw: Any, col: Any) -> bool:
+    """Optimizes the presets that are due, one per call. False when the
+    collection closed meanwhile."""
+    with _holding():
+        presets = list(col._backend.fsrs_presets_due_for_auto_optimize())
+    changed = False
+    for index, preset in enumerate(presets):
+        if index:
+            time.sleep(BETWEEN_PRESETS_SECS)
+        if not _wait_for_the_user(mw, col):
+            return False
+        with _holding():
+            changed |= bool(
+                col._backend.auto_optimize_fsrs_preset(deck_config_id=preset)
+            )
+    if changed:
+        # cards' memory states (and due dates, with "Reschedule cards when
+        # desired retention changes") moved: the screens show them again,
+        # as after a save in deck options
+        mw.taskman.run_on_main(lambda: _refresh_screens(mw, col))
+    return True
+
+
+def _refresh_screens(mw: Any, col: Any) -> None:
+    from anki.collection import OpChanges
+    from aqt import gui_hooks
+
+    if mw.col is not col:
+        return
+    changes = OpChanges(card=True, deck_config=True, study_queues=True)
+    gui_hooks.operation_did_execute(changes, None)
+    gui_hooks.state_did_reset()
 
 
 def report_failure(mw: Any) -> None:

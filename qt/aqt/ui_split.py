@@ -495,6 +495,11 @@ DECK_OPTIONS_SETTINGS: list[
                 False,
             ),
             ("fsrsParams", tr.deck_config_weights, False),
+            (
+                "fsrsAutoOptimizeDays",
+                tr.deck_config_fsrs_auto_optimize_days,
+                False,
+            ),
             ("fsrsSearchFilter", tr.preferences_ui_split_fsrs_search_filter, False),
             ("fsrsHealthCheck", tr.deck_config_health_check_button, False),
             ("fsrsSimulator", tr.deck_config_fsrs_simulator_experimental, False),
