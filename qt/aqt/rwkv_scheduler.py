@@ -17870,6 +17870,10 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
 
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
+    """Only an RWKV-Instant preset gathers new cards by its scores (spec
+    deck-options.new-retrievability-order-instant-only)."""
+    if not _rwkv_review_instant_order_enabled(deck_config):
+        return False
     value = deck_config.get(
         "newCardGatherPriority",
         deck_config.get("new_card_gather_priority"),

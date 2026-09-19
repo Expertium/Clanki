@@ -436,13 +436,12 @@ impl QueueSortOptions {
         self.rwkv_review_instant_order_enabled
     }
 
+    /// Only RWKV-Instant reads its scores; the retrievability new-card
+    /// orders under FSRS-7 or RWKV-Curve would otherwise rank by
+    /// RWKV-Instant's values (spec
+    /// deck-options.new-retrievability-order-instant-only).
     fn uses_rwkv_retrievability_scores(&self) -> bool {
         self.uses_rwkv_review_order()
-            || matches!(
-                self.new_gather_priority,
-                NewCardGatherPriority::AscendingRetrievability
-                    | NewCardGatherPriority::DescendingRetrievability
-            )
     }
 
     /// Retrievability and relative-overdueness orders in an RWKV preset rank
@@ -582,6 +581,16 @@ mod test {
             conf.inner.bury_interday_learning = false;
             conf.inner.new_card_gather_priority = order as i32;
             conf.inner.new_card_sort_order = NewCardSortOrder::NoSort as i32;
+            // the retrievability gather orders are RWKV-Instant's (spec
+            // deck-options.new-retrievability-order-instant-only)
+            if matches!(
+                order,
+                NewCardGatherPriority::AscendingRetrievability
+                    | NewCardGatherPriority::DescendingRetrievability
+            ) {
+                conf.inner.rwkv_review_enabled = false;
+                conf.inner.rwkv_review_instant_order_enabled = true;
+            }
             self.add_or_update_deck_config(&mut conf).unwrap();
             deck.normal_mut().unwrap().config_id = conf.id.0;
             self.add_or_update_deck(deck).unwrap();
@@ -1695,6 +1704,31 @@ mod test {
         col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![second, first, unscored]);
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.new-retrievability-order-instant-only
+    #[test]
+    fn retrievability_gather_outside_rwkv_instant_ignores_instant_scores() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_gather_order(&mut deck, NewCardGatherPriority::DescendingRetrievability);
+        // the same preset, but RWKV-Curve schedules
+        let mut conf = col
+            .get_deck_config(deck.config_id().unwrap(), false)?
+            .unwrap();
+        conf.inner.rwkv_review_enabled = true;
+        conf.inner.rwkv_review_instant_order_enabled = false;
+        col.add_or_update_deck_config(&mut conf)?;
+
+        let first = CardAdder::new().add(&mut col)[0].id;
+        let second = CardAdder::new().add(&mut col)[0].id;
+        let unscored = CardAdder::new().add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.80)]))?;
+
+        // RWKV-Instant's scores would put `second` first; RWKV-Curve gathers
+        // by deck, in position order
+        assert_eq!(col.queue_as_ids(deck.id), vec![first, second, unscored]);
         Ok(())
     }
 
