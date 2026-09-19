@@ -70,6 +70,7 @@ class Preferences(QDialog):
         self.setup_profile()
         self.setup_global()
         self.setup_configurable_answer_keys()
+        self.setup_ui_split()
         self.show()
 
     def _setup_webview(self) -> None:
@@ -482,6 +483,22 @@ class Preferences(QDialog):
             self.form.tabWidget.indexOf(self.heatmap_tab) + 1,
             self.ankiconnect_tab,
             tr.preferences_ankiconnect_tab(),
+        )
+
+    # Collection: UI split
+    ######################################################################
+
+    def setup_ui_split(self) -> None:
+        """The UI split tab, after AnkiConnect (spec ui.split-configurable).
+        It is not an item of the split, so it is always there. Its changes
+        are stored as they are made."""
+        from aqt.ui_split_prefs import UiSplitPreferences
+
+        self.ui_split_tab = UiSplitPreferences(self.mw)
+        self.form.tabWidget.insertTab(
+            self.form.tabWidget.indexOf(self.ankiconnect_tab) + 1,
+            self.ui_split_tab,
+            tr.preferences_ui_split_tab(),
         )
 
     # legacy - one of Henrik's add-ons is currently wrapping them

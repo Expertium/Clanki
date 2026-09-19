@@ -68,7 +68,12 @@ def browser(qapp: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     browser.form.setupUi(browser)
     mode = {"advanced": False}
     browser.mode = mode
-    browser.mw = SimpleNamespace(advanced_ui=lambda: mode["advanced"])
+    choices: dict[str, bool] = {}
+    browser.choices = choices
+    browser.mw = SimpleNamespace(
+        advanced_ui=lambda: mode["advanced"],
+        col=SimpleNamespace(get_config=lambda key, default=None: choices),
+    )
     browser._switch = QWidget(browser)
     browser.toolbar_modes = []
     browser.sidebar = SimpleNamespace(
@@ -80,6 +85,7 @@ def browser(qapp: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     browser.table = SimpleNamespace(
         is_notes_mode=lambda: False, apply_ui_mode=lambda: None
     )
+    browser._setup_remove_leech_tag_action()
     return browser
 
 
@@ -172,16 +178,16 @@ class _Col:
 
 
 def test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice():
-    from aqt.browser.table.state import SIMPLE_CARD_COLUMNS, CardState
+    from aqt.browser.table.state import CardState
 
+    simple_columns = ["noteFld", "deck", "cardDue", "cardIvl"]
     col = _Col(advanced=False)
     state = CardState(col)  # type: ignore[arg-type]
 
-    assert state.active_columns == SIMPLE_CARD_COLUMNS
-    assert SIMPLE_CARD_COLUMNS == ["noteFld", "deck", "cardDue", "cardIvl"]
-    assert col._backend.columns == [SIMPLE_CARD_COLUMNS]
+    assert state.active_columns == simple_columns
+    assert col._backend.columns == [simple_columns]
     state.toggle_active_column("cardEase")
-    assert state.active_columns == SIMPLE_CARD_COLUMNS
+    assert state.active_columns == simple_columns
     assert col.stored == ["noteFld", "template", "cardEase", "deck"]
     # its own column widths, so Advanced mode's layout survives
     assert state.GEOMETRY_KEY_PREFIX != "editor"
@@ -245,15 +251,9 @@ def test_a_hidden_item_runs_from_its_shortcut(browser, qapp):
     browser.hide()
 
 
-def test_remove_leech_tag_follows_remove_tags_in_both_modes(browser, monkeypatch):
+def test_remove_leech_tag_follows_remove_tags_in_both_modes(browser):
     """Pins spec/ui.md#ui.browser-remove-leech-tag: a tag item, so Simple
     mode shows it too."""
-    from aqt.utils import tr
-
-    monkeypatch.setattr(
-        tr, "browsing_remove_leech_tag", lambda: "Remove Leech Tag", raising=False
-    )
-    browser._setup_remove_leech_tag_action()
     browser._setup_ui_mode()
 
     actions = browser.form.menu_Notes.actions()

@@ -15,6 +15,7 @@ import aqt.advance_postpone
 import aqt.operations
 import aqt.review_heatmap
 import aqt.rwkv_scheduler
+import aqt.ui_split
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckCollapseScope, DeckId, DeckTreeNode
 from aqt import AnkiQt, gui_hooks
@@ -69,6 +70,15 @@ class DeckBrowserContent:
 class RenderDeckNodeContext:
     current_deck_id: DeckId
     review_limit_labels: dict[int, tuple[str, str]]
+
+
+# the deck list's bottom-row buttons and their items of the split
+DECK_LIST_BUTTONS = {
+    "shared": "main.deck_list.find_decks_online",
+    "get_addons": "main.deck_list.get_addons",
+    "create": "main.deck_list.create_deck",
+    "import": "main.deck_list.import_file",
+}
 
 
 def _get_addons_label() -> str:
@@ -397,7 +407,7 @@ class DeckBrowser:
 
     def _render_rwkv_deck_counts(self) -> None:
         rows: list[tuple[int, int, int, int | None]] = []
-        advanced = self.mw.advanced_ui()
+        advanced = aqt.ui_split.shown(self.mw, "main.learn_count")
 
         def collect(node: DeckTreeNode) -> None:
             rows.append(
@@ -500,7 +510,7 @@ class DeckBrowser:
         # Simple mode has no Learn column: Learn is folded into Due (spec
         # ui.simple-mode-deck-counts).
         count_header_args: list[str] = [tr.actions_new()]
-        if self.mw.advanced_ui():
+        if aqt.ui_split.shown(self.mw, "main.learn_count"):
             count_header_args.append(tr.decks_learn_header())
         count_header_args.append(tr.decks_review_header())
         count_headers = "<th class=count>{}</th>" * len(count_header_args)
@@ -572,7 +582,7 @@ class DeckBrowser:
                 klass = "zero-count"
             return f'<span id="{count_id}" class="{klass}">{cnt}</span>'
 
-        advanced = self.mw.advanced_ui()
+        advanced = aqt.ui_split.shown(self.mw, "main.learn_count")
         # Simple mode shows one Due count that already includes Learn
         # (spec ui.simple-mode-deck-counts); the stored counts themselves are
         # untouched, only what is displayed is summed.
@@ -629,26 +639,33 @@ class DeckBrowser:
 
     def _showOptions(self, did: str) -> None:
         m = QMenu(self.mw)
-        a = m.addAction(tr.actions_rename())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._rename(DeckId(int(did))))
-        a = m.addAction(tr.actions_options())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._options(DeckId(int(did))))
+        # the split decides which entries show (spec ui.split-configurable)
+        shows = aqt.ui_split.visibility(self.mw)
+        if shows("main.deck_menu.rename"):
+            a = m.addAction(tr.actions_rename())
+            assert a is not None
+            qconnect(a.triggered, lambda b, did=did: self._rename(DeckId(int(did))))
+        if shows("main.deck_menu.options"):
+            a = m.addAction(tr.actions_options())
+            assert a is not None
+            qconnect(a.triggered, lambda b, did=did: self._options(DeckId(int(did))))
         aqt.advance_postpone.add_deck_menu_actions(m, self.mw, int(did))
         self._add_rwkv_menu(m, did)
-        a = m.addAction(tr.actions_export())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
-        a = m.addAction(tr.actions_delete())
-        assert a is not None
-        qconnect(a.triggered, lambda b, did=did: self._delete(DeckId(int(did))))
+        if shows("main.deck_menu.export"):
+            a = m.addAction(tr.actions_export())
+            assert a is not None
+            qconnect(a.triggered, lambda b, did=did: self._export(DeckId(int(did))))
+        if shows("main.deck_menu.delete"):
+            a = m.addAction(tr.actions_delete())
+            assert a is not None
+            qconnect(a.triggered, lambda b, did=did: self._delete(DeckId(int(did))))
         gui_hooks.deck_browser_will_show_options_menu(m, int(did))
         m.popup(QCursor.pos())
 
     def _add_rwkv_menu(self, m: QMenu, did: str) -> None:
-        """The RWKV submenu of the deck menu; Advanced mode only (spec ui.mode-switch)."""
-        if not self.mw.advanced_ui():
+        """The RWKV submenu of the deck menu; Advanced mode only by default
+        (spec ui.mode-switch, ui.split-configurable)."""
+        if not aqt.ui_split.shown(self.mw, "main.deck_menu.rwkv"):
             return
         rwkv_menu = m.addMenu(tr.decks_rwkv())
         assert rwkv_menu is not None
@@ -766,13 +783,18 @@ class DeckBrowser:
 
     def _buttons_html(self) -> str:
         buf = ""
-        # Simple mode keeps Find Decks Online and Create Deck (spec
-        # ui.mode-switch); Import stays in the File menu, and Get Add-ons is
-        # Advanced-only, the same split as the Tools menu's own Add-ons entry
-        # (spec ui.get-decks-and-get-addons).
-        drawLinks = deepcopy(self.drawLinks)
-        if not self.mw.advanced_ui():
-            drawLinks = [b for b in drawLinks if b[1] not in ("import", "get_addons")]
+        # By default Simple mode keeps Find Decks Online and Create Deck
+        # (spec ui.mode-switch); Import stays in the File menu, and Get
+        # Add-ons is Advanced-only, the same split as the Tools menu's own
+        # Add-ons entry (spec ui.get-decks-and-get-addons). The split
+        # decides (spec ui.split-configurable).
+        shows = aqt.ui_split.visibility(self.mw)
+        # a button an add-on added is not ours to hide
+        drawLinks = [
+            b
+            for b in deepcopy(self.drawLinks)
+            if b[1] not in DECK_LIST_BUTTONS or shows(DECK_LIST_BUTTONS[b[1]])
+        ]
         for b in drawLinks:
             if b[0]:
                 b[0] = tr.actions_shortcut_key(val=shortcut(b[0]))

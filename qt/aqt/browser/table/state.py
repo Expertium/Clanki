@@ -12,12 +12,25 @@ from anki.collection import Collection, Config
 from anki.errors import NotFoundError
 from anki.notes import Note, NoteId
 from anki.utils import ids2str
+from aqt import ui_split
 from aqt.browser.table import Column, ItemId, ItemList
 
-# Cards mode in Simple UI mode shows these columns, whatever the stored
-# (Advanced) choice is, and keeps that choice untouched (spec
-# ui.browser-simple-view).
-SIMPLE_CARD_COLUMNS = ["noteFld", "deck", "cardDue", "cardIvl"]
+
+def simple_card_columns(col: Collection) -> list[str]:
+    """Cards mode in Simple UI mode shows the columns the split gives it
+    (by default Sort Field, Deck, Due and Interval), whatever the stored
+    (Advanced) choice is, and keeps that choice untouched (spec
+    ui.browser-simple-view, ui.split-configurable). At least one column
+    shows: with none chosen, the sort field."""
+    choices = ui_split.overrides(col)
+    columns = [
+        column
+        for column, _, _ in ui_split.BROWSER_COLUMNS
+        if ui_split.shown_in_simple(
+            None, ui_split.browser_column_item_id(column), choices
+        )
+    ]
+    return columns or ["noteFld"]
 
 
 class ItemState(ABC):
@@ -143,7 +156,7 @@ class CardState(ItemState):
         if self.simple:
             # its own column widths, so Advanced mode's layout survives
             self.GEOMETRY_KEY_PREFIX = "editorSimple"
-            self._active_columns = list(SIMPLE_CARD_COLUMNS)
+            self._active_columns = simple_card_columns(col)
             self.col._backend.set_active_browser_columns(self._active_columns)
         else:
             self._active_columns = self.col.load_browser_card_columns()
