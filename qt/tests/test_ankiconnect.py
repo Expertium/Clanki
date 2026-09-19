@@ -1636,6 +1636,13 @@ def test_prop_values_follow_the_algorithm(
     server.col.set_config("fsrs", True)
     (cid,) = server.cards_of(server.add_basic())
     server.invoke("answerCards", answers=[{"cardId": cid, "ease": 3}])
+    # The test and cardsInfo each compute R "now", a moment apart. Seconds
+    # after an answer R still falls fast (0.99999 to 0.99966 was seen), so
+    # the review is moved a year back, where R is flat to 1e-6 over that gap.
+    card = server.col.get_card(cid)
+    assert card.last_review_time is not None
+    card.last_review_time -= 365 * 86_400
+    server.col.update_card(card, skip_undo_entry=True)
     stats = server.col.card_stats_data(cid)
     fields = ["prop:r", "prop:s", "prop:d"]
 
