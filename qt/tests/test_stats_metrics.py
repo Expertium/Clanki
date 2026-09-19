@@ -168,6 +168,47 @@ def test_the_job_reads_each_algorithm_from_its_own_rows() -> None:
     assert progress.newer_reviews == 5
 
 
+def test_the_job_keeps_the_um_plus_pairs_after_the_response_is_gone() -> None:
+    """The UM+ pairs reach the page unchanged. The job keeps its own copy of
+    them, because a pair taken straight out of the response shares the
+    response's memory and kept all of it alive after the Stats window
+    closed; this pins that the copy is exact."""
+    import gc
+
+    from anki.stats_pb2 import ReviewPredictionsResponse, UmPlusBin, UmPlusPair
+
+    pair = UmPlusPair(
+        algorithm_a=metrics.FSRS_7,
+        algorithm_b=metrics.RWKV_INSTANT,
+        bins=[UmPlusBin(count=3)],
+        um_a=0.25,
+        um_b=0.125,
+        slope_a=0.5,
+        reviews=7,
+    )
+
+    class _Backend:
+        def review_predictions(self, search: str, days: int) -> object:
+            return ReviewPredictionsResponse(
+                revlog_ids=[1, 2],
+                card_ids=[1, 1],
+                remembered=[True, False],
+                fsrs_predictions=[0.9, 0.4],
+                fsrs_role="validation_fold",
+                um_plus=[pair],
+            )
+
+    class _Collection:
+        _backend = _Backend()
+
+    job = metrics._Job(job_id=1, key=("test",))
+    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    gc.collect()
+
+    assert list(job.um_plus) == [pair]
+    assert list(job.progress().um_plus) == [pair]
+
+
 # Pins spec/ui.md#ui.stats-model-metrics
 def test_an_algorithm_whose_rows_nothing_wrote_says_so() -> None:
     from anki.stats_pb2 import ReviewPredictionsResponse
