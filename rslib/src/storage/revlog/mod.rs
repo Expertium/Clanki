@@ -31,6 +31,9 @@ pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 pub(crate) const REVIEW_PREDICTIONS_TABLE: &str = "review_predictions";
 pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_rwkv_review_retrievability";
+/// Which algorithm scheduled a review, one row per review, written when the
+/// review is answered (spec sched.review-scheduler-record).
+pub(crate) const REVIEW_SCHEDULER_TABLE: &str = "review_scheduler";
 /// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
@@ -385,6 +388,36 @@ impl SqliteStorage {
 
             Ok(stored)
         })
+    }
+
+    fn ensure_review_scheduler_schema(&self) -> Result<()> {
+        let table = Self::qualified_retrievability_cache_table(REVIEW_SCHEDULER_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {table} (
+                revlog_id INTEGER NOT NULL PRIMARY KEY,
+                algorithm TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    /// Records which algorithm scheduled the review, once, at the moment it
+    /// is answered (spec sched.review-scheduler-record). A review already
+    /// recorded keeps its first answer, because the algorithm that scheduled
+    /// it cannot change afterwards.
+    pub(crate) fn set_review_scheduler(&self, revlog_id: RevlogId, algorithm: &str) -> Result<()> {
+        self.ensure_review_scheduler_schema()?;
+        let table = Self::qualified_retrievability_cache_table(REVIEW_SCHEDULER_TABLE);
+        self.db
+            .prepare_cached(&format!(
+                "insert or ignore into {table} (revlog_id, algorithm, recorded_at)
+                 values (?1, ?2, ?3)"
+            ))?
+            .execute(params![revlog_id.0, algorithm, TimestampSecs::now().0])?;
+        Ok(())
     }
 
     fn ensure_rwkv_review_retrievability_cache_schema(&self) -> Result<()> {

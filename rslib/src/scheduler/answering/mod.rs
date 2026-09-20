@@ -487,6 +487,16 @@ impl Collection {
             });
         }
         let revlog_id = self.add_partial_revlog(revlog_partial, usn, answer)?;
+        // which algorithm scheduled this review, so a later stat can compare
+        // an algorithm on every review with the same algorithm on the
+        // reviews it scheduled itself (spec sched.review-scheduler-record)
+        let scheduler = SchedulingAlgorithm::of_preset(&updater.config.inner);
+        if let Err(err) = self
+            .storage
+            .set_review_scheduler(revlog_id, scheduler.stored_name())
+        {
+            tracing::warn!(?err, "failed to record the review's scheduler");
+        }
         if let Some(prediction) = updater.fsrs_review_retrievability {
             if let Err(err) = self.storage.set_fsrs_review_retrievability_predictions(
                 &[FsrsReviewRetrievabilityCacheRow {
@@ -2627,6 +2637,81 @@ pub(crate) mod test {
             (stored.stability_internal - shown.stability_internal).abs() > 1e-3,
             "the show-time state must differ for this test to mean anything"
         );
+        Ok(())
+    }
+    /// Pins spec/scheduling.md#sched.review-scheduler-record
+    #[test]
+    fn every_answer_records_the_algorithm_that_scheduled_it() -> Result<()> {
+        fn recorded(col: &Collection) -> Vec<(i64, String)> {
+            col.storage
+                .db
+                .prepare(
+                    "select revlog_id, algorithm from
+                     retrievability_cache.review_scheduler order by revlog_id",
+                )
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect()
+        }
+
+        for (algorithm, name) in [
+            (SchedulingAlgorithm::Fsrs7, "fsrs7"),
+            (SchedulingAlgorithm::RwkvCurve, "rwkv_curve"),
+            (SchedulingAlgorithm::RwkvInstant, "rwkv_instant"),
+        ] {
+            let (mut col, cids) = v3_test_collection(1)?;
+            col.change_scheduling_algorithm(algorithm)?;
+            col.answer_good();
+
+            let rows = recorded(&col);
+            assert_eq!(rows.len(), 1, "one row per answer, for {name}");
+            assert_eq!(rows[0].1, name);
+
+            // the review log and the record address the same review
+            let revlog = col.storage.get_all_revlog_entries_in_card_order()?;
+            let ids: Vec<i64> = revlog
+                .iter()
+                .filter(|entry| entry.cid == cids[0])
+                .map(|entry| entry.id.0)
+                .collect();
+            assert!(ids.contains(&rows[0].0), "{:?} has no {}", ids, rows[0].0);
+        }
+        Ok(())
+    }
+
+    /// Pins spec/scheduling.md#sched.review-scheduler-record
+    #[test]
+    fn a_review_keeps_the_algorithm_it_was_first_recorded_with() -> Result<()> {
+        let (mut col, _cids) = v3_test_collection(1)?;
+        col.change_scheduling_algorithm(SchedulingAlgorithm::Fsrs7)?;
+        col.answer_good();
+
+        let revlog_id = col
+            .storage
+            .db
+            .query_row(
+                "select revlog_id from retrievability_cache.review_scheduler",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        // a second write of the same review, as a replay or an import might
+        // attempt, does not overwrite the first
+        col.storage
+            .set_review_scheduler(RevlogId(revlog_id), "rwkv_curve")?;
+        let stored: String = col
+            .storage
+            .db
+            .query_row(
+                "select algorithm from retrievability_cache.review_scheduler",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "fsrs7");
         Ok(())
     }
 }
