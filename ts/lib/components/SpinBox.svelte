@@ -11,6 +11,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import Icon from "./Icon.svelte";
     import IconConstrain from "./IconConstrain.svelte";
+    import { snapToStep } from "./spin-box";
 
     export let value: number;
     export let step = 1;
@@ -33,7 +34,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (Number.isNaN(newValue)) {
             // avoid updating the value
         } else {
-            value = Math.min(max, Math.max(min, newValue));
+            // the box shows whole steps, so it stores whole steps: a typed
+            // 65.3% becomes 65% instead of showing 65% and saving 0.653
+            // (spec ui.spin-box-steps)
+            value = snapToStep(Math.min(max, Math.max(min, newValue)), step);
         }
         // Assigning to `value` will trigger the stringValue reactive statement below,
         // but Svelte may not redraw the UI. For example, if '1' was shown, and the user
