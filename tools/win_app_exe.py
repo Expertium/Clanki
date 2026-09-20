@@ -120,7 +120,9 @@ def make_app_exe(interpreter: Path, target: Path) -> Path:
     old = _utf16_value(INTERPRETER_NAME)
     new = _utf16_value(APP_NAME)
     if old not in resource:
-        raise SystemExit(f"{interpreter} does not describe itself as {INTERPRETER_NAME}")
+        raise SystemExit(
+            f"{interpreter} does not describe itself as {INTERPRETER_NAME}"
+        )
     # every occurrence of the whole value, never a longer string that starts
     # with it, such as the company name "Python Software Foundation"
     _patch_in_place(target, resource, old, new)
