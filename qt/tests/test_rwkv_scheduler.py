@@ -20983,29 +20983,25 @@ def test_the_pass_pauses_between_batches_while_the_user_works() -> None:
 def test_the_pass_runs_in_the_background_without_a_progress_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    jobs: list[tuple[Callable[[], bool], Callable[[Future[bool]], None]]] = []
     windows: list[object] = []
     waited: list[object] = []
-    monkeypatch.setattr(
-        rwkv_scheduler, "recompute_rwkv_calibration_data", lambda mw, **kw: True
-    )
+    ran: list[object] = []
+
+    def pass_body(mw: object, **_kwargs: object) -> bool:
+        ran.append(mw)
+        assert rwkv_scheduler.rwkv_recordings_pass_running() is True
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", pass_body)
     monkeypatch.setattr(rwkv_scheduler, "wait_until_idle", waited.append)
-    mw = SimpleNamespace(
-        taskman=SimpleNamespace(
-            run_in_background=lambda work, done: jobs.append((work, done)),
-            with_progress=lambda *a, **k: windows.append(a),
-        ),
-        progress=SimpleNamespace(timer=lambda *a, **k: None),
-    )
+    mw = _recording_pass_mw(windows)
 
     rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
-    assert windows == [], "the pass must not open a progress window"
-    assert len(jobs) == 1 and rwkv_scheduler.rwkv_recordings_pass_running() is True
+    _join_the_recording_pass()
 
-    work, done = jobs[0]
-    assert work() is True
-    future: Future[bool] = Future()
-    future.set_result(True)
+    assert windows == [], "the pass must not open a progress window"
+    assert ran == [mw]
+
     with pytest.MonkeyPatch.context() as patch:
         shown: list[str] = []
         patch.setattr("aqt.utils.tooltip", lambda msg, **kw: shown.append(msg))
@@ -21015,6 +21011,84 @@ def test_the_pass_runs_in_the_background_without_a_progress_window(
             "_tr",
             lambda: SimpleNamespace(qt_misc_stats_data_ready=lambda: "ready"),
         )
-        done(future)
+        for callback in mw.taskman.on_main:
+            callback()
     assert shown == ["ready"]
     assert rwkv_scheduler.rwkv_recordings_pass_running() is False
+
+
+def _recording_pass_mw(windows: list[object]) -> SimpleNamespace:
+    """An `mw` whose collection worker fails the test if the pass takes it."""
+    taskman = SimpleNamespace(
+        run_in_background=lambda *args, **kwargs: pytest.fail(
+            "the recording pass must not take the collection worker"
+        ),
+        with_progress=lambda *args, **kwargs: windows.append(args),
+        on_main=[],
+    )
+    taskman.run_on_main = taskman.on_main.append
+    return SimpleNamespace(
+        col=SimpleNamespace(),
+        taskman=taskman,
+        progress=SimpleNamespace(timer=lambda *a, **k: None),
+    )
+
+
+def _join_the_recording_pass() -> None:
+    for thread in threading.enumerate():
+        if thread.name == "rwkv-recordings-pass":
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: there is ONE
+# collection worker, and answering a card, clicking a deck, the deck list,
+# the Browser and the Stats all go through it. A pass that walks the whole
+# history on that worker put every one of them behind it for tens of
+# minutes (measured: a small collection operation waited 80.4 s behind a
+# 20,000-review pass).
+def test_the_recording_pass_leaves_the_collection_worker_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    windows: list[object] = []
+    threads: list[str] = []
+
+    def pass_body(_mw: object, **_kwargs: object) -> bool:
+        threads.append(threading.current_thread().name)
+        return False
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", pass_body)
+    mw = _recording_pass_mw(windows)
+
+    # `_recording_pass_mw` fails the test from inside `run_in_background`
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    _join_the_recording_pass()
+
+    assert threads == ["rwkv-recordings-pass"]
+    assert rwkv_scheduler.rwkv_recordings_pass_running() is False
+
+
+# The pass stops by itself once the profile it started in has closed, so it
+# never walks a collection that is being torn down.
+def test_the_recording_pass_stops_when_the_profile_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    windows: list[object] = []
+    mw = _recording_pass_mw(windows)
+    waited: list[object] = []
+    monkeypatch.setattr(rwkv_scheduler, "wait_until_idle", waited.append)
+
+    def pass_body(_mw: object, *, progress: object = None, **_kwargs: object) -> bool:
+        assert callable(progress)
+        progress("still open", None, None)
+        mw.col = None  # the profile closes under the pass
+        with pytest.raises(rwkv_scheduler._ReviewerBackendWarmupInvalidated):
+            progress("closed", None, None)
+        return False
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", pass_body)
+
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    _join_the_recording_pass()
+
+    assert waited == [mw]

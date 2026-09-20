@@ -11095,42 +11095,58 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
 
     global _rwkv_recordings_pass_running
 
-    taskman = getattr(mw, "taskman", None)
-    run_in_background = getattr(taskman, "run_in_background", None)
-    if not callable(run_in_background):
-        recompute_rwkv_calibration_data(mw)
+    col = getattr(mw, "col", None)
+    if col is None:
         return
 
     started = time.monotonic()
 
+    def collection_open() -> bool:
+        """False once the profile has closed under the pass."""
+        return getattr(mw, "col", None) is col
+
     def progress(label: str, value: int | None, maximum: int | None) -> None:
-        # between batches: the user comes first
+        # between batches: the user comes first, and the pass stops once the
+        # profile has closed under it
+        if not collection_open():
+            raise _ReviewerBackendWarmupInvalidated
         wait_until_idle(mw)
 
-    def work() -> bool:
-        return recompute_rwkv_calibration_data(mw, progress=progress)
-
-    def done(future: Future[bool]) -> None:
-        global _rwkv_recordings_pass_running
-
+    def finish(recorded: bool) -> None:
         from aqt.utils import tooltip
 
-        _rwkv_recordings_pass_running = False
-        try:
-            recorded = future.result()
-        except Exception:
-            logger.exception("the RWKV recording pass failed")
-            return
         logger.debug(
             "RWKV recording pass finished: recorded=%s elapsed_ms=%.1f",
             recorded,
             (time.monotonic() - started) * 1000,
         )
-        if recorded:
+        if recorded and collection_open():
             tooltip(_tr().qt_misc_stats_data_ready(), parent=cast(QWidget | None, mw))
 
+    def run() -> None:
+        global _rwkv_recordings_pass_running
+
+        recorded = False
+        try:
+            recorded = recompute_rwkv_calibration_data(mw, progress=progress)
+        except Exception:
+            logger.exception("the RWKV recording pass failed")
+        finally:
+            _rwkv_recordings_pass_running = False
+        _run_on_main(mw, lambda: finish(recorded))
+
     _rwkv_recordings_pass_running = True
-    run_in_background(work, done)
+    # NOT the task manager's collection worker: there is one of those, and a
+    # pass that walks the whole review history would hold it for tens of
+    # minutes, with answering a card, clicking a deck, the deck list, the
+    # Browser and the stats all queued behind it (spec
+    # sched.rwkv-recordings-automatic). Its own thread, as the FSRS-7
+    # prediction pass uses.
+    threading.Thread(
+        target=run,
+        name="rwkv-recordings-pass",
+        daemon=True,
+    ).start()
 
 
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:

@@ -334,8 +334,13 @@ that would otherwise need a button, without asking and without a message:
   takes tens of minutes on a large collection, so it never runs at start-up
   and never in a progress window: it starts only after the user has left
   Clanki alone for ten seconds and no card is on the review screen, it runs
-  on a worker thread, and between two batches of reviews it waits again
-  while the user does something. Nothing is shown while it runs, except
+  on a thread of its own, and between two batches of reviews it waits again
+  while the user does something. **That thread is its own, never the task
+  manager's collection worker.** There is one collection worker, and
+  answering a card, clicking a deck, the deck list, the Browser and the
+  Stats all go through it; a pass that walked the whole history on it would
+  put every one of them behind it for tens of minutes. The pass stops by
+  itself once the profile it started in has closed. Nothing is shown while it runs, except
   that the model-quality graphs say their numbers are being computed
   instead of saying that nothing recorded them; a finished pass shows one
   short message. A finished pass remembers what it recorded
@@ -365,6 +370,8 @@ Again".
 `test_the_recording_pass_waits_until_the_user_leaves_clanki_alone`,
 `test_the_pass_pauses_between_batches_while_the_user_works`,
 `test_the_pass_runs_in_the_background_without_a_progress_window`,
+`test_the_recording_pass_leaves_the_collection_worker_free`,
+`test_the_recording_pass_stops_when_the_profile_closes`,
 `test_while_the_recording_pass_runs_the_graphs_say_it_is_computing`
 (`qt/tests/test_stats_metrics.py`),
 `test_nothing_starts_while_the_main_window_is_disabled`,
