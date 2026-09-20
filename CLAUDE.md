@@ -415,6 +415,17 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   `ruff` and `mypy` run fine from the tool directly. Run `format:prettier` in
   its own wrapper before `check:format:prettier`: in one ninja run the check
   races the formatter and fails on files it is about to rewrite.
+- **Never assume how many agents are running** (Andrew, 2026-09-20): "never
+  assume the number of agents running, always check first." Call `ListAgents`
+  before reporting what an agent is doing, before computing the subagent
+  budget for a new spawn, before saying work is in flight, and after any sign
+  of a session change. A session restart takes every subagent with it,
+  silently: on 2026-09-20 a session ended mid-task and the next one kept
+  reporting the agent as running until Andrew pointed it out. A task
+  notification is evidence an agent existed, not that it still exists. When an
+  agent is gone, say so plainly and relaunch it with a brief carrying the
+  results it had already produced -- work on disk survives, its context does
+  not.
 - **Messaging another Claude session needs no permission** (Andrew,
   2026-09-20): "you don't need to ask for permission to simply message another
   Claude". This covers every session on this machine and every subagent: asking
