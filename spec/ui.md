@@ -667,8 +667,10 @@ their subdecks. The settings are stored in the collection config under
 settings are used (its `heatmap` collection config and profile entries),
 except a color scheme left at the add-on's own default. A gear button at the
 right of the heatmap's controls opens the tab — the same gear icon the deck
-list draws for deck options (`imgs/gears.svg`), in the size and the grey of
-the three navigation buttons beside it; Shift+click on the gear cycles the
+list draws for deck options (`imgs/gears.svg`), in the grey of the three
+navigation buttons beside it, and drawn larger than them: the gear carries
+more detail than an arrow, so at their size it reads as a smudge;
+Shift+click on the gear cycles the
 color scheme and Shift+click on "today" cycles the calendar mode. With the
 switch off, or where neither the calendar nor the figures show, nothing is
 computed.
@@ -688,7 +690,8 @@ the add-on with a one-time notice. Later the same day: a user who tries to
 enable the add-on must be told that Clanki has this built in. Andrew,
 2026-09-16: the settings button carried the add-on's own three-bar mark,
 which does not say "settings" to a reader; it now shows the gear that the
-rest of Clanki uses.
+rest of Clanki uses. 2026-09-20: "make the cog inside the rounded square
+icon of Heatmap settings a little bigger".
 
 **Pinned by:** `qt/tests/test_review_heatmap.py` (streaks, averages, the
 day map, settings parsing and defaults, the carry-over from the add-on,
@@ -696,6 +699,7 @@ colors, modes and visibility, the stats-screen period and scope, the
 render cache, the browser search, the Shift+click cycling, the settings
 link, disabling the add-on, the one-time notice,
 `test_the_settings_button_shows_the_deck_lists_gear`,
+`test_the_gear_is_drawn_larger_than_the_navigation_icons`,
 `test_a_new_collection_has_the_heatmap_on_and_keeps_a_stored_off`,
 `test_enabling_the_review_heatmap_addon_is_refused_with_a_message`,
 `test_installing_the_review_heatmap_addon_leaves_it_disabled`);

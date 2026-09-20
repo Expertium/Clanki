@@ -848,6 +848,8 @@ var rhNewFinderAPI = true;
 # navigation buttons; all four get one width. The settings button shows the
 # deck list's own gear (`imgs/gears.svg`), which is drawn in black; the invert
 # turns it into the same grey as the three navigation icons, in both themes.
+# The gear itself is drawn larger than the three arrows: it carries more
+# detail, so at their size it reads as a smudge (spec ui.review-heatmap).
 HEATMAP_BUTTON_CSS = """
 <style>
 .heatmap .heatmap-controls .hm-btn {
@@ -862,6 +864,8 @@ HEATMAP_BUTTON_CSS = """
     object-fit: contain;
 }
 .heatmap .heatmap-controls .opts-btn > img {
+    height: 14px;
+    width: 14px;
     filter: invert(62%);
 }
 </style>

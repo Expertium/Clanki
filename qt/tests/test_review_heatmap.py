@@ -92,10 +92,23 @@ def test_the_settings_button_shows_the_deck_lists_gear() -> None:
     # the same gear the deck list draws, not the add-on's own three-bar mark
     assert "/_anki/imgs/gears.svg" in html
     assert "heatmap-options.svg" not in html
-    # size, place and tooltip of the button are unchanged
+    # place and tooltip of the button are unchanged
     assert '<div class="hm-btn opts-btn" title="Settings' in html
     assert ".heatmap .heatmap-controls .hm-btn {" in html
     assert "width: 28px;" in html
+
+
+# Pins spec/ui.md#ui.review-heatmap
+def test_the_gear_is_drawn_larger_than_the_navigation_icons() -> None:
+    today = 100 * DAY
+    report = compute_activity([(today, 12)], [], today, offset=4)
+    html = render_report(report, HeatmapView.deckbrowser, current_deck_only=False)
+    navigation = html.split(".heatmap .heatmap-controls .hm-btn > img {")[1]
+    navigation = navigation.split("}")[0]
+    gear = html.split(".heatmap .heatmap-controls .opts-btn > img {")[1]
+    gear = gear.split("}")[0]
+    assert "height: 10px;" in navigation and "width: 10px;" in navigation
+    assert "height: 14px;" in gear and "width: 14px;" in gear
 
 
 def _heatmap(enabled: bool, stored: object = None) -> ReviewHeatmap:
