@@ -171,10 +171,17 @@ export function umPlusView(
     };
 }
 
+export function umPlusDifferenceLabel(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.statisticsUmPlusDifferencePlain()
+        : tr.statisticsUmPlusDifference();
+}
+
 export function renderUmPlus(
     svgElem: SVGElement,
     bounds: GraphBounds,
     view: UmPlusView | null,
+    plainRecall = false,
 ): void {
     const svg = select(svgElem);
     svg.selectAll(".um-plus-drawing").remove();
@@ -211,7 +218,7 @@ export function renderUmPlus(
         .attr("text-anchor", "middle")
         .attr("fill", "currentColor")
         .attr("font-size", "12px")
-        .text(tr.statisticsUmPlusDifference());
+        .text(umPlusDifferenceLabel(plainRecall));
     drawing
         .append("text")
         .attr("transform", "rotate(-90)")

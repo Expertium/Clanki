@@ -7,6 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { GraphsRequest_Graph } from "@generated/anki/stats_pb";
     import { getConfigBool } from "@generated/backend";
     import { bridgeCommand } from "@tslib/bridgecommand";
+    import type { RecallWording } from "@tslib/recall-wording";
     import { loadSimpleItems, type SimpleItems } from "@tslib/ui-split";
     import type { Component } from "svelte";
     import { setContext } from "svelte";
@@ -44,6 +45,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // for graphs that show different controls in each mode, such as Total
     // Knowledge (spec ui.mode-switch)
     setContext("graphsAdvancedUi", advancedUi);
+    /** The recall wording, for the graphs that load their own data and so
+     * never see the response that carries it (spec ui.simple-recall-wording). */
+    const recallWording = writable<RecallWording | undefined>(undefined);
+    setContext("graphsRecallWording", recallWording);
     let modeKnown = false;
     /** See UiModeFromData */
     let switchChoice: boolean | null = null;
@@ -103,6 +108,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <UiModeFromData
             data={sourceData}
             {advancedUi}
+            {recallWording}
             bind:switchChoice
             bind:known={modeKnown}
         />

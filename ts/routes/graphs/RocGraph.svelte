@@ -21,11 +21,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         dataNotes,
         overlayText,
         renderRoc,
+        rocAucDescription,
         rocBounds,
         rocCurves,
         stillComputing,
         unavailableNotes,
     } from "./roc";
+    import { plainRecallWording, type RecallWording } from "@tslib/recall-wording";
 
     const pollDelayMs = 500;
     const bounds = rocBounds();
@@ -34,6 +36,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         readable("deck:current");
     const days =
         getContext<Readable<number> | undefined>("graphsDays") ?? readable(365);
+    // this graph loads its own data, so the wording comes from the page
+    // (spec ui.simple-recall-wording)
+    const advancedUi =
+        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
+    const recallWording =
+        getContext<Readable<RecallWording | undefined> | undefined>(
+            "graphsRecallWording",
+        ) ?? readable(undefined);
+    $: plainRecall = plainRecallWording($recallWording, $advancedUi);
 
     let svg: SVGElement | null = null;
     let progress: ReviewMetricsProgress | null = null;
@@ -156,7 +167,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </div>
     <div class="description">
         <div>{tr.statisticsRocDescriptionCurve()}</div>
-        <div>{tr.statisticsRocDescriptionAuc()}</div>
+        <div>{rocAucDescription(plainRecall)}</div>
         <div>{tr.statisticsModelMetricsDescriptionReviews()}</div>
         {#each notes as note}
             <div class="note">{note}</div>

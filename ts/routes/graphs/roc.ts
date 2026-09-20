@@ -76,6 +76,14 @@ export function curveLabel(algorithm: SchedulingAlgorithm, auc: number): string 
     });
 }
 
+/** The AUC sentence under the graph, in the chosen recall wording
+ * (spec ui.simple-recall-wording). */
+export function rocAucDescription(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.statisticsRocDescriptionAucPlain()
+        : tr.statisticsRocDescriptionAuc();
+}
+
 export function chanceLabel(): string {
     return tr.statisticsRocChance({ auc: localizedNumber(0.5, 4) });
 }

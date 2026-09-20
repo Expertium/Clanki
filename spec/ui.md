@@ -448,6 +448,14 @@ to Simple mode; the wording rule is the same either way.
 | Stats, the Retrievability graph                              | Card Probability of Recall; "N cards with X% probability of recall"; Average probability of recall |
 | Stats, the Stability graph's subtitle                        | The delay at which the probability of recall falls to 90%.                                     |
 | Stats, the Total Knowledge subtitle                          | ... each card counts as its probability of recall ...                                          |
+| Stats, the Retrievability graph's subtitle                   | The probability of recalling a card today.                                                     |
+| Stats, the AUC-ROC description                               | ... gives a higher probability of recall to the reviews you remembered ...                     |
+| Stats, the Calibration subtitle and X axis                   | ... predicted probability of recall ...; Predicted probability of recall                       |
+| Stats, the Universal Metric+ X axis                          | Difference in predicted probability of recall                                                  |
+
+The AUC-ROC, Calibration and Universal Metric+ graphs load their own data
+and never see the response that carries the setting, so the Stats page holds
+it and they read it from the page.
 
 Each of the three layers resolves the setting with one helper that takes the
 setting and the mode — `plain_recall_wording` in
@@ -479,7 +487,9 @@ uses the same wording ("Yes"). 2026-09-20 he asked for one setting with three
 choices instead, and for the rule to reach every mention of the word in the
 app: some users want the technical word in Simple mode, and some want the
 plain words everywhere. Simple mode is for users who do not read the FSRS
-papers. "Probability of recall" states what the number is; "memory strength"
+papers. Later the same day he added the graph descriptions that already said
+"probability of recall" and never said the technical word: "it should affect
+the graph descriptions, too". "Probability of recall" states what the number is; "memory strength"
 would be wrong, because that is stability.
 
 **Pinned by:** `the_setting_and_the_mode_together_choose_the_wording` and

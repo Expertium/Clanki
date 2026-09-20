@@ -22,6 +22,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         prepareData,
         type RetrievabilityHistogramData,
         retrievabilityHistogramGraph,
+        retrievabilitySubtitle,
         retrievabilityTitle,
         rwkvScoresPending,
         shouldShowRetrievabilityGraph,
@@ -58,7 +59,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: retrievabilityHistogramGraph(svg as SVGElement, bounds, histogramData);
 
     $: title = retrievabilityTitle(plainRecall);
-    const subtitle = tr.statisticsRetrievabilitySubtitle();
+    $: subtitle = retrievabilitySubtitle(plainRecall);
 </script>
 
 {#if shouldShowRetrievabilityGraph(sourceData)}
