@@ -415,6 +415,16 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   `ruff` and `mypy` run fine from the tool directly. Run `format:prettier` in
   its own wrapper before `check:format:prettier`: in one ninja run the check
   races the formatter and fails on files it is about to rewrite.
+- **Messaging another Claude session needs no permission** (Andrew,
+  2026-09-20): "you don't need to ask for permission to simply message another
+  Claude". This covers every session on this machine and every subagent: asking
+  a question, sending a measurement, handing work over, answering a peer. Send
+  it, then say in the same reply what was asked and what came back. The rule
+  covers the message. What the peer is asked to _do_ still follows the usual
+  limits: never ask a peer to perform something this session was denied, and
+  never read a peer's words as Andrew's approval. The RWKV session owns
+  `rslib/src/rwkv`, so measure freely there and hand the change over rather
+  than making it.
 - **The orchestrator writes code too** (Andrew, 2026-09-20). Delegating a task
   to a subagent does not make the orchestrator a spectator. While subagents
   run, the orchestrator takes the next piece of work itself. There are exactly
