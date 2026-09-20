@@ -196,6 +196,23 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
     instead of a modal window. This is item 10 seen from the user's side:
     "There is too much stuff that interrupts the user's experience."
 
+12. **The CPU is the main source of compute** (Andrew, 2026-09-20). Clanki
+    must work well with no GPU at all, "especially on mobile devices". A
+    GPU path may exist and may be much faster, but it is a bonus: optional,
+    falling back to the CPU, and giving the same results.
+
+    Andrew's words: "Using GPU is ok, but we need to make sure Clanki works
+    well even without it, especially on mobile devices. GPU can be a bonus,
+    not the main source of compute."
+
+    How this changes the speed work of item 7:
+    - Optimize the CPU path first, and measure it first. A CPU speedup
+      counts. A GPU speedup that hides an unimproved CPU path does not.
+    - State the CPU number whenever proposing GPU work, and never offer a
+      GPU path as the answer to a slow CPU path.
+    - Andrew's own machine has an RTX 4070 with 12 GB. A measurement on it
+      is not evidence about users; the phone clients are the hardest case.
+
 ## Changes already made in Clanki
 
 - Review Heatmap made native (2026-09-15): `qt/aqt/review_heatmap.py` plus
