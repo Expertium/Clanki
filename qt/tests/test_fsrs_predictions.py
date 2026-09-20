@@ -175,7 +175,6 @@ def test_the_collection_is_free_between_presets() -> None:
     started, release = _quiet()
     backend = _Backend(started, release, presets=[11, 22, 33])
     mw = _mw(backend)
-    predictions.BETWEEN_PRESETS_SECS = 0.05
 
     predictions.ensure_ready(mw)
     started.wait(5)
@@ -189,7 +188,7 @@ def test_the_collection_is_free_between_presets() -> None:
     # is free in between, so the main thread can get in
     for (_, ended), (began, _) in zip(backend.spans, backend.spans[1:]):
         assert began >= ended
-        assert began - ended >= predictions.BETWEEN_PRESETS_SECS / 2
+        assert began - ended >= predictions.MIN_REST_SECS / 2
 
 
 # Pins spec/ui.md#ui.stats-fsrs-predictions-ready
@@ -199,7 +198,6 @@ def test_the_pass_waits_for_a_pause_in_what_the_user_does(
     started, release = _quiet()
     backend = _Backend(started, release, presets=[11, 22])
     mw = _mw(backend)
-    monkeypatch.setattr(predictions, "BETWEEN_PRESETS_SECS", 0.0)
     monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
     # the user has just clicked
     mw.app = SimpleNamespace(last_input_at=time.monotonic())
@@ -221,28 +219,83 @@ def test_the_pass_waits_for_a_pause_in_what_the_user_does(
 
 
 # Pins spec/ui.md#ui.stats-fsrs-predictions-ready
-def test_a_preset_waits_for_the_next_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_started_pass_never_waits_for_the_user_to_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule: once the pass has begun, no piece of it waits for a pause.
+
+    It used to wait for USER_IDLE_SECS of quiet before every preset. A user
+    who keeps working never gives it one, so the pass made no progress at
+    all while he studied: measured on a 966,822-row collection, 0 of 11
+    presets in five minutes of use, for a job of 25 seconds.
+    """
+
     started = threading.Event()
     release = threading.Event()
-    backend = _Backend(started, release, presets=[11, 22])
+    backend = _Backend(started, release, presets=[11, 22, 33])
+    # the optimization half of the pass is under the same rule
+    backend.due_for_optimize = [11, 22]
     mw = _mw(backend)
-    monkeypatch.setattr(predictions, "BETWEEN_PRESETS_SECS", 0.0)
-    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
-    mw.app = SimpleNamespace(last_input_at=time.monotonic() - 1.0)
+    # long enough that a pass which waited for a pause would never finish
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 30.0)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic() - 60.0)
 
     predictions.ensure_ready(mw)
     assert started.wait(5)
-    # the user does something while the first preset is being computed
-    clicked = time.monotonic()
-    mw.app.last_input_at = clicked
-    release.set()
-    while predictions.is_running():
-        pass
 
-    assert backend.refreshed == [11, 22]
-    # the second preset waited for the next pause instead of landing on top
-    # of what the user was doing
-    assert backend.spans[1][0] - clicked >= predictions.USER_IDLE_SECS
+    # the user works throughout, so a countdown would restart forever
+    stop = threading.Event()
+
+    def working() -> None:
+        while not stop.wait(0.01):
+            mw.app.last_input_at = time.monotonic()
+
+    worker = threading.Thread(target=working, daemon=True)
+    worker.start()
+    release.set()
+    deadline = time.monotonic() + 10.0
+    while predictions.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    stop.set()
+    worker.join(1)
+    still_running = predictions.is_running()
+    # so that a pass which did wait does not run on into the next test
+    mw.col = None
+    while predictions.is_running():
+        time.sleep(0.01)
+
+    assert not still_running
+    assert backend.optimized == [11, 22]
+    assert backend.refreshed == [11, 22, 33]
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_the_rest_between_presets_is_a_bounded_multiple_of_the_preset() -> None:
+    """The rest is sized, not open-ended: a multiple of the preset just done
+    while the user works, a moment while he is away, bounded either way."""
+
+    working = SimpleNamespace(app=SimpleNamespace(last_input_at=time.monotonic()))
+    away = SimpleNamespace(
+        app=SimpleNamespace(
+            last_input_at=time.monotonic() - predictions.USER_ACTIVE_SECS - 1.0
+        )
+    )
+    nothing_tracked = SimpleNamespace()
+
+    # while the user works: REST_RATIO times the preset just done
+    assert predictions.rest_seconds(working, 0.5) == pytest.approx(
+        0.5 * predictions.REST_RATIO
+    )
+    # never longer than MAX_REST_SECS, however long the preset was
+    assert predictions.rest_seconds(working, 3600.0) == predictions.MAX_REST_SECS
+    # and never shorter than MIN_REST_SECS, so a click waiting for the
+    # collection takes it before the pass asks again
+    assert predictions.rest_seconds(working, 0.0) == predictions.MIN_REST_SECS
+
+    # while the user is away, or where nothing tracks him: a moment only
+    assert predictions.rest_seconds(away, 10.0) == predictions.MIN_REST_SECS
+    assert predictions.rest_seconds(nothing_tracked, 10.0) == predictions.MIN_REST_SECS
 
 
 def test_the_pass_holds_the_collection_only_inside_its_backend_calls(
@@ -274,16 +327,28 @@ def test_the_pass_holds_the_collection_only_inside_its_backend_calls(
 def test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """And it stops AT ONCE, not at the end of the countdown it is in.
+
+    The wait used to sleep for the whole remaining countdown before looking
+    at the collection again, so closing the profile left the pass alive for
+    up to USER_IDLE_SECS.
+    """
+
     started, release = _quiet()
     backend = _Backend(started, release)
     mw = _mw(backend)
-    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 30.0)
     mw.app = SimpleNamespace(last_input_at=time.monotonic())
 
     predictions.ensure_ready(mw)
+    time.sleep(0.1)
+    closed = time.monotonic()
     mw.col = None
-    while predictions.is_running():
-        pass
+    deadline = closed + 5.0
+    while predictions.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not predictions.is_running()
+    assert time.monotonic() - closed < predictions.USER_IDLE_SECS / 2
 
     # nothing was asked or written, no failure was reported, and the day
     # is not counted as done

@@ -1548,15 +1548,34 @@ The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
 day, and again whenever a preset's FSRS-7 parameters change.
 
-It waits for a pause in what the user does. It asks which presets are stale,
-and starts each preset, only once ten seconds have passed without a key
-press, a click, a double click, a scroll or a touch anywhere in Clanki. One
-preset holds the collection for up to about five seconds on a large
-collection, and anything the user does meanwhile waits for it; at start-up,
-when the pass began at once, that froze the main window for 2-4 seconds and
-made deck options take 3.5 seconds to open. While it waits for a pause it
-has written nothing. When the collection closes during the wait, the pass
-stops without counting the day as done and without reporting a failure.
+It waits for a pause in what the user does **before it begins**. It asks
+which presets are stale only once ten seconds have passed without a key
+press, a click, a double click, a scroll or a touch anywhere in Clanki. That
+question holds the collection, and so does every preset after it; at
+start-up, when the pass began at once, that froze the main window for 2-4
+seconds and made deck options take 3.5 seconds to open. While it waits for
+that pause it has written nothing. When the collection closes during the
+wait, the pass stops **at once** — it looks again four times a second, not
+at the end of the countdown it is in — without counting the day as done and
+without reporting a failure.
+
+**Once it has begun it never waits for the user again.** Between two presets
+it rests instead, and that rest is bounded. While the user works it is twice
+the preset just done, up to five seconds. While the user is away, or where
+nothing tracks him, it is one twentieth of a second, which is only long
+enough to let a click that is already waiting for the collection take it
+first. The same rest separates two automatic optimizations. The pass holds
+nothing across a rest: it takes the collection inside a backend call and
+gives it back when that call returns, so there is no lock to hand back.
+
+A click still waits for the preset that is being written when it arrives.
+That is a limitation, not a decision: one preset is the smallest piece the
+backend offers, and writing a preset's rows is one transaction. Measured on
+Andrew's collection, the largest preset (339,239 rows) held the collection
+for 6.2 seconds while its rows were written, and about 14 seconds of the
+pass's 25 seconds of work were spent holding it. Splitting that write into
+bounded chunks would remove the limitation, and is the only thing that
+would.
 
 It never starts while the RWKV state cache is loading or building. That load
 holds the collection, so a pass in front of it would make the user wait for
@@ -1612,11 +1631,25 @@ wrong number. The pass costs about 25 seconds on a collection of
 request 125, which is why it runs in the background and at most once a day
 rather than while a page is open.
 
+The rest between presets is the same rule seen from the other side. The pass
+used to wait for the same ten seconds of quiet before every preset, and a
+user who keeps working never gives it one, so it made no progress at all
+while he studied: measured on his collection, headless with a simulated user
+acting every three seconds, 0 of 11 presets and 0 rows in five minutes, for
+a job of 25 seconds. With the bounded rest the same pass wrote all 966,822
+rows in 52 seconds of the same use, for 25 CPU seconds, and 93 per cent of
+the clicks sampled during it waited less than a twentieth of a second. With
+the user away both take the same time, 25 seconds. Looking for the closed
+profile four times a second rather than once a countdown is the same fault
+again: the pass used to stay alive for nine seconds after the profile closed
+under it, and now stops within a quarter of a second.
+
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
 `test_the_pass_waits_for_a_pause_in_what_the_user_does`,
-`test_a_preset_waits_for_the_next_pause`,
+`test_a_started_pass_never_waits_for_the_user_to_stop`,
+`test_the_rest_between_presets_is_a_bounded_multiple_of_the_preset`,
 `test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes`,
 `test_the_fake_backend_returns_what_the_real_backend_returns`
 (`qt/tests/test_fsrs_predictions.py`);

@@ -14,15 +14,23 @@ the same transaction as the change.
 Three rules keep it out of the user's way at start-up. It never begins while
 the RWKV state cache is loading, because that load already holds the
 collection and a 3.3 GB restore behind a backfill is a stall the user
-watches; it waits and asks again. It recomputes ONE PRESET PER CALL, so
-the collection is free between presets and the main thread is never shut out
-for the length of a whole backfill. And it waits for a pause: it asks which
-presets are stale, and starts each preset, only once the user has left
-Clanki alone for USER_IDLE_SECS. One preset holds the collection for up to
-five seconds on a large collection, and at start-up, when the pass used to
-run, that is exactly when the user clicks: deck options took 3.5 s to open
-8 s after the profile opened, and the main window froze for 2-4 s. It reports no progress of its own and
-clears none, so it cannot disturb what the main thread is showing.
+watches; it waits and asks again. It works ONE PRESET PER CALL, so the
+collection is free between presets and the main thread is never shut out
+for the length of a whole backfill. And it does not begin until the user has
+left Clanki alone for USER_IDLE_SECS. One preset holds the collection for up
+to five seconds on a large collection, and at start-up, when the pass used
+to run, that is exactly when the user clicks: deck options took 3.5 s to
+open 8 s after the profile opened, and the main window froze for 2-4 s. It
+reports no progress of its own and clears none, so it cannot disturb what
+the main thread is showing.
+
+Once it has begun it never waits for the user again. Between two presets it
+rests, for a multiple of the preset just done while the user works and for a
+moment while the user is away, and the rest is bounded either way
+(`rest_seconds`). A wait for the user to stop, which every key press
+restarted, made no progress at all while he studied, so the pass stood
+unfinished for a whole session and the graphs kept saying that their numbers
+were being computed.
 
 A pass that fails says so. It cannot report progress, so a failure left no
 trace at all beyond a log line, and an empty FSRS-7 series looks the same as
@@ -30,9 +38,9 @@ one that is merely still being computed.
 
 Before the predictions, the same pass optimizes the FSRS-7 parameters of
 every preset whose "Optimize every N days" is due (spec
-deck-options.fsrs-auto-optimize), one preset per call under the same idle
-rules. New parameters drop that preset's predictions, so the rest of the
-pass then writes them again for the new parameters.
+deck-options.fsrs-auto-optimize), one preset per call and with the same rest
+between two of them. New parameters drop that preset's predictions, so the
+rest of the pass then writes them again for the new parameters.
 
 It runs at most once a day on its own, which is the upkeep the graphs need:
 a stored row is a validation fold, and the per-answer rows written while
@@ -55,17 +63,32 @@ logger = logging.getLogger(__name__)
 LAST_PASS_DAY_KEY = "lastFsrsPredictionPassDay"
 # how long to wait before asking again while the RWKV state cache loads
 RWKV_RETRY_SECS = 5.0
-# how long to leave the collection free between two presets
-BETWEEN_PRESETS_SECS = 0.25
 # how long Clanki must go without a key press, click or scroll before the
-# pass starts, and before each preset: one preset holds the collection for
-# up to several seconds, and whatever the user does meanwhile waits for it
+# pass BEGINS: its first call holds the collection for up to several
+# seconds, and at start-up that is exactly when the user clicks
 USER_IDLE_SECS = 10.0
+# how often that wait looks again, so the pass stops as soon as the profile
+# closes under it instead of at the end of a whole countdown
+START_WAIT_CHECK_SECS = 0.25
+# Once it has begun, the pass rests between two presets instead of waiting
+# for the user; these size that rest (`rest_seconds`).
+# the user counts as working for this long after a key press, a click or a
+# scroll
+USER_ACTIVE_SECS = 2.0
+# while the user works, the pass rests this many times as long as the preset
+# it has just done, so it leaves most of the machine to him
+REST_RATIO = 2.0
+# it always rests a moment, so that a click waiting for the collection takes
+# it before the pass asks again
+MIN_REST_SECS = 0.05
+# and never more than this, so that the whole pass still finishes in about
+# twice its own length rather than standing unfinished
+MAX_REST_SECS = 5.0
 
 _lock = threading.Lock()
 _running = False
 # true only while a backend call of the pass holds the collection, not
-# while the pass waits for a pause
+# while the pass waits for a pause and not while it rests
 _holding_collection = False
 _waiting = False
 # a failed pass warns once per session, not once per preset and not once
@@ -169,16 +192,56 @@ def seconds_since_input(mw: Any) -> float | None:
     return time.monotonic() - last_input_at
 
 
-def _wait_for_the_user(mw: Any, col: Any) -> bool:
-    """Waits until the user has left Clanki alone for USER_IDLE_SECS. False
-    when the collection closed meanwhile: the pass then stops."""
+def _wait_for_a_pause(mw: Any, col: Any) -> bool:
+    """Waits, BEFORE the pass begins, until the user has left Clanki alone
+    for USER_IDLE_SECS. False when the collection closed meanwhile: the pass
+    then stops.
+
+    Only the start waits. Once the pass has begun it rests between two
+    presets instead (`rest_seconds`), because this wait makes no progress at
+    all while the user works: every key press starts the countdown again.
+    """
     while True:
         if mw.col is not col:
             return False
         since_input = seconds_since_input(mw)
         if since_input is None or since_input >= USER_IDLE_SECS:
             return True
-        time.sleep(USER_IDLE_SECS - since_input)
+        # in short pieces, so that a profile closing under the wait stops
+        # the pass at once instead of up to USER_IDLE_SECS later
+        time.sleep(min(USER_IDLE_SECS - since_input, START_WAIT_CHECK_SECS))
+
+
+def rest_seconds(mw: Any, preset_seconds: float) -> float:
+    """How long the pass rests after a preset that took `preset_seconds`
+    (spec ui.stats-fsrs-predictions-ready).
+
+    While the user works, the rest is a multiple of the preset just done,
+    bounded by MAX_REST_SECS, so the pass gives him most of the machine back
+    between presets and still finishes in about twice its own length. While
+    the user is away it is only long enough to let a click that is already
+    waiting for the collection take it first. It is never a wait for the
+    user to stop.
+    """
+    since_input = seconds_since_input(mw)
+    working = since_input is not None and since_input < USER_ACTIVE_SECS
+    rest = max(preset_seconds, 0.0) * REST_RATIO if working else 0.0
+    return min(max(rest, MIN_REST_SECS), MAX_REST_SECS)
+
+
+def _rest_after(mw: Any, col: Any, started: float) -> bool:
+    """Rests after the preset that began at `started`, so that the user's
+    own work goes in between two presets instead of behind all of them.
+    False when the collection closed: the pass then stops.
+
+    The pass holds nothing here, and nothing across the rest: it takes the
+    collection inside a backend call and gives it back when that call
+    returns, so there is no lock to hand back for the length of the rest.
+    """
+    if mw.col is not col:
+        return False
+    time.sleep(rest_seconds(mw, time.monotonic() - started))
+    return mw.col is col
 
 
 @contextmanager
@@ -194,28 +257,31 @@ def _holding() -> Iterator[None]:
 def _run(mw: Any, col: Any) -> None:
     global _running
     try:
-        # asking which presets are stale holds the collection too
-        if not _wait_for_the_user(mw, col):
+        # the pass does not begin until the user has paused: asking which
+        # presets are stale holds the collection too
+        if not _wait_for_a_pause(mw, col):
             return
         if not _auto_optimize(mw, col):
             return
         # the generated backend method already returns the ids, not the
         # response message; reading a field off them raised AttributeError
         # on the pass's first line and the log was the only place it showed
+        started = time.monotonic()
         with _holding():
             presets = list(col._backend.stale_fsrs_prediction_presets())
+        if not _rest_after(mw, col, started):
+            return
         written = 0
         for index, preset in enumerate(presets):
-            if index:
-                # the collection is free here, so anything the user does
-                # goes in between two presets instead of behind all of them
-                time.sleep(BETWEEN_PRESETS_SECS)
-            if not _wait_for_the_user(mw, col):
-                return
+            started = time.monotonic()
             with _holding():
                 written += col._backend.refresh_fsrs_review_predictions(
                     deck_config_id=preset
                 )
+            # the collection is free here, so anything the user does goes in
+            # between two presets instead of behind all of them
+            if index + 1 < len(presets) and not _rest_after(mw, col, started):
+                return
         logger.debug(
             "stored %s FSRS review predictions over %s presets", written, len(presets)
         )
@@ -229,20 +295,22 @@ def _run(mw: Any, col: Any) -> None:
 
 
 def _auto_optimize(mw: Any, col: Any) -> bool:
-    """Optimizes the presets that are due, one per call. False when the
-    collection closed meanwhile."""
+    """Optimizes the presets that are due, one per call, with a rest between
+    two of them. False when the collection closed meanwhile."""
+    started = time.monotonic()
     with _holding():
         presets = list(col._backend.fsrs_presets_due_for_auto_optimize())
+    if not _rest_after(mw, col, started):
+        return False
     changed = False
-    for index, preset in enumerate(presets):
-        if index:
-            time.sleep(BETWEEN_PRESETS_SECS)
-        if not _wait_for_the_user(mw, col):
-            return False
+    for preset in presets:
+        started = time.monotonic()
         with _holding():
             changed |= bool(
                 col._backend.auto_optimize_fsrs_preset(deck_config_id=preset)
             )
+        if not _rest_after(mw, col, started):
+            return False
     if changed:
         # cards' memory states (and due dates, with "Reschedule cards when
         # desired retention changes") moved: the screens show them again,
