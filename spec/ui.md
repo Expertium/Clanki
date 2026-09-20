@@ -1131,6 +1131,28 @@ sure the title says Universal Metric+, not just UM+".
 **Pinned by:** `ts/routes/graphs/calibration.test.ts` ("each count bar spans
 its own bin, and the bins tile 0 to 1").
 
+## ui.tooltip-style
+
+Given a short message over the current window (a finished sync, a
+reschedule, a copied value), Clanki draws one frameless widget: grey-blue
+(#e2e5ec) with black text in the light theme, obsidian black (#0a0a0a) with
+white text in the dark theme, rounded corners, a soft shadow, and no web
+view. A click hides it, and it closes by itself
+after its period. It is the same widget in both themes; the yellow panel
+with a two-pixel frame is gone.
+
+**Why:** Andrew, 2026-09-20: "sometimes Anki displays stuff in this window,
+like for syncing or rescheduling. Can you make it look less 2004 and more
+modern? As long as it doesn't bloat RAM and slow everything down"; the two
+colour pairs are his ("grey-blue-ish with black text", "obsidian black
+#0A0A0A with white text"). A QLabel
+with a shadow costs no process and no page load, so a message stays as cheap
+as it was.
+
+**Pinned by:** `test_a_tooltip_is_a_rounded_toast_in_the_themes_colours`,
+`test_a_tooltip_closes_on_a_click_and_on_close`
+(`qt/tests/test_tooltip.py`).
+
 ## ui.stats-model-metrics
 
 Given the Stats page in Advanced mode, the model-quality graphs compare the

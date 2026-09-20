@@ -150,6 +150,20 @@ Simple mode must still be able to optimize.
 ("Optimize All Presets" visible in Simple mode, no "Optimize Current
 Preset" in either mode). The rest of the visibility is markup.
 
+## deck-options.fsrs-advanced-not-collapsed
+
+Given deck options in Advanced mode with FSRS-7, the FSRS advanced settings
+(Help Me Decide, the parameters, the search filter, "Optimize every N days",
+Check Health, the simulator) are drawn under a divider, not inside a
+collapsed "Advanced settings" expander. There is no expander to open.
+
+**Why:** Andrew, 2026-09-20: "Remove the 'Advanced settings' collapsing.
+It's already shown only in Advanced UI mode." Hiding Advanced-mode settings
+behind a second click inside Advanced mode says the same thing twice.
+
+**Pinned by:** `test_the_fsrs_advanced_settings_are_not_in_an_expander`
+(`qt/tests/test_deckoptions.py`).
+
 ## deck-options.fsrs-auto-optimize
 
 Given a collection with FSRS enabled, whatever its algorithm, Clanki
@@ -376,8 +390,7 @@ by default). A setting the user adds goes where it belongs:
 - Maximum reviews/day, the limit tabs, the Algorithm dropdown, the
   desired-retention tabs and the FSRS advanced settings go into the Simple
   section, next to New cards/day and Desired retention, whose controls
-  they share (the FSRS ones in the collapsed "Advanced settings"
-  expander, as in Advanced mode);
+  they share (the FSRS ones under the same divider as in Advanced mode);
 - every other one goes into its Advanced-mode section (New cards, Lapses,
   Display order, RWKV, Burying, Audio, Timers, Auto advance, Advanced),
   drawn below the Simple section and above the add-ons, in Advanced
