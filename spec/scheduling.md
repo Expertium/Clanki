@@ -255,15 +255,41 @@ built again after every answer.
 **Pinned by:** `emptying_empty_rwkv_scores_keeps_the_study_queue`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
-## sched.rwkv-startup-progress-text
+## sched.rwkv-startup-no-window
 
-Given a collection whose saved RWKV state loads when the profile opens, the
-progress window reads "Starting" with the label "Starting..." (an ellipsis
-character). It does not name RWKV, the state cache, or the file it reads.
-**Why:** Andrew, 2026-09-16: "let's rename it to something more user-friendly,
-like 'Starting...' or something". The window tells the user what they wait
-for; the name of the data structure means nothing to them.
-**Pinned by:** `test_the_startup_progress_text_names_no_internals`
+Given a collection whose RWKV state is restored, or built, when the profile
+opens, Clanki opens no progress window and disables no part of the main
+window. The work runs on a background thread while the deck list, the
+overview, the reviewer, the menus and every dialog stay usable. The one-time
+conversion of an old store is the single exception and keeps its own window
+(`sched.rwkv-lazy-state-upgrade-window`).
+
+While that work runs, every screen that would show an RWKV number shows its
+own quiet state instead of a number: the deck list and the overview wait for
+the counts and ask again, the reviewer says its intervals are being prepared,
+the Browser leaves its RWKV columns empty and retries, the graphs say they
+are being computed, and card info says the same for the RWKV-Curve chart. No
+screen shows an FSRS-7 value in place of an RWKV one, and none shows a number
+computed without the RWKV state. When the work ends, every open card-info
+window draws its card again, so a chart that said it was being computed shows
+the chart without the user asking for it.
+
+The whole-history query the restore and the build run is split into
+`HISTORY_QUERY_PARTS` card-id ranges, so the collection is free between the
+parts instead of held for one query of several seconds.
+
+**Why:** Andrew, 2026-09-20 (CLAUDE.md, Planned direction 10 and 11):
+"Starting Clanki should be near-instantaneous", and Clanki shows no waiting
+window at start-up. Opening his profile showed a modal "Starting" window and
+made the main thread unusable for about 34 seconds (27.2 s, then 6.7 s). A
+window that the user cannot dismiss, in front of work the user never asked
+for, is exactly what rule 11 forbids; the work itself still has to happen, so
+it moves out of the user's way instead of going away.
+
+**Pinned by:** `test_the_startup_restore_opens_no_window`,
+`test_the_startup_build_opens_no_window`,
+`test_open_card_info_is_drawn_again_when_the_rwkv_state_is_ready`,
+`test_startup_loads_usable_rwkv_state_cache_without_a_window`
 (`qt/tests/test_rwkv_scheduler.py`)
 
 ## sched.rwkv-state-cache-startup-build
@@ -273,15 +299,19 @@ and no usable local RWKV state (no saved state cache, or one that does not
 load), when the profile opens and any automatic startup sync has finished:
 
 - Clanki builds the RWKV state cache and the calibration data (the historical
-  retrievability rows) at once, in a progress window, without asking;
+  retrievability rows) at once, without asking and without a progress window
+  (`sched.rwkv-startup-no-window`);
 - it starts this build once per profile open, and skips it when the RWKV
-  state became ready in the meantime.
+  state became ready in the meantime;
+- when the build ends it shows one short message.
 
 **Why:** Andrew, 2026-09-15: "Don't show this at startup, just build both"
 (the question offered "Build State Only", "Build State + Calibration Data"
-and Cancel).
+and Cancel). The same build started by a button, rather than by start-up,
+keeps its window: the user asked for it and waits for it.
 
-**Pinned by:** `test_startup_builds_the_state_and_the_calibration_data_without_asking`
+**Pinned by:** `test_startup_builds_the_state_and_the_calibration_data_without_asking`,
+`test_the_startup_build_opens_no_window`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-recordings-automatic
@@ -382,22 +412,25 @@ entity and a point lookup is exact.
 
 ## sched.rwkv-lazy-state-upgrade-window
 
-Given a saved RWKV state cache in the old format, when a profile opens, the
-start-up progress window is titled "One-time update" and reads "Clanki is
-reorganising its saved review data so it can start faster. This happens once
-and can take some time." The conversion runs once, inside that wait; every
-later start-up of the same profile shows the ordinary "Starting" window
-again. A profile with a converted store, and a profile with no store at all,
-never show the one-time words.
+Given a saved RWKV state cache in the old format, when a profile opens, a
+progress window titled "One-time update" reads "Clanki is reorganising its
+saved review data so it can start faster. This happens once and can take some
+time." The conversion runs once, inside that wait; every later start-up of
+the same profile opens no window at all
+(`sched.rwkv-startup-no-window`). A profile with a converted store, and a
+profile with no store at all, never show the one-time words and never show a
+window.
 
-**Why:** Andrew, 2026-09-16, wrote both strings himself. The conversion is the
-only start-up wait long enough to need its own words: it takes 15.6 seconds on
-his 3.51 GB store, against 0.171 seconds for an ordinary lazy restore, so a
-window that says "Starting" for fifteen seconds once would look like a fault.
-It names what the user waits for, not the format it converts, and it promises
-"once" because the converted store is never converted again. The promise is
-safe to print because the conversion builds a new file and renames it into
-place: ending the wait early loses nothing.
+**Why:** Andrew, 2026-09-16, wrote both strings himself. This conversion is
+the one start-up wait that the user is told about and that happens once, so
+it is the "other exception where it is expected to wait" that rule 11 allows,
+next to optimizing parameters, a backup and a database check. It takes 15.6
+seconds on his 3.51 GB store and changes the file the next start-up reads, so
+a silent 15-second pause on one start-up in a profile's life would look like
+a fault. It names what the user waits for, not the format it converts, and it
+promises "once" because the converted store is never converted again. The
+promise is safe to print because the conversion builds a new file and renames
+it into place: ending the wait early loses nothing.
 
 **Pinned by:** `test_only_the_one_time_upgrade_gets_the_one_time_words`
 (`qt/tests/test_rwkv_scheduler.py`).

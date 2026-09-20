@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import re
 import sqlite3
 import struct
 import threading
@@ -9285,7 +9286,7 @@ def test_embedded_warmup_batches_prediction_recording() -> None:
     assert recorder.rows == [[(102, 0.21), (104, 0.43)]]
 
 
-def test_startup_loads_usable_rwkv_state_cache_with_progress(
+def test_startup_loads_usable_rwkv_state_cache_without_a_window(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -9315,11 +9316,13 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
     set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
     taskman, progress_updates = _attach_progress_taskman(reviewer.mw)
     history_builds = 0
+    history_kwargs: list[dict[str, object]] = []
     build_history = rwkv_scheduler._historical_rwkv_review_inputs
 
     def counted_history_build(*args: object, **kwargs: object) -> object:
         nonlocal history_builds
         history_builds += 1
+        history_kwargs.append(kwargs)
         return build_history(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -9330,11 +9333,11 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
 
     rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
 
-    assert taskman.with_progress_kwargs is not None
-    assert taskman.with_progress_kwargs["label"] == "Starting…"
-    assert taskman.with_progress_kwargs["immediate"] is True
-    assert taskman.with_progress_kwargs["uses_collection"] is True
-    assert taskman.with_progress_kwargs["title"] == "Starting"
+    # pins spec/scheduling.md#sched.rwkv-startup-no-window: no window opens,
+    # and the restore runs off the main thread all the same
+    assert taskman.with_progress_kwargs is None
+    assert taskman.background_runs == 1
+    assert progress_updates == []
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
     assert restored_runtime.reviewed == []
     assert prewarm_calls == [
@@ -9345,9 +9348,11 @@ def test_startup_loads_usable_rwkv_state_cache_with_progress(
     ]
     assert rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw) is False
     assert history_builds == 1
-    assert any(
-        update["label"] == "Loading new RWKV reviews..." for update in progress_updates
-    )
+    # the whole-history query runs in parts, so the collection is free
+    # between them while the user works
+    assert [kwargs.get("between_parts") for kwargs in history_kwargs] == [
+        rwkv_scheduler._split_whole_history_query
+    ]
 
 
 def test_deck_browser_counts_wait_for_startup_cache_load(
@@ -9359,6 +9364,9 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     prewarm_calls: list[int] = []
 
     class Taskman:
+        """Holds the background work until the test releases it, so the deck
+        list can be asked for its counts while the load still runs."""
+
         progress_task: Callable[[], bool] | None = None
         progress_done: Callable[[Future[bool]], None] | None = None
 
@@ -9371,16 +9379,21 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
             on_done: Callable[[Future[bool]], None],
             **_kwargs: object,
         ) -> None:
-            self.progress_task = task
-            self.progress_done = on_done
+            raise AssertionError("the start-up load must open no window")
 
         def run_in_background(
             self,
             task: Callable[[], object],
             on_done: Callable[[Future[object]], None],
             *,
-            uses_collection: bool,
+            uses_collection: bool = True,
         ) -> None:
+            if self.progress_task is None:
+                # the start-up load: held until the test releases it
+                self.progress_task = cast(Callable[[], bool], task)
+                self.progress_done = cast(Callable[[Future[bool]], None], on_done)
+                return
+            # the deck list's own work, which runs while that load is held
             future: Future[object] = Future()
             future.set_result(task())
             on_done(future)
@@ -9636,7 +9649,10 @@ def test_startup_builds_the_state_and_the_calibration_data_without_asking(
 
     rwkv_scheduler.prepare_rwkv_state_cache_on_startup(reviewer.mw)
 
-    assert taskman.with_progress_kwargs is not None
+    # the restore finds nothing and the build follows, neither in a window
+    # (spec sched.rwkv-startup-no-window)
+    assert taskman.with_progress_kwargs is None
+    assert taskman.background_runs == 2
     assert runtime.reviewed == [(1, 2), (1, 3)]
     assert rwkv_scheduler.rwkv_state_cache_usable(reviewer.mw) is True
     assert [
@@ -17603,10 +17619,25 @@ def _rwkv_reviewer(
 
         class DB:
             def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+                if sql == "select cid, count() from revlog group by cid order by cid":
+                    # the card-id ranges a split whole-history query runs in
+                    # (spec sched.rwkv-startup-no-window)
+                    counts: dict[int, int] = {}
+                    for row in historical_review_rows or []:
+                        counts[cast(int, row[1])] = counts.get(cast(int, row[1]), 0) + 1
+                    return sorted(counts.items())
                 assert "from revlog r" in sql
                 assert "join cards c" in sql
                 assert args == ()
-                return historical_review_rows
+                card_range = re.search(r"and r\.cid between (\d+) and (\d+)", sql)
+                if card_range is None:
+                    return historical_review_rows
+                low, high = int(card_range[1]), int(card_range[2])
+                return [
+                    row
+                    for row in (historical_review_rows or [])
+                    if low <= cast(int, row[1]) <= high
+                ]
 
             def execute(self, sql: str) -> None:
                 pytest.fail(f"unexpected DB execute: {sql}")
@@ -17672,6 +17703,13 @@ def _rwkv_cache_reviewer(
                     for review_id, prediction, *_ in rwkv_retrievability_rows
                     if review_id in requested_ids
                 ]
+            if sql == "select cid, count() from revlog group by cid order by cid":
+                # the card-id ranges a split whole-history query runs in
+                # (spec sched.rwkv-startup-no-window)
+                counts: dict[int, int] = {}
+                for row in rows:
+                    counts[row[1]] = counts.get(row[1], 0) + 1
+                return sorted(counts.items())
             assert "from revlog r" in sql
             assert "join cards c" in sql
             # Normalize here too, not only at fixture time: a test may append a
@@ -17680,6 +17718,10 @@ def _rwkv_cache_reviewer(
             query_rows = cast(
                 list[tuple[int, ...]], _benchmark_valid_historical_rows(rows)
             )
+            card_range = re.search(r"and r\.cid between (\d+) and (\d+)", sql)
+            if card_range is not None:
+                low, high = int(card_range[1]), int(card_range[2])
+                query_rows = [row for row in query_rows if low <= row[1] <= high]
             if args:
                 assert len(args) == 1
                 after_review_id = args[0]
@@ -17925,10 +17967,21 @@ def _attach_progress_taskman(
     class Taskman:
         def __init__(self) -> None:
             self.with_progress_kwargs: dict[str, object] | None = None
+            self.background_runs = 0
 
         def run_on_main(self, callback: object) -> None:
             assert callable(callback)
             callback()
+
+        def _run(self, task: object, on_done: object) -> None:
+            assert callable(task)
+            assert callable(on_done)
+            future: Future[Any] = Future()
+            try:
+                future.set_result(task())
+            except Exception as exc:
+                future.set_exception(exc)
+            on_done(future)
 
         def with_progress(
             self,
@@ -17936,15 +17989,18 @@ def _attach_progress_taskman(
             on_done: object,
             **kwargs: object,
         ) -> None:
-            assert callable(task)
-            assert callable(on_done)
             self.with_progress_kwargs = kwargs
-            future: Future[bool] = Future()
-            try:
-                future.set_result(task())
-            except Exception as exc:
-                future.set_exception(exc)
-            on_done(future)
+            self._run(task, on_done)
+
+        def run_in_background(
+            self,
+            task: object,
+            on_done: object,
+            *,
+            uses_collection: bool = True,
+        ) -> None:
+            self.background_runs += 1
+            self._run(task, on_done)
 
     taskman = Taskman()
     mw.taskman = taskman
@@ -20005,21 +20061,177 @@ def test_stats_scoring_after_a_cancel_runs_to_the_end(
     assert backend.predicted_card_ids == [1]
 
 
-# Pins spec/scheduling.md#sched.rwkv-startup-progress-text: the start-up
-# progress window says what the user waits for, not which file is read.
-def test_the_startup_progress_text_names_no_internals() -> None:
-    from pathlib import Path
+class _StartupTaskman:
+    """Records which of the two paths the start-up work took: a progress
+    window, or the background with no window at all."""
 
-    ftl = Path(__file__).parents[2] / "ftl" / "qt" / "qt-misc.ftl"
-    lines = ftl.read_text(encoding="utf-8").splitlines()
+    def __init__(self) -> None:
+        self.windows: list[dict[str, object]] = []
+        self.background_runs = 0
 
-    assert "qt-misc-rwkv-startup-title = Starting" in lines
-    assert "qt-misc-rwkv-startup-label = Starting…" in lines
+    def run_on_main(self, callback: Callable[[], None]) -> None:
+        callback()
 
-    source = (Path(__file__).parents[1] / "aqt" / "rwkv_scheduler.py").read_text(
-        encoding="utf-8"
+    def with_progress(
+        self,
+        task: Callable[[], object],
+        on_done: Callable[[Future[object]], None],
+        **kwargs: object,
+    ) -> None:
+        self.windows.append(kwargs)
+        self._run(task, on_done)
+
+    def run_in_background(
+        self,
+        task: Callable[[], object],
+        on_done: Callable[[Future[object]], None],
+        *,
+        uses_collection: bool = True,
+    ) -> None:
+        self.background_runs += 1
+        assert uses_collection is True
+        self._run(task, on_done)
+
+    def _run(
+        self,
+        task: Callable[[], object],
+        on_done: Callable[[Future[object]], None],
+    ) -> None:
+        future: Future[object] = Future()
+        try:
+            future.set_result(task())
+        except Exception as exc:
+            future.set_exception(exc)
+        on_done(future)
+
+
+# Pins spec/scheduling.md#sched.rwkv-startup-no-window: opening a profile
+# opens no progress window and leaves the main window alone.
+def test_the_startup_restore_opens_no_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    taskman = _StartupTaskman()
+    progress_updates: list[object] = []
+    profile = tmp_path / "converted"
+    _state_store_at_schema(
+        profile, rwkv_scheduler._RWKV_STATE_CACHE_STORE_SCHEMA_VERSION
     )
-    assert "Loading RWKV state cache" not in source
+    mw = SimpleNamespace(
+        taskman=taskman,
+        progress=SimpleNamespace(
+            update=lambda **kwargs: progress_updates.append(kwargs)
+        ),
+        pm=SimpleNamespace(profileFolder=lambda: str(profile)),
+    )
+    reported: list[object] = []
+
+    def load(_mw: object, *, progress: object = None) -> bool:
+        reported.append(progress)
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "load_rwkv_state_cache", load)
+
+    rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
+
+    assert taskman.windows == []
+    assert taskman.background_runs == 1
+    # nothing reports to a window that is not there
+    assert reported == [None]
+    assert progress_updates == []
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
+
+
+# Pins spec/scheduling.md#sched.rwkv-startup-no-window and
+# #sched.rwkv-state-cache-startup-build: the build start-up runs by itself
+# gets no window either, while a build a button starts keeps one.
+def test_the_startup_build_opens_no_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a quiet build runs in the background; a build a button starts still
+    # opens its window
+    taskman = _StartupTaskman()
+    mw = SimpleNamespace(taskman=taskman)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "warm_up_rwkv_state",
+        lambda _mw, **_kwargs: False,
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_finish_rwkv_state_cache_operation",
+        lambda _mw, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_tr",
+        lambda: SimpleNamespace(
+            qt_misc_review_history_reading=lambda: "Reading",
+            qt_misc_review_history_title=lambda: "Getting Ready",
+            qt_misc_review_history_failed=lambda: "failed",
+            qt_misc_review_history_ready=lambda: "ready",
+        ),
+    )
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, quiet=True)
+    assert (taskman.windows, taskman.background_runs) == ([], 1)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw)
+    assert (len(taskman.windows), taskman.background_runs) == (1, 1)
+
+    # and start-up asks for the quiet one
+    quiet_flags: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "build_rwkv_state_cache_with_progress",
+        lambda _mw, **kwargs: quiet_flags.append(kwargs.get("quiet")),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: True,
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_startup_build_started", False)
+
+    rwkv_scheduler._start_rwkv_state_cache_build(mw)
+
+    assert quiet_flags == [True]
+
+
+# Pins spec/scheduling.md#sched.rwkv-startup-no-window: card info is built
+# once when it opens, so its "being computed" message would stay until the
+# user picked another card.
+def test_open_card_info_is_drawn_again_when_the_rwkv_state_is_ready() -> None:
+    from aqt.browser.card_info import CardInfoDialog
+
+    class _OpenCardInfo(CardInfoDialog):
+        def __init__(self) -> None:  # no Qt dialog, no webview
+            self.redraws = 0
+            self.web = object()
+            self._card_id = 7
+
+        def isVisible(self) -> bool:
+            return True
+
+        def redraw(self) -> None:
+            self.redraws += 1
+
+    class _ClosedCardInfo(_OpenCardInfo):
+        def isVisible(self) -> bool:
+            return False
+
+    opened = _OpenCardInfo()
+    closed = _ClosedCardInfo()
+    other = SimpleNamespace(isVisible=lambda: True)
+    mw = SimpleNamespace(
+        app=SimpleNamespace(topLevelWidgets=lambda: [other, opened, closed])
+    )
+
+    rwkv_scheduler._redraw_open_card_info(mw)
+
+    assert (opened.redraws, closed.redraws) == (1, 0)
 
 
 def _state_store_at_schema(profile_folder: Path, version: int) -> None:
@@ -20034,26 +20246,16 @@ def _state_store_at_schema(profile_folder: Path, version: int) -> None:
         connection.close()
 
 
-def _startup_window_words(
+def _startup_window(
     monkeypatch: pytest.MonkeyPatch,
     profile_folder: Path,
-) -> tuple[str, str]:
-    captured: dict[str, object] = {}
-
-    class Taskman:
-        def run_on_main(self, callback: Callable[[], None]) -> None:
-            callback()
-
-        def with_progress(
-            self,
-            task: Callable[[], bool],
-            on_done: Callable[[Future[bool]], None],
-            **kwargs: object,
-        ) -> None:
-            captured.update(kwargs)
-
+) -> dict[str, object] | None:
+    """The kwargs of the progress window the start-up opened, or None where
+    it opened none."""
+    taskman = _StartupTaskman()
     mw = SimpleNamespace(
-        taskman=Taskman(),
+        taskman=taskman,
+        progress=SimpleNamespace(update=lambda **_kwargs: None),
         pm=SimpleNamespace(profileFolder=lambda: str(profile_folder)),
     )
     monkeypatch.setattr(
@@ -20062,7 +20264,8 @@ def _startup_window_words(
         lambda _mw, *, progress=None: True,
     )
     rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
-    return cast(str, captured["title"]), cast(str, captured["label"])
+    assert len(taskman.windows) + taskman.background_runs == 1
+    return taskman.windows[0] if taskman.windows else None
 
 
 # Pins spec/scheduling.md#sched.rwkv-lazy-state-upgrade-window
@@ -20078,22 +20281,22 @@ def test_only_the_one_time_upgrade_gets_the_one_time_words(
     assert rwkv_scheduler.rwkv_state_cache_store_needs_upgrade(
         SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(old)))
     )
-    title, label = _startup_window_words(monkeypatch, old)
-    assert title == tr.qt_misc_rwkv_state_upgrade_title()
-    assert "reorganising" in label
-    assert label == tr.qt_misc_rwkv_state_upgrade_label()
+    window = _startup_window(monkeypatch, old)
+    assert window is not None
+    assert window["title"] == tr.qt_misc_rwkv_state_upgrade_title()
+    assert "reorganising" in cast(str, window["label"])
+    assert window["label"] == tr.qt_misc_rwkv_state_upgrade_label()
 
-    # a store already converted: the ordinary start-up words, unchanged.
-    # The two paths shared one string until the lazy load arrived, so a
-    # later change could merge them again without anyone noticing.
-    new = tmp_path / "new"
-    _state_store_at_schema(new, 5)
+    # a store already converted: no window at all (spec
+    # sched.rwkv-startup-no-window). The two paths shared one string until
+    # the lazy load arrived, so a later change could give the ordinary
+    # start-up a window again without anyone noticing.
+    converted = tmp_path / "new"
+    _state_store_at_schema(converted, 5)
     assert not rwkv_scheduler.rwkv_state_cache_store_needs_upgrade(
-        SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(new)))
+        SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(converted)))
     )
-    title, label = _startup_window_words(monkeypatch, new)
-    assert title == tr.qt_misc_rwkv_startup_title() == "Starting"
-    assert label == tr.qt_misc_rwkv_startup_label()
+    assert _startup_window(monkeypatch, converted) is None
 
     # and a profile with no store at all is not an upgrade either
     empty = tmp_path / "empty"

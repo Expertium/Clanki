@@ -95,11 +95,6 @@ qt-misc-rwkv-curve-intervals-try-again = Try again
 # wrote. Andrew chose this wording himself (2026-09-16); keep it as written.
 qt-misc-rwkv-state-upgrade-title = One-time update
 qt-misc-rwkv-state-upgrade-label = Clanki is reorganising its saved review data so it can start faster. This happens once and can take some time.
-# The progress window while Clanki loads the saved RWKV state at start-up.
-# It says what the user waits for, not which file is read (Andrew,
-# 2026-09-16).
-qt-misc-rwkv-startup-title = Starting
-qt-misc-rwkv-startup-label = Starting…
 # RWKV-Instant has not scored the deck yet, so its reviews are not shown.
 # Plain words, no algorithm name (spec ui.plain-progress-text).
 qt-misc-rwkv-instant-scores-pending = Choosing your reviews…

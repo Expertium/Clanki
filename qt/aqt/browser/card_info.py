@@ -53,6 +53,7 @@ class CardInfoDialog(QDialog):
         super().__init__(parent)
         self.mw = mw
         self._on_close = on_close
+        self._card_id: CardId | None = card.id if card else None
         self.GEOMETRY_KEY = geometry_key or self.GEOMETRY_KEY
         if window_title:
             self.setWindowTitle(window_title)
@@ -133,9 +134,18 @@ class CardInfoDialog(QDialog):
 
         tooltip(tr.about_copied_to_clipboard())
 
+    def redraw(self) -> None:
+        """Draws the same card again, for a value that was not ready when the
+        page was built. The RWKV-Curve chart says it is being computed while
+        the RWKV state loads, and nothing else would take that message away
+        (spec sched.rwkv-startup-no-window)."""
+        if self.web is not None:
+            self.update_card(self._card_id)
+
     def update_card(self, card_id: CardId | None) -> None:
         start = time.monotonic()
         requested_card_id = card_id
+        self._card_id = card_id
         try:
             self.mw.col.get_card(card_id)
         except NotFoundError:
