@@ -28,6 +28,7 @@ from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from aqt import rwkv_scheduler
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
+    RwkvCurveSources,
     RwkvIntervalOverride,
     RwkvRecallPoint,
     RwkvReviewCandidate,
@@ -8203,6 +8204,9 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
     assert taskman.with_progress_kwargs["uses_collection"] is True
 
 
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a sync that
+# brings reviews older than the replay window says nothing and asks for
+# nothing; once it has finished, RWKV reads the whole history again by itself.
 def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -8239,6 +8243,23 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
     _taskman, _progress_updates = _attach_progress_taskman(reviewer.mw)
     completed: list[bool] = []
 
+    rebuilds: list[dict[str, object]] = []
+    build = rwkv_scheduler.build_rwkv_state_cache_with_progress
+
+    def record_rebuild(mw: object, **kwargs: Any) -> None:
+        # the sync itself only skips the old review
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+        assert metadata is not None
+        assert metadata["ignoredReviewIds"] == [review_ids[7]]
+        assert runtime.reviewed == []
+        rebuilds.append(kwargs)
+        build(mw, **kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "build_rwkv_state_cache_with_progress", record_rebuild
+    )
+    monkeypatch.setattr("aqt.utils.tooltip", lambda *args, **kwargs: None)
+
     rwkv_scheduler.refresh_rwkv_state_after_sync(
         reviewer.mw,
         lambda: completed.append(True),
@@ -8246,14 +8267,13 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
     )
 
     assert completed == [True]
-    assert runtime.reviewed == []
-    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
-    assert metadata is not None
-    assert metadata["ignoredReviewIds"] == [review_ids[7]]
-    assert len(warnings) == 1
-    assert _plain(warnings[0]).startswith(
-        "1 synced review is older than 8 days, so RWKV has not learned from it."
-    )
+    # no message; the whole history is read again, the old review included
+    assert warnings == []
+    assert rebuilds == [{"force_rebuild": True}]
+    assert len(runtime.reviewed) == len(rows)
+    rebuilt_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert rebuilt_metadata is not None
+    assert "ignoredReviewIds" not in rebuilt_metadata
     assert (
         rwkv_scheduler._read_rwkv_state_cache_binary(
             reviewer,
@@ -8261,14 +8281,6 @@ def test_post_sync_refresh_ignores_reviews_older_than_eight_days(
         )
         is not None
     )
-
-    assert rwkv_scheduler._warm_up_reviewer_backend(
-        reviewer,
-        force_rebuild=True,
-    )
-    rebuilt_metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
-    assert rebuilt_metadata is not None
-    assert "ignoredReviewIds" not in rebuilt_metadata
 
 
 def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
@@ -20167,6 +20179,282 @@ def test_rwkv_calibration_recompute_records_the_curve_of_every_review(
             rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
         )
     ]
+
+
+# Pins spec/ui.md#ui.stats-model-metrics: building the RWKV state cache
+# writes RWKV-Curve's per-review rows beside RWKV-Instant's, so a collection
+# whose state was built has both series without a separate pass.
+def test_the_state_cache_build_records_rwkv_curve_rows_too(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CurveCacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    assert (
+        rwkv_scheduler.warm_up_rwkv_state(reviewer.mw, record_retrievability_cache=True)
+        is True
+    )
+
+    assert reviewer.mw.col.review_prediction_rows == [
+        (
+            int(rwkv_scheduler._RWKV_CURVE_ALGORITHM),
+            second_review,
+            pytest.approx(0.62),
+            "rwkv_curve_state_cache_build",
+            rwkv_scheduler._RWKV_RETRIEVABILITY_SAMPLE_ROLE_FINAL_FIT,
+        )
+    ]
+    assert [row[0] for row in reviewer.mw.col.rwkv_retrievability_rows] == [
+        first_review,
+        second_review,
+    ]
+
+
+class _TaggedCurveCacheRuntime(_CurveCacheRuntime):
+    def curve_source_tag(self) -> tuple[int, int]:
+        return 1, 1
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a full recording
+# pass remembers what it recorded with, so the next start-up finds the
+# recordings current and runs no pass.
+def test_a_full_recording_pass_marks_the_recordings_current(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((41 * 86_400 + 3_700) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test", "sha256": "abc"},
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_TaggedCurveCacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    marker = tmp_path / "rwkv-state-cache" / "recordings.json"
+    assert not marker.exists()
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    saved = json.loads(marker.read_text(encoding="utf-8"))
+    assert saved == rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
+    assert (saved["model"], saved["format"], saved["kernel"]) == ("abc", 1, 1)
+
+
+class _BulkRecordingRuntime(_TaggedCurveCacheRuntime):
+    """A runtime whose bulk replay reports all three per-review recordings:
+    RWKV-Instant's value, RWKV-Curve's value and the curve source."""
+
+    def warm_up_reviews(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        *,
+        review_ids: Sequence[int] | None = None,
+        prediction_recorder: Callable[[int, float], None] | None = None,
+        curve_recorder: Callable[[int, float], None] | None = None,
+        curve_source_recorder: Callable[[RwkvCurveSources], None] | None = None,
+        progress: object = None,
+        return_snapshot: bool = True,
+    ) -> RwkvBackendCacheSnapshot:
+        del progress, return_snapshot
+        seen: set[int] = set()
+        states: dict[int, bytes] = {}
+        answered_ids: list[int] = []
+        for index, review_input in enumerate(reviews):
+            if review_input.ease is None or review_ids is None:
+                continue
+            card_id = review_input.identity.card_id
+            review_id = review_ids[index]
+            if prediction_recorder is not None:
+                prediction_recorder(review_id, 0.45)
+            if curve_recorder is not None and card_id in seen:
+                curve_recorder(review_id, 0.62)
+            seen.add(card_id)
+            answered_ids.append(review_id)
+            self.reviewed.append((card_id, review_input.ease))
+            states[card_id] = f"card-{card_id}".encode()
+        if curve_source_recorder is not None and answered_ids:
+            curve_source_recorder(
+                RwkvCurveSources(
+                    review_ids=answered_ids,
+                    sources=b"ab" * len(answered_ids),
+                    width=2,
+                    format=1,
+                    kernel=1,
+                )
+            )
+        return RwkvBackendCacheSnapshot(
+            card_states=states,
+            note_states={},
+            deck_states={},
+            preset_states={},
+            global_state=None,
+            runtime_state=None,
+        )
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a state-cache
+# build that replays the whole history with every recorder is the
+# recording pass too, so no automatic pass is due right after it.
+def test_a_full_recording_build_leaves_no_recording_pass_due(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((41 * 86_400 + 3_700) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test", "sha256": "abc"},
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_BulkRecordingRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    saved_sources: list[scheduler_pb2.RwkvCurveSources] = []
+    reviewer.mw.col._backend.set_rwkv_curve_sources = saved_sources.append
+    marker = tmp_path / "rwkv-state-cache" / "recordings.json"
+
+    # a build that records nothing per review is not the recording pass
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    assert not marker.exists()
+
+    assert (
+        rwkv_scheduler.warm_up_rwkv_state(
+            reviewer.mw, force_rebuild=True, record_retrievability_cache=True
+        )
+        is True
+    )
+    assert json.loads(marker.read_text(encoding="utf-8")) == (
+        rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
+    )
+    col = reviewer.mw.col
+    assert col.rwkv_retrievability_rows and col.review_prediction_rows
+    assert [list(batch.revlog_ids) for batch in saved_sources][-1] == [
+        row[0] for row in rows
+    ]
+    passes: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler, "recompute_rwkv_calibration_data_with_progress", passes.append
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_recordings_pass_started", False)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "rwkv_recordings_current", lambda mw: marker.exists()
+    )
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(reviewer.mw)
+    assert passes == []
+
+
+def _recordings_mw(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, rows_present: bool = True
+) -> tuple[SimpleNamespace, list[object]]:
+    """A profile whose RWKV state is ready, with the recording pass watched."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"sha256": "abc"}
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_reviewer_backend",
+        SimpleNamespace(curve_source_tag=lambda: (1, 1)),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_replay_semantics_key", lambda reviewer, **_: "replay"
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_recordings_pass_started", False)
+    passes: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "recompute_rwkv_calibration_data_with_progress",
+        passes.append,
+    )
+    mw = SimpleNamespace(
+        col=SimpleNamespace(
+            db=SimpleNamespace(scalar=lambda sql, *args: int(rows_present))
+        ),
+        pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+        state="deckBrowser",
+    )
+    return mw, passes
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+@pytest.mark.parametrize(
+    "case", ["never_recorded", "other_model", "rows_gone", "current"]
+)
+def test_missing_or_stale_recordings_start_the_recording_pass_by_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=case != "rows_gone")
+    tag = rwkv_scheduler._rwkv_recordings_tag(mw)
+    assert tag is not None
+    if case != "never_recorded":
+        marker = dict(tag, model="old") if case == "other_model" else tag
+        rwkv_scheduler._write_rwkv_recordings_marker(mw, marker)
+
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    expected = [] if case == "current" else [mw]
+    assert passes == expected
+    # once per profile open, however often the state becomes ready
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    assert passes == expected
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_the_recording_pass_waits_until_no_card_is_being_reviewed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from aqt import gui_hooks
+
+    mw, passes = _recordings_mw(monkeypatch, tmp_path)
+    mw.state = "review"
+    hooks_before = gui_hooks.state_did_change.count()
+
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    assert passes == []
+    gui_hooks.state_did_change("review", "overview")
+    assert passes == []
+    gui_hooks.state_did_change("overview", "review")
+    assert passes == [mw]
+    assert gui_hooks.state_did_change.count() == hooks_before
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_nothing_starts_while_the_main_window_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mw, passes = _recordings_mw(monkeypatch, tmp_path)
+    # a sync, or the profile closing
+    mw.isEnabled = lambda: False
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    assert passes == []
+    mw.isEnabled = lambda: True
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    assert passes == [mw]
 
 
 def test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve(

@@ -162,12 +162,3 @@ qt-misc-rwkv-curve-rescheduled =
         [one] RWKV-Curve rescheduled { $count } card.
        *[other] RWKV-Curve rescheduled { $count } cards.
     }
-# After a sync brought in reviews older than 8 days, which RWKV does not
-# replay on its own. $button is the deck-options button that does.
-qt-misc-review-history-sync-too-old =
-    { $count ->
-        [one] { $count } synced review is older than 8 days, so RWKV has not learned from it.
-       *[other] { $count } synced reviews are older than 8 days, so RWKV has not learned from them.
-    }
-
-    To include them, use "{ $button }" in deck options.

@@ -1324,6 +1324,7 @@ user's own rebuild, never to opening a page.
 `the_parallel_bootstrap_draws_what_one_thread_drew`
 (`rslib/src/stats/review_metrics.rs`);
 `test_rwkv_calibration_recompute_records_the_curve_of_every_review`,
+`test_the_state_cache_build_records_rwkv_curve_rows_too`,
 `test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve`,
 `test_bulk_warm_up_is_handed_the_curve_recorder`,
 `test_bulk_warm_up_without_a_curve_recorder_keyword_says_so`,
