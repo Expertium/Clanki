@@ -812,11 +812,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <th></th>
                     <th>
                         {tr.deckConfigCurrentDr()}
-                        ({(startingDesiredRetentionValue * 100).toFixed(2)}%)
+                        ({(startingDesiredRetentionValue * 100).toFixed(0)}%)
                     </th>
                     <th>
                         {tr.deckConfigSelectedDr()}
-                        ({(effectiveDesiredRetention * 100).toFixed(2)}%)
+                        ({(effectiveDesiredRetention * 100).toFixed(0)}%)
                     </th>
                 </tr>
             </thead>
