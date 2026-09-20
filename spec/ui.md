@@ -417,11 +417,11 @@ recall". It is "Replace 'retrievability' with 'probability of recall'" in
 Preferences > UI split (`ui.split-configurable`), the one item of that tab
 with three choices instead of a "Show in Simple mode" checkbox:
 
-| Choice                              | Stored value | Simple mode           | Advanced mode         |
-| ----------------------------------- | ------------ | --------------------- | --------------------- |
-| In Simple mode only (the default)   | `by_mode`    | probability of recall | retrievability        |
-| Never: always say "retrievability"  | `technical`  | retrievability        | retrievability        |
-| Always, in both modes               | `plain`      | probability of recall | probability of recall |
+| Choice                             | Stored value | Simple mode           | Advanced mode         |
+| ---------------------------------- | ------------ | --------------------- | --------------------- |
+| In Simple mode only (the default)  | `by_mode`    | probability of recall | retrievability        |
+| Never: always say "retrievability" | `technical`  | retrievability        | retrievability        |
+| Always, in both modes              | `plain`      | probability of recall | probability of recall |
 
 The choice lives in the collection config under the string key
 `recallWording`, beside the split's own `uiSplit` key, so it syncs with the
@@ -433,25 +433,25 @@ Every text the user reads that names the chance of recall follows the
 setting. In Simple mode some of them show only when the UI split gives them
 to Simple mode; the wording rule is the same either way.
 
-| Where                                                        | Plain wording                                                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| Browser column (name and notes tooltip)                      | Probability of recall                                                                          |
-| Card info, the memory-state row and the forgetting-curve tooltip | Probability of recall                                                                          |
-| Filtered deck, the "Cards selected by" orders                | Ascending / Descending probability of recall                                                   |
-| Filtered-deck rebuild failure (RWKV)                         | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt. |
-| Deck options, Review sort order                              | Ascending / Descending probability of recall                                                   |
-| Deck options, New card gather order (RWKV-Instant)           | Ascending / Descending probability of recall (RWKV-Instant)                                    |
-| Deck options, the New card gather order help                 | `Ascending/descending probability of recall (RWKV)`: ...                                       |
-| Deck options, the RWKV-Instant queue recommendation          | Recommended: Use Ascending Probability of Recall                                               |
-| Deck options, the Minimum reviews per day help               | ... the review cards with the lowest probability of recall ...                                 |
-| Advance / Postpone, the effect line                          | Mean probability of recall at review: X → Y                                                    |
-| Stats, the Retrievability graph                              | Card Probability of Recall; "N cards with X% probability of recall"; Average probability of recall |
-| Stats, the Stability graph's subtitle                        | The delay at which the probability of recall falls to 90%.                                     |
-| Stats, the Total Knowledge subtitle                          | ... each card counts as its probability of recall ...                                          |
-| Stats, the Retrievability graph's subtitle                   | The probability of recalling a card today.                                                     |
-| Stats, the AUC-ROC description                               | ... gives a higher probability of recall to the reviews you remembered ...                     |
-| Stats, the Calibration subtitle and X axis                   | ... predicted probability of recall ...; Predicted probability of recall                       |
-| Stats, the Universal Metric+ X axis                          | Difference in predicted probability of recall                                                  |
+| Where                                                            | Plain wording                                                                                      |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Browser column (name and notes tooltip)                          | Probability of recall                                                                              |
+| Card info, the memory-state row and the forgetting-curve tooltip | Probability of recall                                                                              |
+| Filtered deck, the "Cards selected by" orders                    | Ascending / Descending probability of recall                                                       |
+| Filtered-deck rebuild failure (RWKV)                             | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt.     |
+| Deck options, Review sort order                                  | Ascending / Descending probability of recall                                                       |
+| Deck options, New card gather order (RWKV-Instant)               | Ascending / Descending probability of recall (RWKV-Instant)                                        |
+| Deck options, the New card gather order help                     | `Ascending/descending probability of recall (RWKV)`: ...                                           |
+| Deck options, the RWKV-Instant queue recommendation              | Recommended: Use Ascending Probability of Recall                                                   |
+| Deck options, the Minimum reviews per day help                   | ... the review cards with the lowest probability of recall ...                                     |
+| Advance / Postpone, the effect line                              | Mean probability of recall at review: X → Y                                                        |
+| Stats, the Retrievability graph                                  | Card Probability of Recall; "N cards with X% probability of recall"; Average probability of recall |
+| Stats, the Stability graph's subtitle                            | The delay at which the probability of recall falls to 90%.                                         |
+| Stats, the Total Knowledge subtitle                              | ... each card counts as its probability of recall ...                                              |
+| Stats, the Retrievability graph's subtitle                       | The probability of recalling a card today.                                                         |
+| Stats, the AUC-ROC description                                   | ... gives a higher probability of recall to the reviews you remembered ...                         |
+| Stats, the Calibration subtitle and X axis                       | ... predicted probability of recall ...; Predicted probability of recall                           |
+| Stats, the Universal Metric+ X axis                              | Difference in predicted probability of recall                                                      |
 
 The AUC-ROC, Calibration and Universal Metric+ graphs load their own data
 and never see the response that carries the setting, so the Stats page holds

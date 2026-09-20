@@ -163,9 +163,7 @@ export class DeckOptionsState {
         );
         this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
-        this.plainRecall = derived(this.advancedUi, (advanced) =>
-            plainRecallWording(data.recallWording, advanced),
-        );
+        this.plainRecall = derived(this.advancedUi, (advanced) => plainRecallWording(data.recallWording, advanced));
         this.settingShown = derived(
             [this.advancedUi, this.simpleItems],
             ([advanced, simpleItems]) => (key: SettingKey, placement: Placement) =>
