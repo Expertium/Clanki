@@ -11156,10 +11156,22 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
             raise _ReviewerBackendWarmupInvalidated
 
     batch_started = [time.monotonic()]
+    stopped_for_review = [False]
 
     def between_batches() -> None:
-        """One batch done: rest, with the backend handed back."""
+        """One batch done: rest, with the backend handed back.
+
+        A card on the screen stops the pass instead. While the pass runs it
+        owns the replayed state, so a prediction cannot be served from it
+        and the reviewer shows "Getting this card ready..." for as long as
+        the pass lasts. Reviewing wins: the pass gives up its claim, the
+        state it began with is restored, and it starts again once the user
+        leaves the reviewer (spec sched.rwkv-recordings-automatic).
+        """
         if not collection_open():
+            raise _ReviewerBackendWarmupInvalidated
+        if _reviewer_is_showing_a_card(mw):
+            stopped_for_review[0] = True
             raise _ReviewerBackendWarmupInvalidated
         rest = recordings_pass_rest_seconds(
             mw,
@@ -11179,6 +11191,13 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         )
         if recorded and collection_open():
             tooltip(_tr().qt_misc_stats_data_ready(), parent=cast(QWidget | None, mw))
+        if stopped_for_review[0] and collection_open():
+            # it stopped so the user could review; start it again when the
+            # reviewer closes (spec sched.rwkv-recordings-automatic)
+            global _rwkv_recordings_pass_started
+
+            _rwkv_recordings_pass_started = False
+            _run_when_not_reviewing(mw, lambda: start_rwkv_maintenance_if_needed(mw))
 
     def run() -> None:
         global _rwkv_recordings_pass_running
@@ -12091,6 +12110,16 @@ def start_rwkv_maintenance_if_needed(mw: object) -> None:
         return
     _rwkv_recordings_pass_started = True
     _run_when_idle(mw, lambda: recompute_rwkv_calibration_data_in_background(mw))
+
+
+def _reviewer_is_showing_a_card(mw: object) -> bool:
+    """True while the reviewer has a card on the screen.
+
+    The recording pass owns the RWKV state while it replays, so a card shown
+    during it cannot get its intervals. The pass stops rather than make the
+    user wait (spec sched.rwkv-recordings-automatic).
+    """
+    return getattr(mw, "state", None) == "review"
 
 
 def recordings_pass_rest_seconds(mw: object, batch_seconds: float) -> float:

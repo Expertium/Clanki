@@ -20963,6 +20963,20 @@ def test_the_recording_pass_waits_until_the_user_leaves_clanki_alone(
     assert passes == [mw]
 
 
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a card on the
+# screen stops the pass. While the pass runs it owns the replayed state, so a
+# prediction cannot be served from it and the reviewer shows "Getting this
+# card ready..." for as long as the pass lasts. Reviewing wins.
+def test_a_card_on_the_screen_stops_the_pass() -> None:
+    assert rwkv_scheduler._reviewer_is_showing_a_card(SimpleNamespace(state="review"))
+    for elsewhere in ("deckBrowser", "overview", "browse", None):
+        assert not rwkv_scheduler._reviewer_is_showing_a_card(
+            SimpleNamespace(state=elsewhere)
+        )
+    # a window without the attribute at all is not the reviewer
+    assert not rwkv_scheduler._reviewer_is_showing_a_card(SimpleNamespace())
+
+
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the rest between
 # two batches is SHORT and BOUNDED, so the pass goes on while the user works.
 # It used to wait for ten seconds of quiet, which every key press restarted:
