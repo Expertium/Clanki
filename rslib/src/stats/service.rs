@@ -68,9 +68,12 @@ impl crate::services::BackendStatsService for Backend {
         let start = std::time::Instant::now();
         let response = self.with_col(|col| col.review_predictions(&input.search, input.days))?;
         tracing::debug!(
-            reviews = response.revlog_ids.len(),
-            fsrs_role = response.fsrs_role,
-            rwkv_role = response.rwkv_role,
+            reviews = response.scored,
+            roles = ?response
+                .series
+                .iter()
+                .map(|series| series.sample_role.as_str())
+                .collect::<Vec<_>>(),
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
             "read the model-quality graphs' predictions"
         );

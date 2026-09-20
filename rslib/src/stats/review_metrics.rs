@@ -15,6 +15,9 @@
 use std::collections::HashMap;
 
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
+use anki_proto::stats::review_metrics_progress::Series;
+use anki_proto::stats::review_metrics_progress::Unavailable;
+use anki_proto::stats::CalibrationBin;
 use anki_proto::stats::ReviewPredictionsResponse;
 use rayon::prelude::*;
 
@@ -27,6 +30,8 @@ use crate::stats::algorithms::RoleChoice;
 use crate::stats::algorithms::FSRS7;
 use crate::stats::algorithms::RWKV_CURVE;
 use crate::stats::algorithms::RWKV_INSTANT;
+use crate::stats::roc::roc_curve;
+use crate::stats::roc::CURVE_POINTS;
 
 /// One model's cached predictions for the searched ratings, and the role
 /// they came from.
@@ -44,13 +49,124 @@ impl CachedPredictions {
     }
 }
 
+/// Every rating of the search and period that at least one algorithm has
+/// an honest row for, with each algorithm's prediction of it. The three
+/// prediction lists and `remembered` have the same length; an algorithm
+/// with no row for a rating has NaN there, never another algorithm's
+/// value. These lists never leave the backend: a large collection holds
+/// millions of entries per algorithm, and only the series below are drawn.
+#[derive(Default)]
+struct ScoredRatings {
+    revlog_ids: Vec<i64>,
+    card_ids: Vec<i64>,
+    remembered: Vec<bool>,
+    fsrs_predictions: Vec<f32>,
+    rwkv_predictions: Vec<f32>,
+    rwkv_curve_predictions: Vec<f32>,
+    fsrs_role: String,
+    rwkv_role: String,
+    rwkv_curve_role: String,
+    shared: u32,
+    fsrs_only: u32,
+    rwkv_only: u32,
+    unscored: u32,
+    newest_scored_secs: i64,
+    newer_reviews: u32,
+    rwkv_curve_oldest_secs: i64,
+    rwkv_curve_earlier_reviews: u32,
+}
+
 impl Collection {
-    /// Reads both models' cached predictions of the search's ratings.
+    /// The model-quality graphs' data (spec ui.stats-model-metrics): one
+    /// finished series per algorithm, with the counts the page prints
+    /// under the graph.
     pub(crate) fn review_predictions(
         &mut self,
         search: &str,
         days: u32,
     ) -> Result<ReviewPredictionsResponse> {
+        let rows = self.scored_ratings(search, days)?;
+        let bins =
+            |predictions: &[f32]| calibration_bins(predictions, &rows.remembered, &rows.card_ids);
+        let mut response = ReviewPredictionsResponse {
+            // Each algorithm's finished series: the curve, its area, the
+            // calibration bins and the tiles' averages, all computed here
+            // so the predictions themselves never cross the boundary.
+            series: vec![
+                series(
+                    SchedulingAlgorithmProto::Fsrs7,
+                    &rows.fsrs_predictions,
+                    &rows.remembered,
+                    &rows.fsrs_role,
+                    bins(&rows.fsrs_predictions),
+                ),
+                series(
+                    SchedulingAlgorithmProto::RwkvCurve,
+                    &rows.rwkv_curve_predictions,
+                    &rows.remembered,
+                    &rows.rwkv_curve_role,
+                    bins(&rows.rwkv_curve_predictions),
+                ),
+                series(
+                    SchedulingAlgorithmProto::RwkvInstant,
+                    &rows.rwkv_predictions,
+                    &rows.remembered,
+                    &rows.rwkv_role,
+                    bins(&rows.rwkv_predictions),
+                ),
+            ],
+            scored: rows.revlog_ids.len().try_into().unwrap_or(u32::MAX),
+            shared: rows.shared,
+            fsrs_only: rows.fsrs_only,
+            rwkv_only: rows.rwkv_only,
+            unscored: rows.unscored,
+            newest_scored_secs: rows.newest_scored_secs,
+            newer_reviews: rows.newer_reviews,
+            rwkv_curve_oldest_secs: rows.rwkv_curve_oldest_secs,
+            rwkv_curve_earlier_reviews: rows.rwkv_curve_earlier_reviews,
+            // a comparison needs both models to have scored something here
+            shared_ratings: rows.shared + rows.fsrs_only > 0 && rows.shared + rows.rwkv_only > 0,
+            um_plus: vec![],
+        };
+        // one entry per pair of algorithms that share ratings; three
+        // algorithms make three pairs, and a pair with no shared rating is
+        // simply absent
+        let pairs = [
+            (
+                SchedulingAlgorithmProto::Fsrs7,
+                &rows.fsrs_predictions,
+                SchedulingAlgorithmProto::RwkvCurve,
+                &rows.rwkv_curve_predictions,
+            ),
+            (
+                SchedulingAlgorithmProto::Fsrs7,
+                &rows.fsrs_predictions,
+                SchedulingAlgorithmProto::RwkvInstant,
+                &rows.rwkv_predictions,
+            ),
+            (
+                SchedulingAlgorithmProto::RwkvCurve,
+                &rows.rwkv_curve_predictions,
+                SchedulingAlgorithmProto::RwkvInstant,
+                &rows.rwkv_predictions,
+            ),
+        ];
+        for (algorithm_a, predictions_a, algorithm_b, predictions_b) in pairs {
+            if let Some(pair) = um_plus_pair(
+                algorithm_a,
+                predictions_a,
+                algorithm_b,
+                predictions_b,
+                &rows.remembered,
+            ) {
+                response.um_plus.push(pair);
+            }
+        }
+        Ok(response)
+    }
+
+    /// Reads every algorithm's cached predictions of the search's ratings.
+    fn scored_ratings(&mut self, search: &str, days: u32) -> Result<ScoredRatings> {
         let timing = self.timing_today()?;
         let cutoff = if days == 0 {
             TimestampMillis(0)
@@ -63,7 +179,7 @@ impl Collection {
             Some(search),
         )?;
         let storage = &guard.col.storage;
-        let ratings: Vec<RevlogEntry> = storage
+        let mut ratings: Vec<RevlogEntry> = storage
             .get_revlog_entries_for_searched_cards()?
             .into_iter()
             .filter(|entry| entry.has_rating_and_affects_scheduling() && entry.id.0 > cutoff.0)
@@ -74,7 +190,7 @@ impl Collection {
         let rwkv = read_predictions(storage, &RWKV_INSTANT, cutoff)?;
         let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff)?;
 
-        let mut response = ReviewPredictionsResponse {
+        let mut rows = ScoredRatings {
             fsrs_role: fsrs.role.clone(),
             rwkv_role: rwkv.role.clone(),
             rwkv_curve_role: rwkv_curve.role.clone(),
@@ -85,39 +201,32 @@ impl Collection {
         // rows. The ratings both models scored are counted separately, and
         // they are the ones the graph compares the two models on (spec
         // ui.stats-model-metrics).
-        let mut ratings = ratings;
         ratings.sort_unstable_by_key(|entry| entry.id);
         for entry in &ratings {
             let fsrs_value = fsrs.by_review.get(&entry.id);
             let rwkv_value = rwkv.by_review.get(&entry.id);
             let curve_value = rwkv_curve.by_review.get(&entry.id);
             if fsrs_value.is_some() || rwkv_value.is_some() || curve_value.is_some() {
-                response.revlog_ids.push(entry.id.0);
-                response.card_ids.push(entry.cid.0);
-                response.remembered.push(entry.button_chosen > 1);
+                rows.revlog_ids.push(entry.id.0);
+                rows.card_ids.push(entry.cid.0);
+                rows.remembered.push(entry.button_chosen > 1);
                 // a model without a row for this rating has no number
                 // here, and its series simply skips the rating rather
                 // than borrowing the other model's value
-                response
-                    .fsrs_predictions
+                rows.fsrs_predictions
                     .push(fsrs_value.copied().unwrap_or(f32::NAN));
-                response
-                    .rwkv_predictions
+                rows.rwkv_predictions
                     .push(rwkv_value.copied().unwrap_or(f32::NAN));
-                response
-                    .rwkv_curve_predictions
+                rows.rwkv_curve_predictions
                     .push(curve_value.copied().unwrap_or(f32::NAN));
             }
             match (fsrs_value, rwkv_value) {
-                (Some(_), Some(_)) => response.shared += 1,
-                (Some(_), None) => response.fsrs_only += 1,
-                (None, Some(_)) => response.rwkv_only += 1,
-                (None, None) => response.unscored += 1,
+                (Some(_), Some(_)) => rows.shared += 1,
+                (Some(_), None) => rows.fsrs_only += 1,
+                (None, Some(_)) => rows.rwkv_only += 1,
+                (None, None) => rows.unscored += 1,
             }
         }
-        // a comparison needs both models to have scored something here
-        response.shared_ratings =
-            response.shared + response.fsrs_only > 0 && response.shared + response.rwkv_only > 0;
 
         // how fresh the predictions are: the newest rating either model has
         // scored, and the ratings of the search after it
@@ -131,27 +240,17 @@ impl Collection {
             .map(|entry| entry.id)
             .max();
         if let Some(newest) = newest {
-            response.newest_scored_secs = newest.as_secs().0;
-            response.newer_reviews = ratings
+            rows.newest_scored_secs = newest.as_secs().0;
+            rows.newer_reviews = ratings
                 .iter()
                 .filter(|entry| entry.id > newest)
                 .count()
                 .try_into()
                 .unwrap_or(u32::MAX);
         } else {
-            response.newer_reviews = ratings.len().try_into().unwrap_or(u32::MAX);
+            rows.newer_reviews = ratings.len().try_into().unwrap_or(u32::MAX);
         }
 
-        response.fsrs_bins = calibration_bins(
-            &response.fsrs_predictions,
-            &response.remembered,
-            &response.card_ids,
-        );
-        response.rwkv_bins = calibration_bins(
-            &response.rwkv_predictions,
-            &response.remembered,
-            &response.card_ids,
-        );
         // How far back the curve recording reaches. A collection that has
         // been replayed since the recording shipped has rows for its whole
         // history; one that has not has rows only from the day it started,
@@ -162,57 +261,15 @@ impl Collection {
             .find(|entry| rwkv_curve.by_review.contains_key(&entry.id))
             .map(|entry| entry.id);
         if let Some(oldest) = oldest_curve {
-            response.rwkv_curve_oldest_secs = oldest.as_secs().0;
-            response.rwkv_curve_earlier_reviews = ratings
+            rows.rwkv_curve_oldest_secs = oldest.as_secs().0;
+            rows.rwkv_curve_earlier_reviews = ratings
                 .iter()
                 .filter(|entry| entry.id < oldest)
                 .count()
                 .try_into()
                 .unwrap_or(u32::MAX);
         }
-
-        response.rwkv_curve_bins = calibration_bins(
-            &response.rwkv_curve_predictions,
-            &response.remembered,
-            &response.card_ids,
-        );
-        // one entry per pair of algorithms that share ratings; three
-        // algorithms make three pairs, and a pair with no shared rating is
-        // simply absent
-        let pairs = [
-            (
-                SchedulingAlgorithmProto::Fsrs7,
-                &response.fsrs_predictions,
-                SchedulingAlgorithmProto::RwkvCurve,
-                &response.rwkv_curve_predictions,
-            ),
-            (
-                SchedulingAlgorithmProto::Fsrs7,
-                &response.fsrs_predictions,
-                SchedulingAlgorithmProto::RwkvInstant,
-                &response.rwkv_predictions,
-            ),
-            (
-                SchedulingAlgorithmProto::RwkvCurve,
-                &response.rwkv_curve_predictions,
-                SchedulingAlgorithmProto::RwkvInstant,
-                &response.rwkv_predictions,
-            ),
-        ];
-        let mut um_plus = vec![];
-        for (algorithm_a, predictions_a, algorithm_b, predictions_b) in pairs {
-            if let Some(pair) = um_plus_pair(
-                algorithm_a,
-                predictions_a,
-                algorithm_b,
-                predictions_b,
-                &response.remembered,
-            ) {
-                um_plus.push(pair);
-            }
-        }
-        response.um_plus = um_plus;
-        Ok(response)
+        Ok(rows)
     }
 }
 
@@ -227,6 +284,18 @@ mod tests {
     use crate::storage::RwkvReviewRetrievabilityCacheRow;
     use crate::storage::RwkvReviewRetrievabilitySampleRole;
     use crate::tests::NoteAdder;
+
+    /// One algorithm's series in the response.
+    fn series_of(
+        response: &ReviewPredictionsResponse,
+        algorithm: SchedulingAlgorithmProto,
+    ) -> &Series {
+        response
+            .series
+            .iter()
+            .find(|series| series.algorithm == algorithm as i32)
+            .unwrap()
+    }
 
     fn add_card(col: &mut Collection) -> CardId {
         let note = NoteAdder::basic(col).add(col);
@@ -328,22 +397,22 @@ mod tests {
         store_rwkv(&col, fitted, 0.8);
         store_rwkv(&col, honest, 0.3);
 
-        let response = col.review_predictions("", 0)?;
+        let rows = col.scored_ratings("", 0)?;
         // RWKV can score both ratings, so both are listed
-        assert_eq!(response.revlog_ids, vec![fitted.0, honest.0]);
+        assert_eq!(rows.revlog_ids, vec![fitted.0, honest.0]);
         // FSRS-7's final-fit row is never used, so that rating has no FSRS
         // number at all; it is not filled in from RWKV's
-        assert!(response.fsrs_predictions[0].is_nan());
-        assert_eq!(response.fsrs_predictions[1], 0.4);
-        assert_eq!(response.rwkv_predictions, vec![0.8, 0.3]);
-        assert_eq!(response.remembered, vec![true, false]);
-        assert_eq!(response.fsrs_role, "validation_fold");
+        assert!(rows.fsrs_predictions[0].is_nan());
+        assert_eq!(rows.fsrs_predictions[1], 0.4);
+        assert_eq!(rows.rwkv_predictions, vec![0.8, 0.3]);
+        assert_eq!(rows.remembered, vec![true, false]);
+        assert_eq!(rows.fsrs_role, "validation_fold");
         // RWKV's weights saw no review of this collection, so any role counts
-        assert_eq!(response.rwkv_role, "final_fit");
+        assert_eq!(rows.rwkv_role, "final_fit");
         // the rating only RWKV could score is counted as its own
-        assert_eq!(response.rwkv_only, 1);
-        assert_eq!(response.fsrs_only, 0);
-        assert_eq!(response.shared, 1);
+        assert_eq!(rows.rwkv_only, 1);
+        assert_eq!(rows.fsrs_only, 0);
+        assert_eq!(rows.shared, 1);
         Ok(())
     }
 
@@ -368,21 +437,18 @@ mod tests {
             store_rwkv(&col, review, 0.6);
         }
 
-        let response = col.review_predictions("", 0)?;
+        let rows = col.scored_ratings("", 0)?;
         // every rating either model scored is kept, not only the shared one
-        assert_eq!(
-            response.revlog_ids,
-            vec![shared.0, fsrs_alone.0, rwkv_alone.0]
-        );
-        assert_eq!(response.shared, 1);
-        assert_eq!(response.fsrs_only, 1);
-        assert_eq!(response.rwkv_only, 1);
-        assert_eq!(response.unscored, 1);
-        assert!(response.shared_ratings);
-        assert_eq!(response.fsrs_role, "post_optimization");
+        assert_eq!(rows.revlog_ids, vec![shared.0, fsrs_alone.0, rwkv_alone.0]);
+        assert_eq!(rows.shared, 1);
+        assert_eq!(rows.fsrs_only, 1);
+        assert_eq!(rows.rwkv_only, 1);
+        assert_eq!(rows.unscored, 1);
+        assert!(col.review_predictions("", 0)?.shared_ratings);
+        assert_eq!(rows.fsrs_role, "post_optimization");
         // the rating a model has no row for is NaN, never the other's value
-        assert!(response.fsrs_predictions[2].is_nan());
-        assert!(response.rwkv_predictions[1].is_nan());
+        assert!(rows.fsrs_predictions[2].is_nan());
+        assert!(rows.rwkv_predictions[1].is_nan());
         let _ = neither;
         Ok(())
     }
@@ -407,27 +473,15 @@ mod tests {
             FsrsReviewRetrievabilitySampleRole::PostOptimization,
         );
 
-        let response = col.review_predictions("", 0)?;
-        assert_eq!(response.revlog_ids.len(), 10);
-        assert_eq!(
-            response
-                .rwkv_predictions
-                .iter()
-                .filter(|value| value.is_finite())
-                .count(),
-            10
-        );
-        assert_eq!(
-            response
-                .fsrs_predictions
-                .iter()
-                .filter(|value| value.is_finite())
-                .count(),
-            1
-        );
-        assert_eq!(response.shared, 1);
-        assert_eq!(response.rwkv_only, 9);
-        assert!(response.shared_ratings);
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(rows.revlog_ids.len(), 10);
+        let finite =
+            |predictions: &[f32]| predictions.iter().filter(|value| value.is_finite()).count();
+        assert_eq!(finite(&rows.rwkv_predictions), 10);
+        assert_eq!(finite(&rows.fsrs_predictions), 1);
+        assert_eq!(rows.shared, 1);
+        assert_eq!(rows.rwkv_only, 9);
+        assert!(col.review_predictions("", 0)?.shared_ratings);
         Ok(())
     }
 
@@ -443,14 +497,14 @@ mod tests {
         store_rwkv(&col, first, 0.9);
         store_rwkv(&col, second, 0.4);
 
-        let response = col.review_predictions("", 0)?;
-        assert_eq!(response.revlog_ids, vec![first.0, second.0]);
-        assert_eq!(response.rwkv_predictions, vec![0.9, 0.4]);
-        assert!(!response.shared_ratings);
-        assert!(response.fsrs_role.is_empty());
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(rows.revlog_ids, vec![first.0, second.0]);
+        assert_eq!(rows.rwkv_predictions, vec![0.9, 0.4]);
+        assert!(!col.review_predictions("", 0)?.shared_ratings);
+        assert!(rows.fsrs_role.is_empty());
         // FSRS-7 has no number for these ratings, and is not filled in
-        assert!(response.fsrs_predictions.iter().all(|value| value.is_nan()));
-        assert_eq!(response.rwkv_only, 2);
+        assert!(rows.fsrs_predictions.iter().all(|value| value.is_nan()));
+        assert_eq!(rows.rwkv_only, 2);
         Ok(())
     }
 
@@ -479,12 +533,12 @@ mod tests {
             );
         }
 
-        let response = col.review_predictions("", 0)?;
-        assert_eq!(response.rwkv_role, "final_fit");
-        assert_eq!(response.revlog_ids.len(), 4);
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(rows.rwkv_role, "final_fit");
+        assert_eq!(rows.revlog_ids.len(), 4);
         // the post-optimization row is not mixed in, and its rating is
         // therefore scored by nothing
-        assert_eq!(response.unscored, 1);
+        assert_eq!(rows.unscored, 1);
         Ok(())
     }
 
@@ -506,9 +560,10 @@ mod tests {
         }
 
         let response = col.review_predictions("", 0)?;
+        let bins = &series_of(&response, SchedulingAlgorithmProto::RwkvInstant).bins;
         // every rating has the same prediction, so they share one bin
-        assert_eq!(response.rwkv_bins.len(), 1);
-        let bin = &response.rwkv_bins[0];
+        assert_eq!(bins.len(), 1);
+        let bin = &bins[0];
         assert_eq!(bin.count, 20);
         assert_eq!(bin.index, bin_of(0.75) as u32);
         // 15 of the 20 answers were remembered
@@ -671,8 +726,14 @@ mod tests {
             }
         }
 
-        let first = col.review_predictions("", 0)?.rwkv_bins;
-        let second = col.review_predictions("", 0)?.rwkv_bins;
+        let bins = |col: &mut Collection| -> Result<Vec<CalibrationBin>> {
+            let response = col.review_predictions("", 0)?;
+            Ok(series_of(&response, SchedulingAlgorithmProto::RwkvInstant)
+                .bins
+                .clone())
+        };
+        let first = bins(&mut col)?;
+        let second = bins(&mut col)?;
         assert!(first.len() >= 8, "the fixture must fill several bins");
         for (a, b) in first.iter().zip(&second) {
             assert_eq!((a.index, a.low, a.high), (b.index, b.low, b.high));
@@ -697,11 +758,8 @@ mod tests {
             store_rwkv(&col, review, 0.6);
         }
 
-        assert_eq!(
-            col.review_predictions("", 0)?.revlog_ids,
-            vec![old.0, recent.0]
-        );
-        assert_eq!(col.review_predictions("", 365)?.revlog_ids, vec![recent.0]);
+        assert_eq!(col.scored_ratings("", 0)?.revlog_ids, vec![old.0, recent.0]);
+        assert_eq!(col.scored_ratings("", 365)?.revlog_ids, vec![recent.0]);
         Ok(())
     }
 
@@ -721,12 +779,12 @@ mod tests {
         );
         store_rwkv(&col, scored, 0.6);
 
-        let response = col.review_predictions("", 0)?;
-        assert_eq!(response.revlog_ids, vec![scored.0]);
-        assert_eq!(response.newest_scored_secs, scored.as_secs().0);
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(rows.revlog_ids, vec![scored.0]);
+        assert_eq!(rows.newest_scored_secs, scored.as_secs().0);
         // the two ratings after it are named, never silently dropped
-        assert_eq!(response.newer_reviews, 2);
-        assert_eq!(response.unscored, 2);
+        assert_eq!(rows.newer_reviews, 2);
+        assert_eq!(rows.unscored, 2);
         Ok(())
     }
 }
@@ -764,6 +822,60 @@ struct BinTally {
     bin: usize,
     remembered: f64,
     count: f64,
+}
+
+/// One algorithm's finished series (spec ui.stats-model-metrics): its ROC
+/// curve with the area under it, its calibration bins, and the two
+/// averages the panel's tiles show.
+///
+/// The lists hold one entry per rating ANY algorithm scored, and a rating
+/// this algorithm has no row for is NaN. Those are dropped here, so the
+/// series covers exactly the ratings this algorithm predicted and never
+/// borrows another algorithm's value. An algorithm with no role has no
+/// usable row at all, which is not an error.
+fn series(
+    algorithm: SchedulingAlgorithmProto,
+    predictions: &[f32],
+    remembered: &[bool],
+    role: &str,
+    bins: Vec<CalibrationBin>,
+) -> Series {
+    let absent = || Series {
+        algorithm: algorithm as i32,
+        unavailable: Unavailable::NoReviews as i32,
+        ..Default::default()
+    };
+    let mut own_predictions: Vec<f64> = vec![];
+    let mut own_remembered: Vec<bool> = vec![];
+    for (prediction, answer) in predictions.iter().zip(remembered) {
+        if prediction.is_finite() {
+            own_predictions.push(*prediction as f64);
+            own_remembered.push(*answer);
+        }
+    }
+    if role.is_empty() || own_predictions.is_empty() {
+        return absent();
+    }
+    let (points, auc) = roc_curve(&own_predictions, &own_remembered, CURVE_POINTS);
+    if points.is_empty() {
+        return absent();
+    }
+    let reviews = own_predictions.len();
+    Series {
+        algorithm: algorithm as i32,
+        unavailable: Unavailable::Available as i32,
+        reviews: reviews as u32,
+        sample_role: role.to_string(),
+        false_positive_rate: points.iter().map(|point| point.0 as f32).collect(),
+        true_positive_rate: points.iter().map(|point| point.1 as f32).collect(),
+        auc,
+        bins,
+        average_predicted: own_predictions.iter().sum::<f64>() / reviews as f64,
+        actual_recall: own_remembered.iter().filter(|answer| **answer).count() as f64
+            / reviews as f64,
+        recorded_from_secs: 0,
+        earlier_reviews: 0,
+    }
 }
 
 /// The calibration bins of one model over the scored ratings: each bin's

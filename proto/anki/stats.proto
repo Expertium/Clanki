@@ -206,26 +206,18 @@ message ReviewPredictionsRequest {
 }
 
 message ReviewPredictionsResponse {
-  // One entry per scored rating, oldest first: every rating at least one
-  // model has an honest row for. The five lists have the same length; a
-  // model with no row for a rating has NaN there, never another model's
-  // value.
-  repeated int64 revlog_ids = 1;
-  repeated int64 card_ids = 2;
-  // The answers: true = Hard, Good or Easy, false = Again.
-  repeated bool remembered = 3;
-  repeated float fsrs_predictions = 4;
-  // RWKV-Instant's head.
-  repeated float rwkv_predictions = 5;
-  // RWKV-Curve: the curve the replay had stored at the card's previous
-  // answered review, at this review's own elapsed time. Its own table, so
-  // it can never be mistaken for RWKV-Instant's value.
-  repeated float rwkv_curve_predictions = 18;
-  // The sample role each model's rows came from, such as "validation_fold";
-  // empty when that model has no usable row. Roles are never mixed.
-  string fsrs_role = 6;
-  string rwkv_role = 7;
-  string rwkv_curve_role = 19;
+  // Each algorithm's finished series, one per algorithm the graphs draw:
+  // its ROC curve with the area under it, its calibration bins, and the
+  // tiles' averages. The per-review predictions never leave the backend -
+  // a large collection has millions of them per algorithm, and nothing
+  // outside used them for anything but these series.
+  repeated ReviewMetricsProgress.Series series = 23;
+  // The ratings at least one algorithm has an honest row for.
+  uint32 scored = 24;
+  reserved 1, 2, 3, 4, 5, 6, 7, 13, 14, 18, 19, 20;
+  reserved "revlog_ids", "card_ids", "remembered", "fsrs_predictions",
+      "rwkv_predictions", "fsrs_role", "rwkv_role", "fsrs_bins", "rwkv_bins",
+      "rwkv_curve_predictions", "rwkv_curve_role", "rwkv_curve_bins";
   // How the scored ratings split between the models: only FSRS-7 has a
   // row, only RWKV has one, both have one, or neither has one.
   uint32 fsrs_only = 8;
@@ -236,11 +228,6 @@ message ReviewPredictionsResponse {
   // graph says "predictions up to <date>; N newer reviews not scored".
   int64 newest_scored_secs = 11;
   uint32 newer_reviews = 12;
-  // The calibration bins of each model over the scored ratings, in bin
-  // order, empty bins left out (spec ui.stats-model-metrics).
-  repeated CalibrationBin fsrs_bins = 13;
-  repeated CalibrationBin rwkv_bins = 14;
-  repeated CalibrationBin rwkv_curve_bins = 20;
   // How far back RWKV-Curve's recording reaches: the oldest rating it has
   // a row for, as a Unix timestamp in seconds (0 = none), and the ratings
   // of the search BEFORE it that it has no row for. Rows written before
