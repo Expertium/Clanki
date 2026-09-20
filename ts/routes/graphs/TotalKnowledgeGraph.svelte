@@ -9,11 +9,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         TotalKnowledgeRwkvProgress,
         TotalKnowledgeRwkvProgress_State as RwkvState,
         TotalKnowledgeRwkvRequest,
+        type GraphsResponse,
         type TotalKnowledgeResponse,
     } from "@generated/anki/stats_pb";
     import { totalKnowledge } from "@generated/backend";
     import * as tr from "@generated/ftl";
     import { postProto } from "@generated/post";
+    import { plainRecallWording } from "@tslib/recall-wording";
     import { getContext, onDestroy } from "svelte";
     import { type Readable, readable } from "svelte/store";
 
@@ -34,6 +36,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         subtitleText,
         totalKnowledgeData,
     } from "./total-knowledge";
+
+    /** Only for the recall wording (spec ui.simple-recall-wording); this
+     * graph loads its own data. */
+    export let sourceData: GraphsResponse | null = null;
 
     const pollDelayMs = 500;
     const bounds = defaultGraphBounds();
@@ -58,7 +64,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: load($search);
     $: data = response ? totalKnowledgeData(response, rwkv) : null;
     $: reviewed = showsReviewed($advancedUi, reviewedChecked);
-    $: subtitle = subtitleText($advancedUi);
+    $: subtitle = subtitleText(
+        plainRecallWording(sourceData?.recallWording, $advancedUi),
+    );
     $: if (svg) {
         renderTotalKnowledge(
             svg,

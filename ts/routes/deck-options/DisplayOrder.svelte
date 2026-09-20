@@ -36,6 +36,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+    // the plain wording never says "retrievability" (spec
+    // ui.simple-recall-wording)
+    const plainRecall = state.plainRecall;
     $: rwkv = $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled;
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
@@ -78,10 +81,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
-    const settings = {
+    $: settings = {
         newGatherPriority: {
             title: tr.deckConfigNewGatherPriority(),
-            help: tr.deckConfigNewGatherPriorityTooltip2() + currentDeck,
+            help:
+                ($plainRecall
+                    ? tr.deckConfigNewGatherPriorityTooltip2Plain()
+                    : tr.deckConfigNewGatherPriorityTooltip2()) + currentDeck,
         },
         newCardSortOrder: {
             title: tr.deckConfigNewCardSortOrder(),
@@ -100,7 +106,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigReviewSortOrderTooltip() + currentDeck,
         },
     };
-    const helpSections: HelpItem[] = Object.values(settings);
+    $: helpSections = Object.values(settings) as HelpItem[];
 
     let modal: Modal;
     let carousel: Carousel;
@@ -130,6 +136,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     defaultValue={defaults.newCardGatherPriority}
                     choices={newGatherPriorityChoices(
                         $config.rwkvReviewInstantOrderEnabled,
+                        $plainRecall,
                     )}
                 >
                     <SettingTitle
@@ -207,7 +214,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <EnumSelectorRow
                     bind:value={$config.reviewOrder}
                     defaultValue={defaults.reviewOrder}
-                    choices={reviewOrderChoices($fsrs, rwkv)}
+                    choices={reviewOrderChoices($fsrs, rwkv, $plainRecall)}
                 >
                     <SettingTitle
                         on:click={() =>

@@ -12,6 +12,9 @@ pub enum StringKey {
     SetDueReviewer,
     DefaultSearchText,
     CardStateCustomizer,
+    /// How the interface names the chance of recall (spec
+    /// `ui.simple-recall-wording`); see `recall_wording.rs`.
+    RecallWording,
 }
 
 impl Collection {

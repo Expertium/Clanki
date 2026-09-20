@@ -113,6 +113,7 @@ impl Collection {
                 self.effective_scheduling_algorithm()?,
             ) as i32,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
+            recall_wording: self.recall_wording() as i32,
         })
     }
 

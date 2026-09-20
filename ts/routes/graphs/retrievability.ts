@@ -163,7 +163,7 @@ export function prepareData(
     dispatch: SearchDispatch,
     browserLinksSupported: boolean,
     quantile?: number,
-    advanced = true,
+    plainRecall = false,
 ): [RetrievabilityHistogramData | null, TableDatum[]] {
     const explicitSeries: NamedSeriesData[] = [
         data.fsrs && {
@@ -219,7 +219,9 @@ export function prepareData(
             .map((series) => {
                 const prefix = series.label ? `${series.label}: ` : "";
                 return `${prefix}${
-                    (advanced ? tr.statisticsRetrievabilityTooltip : tr.statisticsRetrievabilityTooltipSimple)({
+                    (plainRecall
+                        ? tr.statisticsRetrievabilityTooltipPlain
+                        : tr.statisticsRetrievabilityTooltip)({
                         cards: binValue(series.bins[index]),
                         percent,
                     })
@@ -240,9 +242,9 @@ export function prepareData(
     const tableData = displaySeries.flatMap((series) => [
         {
             label: tableLabel(
-                advanced
-                    ? tr.statisticsAverageRetrievability()
-                    : tr.statisticsAverageRetrievabilitySimple(),
+                plainRecall
+                    ? tr.statisticsAverageRetrievabilityPlain()
+                    : tr.statisticsAverageRetrievability(),
                 series.label,
                 includeSeriesLabel,
             ),
@@ -376,10 +378,10 @@ export function retrievabilityHistogramGraph(
     }
 }
 
-/** The graph's title; Simple mode never says "retrievability" (spec
+/** The graph's title; the plain wording never says "retrievability" (spec
  * ui.simple-recall-wording). */
-export function retrievabilityTitle(advanced: boolean): string {
-    return advanced
-        ? tr.statisticsCardRetrievabilityTitle()
-        : tr.statisticsCardRetrievabilityTitleSimple();
+export function retrievabilityTitle(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.statisticsCardRetrievabilityTitlePlain()
+        : tr.statisticsCardRetrievabilityTitle();
 }

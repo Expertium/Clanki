@@ -27,13 +27,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     // which settings show (ui-split.ts); in Advanced mode, every one
     const shown = state.settingShown;
+    // the plain wording never says "retrievability" (spec
+    // ui.simple-recall-wording)
+    const plainRecall = state.plainRecall;
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
     $: rwkvActionInProgress =
         forceBuildingRwkvStateCache || recomputingRwkvCalibrationData;
 
-    const settings = {
+    $: settings = {
         rwkvReview: {
             title: tr.deckConfigRwkvReviewEnabled(),
             help: tr.deckConfigRwkvReviewEnabledTooltip(),
@@ -48,7 +51,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         },
         rwkvMinimumReviewsPerDay: {
             title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
-            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
+            help: $plainRecall
+                ? tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltipPlain()
+                : tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
         },
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
@@ -76,7 +81,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         },
     };
     const settingKeys = Object.keys(settings);
-    const helpSections: HelpItem[] = Object.values(settings);
+    $: helpSections = Object.values(settings) as HelpItem[];
 
     let modal: Modal;
     let carousel: Carousel;
@@ -158,7 +163,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {#if $config.rwkvReviewInstantOrderEnabled}
                 <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
                 <span class="rwkv-recommendation">
-                    {tr.deckConfigRwkvReviewInstantOrderRecommended()}
+                    {$plainRecall
+                        ? tr.deckConfigRwkvReviewInstantOrderRecommendedPlain()
+                        : tr.deckConfigRwkvReviewInstantOrderRecommended()}
                 </span>
 
                 {#if $shown("rwkvAllowSameDayReview", "section")}

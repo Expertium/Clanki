@@ -60,13 +60,14 @@ export function algorithmName(algorithm: SchedulingAlgorithm): string {
 }
 
 /**
- * The line under the title. Simple mode says the same thing without the
- * word "retrievability" (spec ui.stats-total-knowledge).
+ * The line under the title. The plain wording says the same thing without
+ * the word "retrievability" (spec ui.stats-total-knowledge,
+ * ui.simple-recall-wording).
  */
-export function subtitleText(advanced: boolean): string {
-    return advanced
-        ? tr.statisticsTotalKnowledgeSubtitle()
-        : tr.statisticsTotalKnowledgeSubtitleSimple();
+export function subtitleText(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.statisticsTotalKnowledgeSubtitlePlain()
+        : tr.statisticsTotalKnowledgeSubtitle();
 }
 
 /**

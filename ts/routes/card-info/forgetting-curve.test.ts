@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import * as tr from "@generated/ftl";
+import { plainRecallWording, RecallWording } from "@tslib/recall-wording";
 import { expect, test, vi } from "vitest";
 
 import type { DataPoint } from "./forgetting-curve";
@@ -345,20 +346,36 @@ function tooltipPoint(): DataPoint {
 
 // spec/ui.md, ui.simple-recall-wording. The English wording of the two strings
 // is pinned in Rust (simple_mode_names_the_retrievability_column_in_plain_words);
-// here the point is that Simple mode takes the plain string and Advanced mode
-// the technical one.
-test("Simple mode's forgetting-curve tooltip does not say retrievability", () => {
-    expect(recallLabel(false)).toBe(tr.cardStatsRecallProbability());
-    expect(recallLabel(false)).not.toBe(tr.cardStatsFsrsRetrievability());
-
-    const tooltip = forgettingCurveTooltip(tooltipPoint(), 30, false);
-    expect(tooltip).not.toContain(tr.cardStatsFsrsRetrievability());
-    expect(tooltip).toContain(`${tr.cardStatsRecallProbability()}: 82.88%`);
-});
-
-test("Advanced mode's forgetting-curve tooltip keeps retrievability", () => {
-    expect(recallLabel(true)).toBe(tr.cardStatsFsrsRetrievability());
+// here the point is that the plain wording takes the plain string and the
+// technical wording the technical one.
+test("the plain forgetting-curve tooltip does not say retrievability", () => {
+    expect(recallLabel(true)).toBe(tr.cardStatsFsrsRetrievabilityPlain());
+    expect(recallLabel(true)).not.toBe(tr.cardStatsFsrsRetrievability());
 
     const tooltip = forgettingCurveTooltip(tooltipPoint(), 30, true);
+    expect(tooltip).not.toContain(`${tr.cardStatsFsrsRetrievability()}: 82.88%`);
+    expect(tooltip).toContain(`${tr.cardStatsFsrsRetrievabilityPlain()}: 82.88%`);
+});
+
+test("the technical forgetting-curve tooltip keeps retrievability", () => {
+    expect(recallLabel(false)).toBe(tr.cardStatsFsrsRetrievability());
+
+    const tooltip = forgettingCurveTooltip(tooltipPoint(), 30, false);
     expect(tooltip).toContain(`${tr.cardStatsFsrsRetrievability()}: 82.88%`);
+});
+
+// Pins spec/ui.md#ui.simple-recall-wording: the setting and the mode together
+// choose the wording, in every layer.
+test("the wording setting and the mode together choose the curve's label", () => {
+    const cases: [RecallWording, boolean, string][] = [
+        [RecallWording.BY_MODE, false, tr.cardStatsFsrsRetrievabilityPlain()],
+        [RecallWording.BY_MODE, true, tr.cardStatsFsrsRetrievability()],
+        [RecallWording.TECHNICAL, false, tr.cardStatsFsrsRetrievability()],
+        [RecallWording.TECHNICAL, true, tr.cardStatsFsrsRetrievability()],
+        [RecallWording.PLAIN, false, tr.cardStatsFsrsRetrievabilityPlain()],
+        [RecallWording.PLAIN, true, tr.cardStatsFsrsRetrievabilityPlain()],
+    ];
+    for (const [setting, advanced, expected] of cases) {
+        expect(recallLabel(plainRecallWording(setting, advanced))).toBe(expected);
+    }
 });

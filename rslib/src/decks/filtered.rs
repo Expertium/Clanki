@@ -44,26 +44,26 @@ impl Deck {
     }
 }
 
-/// The "Cards selected by" labels of the filtered-deck dialog. Simple mode
-/// names the retrievability orders in plain words (`spec/ui.md`,
-/// `ui.simple-recall-wording`).
-pub fn search_order_labels(tr: &I18n, advanced_ui: bool) -> Vec<String> {
+/// The "Cards selected by" labels of the filtered-deck dialog. The plain
+/// recall wording names the retrievability orders in plain words
+/// (`spec/ui.md`, `ui.simple-recall-wording`).
+pub fn search_order_labels(tr: &I18n, plain_recall: bool) -> Vec<String> {
     FilteredSearchOrder::iter()
-        .map(|v| search_order_label(v, tr, advanced_ui))
+        .map(|v| search_order_label(v, tr, plain_recall))
         .collect()
 }
 
-fn search_order_label(order: FilteredSearchOrder, tr: &I18n, advanced_ui: bool) -> String {
-    if !advanced_ui {
+fn search_order_label(order: FilteredSearchOrder, tr: &I18n, plain_recall: bool) -> String {
+    if plain_recall {
         match order {
             FilteredSearchOrder::RetrievabilityAscending => {
                 return tr
-                    .deck_config_sort_order_recall_probability_ascending()
+                    .deck_config_sort_order_retrievability_ascending_plain()
                     .into();
             }
             FilteredSearchOrder::RetrievabilityDescending => {
                 return tr
-                    .deck_config_sort_order_recall_probability_descending()
+                    .deck_config_sort_order_retrievability_descending_plain()
                     .into();
             }
             _ => {}

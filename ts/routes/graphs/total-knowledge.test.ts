@@ -147,11 +147,11 @@ test("Simple mode hides Reviewed; the Advanced checkbox shows and hides it", () 
     expect(showsReviewed(true, false)).toBe(false);
 });
 
-// Pins spec/ui.md#ui.stats-total-knowledge: each mode has its own subtitle,
-// so Simple mode can say the same thing without the word "retrievability".
-test("Simple mode has a subtitle of its own", () => {
-    expect(subtitleText(true)).toBe(tr.statisticsTotalKnowledgeSubtitle());
-    expect(subtitleText(false)).toBe(tr.statisticsTotalKnowledgeSubtitleSimple());
+// Pins spec/ui.md#ui.stats-total-knowledge and #ui.simple-recall-wording: the
+// plain wording has a subtitle of its own, without the word "retrievability".
+test("the plain wording has a subtitle of its own", () => {
+    expect(subtitleText(false)).toBe(tr.statisticsTotalKnowledgeSubtitle());
+    expect(subtitleText(true)).toBe(tr.statisticsTotalKnowledgeSubtitlePlain());
     expect(subtitleText(false)).not.toBe(subtitleText(true));
 });
 

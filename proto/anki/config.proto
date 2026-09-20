@@ -75,7 +75,24 @@ message ConfigKey {
     SET_DUE_REVIEWER = 1;
     DEFAULT_SEARCH_TEXT = 2;
     CARD_STATE_CUSTOMIZER = 3;
+    // One of RecallWording's names, lower case with underscores
+    // ("by_mode", "technical", "plain"); unset means BY_MODE.
+    RECALL_WORDING = 4;
   }
+}
+
+// How the interface names the chance of recalling a card now (spec
+// ui.simple-recall-wording). The user picks it in Preferences > UI split;
+// it is stored in the collection config under ConfigKey.String
+// RECALL_WORDING.
+enum RecallWording {
+  // "Probability of recall" in Simple mode, "retrievability" in Advanced
+  // mode. The default.
+  BY_MODE = 0;
+  // "Retrievability" in both modes.
+  TECHNICAL = 1;
+  // "Probability of recall" in both modes.
+  PLAIN = 2;
 }
 
 enum ExperimentalFeatureFlag {
