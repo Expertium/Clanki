@@ -349,3 +349,19 @@ def test_the_generation_comes_from_the_page_url(referrer, generation) -> None:
     with patch("aqt.deckoptions._web_views") as keeper:
         on_deck_options_page_ready(referrer)
     keeper.on_page_ready.assert_called_once_with(generation)
+
+
+# Pins spec/deck-options.md#deck-options.fsrs-advanced-not-collapsed
+def test_the_fsrs_advanced_settings_are_not_in_an_expander() -> None:
+    from pathlib import Path
+
+    page = (
+        Path(__file__).parents[2]
+        / "ts"
+        / "routes"
+        / "deck-options"
+        / "FsrsOptions.svelte"
+    ).read_text(encoding="utf-8")
+    assert "<details" not in page and "<summary" not in page
+    # they still sit together under their divider
+    assert 'class="fsrs-advanced m-1"' in page
