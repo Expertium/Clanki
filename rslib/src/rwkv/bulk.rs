@@ -221,6 +221,24 @@ fn warm_up_reviews_bulk_impl(
     for input in &inputs {
         inference.warm_up_states.mark_dirty(input);
     }
+    // While recording, the curve source of every answered row (spec
+    // ui.card-info-rwkv-curve): the heads' input, which the answer lane
+    // already holds, in row order. A copy of `prehead_x`; no head runs.
+    if let Some(sources) = &mut inference.curve_sources {
+        let width = curve_source_width();
+        let start = sources.bytes.len();
+        sources.bytes.resize(start + rows * width, 0);
+        sources.bytes[start..]
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(row_index, out)| {
+                let prehead = model.prehead_norm.apply(row(&x, row_index));
+                encode_curve_source_into(&prehead, out);
+            });
+        sources
+            .indices
+            .extend(original_indices.iter().map(|&index| index as u32));
+    }
 
     let Some(x_query) = x_query else {
         #[cfg(test)]

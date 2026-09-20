@@ -433,6 +433,31 @@ pub struct WarmUpPrediction {
     pub curve_retrievability: Option<f32>,
 }
 
+/// The encoding of a saved per-review curve source (spec
+/// ui.card-info-rwkv-curve): what `curves_from_sources` rebuilds a curve
+/// from. For this model, format 1: the heads' input (`prehead_x` after
+/// `prehead_norm`) as little-endian 16-bit floats, one per model dimension.
+/// A model whose curve comes from other numbers (the mid-October one: its
+/// raw head outputs) gets a new format number; readers never assume a width.
+pub const CURVE_SOURCE_FORMAT: u32 = 1;
+/// The version of the arithmetic that produces the source. Bump it when a
+/// kernel change (another float order, quantization) changes `prehead_x`,
+/// so that sources saved before the change read as stale.
+pub const CURVE_SOURCE_KERNEL: u32 = 1;
+
+/// A curve as card info draws it: recall at each asked elapsed day, and the
+/// curve's S90.
+pub type CurvePoints = (Vec<f32>, f32);
+
+/// Curve sources recorded by a replay or a live answer: for each answered
+/// review, its index in the call's input (always 0 for `review`), and its
+/// source, `curve_source_tag().2` bytes each, in `bytes`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CurveSources {
+    pub indices: Vec<u32>,
+    pub bytes: Vec<u8>,
+}
+
 pub struct ReviewState<'a> {
     pub card: Option<&'a [u8]>,
     pub deck: Option<&'a [u8]>,
@@ -533,6 +558,9 @@ pub struct RwkvInference {
     state_cache_store: Option<StateCacheStoreWriter>,
     target_retention: f32,
     max_interval_days: u32,
+    /// While `Some`, every answered review this runtime replays or reviews
+    /// adds its curve source here (`record_curve_sources`).
+    curve_sources: Option<CurveSources>,
 }
 
 struct StateCacheStoreWriter {
@@ -707,7 +735,62 @@ impl RwkvInference {
             state_cache_store: None,
             target_retention,
             max_interval_days,
+            curve_sources: None,
         })
+    }
+
+    /// Starts (or stops, dropping what was recorded) recording the curve
+    /// source of every answered review (spec ui.card-info-rwkv-curve).
+    pub fn record_curve_sources(&mut self, on: bool) {
+        self.curve_sources = on.then(CurveSources::default);
+    }
+
+    /// The sources recorded since the last call; recording goes on.
+    pub fn take_curve_sources(&mut self) -> CurveSources {
+        self.curve_sources
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// (format, kernel, bytes per source) of the sources this model saves.
+    pub fn curve_source_tag(&self) -> (u32, u32, usize) {
+        (
+            CURVE_SOURCE_FORMAT,
+            CURVE_SOURCE_KERNEL,
+            curve_source_width(),
+        )
+    }
+
+    /// The curves saved as `sources` (`width` bytes each), rebuilt through
+    /// this model's curve head, at `elapsed_days`, each with its S90. `None`
+    /// when the sources are not this model's format and kernel, or do not
+    /// split into whole sources; a source whose curve has no S90 gets `None`.
+    pub fn curves_from_sources(
+        &self,
+        format: u32,
+        kernel: u32,
+        sources: &[u8],
+        width: usize,
+        elapsed_days: &[f32],
+    ) -> Option<Vec<Option<CurvePoints>>> {
+        if format != CURVE_SOURCE_FORMAT
+            || kernel != CURVE_SOURCE_KERNEL
+            || width != curve_source_width()
+            || sources.len() % width != 0
+        {
+            return None;
+        }
+        Some(
+            sources
+                .par_chunks(width)
+                .map(|source| {
+                    let prehead = decode_curve_source(source);
+                    let curve = self.model.curve_head(&prehead);
+                    curve_points_and_s90(&curve, elapsed_days, self.max_interval_days)
+                })
+                .collect(),
+        )
     }
 
     pub fn review(
@@ -720,6 +803,10 @@ impl RwkvInference {
         if !input.is_query {
             self.features.store_review(&input);
             self.curves.insert(input.card_id, heads.curve.clone());
+            if let Some(sources) = &mut self.curve_sources {
+                sources.indices.push(0);
+                encode_curve_source(&heads.prehead, &mut sources.bytes);
+            }
         }
 
         let answer_heads = if input.is_query {
@@ -1271,6 +1358,10 @@ impl RwkvInference {
 
             self.features.store_review(&input);
             self.curves.insert(input.card_id, heads.curve.clone());
+            if let Some(sources) = &mut self.curve_sources {
+                sources.indices.push(index as u32);
+                encode_curve_source(&heads.prehead, &mut sources.bytes);
+            }
             self.warm_up_states.store(&input, heads.next_state);
         }
 
@@ -1889,6 +1980,7 @@ insert into segments (
             state_cache_store: None,
             target_retention: self.target_retention,
             max_interval_days: self.max_interval_days,
+            curve_sources: None,
         }
     }
 
@@ -3665,6 +3757,7 @@ impl SrsModel {
             button_probabilities,
             curve,
             next_state,
+            prehead: x,
         };
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::Heads, heads_profile_started);
@@ -3716,6 +3809,9 @@ struct ReviewHeads {
     button_probabilities: [f32; 4],
     curve: ReviewCurve,
     next_state: SrsState,
+    /// The heads' input, `prehead_x` after `prehead_norm`: the curve's
+    /// source (`CURVE_SOURCE_FORMAT`).
+    prehead: Vec<f32>,
 }
 
 #[derive(Clone)]
@@ -5270,6 +5366,85 @@ fn unrounded_interval_for_curve(
 
 /// The recall of `curve` at each of `elapsed_days`, and its S90 (where it
 /// meets 90% recall, `unrounded_interval_for_curve`).
+/// Bytes per saved curve source (`CURVE_SOURCE_FORMAT`).
+fn curve_source_width() -> usize {
+    D_MODEL * 2
+}
+
+/// Appends `prehead` as a curve source (`CURVE_SOURCE_FORMAT`).
+fn encode_curve_source(prehead: &[f32], out: &mut Vec<u8>) {
+    let start = out.len();
+    out.resize(start + curve_source_width(), 0);
+    encode_curve_source_into(prehead, &mut out[start..]);
+}
+
+/// Writes `prehead` as a curve source into `out`, `curve_source_width()`
+/// bytes.
+fn encode_curve_source_into(prehead: &[f32], out: &mut [u8]) {
+    debug_assert_eq!(prehead.len(), D_MODEL);
+    for (value, bytes) in prehead.iter().zip(out.chunks_exact_mut(2)) {
+        bytes.copy_from_slice(&f16_bits(*value).to_le_bytes());
+    }
+}
+
+fn decode_curve_source(source: &[u8]) -> Vec<f32> {
+    source
+        .chunks_exact(2)
+        .map(|bits| f32_from_f16_bits(u16::from_le_bytes([bits[0], bits[1]])))
+        .collect()
+}
+
+/// `value` as IEEE 754 half precision, rounded to nearest, ties to even.
+fn f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        // infinity stays infinity; NaN stays a (quiet) NaN
+        return sign | 0x7c00 | if mantissa != 0 { 0x0200 } else { 0 };
+    }
+    let half_exponent = exponent - 127 + 15;
+    if half_exponent >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if half_exponent <= 0 {
+        // a subnormal half, or zero
+        if half_exponent < -10 {
+            return sign;
+        }
+        let mantissa = mantissa | 0x0080_0000;
+        let shift = (14 - half_exponent) as u32;
+        let rounded = mantissa + (1 << (shift - 1)) - 1 + ((mantissa >> shift) & 1);
+        return sign | (rounded >> shift) as u16;
+    }
+    let rounded = mantissa + 0x0fff + ((mantissa >> 13) & 1);
+    // a carry out of the mantissa moves into the exponent, as it should
+    sign | (((half_exponent as u32) << 10) + (rounded >> 13)) as u16
+}
+
+fn f32_from_f16_bits(half: u16) -> f32 {
+    let sign = ((half & 0x8000) as u32) << 16;
+    let exponent = ((half >> 10) & 0x1f) as u32;
+    let mantissa = (half & 0x03ff) as u32;
+    let bits = match exponent {
+        0 if mantissa == 0 => sign,
+        0 => {
+            // subnormal: shift the mantissa up to an implicit leading one
+            let mut exponent = 113;
+            let mut mantissa = mantissa;
+            while mantissa & 0x0400 == 0 {
+                mantissa <<= 1;
+                exponent -= 1;
+            }
+            sign | (exponent << 23) | ((mantissa & 0x03ff) << 13)
+        }
+        0x1f => sign | 0x7f80_0000 | (mantissa << 13),
+        _ => sign | ((exponent + 112) << 23) | (mantissa << 13),
+    };
+    f32::from_bits(bits)
+}
+
 fn curve_points_and_s90(
     curve: &ReviewCurve,
     elapsed_days: &[f32],
@@ -11242,6 +11417,206 @@ create table segment_state_chunks (
         assert!(fast > 0.03 && fast < 0.05, "{fast}");
         let slow = unrounded_interval_for_curve(&basis_curve(60), 0.9, 36_500).unwrap();
         assert!(slow > 1.0 && slow != slow.round(), "{slow}");
+    }
+
+    // Pins spec/ui.md#ui.card-info-rwkv-curve: every answered review of a
+    // replay saves one curve source, the bulk and the per-review paths save
+    // the same bytes (also across a chunk boundary, and with or without the
+    // per-review predictions), and the last source of each card rebuilds the
+    // curve the replay stored for that card, to within 16-bit rounding. So
+    // the last segment card info rebuilds is the segment it draws today.
+    #[test]
+    fn curve_sources_rebuild_the_curve_stored_at_each_review() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let reviews = curve_source_reviews(160);
+        let answered: Vec<usize> = (0..reviews.len())
+            .filter(|&index| reviews[index].ease.is_some())
+            .collect();
+        let (_, _, width) = RwkvInference::load(weights.clone(), 0.9, 36_500)
+            .unwrap()
+            .curve_source_tag();
+
+        let mut sequential = RwkvInference::load(weights.clone(), 0.9, 36_500).unwrap();
+        sequential.record_curve_sources(true);
+        sequential
+            .warm_up_reviews_sequential(reviews.clone(), true)
+            .unwrap();
+        let expected = sequential.take_curve_sources();
+        assert_eq!(
+            expected.indices,
+            answered
+                .iter()
+                .map(|&index| index as u32)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(expected.bytes.len(), answered.len() * width);
+
+        let mut bulk = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        bulk.record_curve_sources(true);
+        let split = 70;
+        bulk.warm_up_reviews(reviews[..split].to_vec(), false)
+            .unwrap();
+        let mut actual = bulk.take_curve_sources();
+        bulk.warm_up_reviews(reviews[split..].to_vec(), true)
+            .unwrap();
+        let second = bulk.take_curve_sources();
+        actual
+            .indices
+            .extend(second.indices.iter().map(|index| index + split as u32));
+        actual.bytes.extend(second.bytes);
+        assert_eq!(actual, expected, "bulk and per-review sources diverged");
+        assert_warm_up_parity(&mut sequential, &mut bulk);
+
+        let days = [0.0, 0.01, 0.5, 1.0, 3.0, 10.0, 30.0, 100.0, 365.0];
+        let mut last_by_card = HashMap::new();
+        for (position, &index) in actual.indices.iter().enumerate() {
+            last_by_card.insert(reviews[index as usize].card_id, position);
+        }
+        assert!(last_by_card.len() > 10, "fixture should cover many cards");
+        assert!(
+            decode_curve_source(&actual.bytes)
+                .iter()
+                .all(|value| value.is_finite()),
+            "a source holds a value that is not finite"
+        );
+        let mut s90s = HashSet::new();
+        for (card_id, position) in last_by_card {
+            let source = &actual.bytes[position * width..(position + 1) * width];
+            let rebuilt = bulk
+                .curves_from_sources(
+                    CURVE_SOURCE_FORMAT,
+                    CURVE_SOURCE_KERNEL,
+                    source,
+                    width,
+                    &days,
+                )
+                .unwrap();
+            let (recall, s90) = rebuilt[0].clone().unwrap();
+            let (stored_recall, stored_s90) = bulk.card_curve(card_id, &days).unwrap();
+            for (rebuilt, stored) in recall.iter().zip(&stored_recall) {
+                assert!(
+                    (rebuilt - stored).abs() < 1e-4,
+                    "card {card_id}: recall {rebuilt} vs stored {stored}"
+                );
+            }
+            // an S90 of seconds sits where the curve is flat, so its
+            // rounding error is larger in relative terms: allow 3% and one
+            // second
+            assert!(
+                (s90 - stored_s90).abs() <= 0.03 * stored_s90 + 1.0 / SECONDS_PER_DAY as f32,
+                "card {card_id}: S90 {s90} vs stored {stored_s90}"
+            );
+            s90s.insert(stored_s90.to_bits());
+        }
+        // the cards' curves differ, so a source that rebuilt a fixed curve
+        // would fail above
+        assert!(s90s.len() > 5, "the fixture's curves should differ");
+    }
+
+    /// Reviews with real elapsed times: each card's elapsed days and
+    /// seconds since its own previous review, -1 on its first.
+    fn curve_source_reviews(count: usize) -> Vec<ReviewInput> {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as i64
+        };
+        let mut previous: HashMap<i64, i64> = HashMap::new();
+        (0..count)
+            .map(|index| {
+                let card_id = 100 + next().rem_euclid(23);
+                let seconds = index as i64 * 7_919 + next().rem_euclid(3_600);
+                let day = 7_300 + seconds / SECONDS_PER_DAY;
+                let before = previous.insert(card_id, seconds);
+                ReviewInput {
+                    card_id,
+                    note_id: Some(1000 + card_id / 2),
+                    deck_id: Some(2000 + card_id % 3),
+                    preset_id: Some(3000),
+                    is_query: false,
+                    ease: Some((next().rem_euclid(4) + 1) as u8),
+                    duration_millis: Some(1500 + next().rem_euclid(20_000)),
+                    card_type: Some(if before.is_some() { 1 } else { 0 }),
+                    day_offset: Some(day),
+                    current_elapsed_days: Some(
+                        before.map_or(-1, |before| day - (7_300 + before / SECONDS_PER_DAY)),
+                    ),
+                    current_elapsed_seconds: Some(before.map_or(-1, |before| seconds - before)),
+                    target_retentions: [Some(0.9); 4],
+                    enforce_grade_order: true,
+                }
+            })
+            .collect()
+    }
+
+    // Pins spec/ui.md#ui.card-info-rwkv-curve: a source is read only by the
+    // model, format and kernel that saved it, and nothing is recorded while
+    // recording is off.
+    #[test]
+    fn curve_sources_of_another_format_are_not_read() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        inference
+            .warm_up_reviews(bulk_parity_reviews(20), false)
+            .unwrap();
+        assert_eq!(inference.take_curve_sources(), CurveSources::default());
+
+        let (format, kernel, width) = inference.curve_source_tag();
+        let source = vec![0; width];
+        let days = [1.0];
+        assert!(inference
+            .curves_from_sources(format, kernel, &source, width, &days)
+            .is_some());
+        assert!(inference
+            .curves_from_sources(format + 1, kernel, &source, width, &days)
+            .is_none());
+        assert!(inference
+            .curves_from_sources(format, kernel + 1, &source, width, &days)
+            .is_none());
+        assert!(inference
+            .curves_from_sources(format, kernel, &source[1..], width, &days)
+            .is_none());
+    }
+
+    #[test]
+    fn f16_encoding_round_trips_and_rounds_to_nearest_even() {
+        for bits in 0..=u16::MAX {
+            let value = f32_from_f16_bits(bits);
+            if value.is_nan() {
+                assert!(f32_from_f16_bits(f16_bits(value)).is_nan());
+                continue;
+            }
+            assert_eq!(f16_bits(value), bits, "half {bits:#06x} = {value}");
+        }
+        assert_eq!(f16_bits(1.0), 0x3c00);
+        assert_eq!(f16_bits(-2.0), 0xc000);
+        assert_eq!(f16_bits(65504.0), 0x7bff);
+        assert_eq!(f16_bits(70000.0), 0x7c00);
+        assert_eq!(f16_bits(1e-9), 0);
+        // exactly halfway between 1.0 and the next half: ties to even
+        assert_eq!(f16_bits(1.0 + 2f32.powi(-11)), 0x3c00);
+        assert_eq!(f16_bits(1.0 + 3.0 * 2f32.powi(-11)), 0x3c02);
+        // the smallest subnormal half, and half of it (ties to even: zero)
+        assert_eq!(f16_bits(2f32.powi(-24)), 0x0001);
+        assert_eq!(f16_bits(2f32.powi(-25)), 0x0000);
+        let mut state = 12345_u32;
+        for _ in 0..100_000 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let value = (state as f32 / u32::MAX as f32 - 0.5) * 16.0;
+            let back = f32_from_f16_bits(f16_bits(value));
+            assert!(
+                (back - value).abs() <= value.abs() * 2f32.powi(-11) + 2f32.powi(-25),
+                "{value} came back as {back}"
+            );
+        }
     }
 
     // Pins spec/ui.md#ui.card-info-rwkv-curve: card info gets the stored

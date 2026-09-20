@@ -1483,6 +1483,15 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
         response.rwkv_curve.s90 = curve.s90
         if curve.current_recall is not None:
             response.rwkv_curve.current_recall = curve.current_recall
+        # the earlier reviews' own curves; the last review's is the one above
+        latest_time = response.revlog[latest].time if latest is not None else None
+        for past in curve.past:
+            review_time = past.review_id // 1000
+            if latest_time is not None and review_time >= latest_time:
+                continue
+            response.rwkv_curve.past.add(
+                review_time=review_time, recall=past.recall, s90=past.s90
+            )
     if latest is None:
         return
     for entry in response.revlog[latest + 1 :]:

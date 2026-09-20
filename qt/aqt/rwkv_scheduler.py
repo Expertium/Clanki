@@ -970,6 +970,21 @@ _rwkv_memorised_history_job_lock = threading.Lock()
 _rwkv_memorised_history_job: RwkvMemorisedHistoryJob | None = None
 
 
+@dataclass(frozen=True)
+class RwkvCurveSources:
+    """RWKV-Curve's curve sources of answered reviews (spec
+    ui.card-info-rwkv-curve): one source of `width` bytes per id in
+    `review_ids`, in `sources`, in the layout of the model's `format` and
+    `kernel`. Only the model reads them; nothing else looks inside."""
+
+    review_ids: Sequence[int]
+    sources: bytes
+    width: int
+    format: int
+    kernel: int
+
+
+RwkvCurveSourceRecorder = Callable[[RwkvCurveSources], None]
 RwkvWarmUpProgressCallback = Callable[[RwkvWarmUpProgress], None]
 RwkvStateCacheProgressCallback = Callable[[str, int | None, int | None], None]
 RwkvStateCacheSnapshotCallback = Callable[[int, RwkvBackendCacheSnapshot], None]
@@ -1102,6 +1117,36 @@ class RwkvStatefulReviewerBackend:
     ) -> tuple[list[int], bytes] | None:
         card_curve_weights = getattr(self._runtime, "card_curve_weights", None)
         return card_curve_weights(card_ids) if callable(card_curve_weights) else None
+
+    def record_curve_sources(self, on: bool) -> bool:
+        """Starts or stops recording curve sources; False when the runtime
+        cannot record them (spec ui.card-info-rwkv-curve)."""
+        record = getattr(self._runtime, "record_curve_sources", None)
+        if not callable(record):
+            return False
+        record(on)
+        return True
+
+    def take_curve_sources(self) -> tuple[list[int], bytes, int] | None:
+        """(each review's index in its call, the sources, bytes per source)
+        recorded since the last call."""
+        take = getattr(self._runtime, "take_curve_sources", None)
+        return take() if callable(take) else None
+
+    def curve_source_tag(self) -> tuple[int, int] | None:
+        """(format, kernel) of the running model's curve sources."""
+        tag = getattr(self._runtime, "curve_source_tag", None)
+        return tag() if callable(tag) else None
+
+    def curves_from_sources(
+        self,
+        sources: RwkvCurveSources,
+        elapsed_days: Sequence[float],
+    ) -> list[tuple[list[float], float] | None] | None:
+        """The curves rebuilt from `sources`, each (recall at
+        `elapsed_days`, S90) or None; None when they are not this model's."""
+        rebuild = getattr(self._runtime, "curves_from_sources", None)
+        return rebuild(sources, elapsed_days) if callable(rebuild) else None
 
     def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
         if self._runtime_owns_warm_up_state():
@@ -1251,6 +1296,7 @@ class RwkvStatefulReviewerBackend:
         review_ids: Sequence[int] | None = None,
         prediction_recorder: Callable[[int, float], None] | None = None,
         curve_recorder: Callable[[int, float], None] | None = None,
+        curve_source_recorder: RwkvCurveSourceRecorder | None = None,
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
@@ -1296,6 +1342,12 @@ class RwkvStatefulReviewerBackend:
                         "predictions cannot be recorded"
                     )
                 kwargs["curve_recorder"] = curve_recorder
+            if curve_source_recorder is not None and _callable_accepts_keyword(
+                bulk_parameters, "curve_source_recorder"
+            ):
+                # the replay saves each review's curve source as it goes
+                # (spec ui.card-info-rwkv-curve)
+                kwargs["curve_source_recorder"] = curve_source_recorder
             if bulk_supports_snapshots:
                 kwargs["snapshot_after_reviews"] = sorted(snapshot_endpoints)
                 kwargs["snapshot_recorder"] = snapshot_recorder
@@ -3387,6 +3439,69 @@ class _RwkvCurveReviewPredictionWriter:
             self.written += len(rows)
 
 
+class _RwkvCurveSourceWriter:
+    """RWKV-Curve's per-review curve sources, into the cache beside the
+    collection (spec ui.card-info-rwkv-curve).
+
+    Every row is tagged with the running model (the SHA-256 of its weights)
+    and the sources' format and kernel versions, so that sources of another
+    model read as stale. Without the model's identity nothing is saved:
+    an untagged source could later be read by the wrong model.
+    """
+
+    _BATCH_ROWS = 20_000
+
+    def __init__(self, reviewer: object) -> None:
+        self._col: Any | None = _collection(reviewer)
+        model_key = _rwkv_model_cache_key()
+        self._model = str(model_key.get("sha256") or "") if model_key else ""
+        self._pending: list[RwkvCurveSources] = []
+        self._pending_rows = 0
+        self.written = 0
+
+    def __call__(self, sources: RwkvCurveSources) -> None:
+        if self._col is None or not self._model or not sources.review_ids:
+            return
+        if self._pending and (
+            (self._pending[0].width, self._pending[0].format, self._pending[0].kernel)
+            != (sources.width, sources.format, sources.kernel)
+        ):
+            self.flush()
+        self._pending.append(sources)
+        self._pending_rows += len(sources.review_ids)
+        if self._pending_rows >= self._BATCH_ROWS:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._col is None or not self._pending:
+            return
+        pending = self._pending
+        self._pending = []
+        self._pending_rows = 0
+        backend = getattr(self._col, "_backend", None)
+        store = getattr(backend, "set_rwkv_curve_sources", None)
+        if not callable(store):
+            logger.debug("RWKV curve sources skipped: backend unavailable")
+            return
+        first = pending[0]
+        review_ids = [review_id for batch in pending for review_id in batch.review_ids]
+        try:
+            store(
+                scheduler_pb2.RwkvCurveSources(
+                    tag=scheduler_pb2.RwkvCurveSourceTag(
+                        model=self._model, format=first.format, kernel=first.kernel
+                    ),
+                    revlog_ids=review_ids,
+                    width=first.width,
+                    sources=b"".join(batch.sources for batch in pending),
+                )
+            )
+        except Exception:
+            logger.exception("failed to store RWKV curve sources")
+        else:
+            self.written += len(review_ids)
+
+
 def set_reviewer_backend(
     backend: RwkvReviewerBackend | None,
 ) -> RwkvReviewerBackend | None:
@@ -5106,11 +5221,21 @@ def record_reviewer_answer(
                 )
                 logger.debug("RWKV answer update deferred: %s", recovery_reason)
                 return
-            backend.review_answered(
-                reviewer=reviewer,
-                card=card,
-                ease=ease,
-            )
+            # the answer's curve source, for card info (spec
+            # ui.card-info-rwkv-curve)
+            recording = _record_curve_sources(backend, True)
+            try:
+                backend.review_answered(
+                    reviewer=reviewer,
+                    card=card,
+                    ease=ease,
+                )
+                answered_sources = _take_curve_sources(backend) if recording else None
+            finally:
+                if recording:
+                    _record_curve_sources(backend, False)
+            if answered_sources is not None and card_id is not None:
+                _save_answered_curve_source(reviewer, card_id, answered_sources)
             if not _reviewer_backend_mutation_context_is_current(
                 mutation_context,
                 reviewer,
@@ -5169,6 +5294,54 @@ def record_reviewer_answer(
                 else:
                     synthetic_states.pop(pending.card_id, None)
             delattr(reviewer, _REVIEWER_PENDING_ANSWER_STATE_ATTR)
+
+
+def _record_curve_sources(backend: object, on: bool) -> bool:
+    record = getattr(backend, "record_curve_sources", None)
+    return bool(record(on)) if callable(record) else False
+
+
+def _take_curve_sources(backend: object) -> RwkvCurveSources | None:
+    """The one curve source a live answer recorded, still without its
+    review id (0 stands in until `_save_answered_curve_source`)."""
+    take = getattr(backend, "take_curve_sources", None)
+    tag = getattr(backend, "curve_source_tag", None)
+    taken = take() if callable(take) else None
+    format_and_kernel = tag() if callable(tag) else None
+    if not taken or format_and_kernel is None:
+        return None
+    indices, sources, width = taken
+    if not indices or width <= 0 or len(sources) < width:
+        return None
+    return RwkvCurveSources(
+        review_ids=[0],
+        # the answer's own review is the last one it recorded
+        sources=sources[-width:],
+        width=width,
+        format=format_and_kernel[0],
+        kernel=format_and_kernel[1],
+    )
+
+
+def _save_answered_curve_source(
+    reviewer: object, card_id: int, sources: RwkvCurveSources
+) -> None:
+    """Saves a live answer's curve source under the answer's review id: the
+    card's newest answered review, which the answer has just written."""
+    try:
+        db = getattr(_collection(reviewer), "db", None)
+        review_id = (
+            db.scalar("select max(id) from revlog where cid = ? and ease > 0", card_id)
+            if db is not None
+            else None
+        )
+        if not isinstance(review_id, int) or review_id <= 0:
+            return
+        writer = _RwkvCurveSourceWriter(reviewer)
+        writer(replace(sources, review_ids=[review_id]))
+        writer.flush()
+    except Exception:
+        logger.exception("failed to save the answer's RWKV curve source")
 
 
 def _rwkv_live_answer_canonical_recovery_reason(
@@ -9168,6 +9341,19 @@ class RwkvCardCurve:
     s90: float
     # the recall at the requested elapsed time (the card's R now)
     current_recall: float | None = None
+    # the curves after the card's answered reviews that have a saved source,
+    # oldest first, on the same elapsed days (spec ui.card-info-rwkv-curve)
+    past: tuple[RwkvPastCurve, ...] = ()
+
+
+@dataclass(frozen=True)
+class RwkvPastCurve:
+    """RWKV-Curve's curve after one answered review, rebuilt from the source
+    saved for that review (spec ui.card-info-rwkv-curve)."""
+
+    review_id: int
+    recall: tuple[float, ...]
+    s90: float
 
 
 @dataclass(frozen=True)
@@ -9219,6 +9405,11 @@ def rwkv_card_info_curve_result(
             if elapsed_days is not None:
                 days = (*days, elapsed_days)
             result = card_curve(card_id, days)
+            past = (
+                _rwkv_past_curves(reviewer, current_backend, card_id)
+                if result is not None
+                else ()
+            )
     except Exception:
         logger.exception("RWKV card info curve failed")
         return RwkvCardCurveResult(curve=None, pending=True)
@@ -9233,7 +9424,62 @@ def rwkv_card_info_curve_result(
             recall=values[:grid_size],
             s90=float(s90),
             current_recall=values[grid_size] if len(values) > grid_size else None,
+            past=past,
         )
+    )
+
+
+def _rwkv_past_curves(
+    reviewer: object, backend: object, card_id: int
+) -> tuple[RwkvPastCurve, ...]:
+    """The card's saved curve sources that the running model wrote, rebuilt
+    by that model (spec ui.card-info-rwkv-curve). A review without a
+    current source gets nothing, and nothing stands in for it. Card info
+    never looks inside a source: the model reads its own format."""
+    tag = getattr(backend, "curve_source_tag", None)
+    rebuild = getattr(backend, "curves_from_sources", None)
+    col_backend = getattr(_collection(reviewer), "_backend", None)
+    read = getattr(col_backend, "get_rwkv_curve_sources", None)
+    model_key = _rwkv_model_cache_key()
+    model = str(model_key.get("sha256") or "") if model_key else ""
+    if not (callable(tag) and callable(rebuild) and callable(read) and model):
+        return ()
+    format_and_kernel = tag()
+    if format_and_kernel is None:
+        return ()
+    source_format, kernel = format_and_kernel
+    try:
+        saved = read(
+            card_id=card_id,
+            tag=scheduler_pb2.RwkvCurveSourceTag(
+                model=model, format=source_format, kernel=kernel
+            ),
+        )
+    except Exception:
+        logger.exception("failed to read RWKV curve sources")
+        return ()
+    if not saved.revlog_ids:
+        return ()
+    curves = rebuild(
+        RwkvCurveSources(
+            review_ids=list(saved.revlog_ids),
+            sources=saved.sources,
+            width=saved.width,
+            format=source_format,
+            kernel=kernel,
+        ),
+        RWKV_CARD_INFO_CURVE_DAYS,
+    )
+    if curves is None:
+        return ()
+    return tuple(
+        RwkvPastCurve(
+            review_id=int(review_id),
+            recall=tuple(float(value) for value in curve[0]),
+            s90=float(curve[1]),
+        )
+        for review_id, curve in zip(saved.revlog_ids, curves)
+        if curve is not None
     )
 
 
@@ -10347,27 +10593,38 @@ def _warm_up_rwkv_reviews(
         )
 
     if isinstance(backend, RwkvStatefulReviewerBackend):
-        if not record_retrievability_cache:
-            backend.warm_up(
-                reviews,
-                review_ids=review_ids,
-                progress=progress_reporter,
-                snapshot_after_reviews=snapshot_after_reviews,
-                snapshot_recorder=snapshot_recorder,
-            )
-        else:
-            writer = _RwkvReviewRetrievabilityCacheWriter(reviewer)
-            try:
+        # every replayed review saves its curve source, for card info
+        # (spec ui.card-info-rwkv-curve)
+        source_writer = (
+            _RwkvCurveSourceWriter(reviewer) if review_ids is not None else None
+        )
+        try:
+            if not record_retrievability_cache:
                 backend.warm_up(
                     reviews,
                     review_ids=review_ids,
-                    prediction_recorder=writer,
+                    curve_source_recorder=source_writer,
                     progress=progress_reporter,
                     snapshot_after_reviews=snapshot_after_reviews,
                     snapshot_recorder=snapshot_recorder,
                 )
-            finally:
-                writer.flush()
+            else:
+                writer = _RwkvReviewRetrievabilityCacheWriter(reviewer)
+                try:
+                    backend.warm_up(
+                        reviews,
+                        review_ids=review_ids,
+                        prediction_recorder=writer,
+                        curve_source_recorder=source_writer,
+                        progress=progress_reporter,
+                        snapshot_after_reviews=snapshot_after_reviews,
+                        snapshot_recorder=snapshot_recorder,
+                    )
+                finally:
+                    writer.flush()
+        finally:
+            if source_writer is not None:
+                source_writer.flush()
         return
 
     if callable(warm_up):
@@ -10634,6 +10891,9 @@ def recompute_rwkv_calibration_data(
                 reviewer,
                 source="rwkv_curve_calibration_recompute",
             )
+            # and each review's curve source, for card info (spec
+            # ui.card-info-rwkv-curve)
+            source_writer = _RwkvCurveSourceWriter(reviewer)
             started_at = time.monotonic()
 
             def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
@@ -10652,6 +10912,11 @@ def recompute_rwkv_calibration_data(
                     "curve_recorder": curve_writer.record,
                     "progress": replay_progress,
                 }
+                if _callable_accepts_keyword(
+                    _callable_parameters(cast(Callable[..., Any], warm_up)),
+                    "curve_source_recorder",
+                ):
+                    warm_up_kwargs["curve_source_recorder"] = source_writer
                 cast(Callable[..., object], warm_up)(
                     history.reviews,
                     **warm_up_kwargs,
@@ -10660,6 +10925,7 @@ def recompute_rwkv_calibration_data(
             finally:
                 writer.flush()
                 curve_writer.flush()
+                source_writer.flush()
             if curve_writer.written == 0 and len(history.reviews) > 1:
                 # the replay ran and recorded nothing: say so in the log
                 # rather than leave an empty series to be found in the UI

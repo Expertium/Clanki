@@ -617,31 +617,48 @@ shows only RWKV-Curve's own curves. **The rule:** no FSRS-7 segment and no
 FSRS-7 value is ever drawn on such a card, whatever RWKV has. FSRS-7's
 parameters change nothing on the chart.
 
-**A limitation, not a decision:** the chart today draws ONE segment, from the
-card's last answered review onward, and nothing for the reviews before it.
-The full history is meant to be drawn. Clanki keeps one RWKV curve per card,
-the curve the model held at that card's last answered review, and keeps no
-curve for any earlier review, so there is nothing to draw the earlier
-segments from. What would remove it: storing the curve the model held at
-every review. The per-review values the RWKV replay records
-(`ui.stats-model-metrics`) are ONE recall number per review, not a curve, so
-they are enough for the model-quality graphs and not enough for a segment.
+**The full history.** The chart draws one segment per answered review:
+after each review, the curve RWKV held for the card right after that review,
+up to the next review. That is the curve RWKV-Curve scheduled the card
+with, the real answer's own curve and not a per-button probe. Clanki cannot
+recompute it later from the card's own reviews, because RWKV's state depends
+on every earlier review of the collection, so the RWKV replay (the history
+pass at start-up and the one that records the Stats data) and each answer in
+the reviewer save a compact source of that curve for every answered review,
+and card info rebuilds the curve from it. The source's format belongs to the
+model and is tagged with it: the current model saves the 128 values its
+curve head reads, as 16-bit floats (about 256 bytes per review). Each saved
+source carries the model's identity (the SHA-256 of its weights) and the
+format and kernel versions; a source whose tag does not match the running
+model is stale and is never drawn. The sources live in the
+`collection.retrievability-cache.sqlite` file beside the collection, with the
+other per-review recordings: a cache, never synced, never read by official
+Anki or AnkiDroid.
 
-The drawn segment runs from the last answered review to now and then as a
+A review with no saved source (older than the recording, recorded by
+another model, or a review the RWKV replay does not read) gets no segment: the line breaks there, no curve is invented
+for it, and no FSRS-7 curve stands in. The chart starts at the oldest review
+that has a source; with none, it starts at the last answered review.
+The segment after the last answered review is the curve RWKV holds for the
+card now; the rebuilt curve of that review matches it to within 16-bit
+rounding.
+
+The last segment runs from the last answered review to now and then as a
 dashed preview. The chart's tooltip, card info's "Stability" row and the
 latest review's stability in the page data show that curve's S90 (where it
 meets 90% recall), not the S90 stored on the card. While RWKV has no curve
 for the card (its state still loading, busy, or no answered review), the
 chart shows no data and card info has no "Stability" row. A curve reaches
 the page as recall at 0 and at 300 elapsed times evenly spaced in log time
-from one minute to 100 years, joined by straight lines. The chart draws
-whether or not FSRS-7 has a memory state for the card
+from one minute to 100 years, joined by straight lines; every segment uses
+the same elapsed times, and its tooltip shows that segment's own S90. The
+chart draws whether or not FSRS-7 has a memory state for the card
 (`ui.card-info-curve-messages`).
 
 Card info for such a card shows no other FSRS-7 value either: no
 "Difficulty" row, and its one "Retrievability" row is the curve's recall
 now (`ui.card-info-one-algorithm`). The page data of the reviews before the latest answered one carries no
-memory state, so no FSRS-7 stability of those reviews reaches the page.
+FSRS-7 memory state, so no FSRS-7 stability of those reviews reaches the page.
 Cards of FSRS-7 presets draw FSRS-7's curve with its S90 for every review;
 RWKV-Instant cards draw none (`ui.card-info-one-algorithm`). With no curve the
 box says why (`ui.card-info-curve-messages`).
@@ -655,16 +672,24 @@ no FSRS-7 S90. He also asked, on the same day, that the forgetting curve
 "always shows the full history of a card, all reviews", for both algorithms,
 and on 2026-09-16, shown the one-segment chart: "that is absolutely not
 intended whatsoever". His no-mixing rule forbids borrowing FSRS-7's curve;
-it says nothing about RWKV's own, and the empty history does not follow from
-it. This entry stated the two as one sentence, so a missing feature read as
-a decision.
+it says nothing about RWKV's own. On 2026-09-19 he accepted about 170 MB of
+saved sources for his 656k reviews, so that the chart can draw them.
 
-**Pinned by:** `card_curve_points_are_the_curve_and_its_s90`
+**Pinned by:** `card_curve_points_are_the_curve_and_its_s90`,
+`curve_sources_rebuild_the_curve_stored_at_each_review`,
+`curve_sources_of_another_format_are_not_read`
 (`rslib/src/rwkv/mod.rs`);
+`rwkv_curve_sources_are_per_review_cache_rows_read_by_tag`
+(`rslib/src/storage/revlog/mod.rs`);
 `test_rwkv_card_info_curve_samples_the_stored_curve`,
 `test_rwkv_card_info_curve_is_none_without_a_curve`,
+`test_rwkv_card_info_rebuilds_the_saved_curve_of_each_review`,
+`test_rwkv_curve_source_writer_tags_every_source_with_the_model`,
+`test_rust_runtime_hands_each_chunks_curve_sources_with_review_ids`,
+`test_live_answer_saves_its_curve_source_under_its_review_id`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_card_info_gets_rwkv_curves_own_curve_and_s90`,
+`test_card_info_sends_rwkv_curves_of_the_earlier_reviews`,
 `test_card_info_has_no_rwkv_curve_for_other_algorithms`
 (`qt/tests/test_mediasrv.py`); "an RWKV-Curve card shows its curve's S90
 and R, and no difficulty", "an RWKV-Curve card without a curve shows no
@@ -672,7 +697,9 @@ stability and a calculating R" (`ts/routes/card-info/lib.test.ts`);
 "rwkvRecallAt interpolates between the
 curve's points", "no FSRS-7 value reaches an RWKV-Curve card's chart",
 "after the last review an RWKV-Curve card follows RWKV's curve and S90",
-"without an RWKV curve yet the chart stops at the last review"
+"an RWKV-Curve card draws RWKV's curve after every review that has one",
+"a review without a stored RWKV curve gets no segment, and none is
+invented", "without an RWKV curve yet the chart stops at the last review"
 (`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## ui.card-info-curve-messages

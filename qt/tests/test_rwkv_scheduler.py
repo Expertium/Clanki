@@ -18946,6 +18946,230 @@ def test_rwkv_card_info_curve_samples_the_stored_curve(
     assert grid[2] / grid[1] == pytest.approx(grid[-1] / grid[-2])
 
 
+class _SavedCurveSources:
+    """A collection backend holding three saved curve sources of one card."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[int, str, int, int]] = []
+
+    def get_rwkv_curve_sources(
+        self, *, card_id: int, tag: scheduler_pb2.RwkvCurveSourceTag
+    ) -> scheduler_pb2.RwkvCurveSources:
+        self.requests.append((card_id, tag.model, tag.format, tag.kernel))
+        return scheduler_pb2.RwkvCurveSources(
+            revlog_ids=[1000, 5000, 9000], width=2, sources=b"aabbcc"
+        )
+
+
+class _RebuildingCurveBackend(_CardCurveBackend):
+    def __init__(self, result: tuple[list[float], float] | None) -> None:
+        super().__init__(result)
+        self.rebuilt: list[rwkv_scheduler.RwkvCurveSources] = []
+
+    def curve_source_tag(self) -> tuple[int, int]:
+        return 7, 3
+
+    def curves_from_sources(
+        self,
+        sources: rwkv_scheduler.RwkvCurveSources,
+        elapsed_days: Sequence[float],
+    ) -> list[tuple[list[float], float] | None]:
+        self.rebuilt.append(sources)
+        return [
+            ([0.5] * len(elapsed_days), 1.5),
+            None,
+            ([0.25] * len(elapsed_days), 2.5),
+        ]
+
+
+def test_rwkv_card_info_rebuilds_the_saved_curve_of_each_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: card info reads the card's
+    sources saved under the running model's tag and has that model rebuild
+    them; a source that rebuilds nothing gets no curve, and none stands in."""
+    grid = rwkv_scheduler.RWKV_CARD_INFO_CURVE_DAYS
+    backend = _RebuildingCurveBackend(([1.0] * len(grid), 3.25))
+    _card_curve_ready(monkeypatch, backend)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"sha256": "abc"}
+    )
+    saved = _SavedCurveSources()
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(_backend=saved)))
+
+    curve = rwkv_scheduler.rwkv_card_info_curve(reviewer, SimpleNamespace(id=42))
+
+    assert curve is not None
+    assert saved.requests == [(42, "abc", 7, 3)]
+    assert backend.rebuilt == [
+        rwkv_scheduler.RwkvCurveSources(
+            review_ids=[1000, 5000, 9000],
+            sources=b"aabbcc",
+            width=2,
+            format=7,
+            kernel=3,
+        )
+    ]
+    assert [(past.review_id, past.s90) for past in curve.past] == [
+        (1000, 1.5),
+        (9000, 2.5),
+    ]
+    assert curve.past[0].recall == (0.5,) * len(grid)
+
+    # without the model's identity no source can be matched to it: none is read
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_model_cache_key", lambda: None)
+    curve = rwkv_scheduler.rwkv_card_info_curve(reviewer, SimpleNamespace(id=42))
+    assert curve is not None and curve.past == ()
+    assert len(saved.requests) == 1
+
+
+def test_rwkv_curve_source_writer_tags_every_source_with_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: the saved sources carry the
+    model's identity and their format and kernel; without the identity nothing
+    is saved."""
+    stored: list[scheduler_pb2.RwkvCurveSources] = []
+
+    class ColBackend:
+        def set_rwkv_curve_sources(
+            self, message: scheduler_pb2.RwkvCurveSources
+        ) -> None:
+            stored.append(message)
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(_backend=ColBackend()))
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"sha256": "abc"}
+    )
+    writer = rwkv_scheduler._RwkvCurveSourceWriter(reviewer)
+    for review_ids, sources in (([11, 12], b"aabb"), ([13], b"cc")):
+        writer(
+            rwkv_scheduler.RwkvCurveSources(
+                review_ids=review_ids, sources=sources, width=2, format=1, kernel=4
+            )
+        )
+    writer.flush()
+    assert len(stored) == 1
+    assert (stored[0].tag.model, stored[0].tag.format, stored[0].tag.kernel) == (
+        "abc",
+        1,
+        4,
+    )
+    assert list(stored[0].revlog_ids) == [11, 12, 13]
+    assert (stored[0].width, stored[0].sources) == (2, b"aabbcc")
+    assert writer.written == 3
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_model_cache_key", lambda: None)
+    writer = rwkv_scheduler._RwkvCurveSourceWriter(reviewer)
+    writer(
+        rwkv_scheduler.RwkvCurveSources(
+            review_ids=[14], sources=b"dd", width=2, format=1, kernel=4
+        )
+    )
+    writer.flush()
+    assert len(stored) == 1
+
+
+def test_rust_runtime_hands_each_chunks_curve_sources_with_review_ids() -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: the replay records each
+    answered review's source and hands it over under its review id; the
+    recording stops when the replay ends."""
+    from aqt.rwkv_srs_benchmark import _RustRwkvRuntime
+
+    class Process:
+        def __init__(self) -> None:
+            self.recording: list[bool] = []
+            self.calls = 0
+
+        def record_curve_sources(self, on: bool) -> None:
+            self.recording.append(on)
+
+        def warm_up_reviews_packed(
+            self, reviews: bytes, record_predictions: bool
+        ) -> list[tuple[int, float, float | None]]:
+            self.calls += 1
+            return []
+
+        def take_curve_sources(self) -> tuple[bytes, bytes, int]:
+            # the first review of each chunk only
+            return struct.pack("<I", 0), bytes([self.calls, self.calls]), 2
+
+        def curve_source_tag(self) -> tuple[int, int, int]:
+            return 1, 1, 2
+
+    process = Process()
+    runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
+    runtime._process = process
+    handed: list[rwkv_scheduler.RwkvCurveSources] = []
+
+    runtime.warm_up_reviews(
+        [
+            _warm_up_review_input(card_id=1, note_id=10, ease=2),
+            _warm_up_review_input(card_id=2, note_id=20, ease=3),
+        ],
+        review_ids=[101, 102],
+        prediction_recorder=lambda review_id, retrievability: None,
+        curve_source_recorder=handed.append,
+        return_snapshot=False,
+    )
+
+    assert process.recording == [True, False]
+    assert [(list(batch.review_ids), batch.sources) for batch in handed] == [
+        ([101], b"\x01\x01"),
+        ([102], b"\x02\x02"),
+    ]
+    assert {(batch.width, batch.format, batch.kernel) for batch in handed} == {
+        (2, 1, 1)
+    }
+
+
+def test_live_answer_saves_its_curve_source_under_its_review_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-rwkv-curve: a live answer's source is
+    saved under the answer's own review, the card's newest answered one."""
+    saved: list[rwkv_scheduler.RwkvCurveSources] = []
+
+    class Writer:
+        def __init__(self, reviewer: object) -> None:
+            pass
+
+        def __call__(self, sources: rwkv_scheduler.RwkvCurveSources) -> None:
+            saved.append(sources)
+
+        def flush(self) -> None:
+            pass
+
+    class Backend:
+        def take_curve_sources(self) -> tuple[list[int], bytes, int]:
+            return [0, 0], b"aabb", 2
+
+        def curve_source_tag(self) -> tuple[int, int]:
+            return 1, 1
+
+    queries: list[tuple[str, tuple[object, ...]]] = []
+
+    class Db:
+        def scalar(self, sql: str, *args: object) -> int:
+            queries.append((sql, args))
+            return 777
+
+    monkeypatch.setattr(rwkv_scheduler, "_RwkvCurveSourceWriter", Writer)
+    sources = rwkv_scheduler._take_curve_sources(Backend())
+    assert sources is not None
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=Db())))
+    rwkv_scheduler._save_answered_curve_source(reviewer, 42, sources)
+
+    # the last source recorded is the answer's own
+    assert [(list(batch.review_ids), batch.sources) for batch in saved] == [
+        ([777], b"bb")
+    ]
+    assert queries[0][1] == (42,)
+    assert "ease > 0" in queries[0][0]
+
+
 def test_rwkv_card_info_curve_gives_the_recall_now(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

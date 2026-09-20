@@ -810,6 +810,52 @@ impl RwkvInference {
         self.inner.card_curve(card_id, &elapsed_days)
     }
 
+    /// Starts or stops recording the curve source of every answered review
+    /// (spec ui.card-info-rwkv-curve).
+    fn record_curve_sources(&mut self, on: bool) {
+        self.inner.record_curve_sources(on)
+    }
+
+    /// The sources recorded since the last call: (each review's index in
+    /// its call as little-endian u32s, the sources, bytes per source).
+    fn take_curve_sources(&mut self, py: Python<'_>) -> (Py<PyBytes>, Py<PyBytes>, usize) {
+        let sources = self.inner.take_curve_sources();
+        let indices: Vec<u8> = sources
+            .indices
+            .iter()
+            .flat_map(|index| index.to_le_bytes())
+            .collect();
+        (
+            PyBytes::new(py, &indices).unbind(),
+            PyBytes::new(py, &sources.bytes).unbind(),
+            self.inner.curve_source_tag().2,
+        )
+    }
+
+    /// (format, kernel, bytes per source) of this model's curve sources.
+    fn curve_source_tag(&self) -> (u32, u32, usize) {
+        self.inner.curve_source_tag()
+    }
+
+    /// The curves rebuilt from saved sources: for each, (recall at each of
+    /// `elapsed_days`, S90) or None; None for all when the sources are not
+    /// this model's.
+    fn curves_from_sources(
+        &self,
+        py: Python<'_>,
+        format: u32,
+        kernel: u32,
+        sources: &Bound<'_, PyBytes>,
+        width: usize,
+        elapsed_days: Vec<f32>,
+    ) -> Option<Vec<Option<rwkv::CurvePoints>>> {
+        let sources = sources.as_bytes().to_vec();
+        py.detach(|| {
+            self.inner
+                .curves_from_sources(format, kernel, &sources, width, &elapsed_days)
+        })
+    }
+
     /// (the ids of `card_ids` with a stored curve, the curves packed), for
     /// Advance and Postpone (spec sched.advance-postpone-algorithm).
     fn card_curve_weights(&self, py: Python<'_>, card_ids: Vec<i64>) -> (Vec<i64>, Py<PyBytes>) {
