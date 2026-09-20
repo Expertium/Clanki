@@ -852,9 +852,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {/if}
 
 {#if !rwkvMode && fsrsAdvancedShown}
-    <details class="fsrs-advanced m-1">
-        <summary>{tr.deckConfigAdvancedSettings()}</summary>
-
+    <!-- no expander: these settings show only in Advanced mode anyway
+         (spec deck-options.fsrs-advanced-not-collapsed) -->
+    <div class="fsrs-advanced m-1">
         <div class:hidden-row={!$shown("fsrsHelpMeDecide", placement)}>
             <button
                 class="btn btn-outline-primary"
@@ -953,7 +953,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         >
             {tr.deckConfigFsrsSimulatorExperimental()}
         </button>
-    </details>
+    </div>
 {/if}
 
 <SimulatorModal
@@ -987,12 +987,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .fsrs-advanced {
         border-top: 1px solid var(--border);
         padding-top: 0.75rem;
-    }
-
-    .fsrs-advanced summary {
-        cursor: pointer;
-        font-weight: 700;
-        margin-bottom: 0.75rem;
     }
 
     .interval-preview {

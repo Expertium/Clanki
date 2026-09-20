@@ -28,6 +28,7 @@ from anki.utils import (
     no_bundled_libs,
     version_with_build,
 )
+from aqt import colors
 from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.qt import (
@@ -36,14 +37,13 @@ from aqt.qt import (
     QAction,
     QApplication,
     QCheckBox,
-    QColor,
     QComboBox,
     QDesktopServices,
     QDialog,
     QDialogButtonBox,
     QEvent,
     QFileDialog,
-    QFrame,
+    QGraphicsDropShadowEffect,
     QHeaderView,
     QIcon,
     QLabel,
@@ -56,7 +56,6 @@ from aqt.qt import (
     QNativeGestureEvent,
     QOffscreenSurface,
     QOpenGLContext,
-    QPalette,
     QPixmap,
     QPlainTextEdit,
     QPoint,
@@ -1052,7 +1051,14 @@ def send_to_trash(path: Path) -> None:
 ######################################################################
 
 _tooltipTimer: QTimer | None = None
-_tooltipLabel: QLabel | None = None
+_tooltipLabel: QWidget | None = None
+# the space the tooltip's shadow is drawn in, and its blur radius
+TOOLTIP_SHADOW_MARGIN = 12
+# Andrew 2026-09-20: grey-blue with black text by day, obsidian black with
+# white text by night (spec ui.tooltip-style)
+TOOLTIP_BACKGROUND = {"light": "#e2e5ec", "dark": "#0a0a0a"}
+TOOLTIP_TEXT = {"light": "#000000", "dark": "#ffffff"}
+TOOLTIP_BORDER = {"light": "#c7cdd8", "dark": "#2a2a2a"}
 
 
 def tooltip(
@@ -1062,9 +1068,15 @@ def tooltip(
     x_offset: int = 0,
     y_offset: int = 100,
 ) -> None:
+    """A short message over the current window (spec ui.tooltip-style).
+
+    One frameless widget with rounded corners, the theme's elevated surface
+    and a soft shadow; no web view, so it costs no process and no page load.
+    """
+
     global _tooltipTimer, _tooltipLabel
 
-    class CustomLabel(QLabel):
+    class CustomLabel(QWidget):
         silentlyClose = True
 
         def mousePressEvent(self, evt: QMouseEvent | None) -> None:
@@ -1074,23 +1086,46 @@ def tooltip(
 
     closeTooltip()
     aw = parent or aqt.mw.app.activeWindow() or aqt.mw
-    lab = CustomLabel(
-        f"""<table cellpadding=10>
-<tr>
-<td>{msg}</td>
-</tr>
-</table>""",
-        aw,
+    # the outer widget is transparent and only holds the margin the shadow
+    # is drawn in; the inner label carries the toast itself
+    lab = CustomLabel(aw)
+    lab.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+    lab.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    lab.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    layout = QVBoxLayout(lab)
+    layout.setContentsMargins(
+        TOOLTIP_SHADOW_MARGIN,
+        TOOLTIP_SHADOW_MARGIN,
+        TOOLTIP_SHADOW_MARGIN,
+        TOOLTIP_SHADOW_MARGIN,
     )
-    lab.setFrameStyle(QFrame.Shape.Panel)
-    lab.setLineWidth(2)
-    lab.setWindowFlags(Qt.WindowType.ToolTip)
-    if not theme_manager.night_mode:
-        p = QPalette()
-        p.setColor(QPalette.ColorRole.Window, QColor("#feffc4"))
-        p.setColor(QPalette.ColorRole.WindowText, QColor("#000000"))
-        lab.setPalette(p)
-    lab.move(aw.mapToGlobal(QPoint(0 + x_offset, aw.height() - y_offset)))
+    inner = QLabel(msg, lab)
+    inner.setObjectName("tooltipBody")
+    inner.setTextFormat(Qt.TextFormat.RichText)
+    inner.setStyleSheet(
+        f"""#tooltipBody {{
+    background: {theme_manager.var(TOOLTIP_BACKGROUND)};
+    color: {theme_manager.var(TOOLTIP_TEXT)};
+    border: 1px solid {theme_manager.var(TOOLTIP_BORDER)};
+    border-radius: 10px;
+    padding: 10px 14px;
+}}"""
+    )
+    shadow = QGraphicsDropShadowEffect(inner)
+    shadow.setBlurRadius(TOOLTIP_SHADOW_MARGIN)
+    shadow.setOffset(0, 2)
+    shadow.setColor(theme_manager.qcolor(colors.SHADOW))
+    inner.setGraphicsEffect(shadow)
+    layout.addWidget(inner)
+    lab.adjustSize()
+    lab.move(
+        aw.mapToGlobal(
+            QPoint(
+                x_offset - TOOLTIP_SHADOW_MARGIN,
+                aw.height() - y_offset - TOOLTIP_SHADOW_MARGIN,
+            )
+        )
+    )
     lab.show()
     _tooltipTimer = aqt.mw.progress.timer(
         period, closeTooltip, False, requiresCollection=False, parent=aw

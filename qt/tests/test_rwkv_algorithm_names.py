@@ -68,3 +68,19 @@ def test_no_english_label_says_a_bare_rwkv_about_values():
             if "RWKV" in bare and not allowed.search(text):
                 offenders.append(f"{path.name}: {line.strip()}")
     assert offenders == []
+
+
+# Pins spec/ui.md#ui.plain-progress-text
+def test_the_waiting_messages_name_no_algorithm() -> None:
+    from pathlib import Path
+
+    ftl = (Path(__file__).parents[2] / "ftl" / "qt" / "qt-misc.ftl").read_text(
+        encoding="utf-8"
+    )
+    for key in (
+        "qt-misc-rwkv-curve-intervals-pending",
+        "qt-misc-rwkv-instant-scores-pending",
+    ):
+        line = next(x for x in ftl.splitlines() if x.startswith(key + " ="))
+        text = line.split("=", 1)[1]
+        assert "RWKV" not in text and "Waiting" not in text, line
