@@ -78,7 +78,28 @@ pub fn setup_venv(build: &mut Build) -> Result<()> {
         },
     )?;
 
+    if cfg!(windows) {
+        // Task Manager shows a process's description, not its file name, so a
+        // source build appears as "Python". This copy of the interpreter
+        // describes itself as Clanki (tools/win_app_exe.py).
+        build.add_action("qt:app_exe", BuildAppExe {})?;
+    }
+
     Ok(())
+}
+
+struct BuildAppExe {}
+
+impl BuildAction for BuildAppExe {
+    fn command(&self) -> &str {
+        "$pyenv_bin $script $out"
+    }
+
+    fn files(&mut self, build: &mut impl FilesHandle) {
+        build.add_inputs("pyenv_bin", inputs![":pyenv:bin"]);
+        build.add_inputs("script", inputs!["tools/win_app_exe.py"]);
+        build.add_outputs("out", vec!["pyenv/Scripts/Clanki.exe"]);
+    }
 }
 
 pub struct GenPythonProto {
