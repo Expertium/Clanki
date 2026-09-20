@@ -1241,6 +1241,35 @@ standing rule never to mix two algorithms (hide rather than fall back).
 `stored_curves_reach_the_collection_unchanged` (`rslib/src/rwkv/mod.rs`);
 `test_rwkv_curve_moves_send_the_stored_curves` (`qt/tests/test_advance_postpone.py`).
 
+## sched.review-scheduler-record
+
+When a card is answered, Clanki records which algorithm scheduled that
+review: `fsrs7`, `rwkv_curve` or `rwkv_instant`, the algorithm of the card's
+preset at the moment of the answer. One row per review, keyed by the review
+log id, in the `review_scheduler` table of the retrievability-cache sidecar
+beside the collection.
+
+- The record is written once. A second write of the same review keeps the
+  first answer, because the algorithm that scheduled a review cannot change
+  afterwards.
+- A review answered before this version has no row. It is absent, not
+  guessed: nothing in the review log says which algorithm set its interval.
+- A failure to write the record never fails the answer. The answer is the
+  user's work; the record is ours.
+- The table lives in the sidecar, not in the collection, so the collection
+  schema and the sync wire protocol are untouched. It does not sync: a review
+  answered on another client has no row here.
+
+**Why:** Andrew, 2026-09-20: "for every review, record whether it was
+scheduled using FSRS-7, RWKV-Curve or RWKV-Instant. We'll later add another
+stat: how well the algorithm performs on all reviews (logloss and AUC) vs how
+well it performs _on reviews that it scheduled_." An algorithm judged only on
+reviews another algorithm chose is judged on the wrong sample.
+
+**Pinned by:** `every_answer_records_the_algorithm_that_scheduled_it`,
+`a_review_keeps_the_algorithm_it_was_first_recorded_with`
+(`rslib/src/scheduler/answering/mod.rs`).
+
 ## sched.one-global-algorithm
 
 Given a collection with the `schedulingAlgorithm` config key (`fsrs7`,

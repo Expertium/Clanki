@@ -43,6 +43,17 @@ impl SchedulingAlgorithm {
         inner.rwkv_review_instant_order_enabled = self == Self::RwkvInstant;
     }
 
+    /// The name stored against a review, so a later reader knows which
+    /// algorithm scheduled it (spec sched.review-scheduler-record). The
+    /// names are a stored format: never rename one.
+    pub(crate) fn stored_name(self) -> &'static str {
+        match self {
+            Self::Fsrs7 => "fsrs7",
+            Self::RwkvCurve => "rwkv_curve",
+            Self::RwkvInstant => "rwkv_instant",
+        }
+    }
+
     fn is_applied_to(self, inner: &DeckConfigInner) -> bool {
         inner.rwkv_review_enabled == (self == Self::RwkvCurve)
             && inner.rwkv_review_instant_order_enabled == (self == Self::RwkvInstant)
