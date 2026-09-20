@@ -409,6 +409,55 @@ switch changes the toolbar at once and keeps the typed text", "a hidden
 button keeps its shortcut", "add-on buttons show in both modes"
 (`ts/tests/e2e/editor-ui-mode.spec.ts`).
 
+## ui.spin-box-steps
+
+A spin box stores whole steps of its own step size. When the user types a
+value between two steps, the box rounds it to the nearest step and stores
+that; it never shows one number and stores another.
+
+Desired retention steps by 1%, so it holds whole percents: typing 65.3 gives
+65%, and typing 65.7 gives 66%. The deck-options "First intervals" table
+names the two retentions in whole percents as well, "Current DR (65%)" and
+"Selected DR (65%)".
+
+A value that is already on a step does not move, and a box whose step cannot
+round, such as a step of zero, leaves the value alone.
+
+**Why:** Andrew, 2026-09-20: "Make sure desired retention is rounded to 1%
+and the user cannot enter something like 65.3% DR", and "don't show .00".
+The box already displayed as many decimal places as its step, so 65.3%
+showed "65%" while the collection stored 0.653, and the table printed
+"65.00%".
+
+**Pinned by:** `desired retention keeps whole percents`,
+`a value already on a step does not move`,
+`whole-number boxes stay whole numbers`
+(`ts/lib/components/spin-box.test.ts`).
+
+## ui.process-name
+
+On Windows, a source build appears in Task Manager as "Clanki", not as
+"Python". The build writes `out/pyenv/Scripts/Clanki.exe`: a copy of the
+virtual environment's interpreter whose description resource reads Clanki
+instead of Python. Running it runs the interpreter, from the same virtual
+environment, with the same arguments.
+
+The name is written in place, so the copy has the same size as the
+interpreter, byte for byte apart from the twelve bytes of the name. It lives
+in the virtual environment's own directory, because the interpreter finds
+`pyvenv.cfg` beside itself and refuses to start anywhere else. The installed
+build is unaffected; its executable is named by the installer.
+
+**Why:** Andrew, 2026-09-20: "Clanki doesn't show up as a process named
+'Clanki'. It should." Task Manager shows a process's description resource
+rather than its file name, so a renamed copy of the interpreter still reads
+"Python", and a separate launcher program would add a second process to the
+list.
+
+**Pinned by:** `test_the_copy_describes_itself_as_the_app`,
+`test_the_copy_is_the_same_size_and_still_runs`
+(`qt/tests/test_win_app_exe.py`).
+
 ## ui.simple-recall-wording
 
 One setting decides what the interface calls the chance of recalling a card
