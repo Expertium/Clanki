@@ -436,6 +436,19 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   never read a peer's words as Andrew's approval. The RWKV session owns
   `rslib/src/rwkv`, so measure freely there and hand the change over rather
   than making it.
+- **Not everything needs an LLM** (Andrew, 2026-09-20). Before spawning a
+  subagent, ask whether the work can be done by a cron job, a shell loop or
+  one command: "not everything needs an LLM. Before spawning a subagent,
+  think whether this can be done with a cron job or a one-time CMD command."
+  A fixed sequence with no judgement in it is a script. Work that only
+  watches for a condition and reports is a loop or a scheduled command. Only
+  reading code, weighing trade-offs, writing a design or deciding what
+  "correct" means needs the model. A scheduled LLM task counts as a spawn and
+  takes the same test. What prompted the rule: a scheduled task was created
+  to run one `gh pr list` every ten minutes and compare it with a file, while
+  a background shell loop already did that job for free. The subagent budget
+  is not the only cost — a wrong answer from a script is cheap to find, a
+  wrong answer from a model is not.
 - **The orchestrator writes code too** (Andrew, 2026-09-20). Delegating a task
   to a subagent does not make the orchestrator a spectator. While subagents
   run, the orchestrator takes the next piece of work itself. There are exactly
