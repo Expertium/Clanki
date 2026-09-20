@@ -126,7 +126,6 @@ test("collection-wide settings are not on the deck-options page", async ({ page 
 });
 
 test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }) => {
-    const advanced = page.locator("details.fsrs-advanced");
     const parameters = page.locator("[role=\"button\"][aria-label=\"FSRS Parameters\"]");
     const input = parameters.locator("textarea");
 
@@ -157,7 +156,6 @@ test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }
 
         // The host can configure timing, and three clicks inside it unlock the input.
         await setTimeoutMs(1000);
-        await advanced.locator("summary").click();
         await expect(input).toBeDisabled();
         await clickThreeTimes(750);
         await expect(input).toBeEnabled();
@@ -168,7 +166,6 @@ test("FSRS parameter unlock timing is per page (Advanced mode)", async ({ page }
         await page.clock.resume();
         await chooseAlgorithm(page, "FSRS-7");
         await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
-        await advanced.locator("summary").click();
         await clickThreeTimes(750);
         await expect(input).toBeDisabled();
     } finally {
