@@ -282,3 +282,40 @@ def test_not_recorded_text_does_not_ask_the_user_to_rebuild() -> None:
     # the user never decides to rebuild RWKV's history (Planned direction 9)
     for instruction in ("deck options", "Read Review History Again", "Use "):
         assert instruction not in line
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_while_the_recording_pass_runs_the_graphs_say_it_is_computing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anki.stats_pb2 import ReviewPredictionsResponse
+
+    class _Backend:
+        def review_predictions(self, search: str, days: int) -> object:
+            # RWKV-Instant has rows; RWKV-Curve has none yet
+            return ReviewPredictionsResponse(
+                revlog_ids=[1, 2],
+                card_ids=[1, 1],
+                remembered=[True, False],
+                rwkv_predictions=[0.9, 0.4],
+                rwkv_role="final_fit",
+            )
+
+    class _Collection:
+        _backend = _Backend()
+
+    import aqt.rwkv_scheduler
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "rwkv_recordings_pass_running", lambda: True
+    )
+    job = metrics._Job(job_id=1, key=("test",))
+    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    by_algorithm = {series.algorithm: series for series in job.progress().series}
+
+    # the pass is writing the rows now, so the graph says that, not that
+    # nothing ever recorded them
+    assert (
+        by_algorithm[metrics.RWKV_CURVE].unavailable
+        == metrics.Unavailable.COMPUTING_PREDICTIONS
+    )

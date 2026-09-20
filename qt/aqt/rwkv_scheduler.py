@@ -313,6 +313,15 @@ _rwkv_startup_build_started = False
 # history each run at most once per profile open, or per sync that needs one
 _rwkv_recordings_pass_started = False
 _rwkv_history_reread_started = False
+# true while the recording pass is writing rows, so the graphs can say that
+# their numbers are being computed instead of showing the algorithm as absent
+_rwkv_recordings_pass_running = False
+# the pass starts only after the user has left Clanki alone this long, and it
+# pauses between batches whenever the user comes back (spec
+# sched.rwkv-recordings-automatic)
+RECORDINGS_PASS_IDLE_SECS = 10.0
+# how often the wait checks whether the user has gone idle
+RECORDINGS_PASS_CHECK_MS = 5000
 _rwkv_model_cache_lock = threading.Lock()
 _rwkv_model_cache_signature: tuple[str, str, int, int, int, int, int] | None = None
 _rwkv_model_cache_value: dict[str, object] | None = None
@@ -11073,6 +11082,56 @@ def ensure_rwkv_calibration_data(
     return recompute_rwkv_calibration_data(mw, progress=progress)
 
 
+def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
+    """The recording pass with no progress window, off the main thread, and
+    out of the user's way (spec sched.rwkv-recordings-automatic).
+
+    The pass takes tens of minutes on a large collection. It must never hold
+    the window: it runs on a worker thread, and between two batches of
+    reviews it waits while the user is doing something, so a click is never
+    behind it. The Stats graphs say that their numbers are being computed
+    while it runs; nothing else is shown."""
+
+    global _rwkv_recordings_pass_running
+
+    taskman = getattr(mw, "taskman", None)
+    run_in_background = getattr(taskman, "run_in_background", None)
+    if not callable(run_in_background):
+        recompute_rwkv_calibration_data(mw)
+        return
+
+    started = time.monotonic()
+
+    def progress(label: str, value: int | None, maximum: int | None) -> None:
+        # between batches: the user comes first
+        wait_until_idle(mw)
+
+    def work() -> bool:
+        return recompute_rwkv_calibration_data(mw, progress=progress)
+
+    def done(future: Future[bool]) -> None:
+        global _rwkv_recordings_pass_running
+
+        from aqt.utils import tooltip
+
+        _rwkv_recordings_pass_running = False
+        try:
+            recorded = future.result()
+        except Exception:
+            logger.exception("the RWKV recording pass failed")
+            return
+        logger.debug(
+            "RWKV recording pass finished: recorded=%s elapsed_ms=%.1f",
+            recorded,
+            (time.monotonic() - started) * 1000,
+        )
+        if recorded:
+            tooltip(_tr().qt_misc_stats_data_ready(), parent=cast(QWidget | None, mw))
+
+    _rwkv_recordings_pass_running = True
+    run_in_background(work, done)
+
+
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
     """Recompute RWKV calibration rows with a modal progress dialog."""
 
@@ -11927,9 +11986,65 @@ def start_rwkv_maintenance_if_needed(mw: object) -> None:
     if _rwkv_recordings_pass_started or rwkv_recordings_current(mw) is not False:
         return
     _rwkv_recordings_pass_started = True
-    _run_when_not_reviewing(
-        mw, lambda: recompute_rwkv_calibration_data_with_progress(mw)
-    )
+    _run_when_idle(mw, lambda: recompute_rwkv_calibration_data_in_background(mw))
+
+
+def wait_until_idle(mw: object, sleep: Callable[[float], None] = time.sleep) -> None:
+    """Waits until the user has left Clanki alone for
+    RECORDINGS_PASS_IDLE_SECS. The recording pass calls this between two
+    batches of reviews, so the work pauses while the user works (spec
+    sched.rwkv-recordings-automatic)."""
+    while True:
+        since_input = _seconds_since_input(mw)
+        if since_input is None or since_input >= RECORDINGS_PASS_IDLE_SECS:
+            return
+        sleep(RECORDINGS_PASS_IDLE_SECS - since_input)
+
+
+def rwkv_recordings_pass_running() -> bool:
+    """True while the recording pass writes rows (spec
+    sched.rwkv-recordings-automatic)."""
+    return _rwkv_recordings_pass_running
+
+
+def _seconds_since_input(mw: object) -> float | None:
+    from aqt.fsrs_predictions import seconds_since_input
+
+    return seconds_since_input(mw)
+
+
+def _run_when_idle(mw: object, callback: Callable[[], None]) -> None:
+    """Runs `callback` on the main thread once the user has left Clanki
+    alone, and never while a card is on the review screen. Start-up is not
+    that moment: nothing heavy may run in front of the user's first clicks
+    (CLAUDE.md, Planned direction 10)."""
+
+    def check() -> None:
+        if getattr(mw, "col", None) is None:
+            return
+        since_input = _seconds_since_input(mw)
+        idle = since_input is None or since_input >= RECORDINGS_PASS_IDLE_SECS
+        is_enabled = getattr(mw, "isEnabled", None)
+        enabled = not callable(is_enabled) or is_enabled()
+        if idle and enabled and getattr(mw, "state", None) != "review":
+            callback()
+            return
+        again()
+
+    def again() -> None:
+        progress = getattr(mw, "progress", None)
+        timer = getattr(progress, "timer", None)
+        if not callable(timer):
+            return
+        timer(
+            RECORDINGS_PASS_CHECK_MS,
+            check,
+            False,
+            requiresCollection=False,
+            parent=cast(QWidget | None, mw),
+        )
+
+    again()
 
 
 def _run_when_not_reviewing(mw: object, callback: Callable[[], None]) -> None:
