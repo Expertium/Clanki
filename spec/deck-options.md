@@ -169,11 +169,12 @@ behind a second click inside Advanced mode says the same thing twice.
 Given a collection with FSRS enabled, whatever its algorithm, Clanki
 optimizes each preset's FSRS-7 parameters by itself: every preset has "Optimize every N
 days" (Advanced mode, in the FSRS advanced section; unset means 7, 0 means
-never). Once a day, after the collection opens and while the user leaves
+never). Once a day, after the collection opens and once the user has left
 Clanki alone, the background pass of `ui.stats-fsrs-predictions-ready`
 first optimizes every preset whose N days have passed since its last
 optimization (a preset never optimized is due at once), one preset per
-call, with the same reviews and settings as "Optimize All Presets". It
+call and resting between two of them rather than waiting for the user to
+stop, with the same reviews and settings as "Optimize All Presets". It
 holds the collection only to read the reviews and to save; a preset saved
 in deck options while it trains keeps the saved values and the result is
 dropped. The new parameters are saved as a deck-options save would save
@@ -202,6 +203,7 @@ background pass does it instead.
 `under_rwkv_it_optimizes_but_never_reschedules`, `a_save_during_training_drops_the_result`
 (rslib/src/scheduler/fsrs/auto_optimize.rs);
 `test_due_presets_are_optimized_before_the_predictions`,
+`test_a_started_pass_never_waits_for_the_user_to_stop`,
 `test_the_fake_auto_optimize_matches_the_real_backend`
 (qt/tests/test_fsrs_predictions.py); `auto-optimize.test.ts`.
 
