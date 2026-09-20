@@ -1081,6 +1081,12 @@ The deck-options buttons are "Read Review History Again" and "Prepare Stats
 Graphs". Before the first review is done the text shows the counts without a
 time. All the text is translatable.
 
+The two waits that replace a screen's own content follow the same rule and
+name no algorithm: the reviewer shows "Getting this card ready..." instead
+of the answer buttons while the card's intervals are being calculated, and
+the deck screen shows "Choosing your reviews..." while the deck's cards are
+being scored.
+
 **Why:** Andrew, 2026-09-19, about "Building RWKV state cache: 425,984/656,459
 reviews | elapsed: 54s | remaining: 29s": "we need more user-friendly, less
 jargon-y message for this" (asked before as well).

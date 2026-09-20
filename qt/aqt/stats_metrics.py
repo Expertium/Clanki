@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aqt.fsrs_predictions
+import aqt.rwkv_scheduler
 from anki.deck_config_pb2 import DeckConfigsForUpdate
 from anki.stats_pb2 import ReviewMetricsProgress
 
@@ -217,16 +218,23 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
     # ui.stats-fsrs-predictions-ready).
     if fsrs.unavailable == Unavailable.NO_REVIEWS and aqt.fsrs_predictions.is_running():
         fsrs = Series(algorithm=FSRS_7, unavailable=Unavailable.COMPUTING_PREDICTIONS)
+    # the RWKV recording pass writes both algorithms' rows, so while it runs
+    # an empty series is one being computed, not one that nothing recorded
+    # (spec sched.rwkv-recordings-automatic)
+    rwkv_pass_running = aqt.rwkv_scheduler.rwkv_recordings_pass_running()
     job.set_series(fsrs)
-    job.set_series(
-        _series(
-            RWKV_INSTANT,
-            data.rwkv_predictions,
-            data.remembered,
-            data.rwkv_role,
-            data.rwkv_bins,
-        )
+    instant = _series(
+        RWKV_INSTANT,
+        data.rwkv_predictions,
+        data.remembered,
+        data.rwkv_role,
+        data.rwkv_bins,
     )
+    if instant.unavailable == Unavailable.NO_REVIEWS and rwkv_pass_running:
+        instant = Series(
+            algorithm=RWKV_INSTANT, unavailable=Unavailable.COMPUTING_PREDICTIONS
+        )
+    job.set_series(instant)
     # RWKV-Curve's prediction of a past review is the curve the replay had
     # stored at the card's previous answered review, evaluated at that
     # review's elapsed time. The warm-up records it per review, so the
@@ -241,7 +249,14 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         data.rwkv_curve_bins,
     )
     if curve.unavailable == Unavailable.NO_REVIEWS:
-        curve = Series(algorithm=RWKV_CURVE, unavailable=Unavailable.NOT_RECORDED)
+        curve = Series(
+            algorithm=RWKV_CURVE,
+            unavailable=(
+                Unavailable.COMPUTING_PREDICTIONS
+                if rwkv_pass_running
+                else Unavailable.NOT_RECORDED
+            ),
+        )
     else:
         # how far back the recording reaches, so a series covering days
         # cannot look like one covering years

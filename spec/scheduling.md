@@ -300,15 +300,22 @@ that would otherwise need a button, without asking and without a message:
   full recording pass with the running model (the SHA-256 of its weights),
   the running curve-source format and kernel and the current replay
   semantics, or their rows are gone from the cache file beside the
-  collection, it runs that pass, in the "Preparing Stats" progress window,
-  at most once per profile open. A finished pass remembers what it recorded
+  collection, it runs that pass at most once per profile open. That pass
+  takes tens of minutes on a large collection, so it never runs at start-up
+  and never in a progress window: it starts only after the user has left
+  Clanki alone for ten seconds and no card is on the review screen, it runs
+  on a worker thread, and between two batches of reviews it waits again
+  while the user does something. Nothing is shown while it runs, except
+  that the model-quality graphs say their numbers are being computed
+  instead of saying that nothing recorded them; a finished pass shows one
+  short message. A finished pass remembers what it recorded
   with (`rwkv-state-cache/recordings.json` in the profile folder), so the
   next start-up runs none. A state-cache build that replays the whole
   history and records all three (RWKV-Instant's rows, RWKV-Curve's rows and
   the curve sources), such as the build on a first start, is that pass too:
   it remembers the same, and no recording pass runs right after it.
 
-Neither starts while a card is on the review screen: it waits until the
+Neither starts while a card is on the review screen: each waits until the
 review screen closes. Neither starts while the main window is disabled (a
 sync in progress, or the profile closing); the next time the state becomes
 ready finds the same reason and starts it then. A sync that skipped old
@@ -325,6 +332,11 @@ Again".
 
 **Pinned by:** `test_missing_or_stale_recordings_start_the_recording_pass_by_itself`,
 `test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
+`test_the_recording_pass_waits_until_the_user_leaves_clanki_alone`,
+`test_the_pass_pauses_between_batches_while_the_user_works`,
+`test_the_pass_runs_in_the_background_without_a_progress_window`,
+`test_while_the_recording_pass_runs_the_graphs_say_it_is_computing`
+(`qt/tests/test_stats_metrics.py`),
 `test_nothing_starts_while_the_main_window_is_disabled`,
 `test_a_full_recording_pass_marks_the_recordings_current`,
 `test_a_full_recording_build_leaves_no_recording_pass_due`,
