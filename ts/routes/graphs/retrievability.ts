@@ -222,9 +222,9 @@ export function prepareData(
                     (plainRecall
                         ? tr.statisticsRetrievabilityTooltipPlain
                         : tr.statisticsRetrievabilityTooltip)({
-                        cards: binValue(series.bins[index]),
-                        percent,
-                    })
+                            cards: binValue(series.bins[index]),
+                            percent,
+                        })
                 }`;
             })
             .join("<br>");
