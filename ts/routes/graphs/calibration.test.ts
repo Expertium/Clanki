@@ -9,13 +9,16 @@ import {
     ReviewMetricsProgress_State as JobState,
     ReviewMetricsProgress_Unavailable as Unavailable,
 } from "@generated/anki/stats_pb";
+import * as tr from "@generated/ftl";
 import { expect, test } from "vitest";
 
 import {
     axisTenths,
     binPoints,
     calibrationBounds,
+    calibrationPredictedLabel,
     calibrationSeries,
+    calibrationSubtitle,
     chooserOptions,
     chosenAlgorithm,
     COUNT_BAR_COLOUR,
@@ -164,4 +167,14 @@ test("both axes step by 0.1, and the count bars are blue", () => {
     expect(axisTenths[axisTenths.length - 1]).toBe(1);
     // the reference diagonal stays grey; only the bars changed
     expect(COUNT_BAR_COLOUR).toBe("#6ba3d6");
+});
+
+// Pins spec/ui.md#ui.simple-recall-wording
+test("the calibration subtitle and X axis follow the recall wording", () => {
+    expect(calibrationSubtitle(true)).toBe(tr.statisticsCalibrationSubtitlePlain());
+    expect(calibrationSubtitle(false)).toBe(tr.statisticsCalibrationSubtitle());
+    expect(calibrationPredictedLabel(true)).toBe(
+        tr.statisticsCalibrationPredictedPlain(),
+    );
+    expect(calibrationPredictedLabel(false)).toBe(tr.statisticsCalibrationPredicted());
 });

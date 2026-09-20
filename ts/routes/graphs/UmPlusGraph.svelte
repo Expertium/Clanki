@@ -16,6 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import Graph from "./Graph.svelte";
     import { chosenUmPlusPair, showSmallUmPlusGroups } from "./metrics-choice";
+    import { plainRecallWording, type RecallWording } from "@tslib/recall-wording";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import { dataNotes, overlayText, stillComputing, unavailableNotes } from "./roc";
     import {
@@ -35,6 +36,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         readable("deck:current");
     const days =
         getContext<Readable<number> | undefined>("graphsDays") ?? readable(365);
+    // this graph loads its own data, so the wording comes from the page
+    // (spec ui.simple-recall-wording)
+    const advancedUi =
+        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
+    const recallWording =
+        getContext<Readable<RecallWording | undefined> | undefined>(
+            "graphsRecallWording",
+        ) ?? readable(undefined);
+    $: plainRecall = plainRecallWording($recallWording, $advancedUi);
 
     let svg: SVGElement | null = null;
     let progress: ReviewMetricsProgress | null = null;
@@ -51,7 +61,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ...unavailableNotes(progress),
     ];
     $: if (svg) {
-        renderUmPlus(svg, bounds, view);
+        renderUmPlus(svg, bounds, view, plainRecall);
     }
     $: overlay = view ? undefined : overlayText(progress);
 

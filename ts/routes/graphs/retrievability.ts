@@ -385,3 +385,9 @@ export function retrievabilityTitle(plainRecall: boolean): string {
         ? tr.statisticsCardRetrievabilityTitlePlain()
         : tr.statisticsCardRetrievabilityTitle();
 }
+
+export function retrievabilitySubtitle(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.statisticsRetrievabilitySubtitlePlain()
+        : tr.statisticsRetrievabilitySubtitle();
+}

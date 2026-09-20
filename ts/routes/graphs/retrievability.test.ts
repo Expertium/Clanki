@@ -15,6 +15,7 @@ import type { GraphData } from "./retrievability";
 import {
     fsrsColour,
     prepareData,
+    retrievabilitySubtitle,
     retrievabilityTitle,
     rwkvColour,
     rwkvScoresPending,
@@ -134,6 +135,10 @@ test("with the plain wording the graph says probability of recall", () => {
     expect(technical[1][0].label).toBe(tr.statisticsAverageRetrievability());
     expect(retrievabilityTitle(true)).toBe(tr.statisticsCardRetrievabilityTitlePlain());
     expect(retrievabilityTitle(false)).toBe(tr.statisticsCardRetrievabilityTitle());
+    expect(retrievabilitySubtitle(true)).toBe(
+        tr.statisticsRetrievabilitySubtitlePlain(),
+    );
+    expect(retrievabilitySubtitle(false)).toBe(tr.statisticsRetrievabilitySubtitle());
 });
 
 // Pins spec/ui.md#ui.simple-recall-wording

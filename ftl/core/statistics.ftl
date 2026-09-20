@@ -158,7 +158,9 @@ statistics-card-retrievability-title = Card Retrievability
 statistics-card-retrievability-title-plain = Card Probability of Recall
 statistics-card-ease-subtitle = The lower the ease, the more frequently a card will appear.
 statistics-card-difficulty-subtitle2 = The higher the difficulty, the slower stability will increase.
-statistics-retrievability-subtitle = The probability of recalling a card today.
+statistics-retrievability-subtitle = The retrievability of a card today.
+# The same string in the plain recall wording (spec ui.simple-recall-wording).
+statistics-retrievability-subtitle-plain = The probability of recalling a card today.
 # eg "3 cards with 150-170% ease"
 statistics-card-ease-tooltip =
     { $cards ->
@@ -215,7 +217,9 @@ statistics-roc-false-positive-rate = False positive rate
 statistics-roc-true-positive-rate = True positive rate
 # Shown under the graph.
 statistics-roc-description-curve = Each curve plots the true positive rate against the false positive rate, at every prediction threshold; the dashed line is random chance.
-statistics-roc-description-auc = A higher AUC is better. At 1.0, the algorithm always gives a higher probability of recall to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
+statistics-roc-description-auc = A higher AUC is better. At 1.0, the algorithm always gives a higher retrievability to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
+# The same string in the plain recall wording (spec ui.simple-recall-wording).
+statistics-roc-description-auc-plain = A higher AUC is better. At 1.0, the algorithm always gives a higher probability of recall to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
 # Shown under every model-quality graph; it says which reviews the graph counts.
 statistics-model-metrics-description-reviews = Hard, Good and Easy count as remembered, Again counts as forgotten.
 # Shown under the graph; $reviews is how many ratings at least one algorithm scored.
@@ -227,10 +231,14 @@ statistics-model-metrics-none = { $reviews } reviews have no prediction from any
 # Shown under the graph; $role is a stored sample role, such as "validation_fold".
 statistics-model-metrics-role = { $algorithm } uses its "{ $role }" predictions, made before the algorithm had seen these reviews.
 statistics-calibration-title = Calibration
-statistics-calibration-subtitle = How close an algorithm's predicted probability of recall is to what really happened.
+statistics-calibration-subtitle = How close an algorithm's predicted retrievability is to what really happened.
+# The same string in the plain recall wording (spec ui.simple-recall-wording).
+statistics-calibration-subtitle-plain = How close an algorithm's predicted probability of recall is to what really happened.
 # Label of the menu that picks the one algorithm the graph draws.
 statistics-calibration-algorithm = Algorithm
-statistics-calibration-predicted = Predicted probability of recall
+statistics-calibration-predicted = Predicted retrievability
+# The same string in the plain recall wording (spec ui.simple-recall-wording).
+statistics-calibration-predicted-plain = Predicted probability of recall
 statistics-calibration-actual = Actual recall
 # The tiles above the graph.
 statistics-calibration-average-predicted = Average predicted
@@ -249,7 +257,9 @@ statistics-um-plus-algorithms = Algorithms
 statistics-um-plus-pair = { $first } against { $second }
 # Label of the switch that also shows groups of fewer than 200 reviews.
 statistics-um-plus-small-groups = Show small groups (under 200 reviews)
-statistics-um-plus-difference = Difference in predicted probability of recall
+statistics-um-plus-difference = Difference in predicted retrievability
+# The same string in the plain recall wording (spec ui.simple-recall-wording).
+statistics-um-plus-difference-plain = Difference in predicted probability of recall
 statistics-um-plus-error = Predicted minus actual
 # Legend entry of one algorithm, with its UM+ and the slope of its line.
 statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }

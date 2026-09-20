@@ -18,6 +18,7 @@ import {
     dataNotes,
     overlayText,
     renderRoc,
+    rocAucDescription,
     rocBounds,
     rocCurves,
     stillComputing,
@@ -256,4 +257,10 @@ test("both axes step by 0.1", () => {
     const labels = Array.from(svg.querySelectorAll(".tick text")).map((t) => t.textContent);
     expect(labels.filter((l) => /^0[.,]1$/.test(l ?? ""))).toHaveLength(2);
     expect(labels.filter((l) => /^0[.,]7$/.test(l ?? ""))).toHaveLength(2);
+});
+
+// Pins spec/ui.md#ui.simple-recall-wording
+test("the AUC description follows the recall wording", () => {
+    expect(rocAucDescription(true)).toBe(tr.statisticsRocDescriptionAucPlain());
+    expect(rocAucDescription(false)).toBe(tr.statisticsRocDescriptionAuc());
 });
