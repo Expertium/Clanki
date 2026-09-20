@@ -415,6 +415,26 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   `ruff` and `mypy` run fine from the tool directly. Run `format:prettier` in
   its own wrapper before `check:format:prettier`: in one ninja run the check
   races the formatter and fails on files it is about to rewrite.
+- **The orchestrator writes code too** (Andrew, 2026-09-20). Delegating a task
+  to a subagent does not make the orchestrator a spectator. While subagents
+  run, the orchestrator takes the next piece of work itself. There are exactly
+  two reasons not to:
+  1. There is genuinely no work left.
+  2. Working right now would conflict with a running subagent — the same
+     files, the same branch, the same build directory, or a probe that a
+     build would fight over.
+
+  When reason 2 applies, pick work somewhere else in the queue rather than
+  waiting. Say which reason applies if neither piece of work is being done.
+- **`dprint` does run on this machine.** The warning further up, that
+  `check:format:dprint` sits for 30+ minutes fetching plugins, is true only
+  for the first run. Once `~/AppData/Local/dprint/cache` exists,
+  `out/node_modules/.bin/dprint.cmd check` finishes offline in seconds and
+  reports the same files CI reports. Run it before pushing any markdown or
+  TypeScript change; the `format` job has gone red twice on hand-padded
+  tables. Ignore its "Text differed by line endings" entries: those come from
+  CRLF in the working tree, and git normalizes them on commit. After
+  `dprint fmt`, `git diff --stat` shows only the real changes.
 
 ---
 
