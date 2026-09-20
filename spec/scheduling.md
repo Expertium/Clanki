@@ -370,6 +370,12 @@ ready finds the same reason and starts it then. A sync that skipped old
 reviews shows no message. The deck-options buttons "Read Review History
 Again" and "Prepare Stats Graphs" stay, as a manual fallback.
 
+A card on the screen stops the pass rather than resting it. While the pass
+replays it owns the RWKV state, so a prediction cannot be served from it and
+the reviewer shows "Getting this card ready..." for as long as the pass
+lasts. The pass gives up its claim, the state it began with is restored, and
+it starts again once the user leaves the reviewer. Reviewing always wins.
+
 **Why:** Andrew, 2026-09-19 (CLAUDE.md Planned direction 9, "Everything Just
 Works"): the user never decides to rebuild RWKV states; a message or a
 button that asks the user to read the history again or prepare data is a
