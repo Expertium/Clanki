@@ -20191,3 +20191,13 @@ def _tr() -> Any:
     from aqt.utils import tr
 
     return tr
+
+
+# Pins spec/scheduling.md#sched.filtered-deck-one-algorithm
+def test_filtered_deck_prepares_rwkv_scores_for_relative_overdueness() -> None:
+    # under RWKV the order reads the deck's own RWKV scores, so the build
+    # must prepare them for it as for the retrievability orders
+    assert (
+        FilteredDeckConfig.SearchTerm.RELATIVE_OVERDUENESS
+        in rwkv_scheduler._FILTERED_DECK_RETRIEVABILITY_ORDERS
+    )

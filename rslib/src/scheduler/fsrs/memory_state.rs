@@ -246,6 +246,12 @@ impl FsrsCardCurves {
         )
     }
 
+    /// The card's desired retention: its own, else its preset's.
+    pub(crate) fn desired_retention(&mut self, col: &mut Collection, card: &Card) -> Result<f32> {
+        let (_, preset_retention) = self.preset(col, card)?;
+        Ok(card.desired_retention.unwrap_or(preset_retention))
+    }
+
     /// `Collection::fsrs_preset_for_card`, as the index of its model and its
     /// desired retention, with the home-deck presets kept.
     fn preset(&mut self, col: &mut Collection, card: &Card) -> Result<(usize, f32)> {
