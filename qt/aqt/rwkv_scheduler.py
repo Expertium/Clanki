@@ -10294,6 +10294,7 @@ def _warm_up_reviewer_backend(
             reviewer,
             progress=progress,
             prepare_recovery_checkpoint=state_cache_available,
+            between_parts=_split_whole_history_query,
         )
         history_elapsed_ms = (time.monotonic() - history_start) * 1000
         _require_reviewer_backend_warmup_current(is_current)
@@ -11863,7 +11864,13 @@ def _start_rwkv_state_cache_build(mw: object) -> None:
     def build() -> None:
         if _rwkv_resident_state_ready(mw):
             return
-        build_rwkv_state_cache_with_progress(mw, record_retrievability_cache=True)
+        # nobody asked for this build, so it gets no window either (spec
+        # sched.rwkv-startup-no-window)
+        build_rwkv_state_cache_with_progress(
+            mw,
+            record_retrievability_cache=True,
+            quiet=True,
+        )
 
     taskman = getattr(mw, "taskman", None)
     run_on_main = getattr(taskman, "run_on_main", None)
@@ -11911,6 +11918,25 @@ def _refresh_active_rwkv_count_view(mw: object) -> bool:
     return True
 
 
+def _redraw_open_card_info(mw: object) -> None:
+    """Draws every open card-info window again, now that the RWKV state is
+    there. Card info is built once when it opens, so a chart that said it was
+    being computed would say so until the user picked another card (spec
+    sched.rwkv-startup-no-window)."""
+    app = getattr(mw, "app", None)
+    top_level_widgets = getattr(app, "topLevelWidgets", None)
+    if not callable(top_level_widgets):
+        return
+    try:
+        from aqt.browser.card_info import CardInfoDialog
+
+        for widget in top_level_widgets():
+            if isinstance(widget, CardInfoDialog) and widget.isVisible():
+                widget.redraw()
+    except Exception:
+        logger.exception("failed to redraw card info after the RWKV state loaded")
+
+
 def _finish_rwkv_state_cache_operation(
     mw: object,
     *,
@@ -11918,6 +11944,7 @@ def _finish_rwkv_state_cache_operation(
     prewarm_reason: str,
 ) -> None:
     _set_rwkv_state_cache_loading(mw, False)
+    _redraw_open_card_info(mw)
     if ready:
         start_rwkv_maintenance_if_needed(mw)
     if _refresh_active_rwkv_count_view(mw) or not ready:
@@ -12167,7 +12194,15 @@ def load_rwkv_state_cache_with_progress(
     *,
     build_if_unavailable: bool = False,
 ) -> None:
-    """Restore the local RWKV state cache with a lightweight progress dialog."""
+    """Restore the local RWKV state cache on a background thread.
+
+    No progress window opens and the main window is never disabled: this runs
+    at profile open, and start-up puts nothing in front of the user's first
+    clicks (spec sched.rwkv-startup-no-window). The one-time conversion of an
+    old store is the exception and keeps its window, because it is the one
+    start-up wait the user is told about
+    (spec sched.rwkv-lazy-state-upgrade-window).
+    """
 
     def finish(loaded: bool) -> None:
         if build_if_unavailable and not loaded:
@@ -12198,6 +12233,9 @@ def load_rwkv_state_cache_with_progress(
     def start_load() -> None:
         parent = cast(QWidget | None, mw)
         start = time.monotonic()
+        # the one-time conversion runs inside this restore, and it is the
+        # only start-up wait with a window of its own
+        upgrading = rwkv_state_cache_store_needs_upgrade(mw)
 
         def progress(
             label: str,
@@ -12213,7 +12251,8 @@ def load_rwkv_state_cache_with_progress(
             _run_on_main(mw, update)
 
         def load() -> bool:
-            return load_rwkv_state_cache(mw, progress=progress)
+            # nothing reports to a window that is not there
+            return load_rwkv_state_cache(mw, progress=progress if upgrading else None)
 
         def done(future: Future[bool]) -> None:
             try:
@@ -12238,30 +12277,19 @@ def load_rwkv_state_cache_with_progress(
 
         from aqt.utils import tr
 
-        # the one-time conversion runs inside this restore, and it is the
-        # only wait long enough to need its own words
-        upgrading = rwkv_state_cache_store_needs_upgrade(mw)
-        label = (
-            tr.qt_misc_rwkv_state_upgrade_label()
-            if upgrading
-            else tr.qt_misc_rwkv_startup_label()
-        )
-        title = (
-            tr.qt_misc_rwkv_state_upgrade_title()
-            if upgrading
-            else tr.qt_misc_rwkv_startup_title()
-        )
-
         try:
-            with_progress(
-                load,
-                done,
-                parent=parent,
-                label=label,
-                immediate=True,
-                uses_collection=True,
-                title=title,
-            )
+            if upgrading:
+                with_progress(
+                    load,
+                    done,
+                    parent=parent,
+                    label=tr.qt_misc_rwkv_state_upgrade_label(),
+                    immediate=True,
+                    uses_collection=True,
+                    title=tr.qt_misc_rwkv_state_upgrade_title(),
+                )
+            else:
+                _run_in_background(mw, load, done)
         except Exception:
             finish(False)
             if build_if_unavailable:
@@ -12270,6 +12298,23 @@ def load_rwkv_state_cache_with_progress(
             raise
 
     _run_on_main(mw, start_load)
+
+
+def _run_in_background(
+    mw: object,
+    task: Callable[[], _T],
+    on_done: Callable[[Future[_T]], None],
+) -> None:
+    """Runs `task` off the main thread without opening a progress window, and
+    calls `on_done` back on the main thread (spec
+    sched.rwkv-startup-no-window). Raises where the task manager cannot take
+    it, so the caller can fall back the same way it does for a window that
+    fails to open."""
+    taskman = getattr(mw, "taskman", None)
+    run_in_background = getattr(taskman, "run_in_background", None)
+    if not callable(run_in_background):
+        raise RuntimeError("no task manager to run the RWKV work in the background")
+    run_in_background(task, on_done, uses_collection=True)
 
 
 def refresh_rwkv_state_after_sync(
@@ -12401,8 +12446,14 @@ def build_rwkv_state_cache_with_progress(
     *,
     force_rebuild: bool = False,
     record_retrievability_cache: bool = False,
+    quiet: bool = False,
 ) -> None:
-    """Build the local RWKV state cache with a modal progress dialog."""
+    """Build the local RWKV state cache with a modal progress dialog.
+
+    `quiet` drops the dialog and leaves the main window usable: the build that
+    start-up runs by itself is not a wait the user asked for (spec
+    sched.rwkv-startup-no-window). A build a button starts keeps its dialog.
+    """
 
     from aqt.utils import show_warning, tooltip
 
@@ -12510,7 +12561,8 @@ def build_rwkv_state_cache_with_progress(
             _run_on_main(mw, update)
 
         def build_with_progress() -> _RwkvStateCacheBuildResult:
-            return build(progress)
+            # nothing reports to a window that is not there
+            return build(None if quiet else progress)
 
         def done(future: Future[_RwkvStateCacheBuildResult]) -> None:
             try:
@@ -12532,15 +12584,18 @@ def build_rwkv_state_cache_with_progress(
             )
 
         try:
-            with_progress(
-                build_with_progress,
-                done,
-                parent=parent,
-                label=_tr().qt_misc_review_history_reading() + "...",
-                immediate=True,
-                uses_collection=True,
-                title=_tr().qt_misc_review_history_title(),
-            )
+            if quiet:
+                _run_in_background(mw, build_with_progress, done)
+            else:
+                with_progress(
+                    build_with_progress,
+                    done,
+                    parent=parent,
+                    label=_tr().qt_misc_review_history_reading() + "...",
+                    immediate=True,
+                    uses_collection=True,
+                    title=_tr().qt_misc_review_history_title(),
+                )
         except Exception:
             _finish_rwkv_state_cache_operation(
                 mw,
@@ -14209,6 +14264,7 @@ def _restore_reviewer_backend_cache(
                 review_count_by_card=stored_history.review_count_by_card,
                 previous_history_hash=stored_history.history_hash,
                 previous_replay_key=stored_history.replay_key,
+                between_parts=_split_whole_history_query,
             )
         _require_reviewer_backend_warmup_current(is_current)
         if history.reviews:
@@ -15221,6 +15277,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             ignored_review_ids=frozenset(
                 (*existing_ignored_review_ids, *newly_ignored_review_ids)
             ),
+            between_parts=_split_whole_history_query,
         )
     except Exception:
         logger.exception("failed to validate current RWKV replay history")
@@ -18313,6 +18370,16 @@ def _historical_rwkv_review_rows(
 
 # how many card-id ranges a stoppable whole-history query runs in
 HISTORY_QUERY_PARTS = 16
+
+
+def _split_whole_history_query() -> None:
+    """A `between_parts` callback with nothing to do between the parts.
+
+    A caller passes it to split the whole-history query into
+    HISTORY_QUERY_PARTS short queries, so the collection is free between them
+    instead of held for one query of several seconds. The start-up restore and
+    the start-up build pass it because they now run while the user works (spec
+    sched.rwkv-startup-no-window)."""
 
 
 def _card_id_ranges(col: Any, parts: int) -> list[tuple[int, int]]:
