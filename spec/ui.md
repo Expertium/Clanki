@@ -1131,6 +1131,33 @@ sure the title says Universal Metric+, not just UM+".
 **Pinned by:** `ts/routes/graphs/calibration.test.ts` ("each count bar spans
 its own bin, and the bins tile 0 to 1").
 
+## ui.no-waiting-windows
+
+Given the path a user takes from starting Clanki to answering a card
+(start-up, the deck list, expanding or collapsing a deck, clicking a deck,
+the overview, answering), Clanki opens no progress or waiting window, however
+long an operation waits for something else. The operations of that path run
+without one: expanding or collapsing a deck, clicking a deck, and answering a
+card.
+
+A window is shown only for the waits the user asked for and expects:
+optimizing FSRS-7 parameters, creating a backup, checking the database,
+checking the media, and operations of that kind (an import, an export, a
+bulk edit the user started). The slowest Stats graphs say "Calculating..."
+in their own place instead of opening a window.
+
+**Why:** Andrew, 2026-09-20: "No 'Processing...'/'Getting review data
+ready...'/'Preparing...'/'Starting...' neither at startup nor when a user
+clicks on anything other than optimizing FSRS-7 parameters, creating a
+backup, checking the database or media, or some other exception where it is
+expected to wait... the whole path from Clanki startup to clicking on a deck
+to reviewing a card should be seamless." A window that appears because
+something else is busy tells the user nothing and takes the app away from
+them.
+
+**Pinned by:** `test_the_click_path_operations_open_no_waiting_window`
+(`qt/tests/test_operations_no_waiting_window.py`).
+
 ## ui.stats-model-metrics
 
 Given the Stats page in Advanced mode, the model-quality graphs compare the

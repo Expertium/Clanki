@@ -114,6 +114,8 @@ def set_deck_collapsed(
     collapsed: bool,
     scope: DeckCollapseScope.V,
 ) -> CollectionOp[OpChanges]:
+    """Expanding or collapsing a deck never opens a window: it is one click
+    on a triangle (spec ui.no-waiting-windows)."""
     return CollectionOp(
         parent,
         lambda col: _run_preserving_rwkv_state(
@@ -124,17 +126,18 @@ def set_deck_collapsed(
                 scope=scope,
             ),
         ),
-    )
+    ).without_waiting_window()
 
 
 def set_current_deck(*, parent: QWidget, deck_id: DeckId) -> CollectionOp[OpChanges]:
+    """Clicking a deck never opens a window (spec ui.no-waiting-windows)."""
     return CollectionOp(
         parent,
         lambda col: _run_preserving_rwkv_state(
             col,
             lambda: col.decks.set_current(deck_id),
         ),
-    )
+    ).without_waiting_window()
 
 
 def update_deck_configs(

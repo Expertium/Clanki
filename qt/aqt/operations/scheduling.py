@@ -495,7 +495,8 @@ def answer_card(
             after_answer()
         return changes
 
-    return CollectionOp(parent, answer_v3)
+    # answering a card never opens a window (spec ui.no-waiting-windows)
+    return CollectionOp(parent, answer_v3).without_waiting_window()
 
 
 def custom_study(
