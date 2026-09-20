@@ -474,6 +474,7 @@ class _RustRwkvRuntime:
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
         return_snapshot: bool = True,
+        batch_rows: int | None = None,
     ) -> RwkvBackendCacheSnapshot | None:
         total = len(reviews)
         snapshot_endpoints = sorted(
@@ -483,6 +484,7 @@ class _RustRwkvRuntime:
         backend_chunk_size = _rust_warmup_chunk_size(
             total,
             record_predictions=record_predictions,
+            batch_rows=batch_rows,
         )
         _report_warmup_progress(progress, processed=0, total=total)
         warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
@@ -494,31 +496,26 @@ class _RustRwkvRuntime:
             and callable(getattr(self._process, "record_curve_sources", None))
         )
 
+        self._warm_up_batches(
+            reviews,
+            review_ids=review_ids,
+            prediction_recorder=prediction_recorder,
+            curve_recorder=curve_recorder,
+            curve_source_recorder=(curve_source_recorder if record_sources else None),
+            progress=progress,
+            snapshot_endpoints=snapshot_endpoints,
+            snapshot_recorder=snapshot_recorder,
+            backend_chunk_size=backend_chunk_size,
+            record_predictions=record_predictions,
+            record_sources=record_sources,
+            warm_up_packed=warm_up_packed,
+        )
+        if not return_snapshot:
+            return None
         with self._locked_process():
-            if record_sources:
-                self._process.record_curve_sources(True)
-            try:
-                self._warm_up_chunks_locked(
-                    reviews,
-                    review_ids=review_ids,
-                    prediction_recorder=prediction_recorder,
-                    curve_recorder=curve_recorder,
-                    curve_source_recorder=(
-                        curve_source_recorder if record_sources else None
-                    ),
-                    progress=progress,
-                    snapshot_endpoints=snapshot_endpoints,
-                    snapshot_recorder=snapshot_recorder,
-                    backend_chunk_size=backend_chunk_size,
-                    record_predictions=record_predictions,
-                    warm_up_packed=warm_up_packed,
-                )
-            finally:
-                if record_sources:
-                    self._process.record_curve_sources(False)
-            return self._warm_up_snapshot_locked() if return_snapshot else None
+            return self._warm_up_snapshot_locked()
 
-    def _warm_up_chunks_locked(
+    def _warm_up_batches(
         self,
         reviews: Sequence[RwkvReviewInput],
         *,
@@ -531,8 +528,18 @@ class _RustRwkvRuntime:
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None,
         backend_chunk_size: int,
         record_predictions: bool,
+        record_sources: bool,
         warm_up_packed: Any,
     ) -> None:
+        """Replays `reviews` one batch at a time.
+
+        The runtime lock is taken per batch, not once for the whole replay,
+        so a caller that replays the whole review history does not hold the
+        runtime for minutes. The replayed state lives in the runtime, so a
+        batch goes on where the one before it stopped, and whoever paces
+        this replay can step aside for the user between two batches (spec
+        sched.rwkv-recordings-automatic).
+        """
         total = len(reviews)
         processed = 0
         endpoint_index = 0
@@ -541,65 +548,77 @@ class _RustRwkvRuntime:
             if endpoint_index < len(snapshot_endpoints):
                 chunk_end = min(chunk_end, snapshot_endpoints[endpoint_index])
             chunk = reviews[processed:chunk_end]
-            if callable(warm_up_packed):
-                predictions = warm_up_packed(
-                    _packed_warm_up_reviews(chunk),
-                    record_predictions,
-                )
-            else:
-                predictions = self._process.warm_up_reviews(
-                    [_review_input_row(review_input) for review_input in chunk],
-                    record_predictions,
-                )
-            if (
-                record_predictions
-                and review_ids is not None
-                and prediction_recorder is not None
-            ):
-                _record_warm_up_predictions(
-                    prediction_recorder,
-                    review_ids,
-                    processed,
-                    predictions,
-                    curve_recorder=curve_recorder,
-                )
-            if curve_source_recorder is not None and review_ids is not None:
-                sources = _recorded_curve_sources(self._process, review_ids, processed)
-                if sources is not None:
-                    curve_source_recorder(sources)
-
-            processed += len(chunk)
-            if (
-                endpoint_index < len(snapshot_endpoints)
-                and processed == snapshot_endpoints[endpoint_index]
-            ):
-                if snapshot_recorder is not None:
-                    write_runtime_checkpoint = getattr(
-                        snapshot_recorder,
-                        "write_runtime_checkpoint",
-                        None,
-                    )
-                    write_runtime_snapshot = getattr(
-                        snapshot_recorder,
-                        "write_runtime_snapshot",
-                        None,
-                    )
-                    if callable(write_runtime_checkpoint):
-                        write_runtime_checkpoint(
-                            processed,
-                            self.write_warm_up_state_checkpoint,
-                        )
-                    elif callable(write_runtime_snapshot):
-                        write_runtime_snapshot(
-                            processed,
-                            self.append_warm_up_snapshot_binary,
+            with self._locked_process():
+                if record_sources:
+                    self._process.record_curve_sources(True)
+                try:
+                    if callable(warm_up_packed):
+                        predictions = warm_up_packed(
+                            _packed_warm_up_reviews(chunk),
+                            record_predictions,
                         )
                     else:
-                        snapshot_recorder(
-                            processed,
-                            self._warm_up_snapshot_locked(),
+                        predictions = self._process.warm_up_reviews(
+                            [_review_input_row(review_input) for review_input in chunk],
+                            record_predictions,
                         )
-                endpoint_index += 1
+                    if (
+                        record_predictions
+                        and review_ids is not None
+                        and prediction_recorder is not None
+                    ):
+                        _record_warm_up_predictions(
+                            prediction_recorder,
+                            review_ids,
+                            processed,
+                            predictions,
+                            curve_recorder=curve_recorder,
+                        )
+                    if curve_source_recorder is not None and review_ids is not None:
+                        sources = _recorded_curve_sources(
+                            self._process,
+                            review_ids,
+                            processed,
+                        )
+                        if sources is not None:
+                            curve_source_recorder(sources)
+
+                    processed += len(chunk)
+                    if (
+                        endpoint_index < len(snapshot_endpoints)
+                        and processed == snapshot_endpoints[endpoint_index]
+                    ):
+                        if snapshot_recorder is not None:
+                            write_runtime_checkpoint = getattr(
+                                snapshot_recorder,
+                                "write_runtime_checkpoint",
+                                None,
+                            )
+                            write_runtime_snapshot = getattr(
+                                snapshot_recorder,
+                                "write_runtime_snapshot",
+                                None,
+                            )
+                            if callable(write_runtime_checkpoint):
+                                write_runtime_checkpoint(
+                                    processed,
+                                    self.write_warm_up_state_checkpoint,
+                                )
+                            elif callable(write_runtime_snapshot):
+                                write_runtime_snapshot(
+                                    processed,
+                                    self.append_warm_up_snapshot_binary,
+                                )
+                            else:
+                                snapshot_recorder(
+                                    processed,
+                                    self._warm_up_snapshot_locked(),
+                                )
+                        endpoint_index += 1
+                finally:
+                    if record_sources:
+                        self._process.record_curve_sources(False)
+            # outside the runtime lock: whoever paces the replay rests here
             _report_warmup_progress(progress, processed=processed, total=total)
 
     def _warm_up_snapshot_locked(self) -> RwkvBackendCacheSnapshot:
@@ -1834,7 +1853,16 @@ def _warmup_progress_interval(total: int) -> int:
     return max(1, min(1000, total // 100 or 1))
 
 
-def _rust_warmup_chunk_size(total: int, *, record_predictions: bool = False) -> int:
+def _rust_warmup_chunk_size(
+    total: int,
+    *,
+    record_predictions: bool = False,
+    batch_rows: int | None = None,
+) -> int:
+    if batch_rows is not None:
+        # the caller replays in short batches, so that it can step aside for
+        # the user between two of them
+        return max(1, min(total, batch_rows))
     if not record_predictions:
         return max(1, min(total, _RUST_STATE_ONLY_WARMUP_CHUNK_SIZE))
 
