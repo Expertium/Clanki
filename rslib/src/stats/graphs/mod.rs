@@ -32,7 +32,7 @@ struct GraphsContext {
     revlog: Vec<RevlogEntry>,
     cards: Vec<Card>,
     fsrs_by_preset: HashMap<FsrsPresetId, FSRS>,
-    /// The same presets' curves in scalar form (bit-identical, faster).
+    /// The same presets' FSRS-7 curves (see `Fsrs7Curve`).
     fsrs_curve_by_preset: HashMap<FsrsPresetId, Fsrs7Curve>,
     fsrs_preset_by_card: HashMap<CardId, FsrsPresetId>,
     /// The active algorithm's RWKV R per card (RWKV-Curve's curve R or

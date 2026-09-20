@@ -892,11 +892,8 @@ fn fsrs_review_retrievability_predictions_for_targets(
     // FSRS-7 only (spec sched.fsrs7-only): the fsrs crate runs FSRS-6 for 0,
     // 17, 19 or 21 values
     let params = effective_fsrs7_params(params);
-    // The scalar copy of the forgetting curve gives the same bits as
-    // `FSRS::current_retrievability` at a fraction of its cost, because the
-    // tensor path allocates about thirty one-element tensors for every
-    // review (see `Fsrs7Curve`). It covers FSRS-7 parameters only; anything
-    // else falls back to the tensor path.
+    // one model for every review (see `Fsrs7Curve`); FSRS-7 parameters only,
+    // anything else goes through `FSRS::new` below
     let curve = Fsrs7Curve::new(params);
     // Only the cards that hold a wanted rating are replayed, shortest
     // history first so that a batch pads little.
