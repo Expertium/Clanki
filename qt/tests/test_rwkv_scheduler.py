@@ -19185,7 +19185,10 @@ def test_rust_runtime_hands_each_chunks_curve_sources_with_review_ids() -> None:
         return_snapshot=False,
     )
 
-    assert process.recording == [True, False]
+    # on for each batch and off again after it, so the recording is never
+    # left on while the runtime is free between two batches; off at the end
+    assert process.recording == [True, False] * process.calls
+    assert process.recording[-1] is False
     assert [(list(batch.review_ids), batch.sources) for batch in handed] == [
         ([101], b"\x01\x01"),
         ([102], b"\x02\x02"),
@@ -20960,23 +20963,139 @@ def test_the_recording_pass_waits_until_the_user_leaves_clanki_alone(
     assert passes == [mw]
 
 
-# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
-def test_the_pass_pauses_between_batches_while_the_user_works() -> None:
-    slept: list[float] = []
-    inputs = [0.0, 3.0, rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS]
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the rest between
+# two batches is SHORT and BOUNDED, so the pass goes on while the user works.
+# It used to wait for ten seconds of quiet, which every key press restarted:
+# measured, the pass replayed 0 of 656,402 reviews in five minutes of use.
+def test_the_pass_rests_a_bounded_time_between_batches() -> None:
     mw = SimpleNamespace(app=SimpleNamespace(last_input_at=0.0))
+    batch = 0.2
 
-    def since_input(_mw: object) -> float:
-        return inputs.pop(0)
+    def rest(since_input: float | None) -> float:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                rwkv_scheduler,
+                "_seconds_since_input",
+                lambda _mw: since_input,
+            )
+            return rwkv_scheduler.recordings_pass_rest_seconds(mw, batch)
 
+    # the user is typing: the pass rests a multiple of the batch it just did,
+    # and then goes on. It never waits for the user to stop.
+    assert rest(0.0) == batch * rwkv_scheduler.RECORDINGS_PASS_REST_RATIO
+    assert rest(0.5) == batch * rwkv_scheduler.RECORDINGS_PASS_REST_RATIO
+    # the user has left it alone: only long enough to hand a waiting click
+    # the backend first
+    assert rest(rwkv_scheduler.RECORDINGS_PASS_ACTIVE_SECS) == (
+        rwkv_scheduler.RECORDINGS_PASS_MIN_REST_SECS
+    )
+    assert rest(None) == rwkv_scheduler.RECORDINGS_PASS_MIN_REST_SECS
+    # and however long a batch took, the rest has a ceiling
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(rwkv_scheduler, "_seconds_since_input", since_input)
-        rwkv_scheduler.wait_until_idle(mw, sleep=slept.append)
-    # it waited out the two active moments and returned on the idle one
-    assert slept == [
-        rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS,
-        rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS - 3.0,
+        patch.setattr(rwkv_scheduler, "_seconds_since_input", lambda _mw: 0.0)
+        assert rwkv_scheduler.recordings_pass_rest_seconds(mw, 600.0) == (
+            rwkv_scheduler.RECORDINGS_PASS_MAX_REST_SECS
+        )
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: while it rests, the
+# pass hands the RWKV backend back, so a click waits for one batch at most
+# (measured: a click waited more than 30 s for it, the pass's whole length,
+# before this).
+def test_the_pass_hands_the_backend_back_while_it_rests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", SimpleNamespace())
+    lock = rwkv_scheduler._reviewer_backend_execution_lock
+    lock.acquire()
+    try:
+        with rwkv_scheduler._reviewer_backend_handed_back():
+            # another thread can take the backend now
+            taken = threading.Thread(target=_take_the_backend_lock)
+            taken.start()
+            taken.join(timeout=5.0)
+            assert not taken.is_alive(), "the pass did not hand the backend back"
+            # and a prediction made in that moment reads no half-replayed
+            # state: it is refused and falls back
+            assert rwkv_scheduler._reviewer_backend_resting.is_set()
+            with rwkv_scheduler._try_reviewer_backend_prediction_access() as backend:
+                assert backend is None
+    finally:
+        lock.release()
+    assert not rwkv_scheduler._reviewer_backend_resting.is_set()
+    # outside the rest the same access is granted
+    with rwkv_scheduler._try_reviewer_backend_prediction_access() as backend:
+        assert backend is not None
+
+
+def _take_the_backend_lock() -> None:
+    rwkv_scheduler._reviewer_backend_execution_lock.acquire()
+    rwkv_scheduler._reviewer_backend_execution_lock.release()
+
+
+def _the_backend_is_free() -> bool:
+    """Whether another thread could take the RWKV backend right now."""
+    taken: list[bool] = []
+
+    def take() -> None:
+        lock = rwkv_scheduler._reviewer_backend_execution_lock
+        got = lock.acquire(blocking=False)
+        if got:
+            lock.release()
+        taken.append(got)
+
+    thread = threading.Thread(target=take)
+    thread.start()
+    thread.join()
+    return taken[0]
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the pass reads the
+# review history BEFORE it claims the RWKV backend. Reading it under the
+# claim held the backend for the whole read, which is seconds of collection
+# work on a large collection: measured, one click waited 9.9 s for it.
+def test_the_pass_reads_the_history_before_it_claims_the_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
     ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    free: dict[str, bool] = {}
+
+    class _WatchingRuntime(_CurveCacheRuntime):
+        def review(self, **kwargs: Any) -> RwkvReviewTransition:
+            free.setdefault("replay", _the_backend_is_free())
+            return super().review(**kwargs)
+
+    backend = RwkvStatefulReviewerBackend(_WatchingRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    original_history = rwkv_scheduler._historical_rwkv_review_inputs
+
+    def reading_the_history(*args: Any, **kwargs: Any) -> Any:
+        free.setdefault("history", _the_backend_is_free())
+        return original_history(*args, **kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        reading_the_history,
+    )
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    # free while the history is read, claimed while the replay runs
+    assert free == {"history": True, "replay": False}
 
 
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic
@@ -20984,7 +21103,6 @@ def test_the_pass_runs_in_the_background_without_a_progress_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     windows: list[object] = []
-    waited: list[object] = []
     ran: list[object] = []
 
     def pass_body(mw: object, **_kwargs: object) -> bool:
@@ -20993,7 +21111,6 @@ def test_the_pass_runs_in_the_background_without_a_progress_window(
         return True
 
     monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", pass_body)
-    monkeypatch.setattr(rwkv_scheduler, "wait_until_idle", waited.append)
     mw = _recording_pass_mw(windows)
 
     rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
@@ -21069,21 +21186,38 @@ def test_the_recording_pass_leaves_the_collection_worker_free(
 
 
 # The pass stops by itself once the profile it started in has closed, so it
-# never walks a collection that is being torn down.
+# never walks a collection that is being torn down. Both of its own hooks
+# say so: the one that reports progress and the one it rests in. The rest
+# used to be a wait for the user with no such check, and a pass that was
+# waiting in it never noticed the profile closing at all.
 def test_the_recording_pass_stops_when_the_profile_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     windows: list[object] = []
     mw = _recording_pass_mw(windows)
-    waited: list[object] = []
-    monkeypatch.setattr(rwkv_scheduler, "wait_until_idle", waited.append)
+    rested: list[float] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "recordings_pass_rest_seconds",
+        lambda _mw, batch: rested.append(batch) or 0.0,
+    )
 
-    def pass_body(_mw: object, *, progress: object = None, **_kwargs: object) -> bool:
+    def pass_body(
+        _mw: object,
+        *,
+        progress: object = None,
+        between_batches: object = None,
+        **_kwargs: object,
+    ) -> bool:
         assert callable(progress)
+        assert callable(between_batches)
         progress("still open", None, None)
+        between_batches()
         mw.col = None  # the profile closes under the pass
         with pytest.raises(rwkv_scheduler._ReviewerBackendWarmupInvalidated):
             progress("closed", None, None)
+        with pytest.raises(rwkv_scheduler._ReviewerBackendWarmupInvalidated):
+            between_batches()
         return False
 
     monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", pass_body)
@@ -21091,4 +21225,4 @@ def test_the_recording_pass_stops_when_the_profile_closes(
     rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
     _join_the_recording_pass()
 
-    assert waited == [mw]
+    assert len(rested) == 1

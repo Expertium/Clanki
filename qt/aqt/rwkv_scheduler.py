@@ -255,6 +255,11 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
 
 _reviewer_backend_state_lock = threading.RLock()
 _reviewer_backend_execution_lock = threading.RLock()
+# set while the recording pass rests between two batches: it still owns the
+# replayed state and has only handed the execution lock back, so a prediction
+# made now would read a half-replayed state (spec
+# sched.rwkv-recordings-automatic)
+_reviewer_backend_resting = threading.Event()
 _reviewer_backend_prediction_local = threading.local()
 _reviewer_backend: RwkvReviewerBackend | None = None
 _reviewer_backend_assignment_generation = 0
@@ -316,12 +321,25 @@ _rwkv_history_reread_started = False
 # true while the recording pass is writing rows, so the graphs can say that
 # their numbers are being computed instead of showing the algorithm as absent
 _rwkv_recordings_pass_running = False
-# the pass starts only after the user has left Clanki alone this long, and it
-# pauses between batches whenever the user comes back (spec
+# the pass starts only after the user has left Clanki alone this long (spec
 # sched.rwkv-recordings-automatic)
 RECORDINGS_PASS_IDLE_SECS = 10.0
 # how often the wait checks whether the user has gone idle
 RECORDINGS_PASS_CHECK_MS = 5000
+# Once started, the pass works in batches of this many reviews and rests
+# between two of them. A batch is about a tenth of a second of work, so the
+# RWKV backend, which the pass holds while a batch runs, is never held for
+# longer than that (spec sched.rwkv-recordings-automatic).
+RECORDINGS_PASS_BATCH_REVIEWS = 1024
+# the user counts as working for this long after a key press, a click or a
+# scroll
+RECORDINGS_PASS_ACTIVE_SECS = 2.0
+# while the user works, the pass rests this many times as long as the batch
+# it has just done, so it takes about a third of the machine
+RECORDINGS_PASS_REST_RATIO = 2.0
+# it always rests a moment, so that a waiting click gets the backend first
+RECORDINGS_PASS_MIN_REST_SECS = 0.005
+RECORDINGS_PASS_MAX_REST_SECS = 1.0
 _rwkv_model_cache_lock = threading.Lock()
 _rwkv_model_cache_signature: tuple[str, str, int, int, int, int, int] | None = None
 _rwkv_model_cache_value: dict[str, object] | None = None
@@ -1318,6 +1336,7 @@ class RwkvStatefulReviewerBackend:
         progress: RwkvWarmUpProgressCallback | None = None,
         snapshot_after_reviews: Sequence[int] = (),
         snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
+        batch_rows: int | None = None,
     ) -> None:
         total = len(reviews)
         snapshot_endpoints = {
@@ -1366,6 +1385,13 @@ class RwkvStatefulReviewerBackend:
                 # the replay saves each review's curve source as it goes
                 # (spec ui.card-info-rwkv-curve)
                 kwargs["curve_source_recorder"] = curve_source_recorder
+            if batch_rows is not None and _callable_accepts_keyword(
+                bulk_parameters,
+                "batch_rows",
+            ):
+                # short batches, so that the caller's pacing between two of
+                # them is fine-grained (spec sched.rwkv-recordings-automatic)
+                kwargs["batch_rows"] = batch_rows
             if bulk_supports_snapshots:
                 kwargs["snapshot_after_reviews"] = sorted(snapshot_endpoints)
                 kwargs["snapshot_recorder"] = snapshot_recorder
@@ -3680,6 +3706,12 @@ def _try_reviewer_backend_prediction_access(
         return
 
     try:
+        if _reviewer_backend_resting.is_set():
+            # the recording pass is between two batches: it owns the
+            # replayed state and has handed the lock back only so that the
+            # user's own work gets in (spec sched.rwkv-recordings-automatic)
+            yield None
+            return
         if not _reviewer_backend_prediction_access_is_current(
             backend,
             expected_backend_assignment_generation=(
@@ -10858,8 +10890,16 @@ def recompute_rwkv_calibration_data(
     mw: object,
     *,
     progress: RwkvStateCacheProgressCallback | None = None,
+    between_batches: Callable[[], None] | None = None,
 ) -> bool:
-    """Rewrite historical RWKV calibration rows without replacing active state."""
+    """Rewrite historical RWKV calibration rows without replacing active state.
+
+    `between_batches` is called between two batches of reviews, and between
+    the parts of the history query. The automatic pass passes the one that
+    rests and hands the backend back, so that the pass makes progress while
+    the user works (spec sched.rwkv-recordings-automatic); a pass the user
+    asked for and watches passes nothing and runs straight through.
+    """
 
     configure_reviewer_backend_from_environment()
     backend = _reviewer_backend
@@ -10899,6 +10939,27 @@ def recompute_rwkv_calibration_data(
     reviewer = SimpleNamespace(mw=mw)
     start = time.monotonic()
     try:
+        # The whole review history, read BEFORE the backend is claimed. This
+        # is collection work of several seconds on a large collection, and it
+        # needs no RWKV state at all; reading it under the claim held the
+        # backend for all of it, and a click that arrived meanwhile waited
+        # the whole time (spec sched.rwkv-recordings-automatic).
+        _report_rwkv_state_cache_progress(
+            progress,
+            "Loading RWKV review history...",
+        )
+        history = _historical_rwkv_review_inputs(
+            reviewer,
+            progress=progress,
+            # the whole-history query in short parts, so that the pass can
+            # rest between them instead of holding the collection for one
+            # query of several seconds
+            between_parts=between_batches,
+        )
+        logger.debug(
+            "RWKV calibration recompute inputs prepared: reviews=%s",
+            len(history.reviews),
+        )
         with _temporary_reviewer_backend_operation(
             reviewer,
             backend,
@@ -10913,32 +10974,6 @@ def recompute_rwkv_calibration_data(
             operation, _original_snapshot = temporary
 
             operation.require_current()
-
-            def current_progress(
-                label: str,
-                value: int | None = None,
-                maximum: int | None = None,
-            ) -> None:
-                operation.require_current()
-                _report_rwkv_state_cache_progress(
-                    progress,
-                    label,
-                    value,
-                    maximum,
-                )
-
-            current_progress(
-                "Loading RWKV review history...",
-            )
-            history = _historical_rwkv_review_inputs(
-                reviewer,
-                progress=current_progress,
-            )
-            operation.require_current()
-            logger.debug(
-                "RWKV calibration recompute inputs prepared: reviews=%s",
-                len(history.reviews),
-            )
             reset_cache_snapshot()
             sample_role_by_review_id, fold_index_by_review_id = (
                 _rwkv_calibration_fold_role_maps(reviewer, history)
@@ -10969,6 +11004,9 @@ def recompute_rwkv_calibration_data(
                     replay_progress=replay_progress,
                     elapsed_seconds=time.monotonic() - started_at,
                 )
+                # one batch done: the user comes first
+                if between_batches is not None:
+                    between_batches()
 
             try:
                 warm_up_kwargs: dict[str, Any] = {
@@ -10977,6 +11015,13 @@ def recompute_rwkv_calibration_data(
                     "curve_recorder": curve_writer.record,
                     "progress": replay_progress,
                 }
+                if between_batches is not None and _callable_accepts_keyword(
+                    _callable_parameters(cast(Callable[..., Any], warm_up)),
+                    "batch_rows",
+                ):
+                    # short batches, so that a click waits for one batch at
+                    # most (spec sched.rwkv-recordings-automatic)
+                    warm_up_kwargs["batch_rows"] = RECORDINGS_PASS_BATCH_REVIEWS
                 if _callable_accepts_keyword(
                     _callable_parameters(cast(Callable[..., Any], warm_up)),
                     "curve_source_recorder",
@@ -11087,9 +11132,9 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     """The recording pass with no progress window, off the main thread, and
     out of the user's way (spec sched.rwkv-recordings-automatic).
 
-    The pass takes tens of minutes on a large collection. It must never hold
-    the window: it runs on a worker thread, and between two batches of
-    reviews it waits while the user is doing something, so a click is never
+    The pass is minutes of work on a large collection. It must never hold
+    the window: it runs on a worker thread, in short batches, and rests
+    between two of them, handing the RWKV backend back, so a click is never
     behind it. The Stats graphs say that their numbers are being computed
     while it runs; nothing else is shown."""
 
@@ -11106,11 +11151,23 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         return getattr(mw, "col", None) is col
 
     def progress(label: str, value: int | None, maximum: int | None) -> None:
-        # between batches: the user comes first, and the pass stops once the
-        # profile has closed under it
+        # the pass stops once the profile has closed under it
         if not collection_open():
             raise _ReviewerBackendWarmupInvalidated
-        wait_until_idle(mw)
+
+    batch_started = [time.monotonic()]
+
+    def between_batches() -> None:
+        """One batch done: rest, with the backend handed back."""
+        if not collection_open():
+            raise _ReviewerBackendWarmupInvalidated
+        rest = recordings_pass_rest_seconds(
+            mw,
+            time.monotonic() - batch_started[0],
+        )
+        with _reviewer_backend_handed_back():
+            time.sleep(rest)
+        batch_started[0] = time.monotonic()
 
     def finish(recorded: bool) -> None:
         from aqt.utils import tooltip
@@ -11128,7 +11185,11 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
 
         recorded = False
         try:
-            recorded = recompute_rwkv_calibration_data(mw, progress=progress)
+            recorded = recompute_rwkv_calibration_data(
+                mw,
+                progress=progress,
+                between_batches=between_batches,
+            )
         except Exception:
             logger.exception("the RWKV recording pass failed")
         finally:
@@ -12032,16 +12093,54 @@ def start_rwkv_maintenance_if_needed(mw: object) -> None:
     _run_when_idle(mw, lambda: recompute_rwkv_calibration_data_in_background(mw))
 
 
-def wait_until_idle(mw: object, sleep: Callable[[float], None] = time.sleep) -> None:
-    """Waits until the user has left Clanki alone for
-    RECORDINGS_PASS_IDLE_SECS. The recording pass calls this between two
-    batches of reviews, so the work pauses while the user works (spec
-    sched.rwkv-recordings-automatic)."""
-    while True:
-        since_input = _seconds_since_input(mw)
-        if since_input is None or since_input >= RECORDINGS_PASS_IDLE_SECS:
-            return
-        sleep(RECORDINGS_PASS_IDLE_SECS - since_input)
+def recordings_pass_rest_seconds(mw: object, batch_seconds: float) -> float:
+    """How long the recording pass rests after a batch that took
+    `batch_seconds` (spec sched.rwkv-recordings-automatic).
+
+    While the user works, the rest is a multiple of the batch, so the pass
+    takes a known, small share of the machine and still finishes in minutes.
+    While the user is away it is only long enough to hand a waiting click
+    the backend first. It is never a wait for the user to stop: a wait that
+    every key press restarted made no progress at all while he studied, and
+    the pass stood unfinished for an hour of a job of two minutes.
+    """
+    since_input = _seconds_since_input(mw)
+    working = since_input is not None and since_input < RECORDINGS_PASS_ACTIVE_SECS
+    rest = max(batch_seconds, 0.0) * RECORDINGS_PASS_REST_RATIO if working else 0.0
+    return min(
+        max(rest, RECORDINGS_PASS_MIN_REST_SECS),
+        RECORDINGS_PASS_MAX_REST_SECS,
+    )
+
+
+@contextmanager
+def _reviewer_backend_handed_back() -> Iterator[None]:
+    """Hands the RWKV backend back for the length of the block.
+
+    The recording pass owns the backend while it replays a batch. Between
+    two batches it hands it back, so that answering a card, showing one or
+    an undo never waits for more than one batch (spec
+    sched.rwkv-recordings-automatic). Its claim stays: everything that takes
+    the lock finds the state pending and leaves it alone, and a prediction
+    finds `_reviewer_backend_resting` and falls back rather than read a
+    half-replayed state.
+    """
+    # set first, then release: a prediction that gets in between the two must
+    # find the flag already set
+    _reviewer_backend_resting.set()
+    try:
+        _reviewer_backend_execution_lock.release()
+    except RuntimeError:
+        # nothing to hand back. The pass rests between the parts of the
+        # history query too, and it has claimed no backend yet then.
+        _reviewer_backend_resting.clear()
+        yield
+        return
+    try:
+        yield
+    finally:
+        _reviewer_backend_execution_lock.acquire()
+        _reviewer_backend_resting.clear()
 
 
 def rwkv_recordings_pass_running() -> bool:

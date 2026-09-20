@@ -330,17 +330,30 @@ that would otherwise need a button, without asking and without a message:
   full recording pass with the running model (the SHA-256 of its weights),
   the running curve-source format and kernel and the current replay
   semantics, or their rows are gone from the cache file beside the
-  collection, it runs that pass at most once per profile open. That pass
-  takes tens of minutes on a large collection, so it never runs at start-up
-  and never in a progress window: it starts only after the user has left
-  Clanki alone for ten seconds and no card is on the review screen, it runs
-  on a thread of its own, and between two batches of reviews it waits again
-  while the user does something. **That thread is its own, never the task
-  manager's collection worker.** There is one collection worker, and
-  answering a card, clicking a deck, the deck list, the Browser and the
-  Stats all go through it; a pass that walked the whole history on it would
-  put every one of them behind it for tens of minutes. The pass stops by
-  itself once the profile it started in has closed. Nothing is shown while it runs, except
+  collection, it runs that pass at most once per profile open. That pass is
+  minutes of work on a large collection, so it never runs at start-up and
+  never in a progress window: it starts only after the user has left Clanki
+  alone for ten seconds and no card is on the review screen, and it runs on
+  a thread of its own. **That thread is its own, never the task manager's
+  collection worker.** There is one collection worker, and answering a card,
+  clicking a deck, the deck list, the Browser and the Stats all go through
+  it; a pass that walked the whole history on it would put every one of them
+  behind it for minutes.
+
+  It reads the review history before it claims the RWKV backend, in parts,
+  and then replays in short batches of about a thousand reviews.
+  **Between two batches it rests and hands the
+  RWKV backend back**, so the user's own work — answering a card, showing
+  one, an undo, Grade Now — waits for one batch at most and never for the
+  pass. While the user works, the rest is a multiple of the batch just
+  done, so the pass takes a known, small share of the machine and still
+  finishes in minutes; while the user is away, it is only long enough to
+  hand a waiting click the backend first. **It is never a wait for the user
+  to stop.** While it rests it still owns the state it has half replayed, so
+  a prediction asked for in that moment is refused and falls back, the same
+  as during a batch. The pass stops by itself once the profile it started in
+  has closed, checked both between two batches and at every progress
+  report. Nothing is shown while it runs, except
   that the model-quality graphs say their numbers are being computed
   instead of saying that nothing recorded them; a finished pass shows one
   short message. A finished pass remembers what it recorded
@@ -365,10 +378,23 @@ not recorded its predictions" on AUC-ROC, and a sync warned that "synced
 reviews are older than 8 days" and asked him to press "Read Review History
 Again".
 
+The batches and the short rest are the same rule seen from the other side.
+A pass that waited for ten seconds of quiet between two batches made no
+progress at all while he studied, because every key press restarted the
+wait: measured on his collection, 0 of 656,402 reviews in five minutes of
+use, and a job of two minutes stood unfinished for an hour. Because
+it never finished, RWKV-Curve's per-review rows stayed empty (0 rows, next
+to 966,964 for FSRS-7 and 1,350,982 for RWKV-Instant) and RWKV-Curve was
+missing from the AUC-ROC graph and greyed out in the Calibration menu.
+Holding the backend for the whole pass cost the same: a click waited for it
+for longer than 30 s, the pass's whole length.
+
 **Pinned by:** `test_missing_or_stale_recordings_start_the_recording_pass_by_itself`,
 `test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
 `test_the_recording_pass_waits_until_the_user_leaves_clanki_alone`,
-`test_the_pass_pauses_between_batches_while_the_user_works`,
+`test_the_pass_rests_a_bounded_time_between_batches`,
+`test_the_pass_hands_the_backend_back_while_it_rests`,
+`test_the_pass_reads_the_history_before_it_claims_the_backend`,
 `test_the_pass_runs_in_the_background_without_a_progress_window`,
 `test_the_recording_pass_leaves_the_collection_worker_free`,
 `test_the_recording_pass_stops_when_the_profile_closes`,
