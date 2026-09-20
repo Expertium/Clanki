@@ -1081,6 +1081,12 @@ The deck-options buttons are "Read Review History Again" and "Prepare Stats
 Graphs". Before the first review is done the text shows the counts without a
 time. All the text is translatable.
 
+The two waits that replace a screen's own content follow the same rule and
+name no algorithm: the reviewer shows "Getting this card ready..." instead
+of the answer buttons while the card's intervals are being calculated, and
+the deck screen shows "Choosing your reviews..." while the deck's cards are
+being scored.
+
 **Why:** Andrew, 2026-09-19, about "Building RWKV state cache: 425,984/656,459
 reviews | elapsed: 54s | remaining: 29s": "we need more user-friendly, less
 jargon-y message for this" (asked before as well).
@@ -1157,6 +1163,28 @@ them.
 
 **Pinned by:** `test_the_click_path_operations_open_no_waiting_window`
 (`qt/tests/test_operations_no_waiting_window.py`).
+
+## ui.tooltip-style
+
+Given a short message over the current window (a finished sync, a
+reschedule, a copied value), Clanki draws one frameless widget: grey-blue
+(#e2e5ec) with black text in the light theme, obsidian black (#0a0a0a) with
+white text in the dark theme, rounded corners, a soft shadow, and no web
+view. A click hides it, and it closes by itself
+after its period. It is the same widget in both themes; the yellow panel
+with a two-pixel frame is gone.
+
+**Why:** Andrew, 2026-09-20: "sometimes Anki displays stuff in this window,
+like for syncing or rescheduling. Can you make it look less 2004 and more
+modern? As long as it doesn't bloat RAM and slow everything down"; the two
+colour pairs are his ("grey-blue-ish with black text", "obsidian black
+#0A0A0A with white text"). A QLabel
+with a shadow costs no process and no page load, so a message stays as cheap
+as it was.
+
+**Pinned by:** `test_a_tooltip_is_a_rounded_toast_in_the_themes_colours`,
+`test_a_tooltip_closes_on_a_click_and_on_close`
+(`qt/tests/test_tooltip.py`).
 
 ## ui.stats-model-metrics
 

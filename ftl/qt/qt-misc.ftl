@@ -77,8 +77,9 @@ qt-misc-layout-horizontal-enabled = Horizontal layout enabled
 qt-misc-rwkv-filtered-deck-preparation-failed = { $algorithm } retrievability scores could not be prepared, so the filtered deck was not rebuilt.
 # The same message in Simple mode, which never says "retrievability".
 qt-misc-rwkv-filtered-deck-preparation-failed-simple = { $algorithm } probability of recall scores could not be prepared, so the filtered deck was not rebuilt.
-# Shown instead of the answer buttons until RWKV-Curve has calculated the card's intervals.
-qt-misc-rwkv-curve-intervals-pending = Waiting for RWKV-Curve…
+# Shown instead of the answer buttons until RWKV-Curve has calculated the
+# card's intervals. Plain words, no algorithm name (spec ui.plain-progress-text).
+qt-misc-rwkv-curve-intervals-pending = Getting this card ready…
 # RWKV cannot run because its model file is missing or does not load.
 qt-misc-rwkv-model-not-found = RWKV model not found
 # Shown instead of the answer buttons when RWKV-Curve calculated the card but
@@ -100,7 +101,8 @@ qt-misc-rwkv-state-upgrade-label = Clanki is reorganising its saved review data 
 qt-misc-rwkv-startup-title = Starting
 qt-misc-rwkv-startup-label = Starting…
 # RWKV-Instant has not scored the deck yet, so its reviews are not shown.
-qt-misc-rwkv-instant-scores-pending = Waiting for RWKV-Instant…
+# Plain words, no algorithm name (spec ui.plain-progress-text).
+qt-misc-rwkv-instant-scores-pending = Choosing your reviews…
 # Grade Now left these cards unanswered: RWKV-Curve gave no intervals for them.
 qt-misc-rwkv-curve-grade-now-skipped =
     { $cards ->

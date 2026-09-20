@@ -20391,15 +20391,29 @@ def _recordings_mw(
     passes: list[object] = []
     monkeypatch.setattr(
         rwkv_scheduler,
-        "recompute_rwkv_calibration_data_with_progress",
+        "recompute_rwkv_calibration_data_in_background",
         passes.append,
     )
+    # the idle wait's timer, fired by the test with mw.fire_timer()
+    timers: list[Callable[[], None]] = []
+
+    def timer(
+        ms: int, fn: Callable[[], None], repeat: bool, **kwargs: object
+    ) -> object:
+        timers.append(fn)
+        return SimpleNamespace()
+
     mw = SimpleNamespace(
         col=SimpleNamespace(
             db=SimpleNamespace(scalar=lambda sql, *args: int(rows_present))
         ),
         pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
         state="deckBrowser",
+        progress=SimpleNamespace(timer=timer),
+        # left alone long ago: the pass may start
+        app=SimpleNamespace(last_input_at=time.monotonic() - 600),
+        fire_timer=lambda: timers.pop()(),
+        timers=timers,
     )
     return mw, passes
 
@@ -20419,10 +20433,16 @@ def test_missing_or_stale_recordings_start_the_recording_pass_by_itself(
         rwkv_scheduler._write_rwkv_recordings_marker(mw, marker)
 
     rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    expected = [] if case == "current" else [mw]
+    # never at start-up: the pass waits for the user to leave Clanki alone
+    assert passes == []
+    expected: list[object] = [] if case == "current" else [mw]
+    if mw.timers:
+        mw.fire_timer()
     assert passes == expected
     # once per profile open, however often the state becomes ready
     rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    if mw.timers:
+        mw.fire_timer()
     assert passes == expected
 
 
@@ -20430,19 +20450,17 @@ def test_missing_or_stale_recordings_start_the_recording_pass_by_itself(
 def test_the_recording_pass_waits_until_no_card_is_being_reviewed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from aqt import gui_hooks
-
-    mw, passes = _recordings_mw(monkeypatch, tmp_path)
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
     mw.state = "review"
-    hooks_before = gui_hooks.state_did_change.count()
 
     rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    mw.fire_timer()
     assert passes == []
-    gui_hooks.state_did_change("review", "overview")
-    assert passes == []
-    gui_hooks.state_did_change("overview", "review")
+
+    # the card is answered and the review screen closes
+    mw.state = "deckBrowser"
+    mw.fire_timer()
     assert passes == [mw]
-    assert gui_hooks.state_did_change.count() == hooks_before
 
 
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic
@@ -20456,6 +20474,7 @@ def test_nothing_starts_while_the_main_window_is_disabled(
     assert passes == []
     mw.isEnabled = lambda: True
     rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    mw.fire_timer()
     assert passes == [mw]
 
 
@@ -20715,3 +20734,84 @@ def test_filtered_deck_prepares_rwkv_scores_for_relative_overdueness() -> None:
         FilteredDeckConfig.SearchTerm.RELATIVE_OVERDUENESS
         in rwkv_scheduler._FILTERED_DECK_RETRIEVABILITY_ORDERS
     )
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_the_recording_pass_waits_until_the_user_leaves_clanki_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
+    # the user is typing: start-up is never the moment for a pass of minutes
+    mw.app.last_input_at = time.monotonic()
+    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    mw.fire_timer()
+    assert passes == []
+    # a card on the review screen keeps it waiting too
+    mw.app.last_input_at = time.monotonic() - 600
+    mw.state = "review"
+    mw.fire_timer()
+    assert passes == []
+    # left alone, outside the reviewer: now it starts
+    mw.state = "deckBrowser"
+    mw.fire_timer()
+    assert passes == [mw]
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_the_pass_pauses_between_batches_while_the_user_works() -> None:
+    slept: list[float] = []
+    inputs = [0.0, 3.0, rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS]
+    mw = SimpleNamespace(app=SimpleNamespace(last_input_at=0.0))
+
+    def since_input(_mw: object) -> float:
+        return inputs.pop(0)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rwkv_scheduler, "_seconds_since_input", since_input)
+        rwkv_scheduler.wait_until_idle(mw, sleep=slept.append)
+    # it waited out the two active moments and returned on the idle one
+    assert slept == [
+        rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS,
+        rwkv_scheduler.RECORDINGS_PASS_IDLE_SECS - 3.0,
+    ]
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def test_the_pass_runs_in_the_background_without_a_progress_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs: list[tuple[Callable[[], bool], Callable[[Future[bool]], None]]] = []
+    windows: list[object] = []
+    waited: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler, "recompute_rwkv_calibration_data", lambda mw, **kw: True
+    )
+    monkeypatch.setattr(rwkv_scheduler, "wait_until_idle", waited.append)
+    mw = SimpleNamespace(
+        taskman=SimpleNamespace(
+            run_in_background=lambda work, done: jobs.append((work, done)),
+            with_progress=lambda *a, **k: windows.append(a),
+        ),
+        progress=SimpleNamespace(timer=lambda *a, **k: None),
+    )
+
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    assert windows == [], "the pass must not open a progress window"
+    assert len(jobs) == 1 and rwkv_scheduler.rwkv_recordings_pass_running() is True
+
+    work, done = jobs[0]
+    assert work() is True
+    future: Future[bool] = Future()
+    future.set_result(True)
+    with pytest.MonkeyPatch.context() as patch:
+        shown: list[str] = []
+        patch.setattr("aqt.utils.tooltip", lambda msg, **kw: shown.append(msg))
+        # the translations need a collection, which this test has not
+        patch.setattr(
+            rwkv_scheduler,
+            "_tr",
+            lambda: SimpleNamespace(qt_misc_stats_data_ready=lambda: "ready"),
+        )
+        done(future)
+    assert shown == ["ready"]
+    assert rwkv_scheduler.rwkv_recordings_pass_running() is False

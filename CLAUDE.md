@@ -168,6 +168,19 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
    history again or prepare data is a design bug. Manual buttons may stay
    in Advanced mode as a fallback only.
 
+10. **Start-up is near-instant** (Andrew, 2026-09-20). No heavy work before
+    the main window is interactive and no heavy work in front of the user's
+    first clicks. Work that must happen runs later: only while the user is
+    idle, in batches, off the main thread, pausing when the user comes back,
+    and cancellable. Work a screen needs is loaded when that screen needs
+    it, not "just in case" at start-up. This does not cancel item 9: the
+    passes still run by themselves, only never at start-up and never in the
+    user's way. Before adding anything to `profile_did_open`, ask what the
+    user sees in the first seconds.
+
+    Andrew's words: "I think we have to move away from the 'do a lot of
+    stuff on startup' approach. Starting Clanki should be near-instantaneous."
+
 11. **No waiting windows** (Andrew, 2026-09-20). Clanki shows no progress
     or waiting window ("Processing...", "Getting review data ready...",
     "Preparing...", "Starting...") at start-up, and none when the user

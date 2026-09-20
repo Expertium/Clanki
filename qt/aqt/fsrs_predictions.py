@@ -160,7 +160,7 @@ def _record_finished(mw: Any, col: Any) -> None:
         pass
 
 
-def _seconds_since_input(mw: Any) -> float | None:
+def seconds_since_input(mw: Any) -> float | None:
     """How long ago the user last pressed a key, clicked or scrolled in
     Clanki; None where nothing tracks it."""
     last_input_at = getattr(getattr(mw, "app", None), "last_input_at", None)
@@ -175,7 +175,7 @@ def _wait_for_the_user(mw: Any, col: Any) -> bool:
     while True:
         if mw.col is not col:
             return False
-        since_input = _seconds_since_input(mw)
+        since_input = seconds_since_input(mw)
         if since_input is None or since_input >= USER_IDLE_SECS:
             return True
         time.sleep(USER_IDLE_SECS - since_input)
