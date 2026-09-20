@@ -7405,7 +7405,9 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_historical_rwkv_review_rows",
-        lambda reviewer, *, after_review_id=None, deck_id=None: rows,
+        lambda reviewer, *, after_review_id=None, deck_id=None, between_parts=None: (
+            rows
+        ),
     )
     monkeypatch.setattr(
         rwkv_scheduler,

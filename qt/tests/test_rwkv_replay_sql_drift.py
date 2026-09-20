@@ -138,3 +138,72 @@ def test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint(
         assert _fingerprint_accepts_the_python_history(reviewer) is False
     finally:
         col.close()
+
+
+def _add_card_with_history(
+    col: Collection, card_id: int, rows: list[tuple[int, int, int]]
+) -> None:
+    col.db.execute(
+        "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, "
+        "factor, reps, lapses, left, odue, odid, flags, data) "
+        "values (?, 1, ?, 0, 0, -1, 2, 2, 1, 20, 2500, 0, 0, 0, 0, 0, 0, '')",
+        card_id,
+        int(DeckId(1)),
+    )
+    day = 86_400 * 1000
+    for offset, (ease, kind, factor) in enumerate(rows):
+        # interleaved review times across cards, so a merge must really merge
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, "
+            "type) values (?, ?, -1, ?, 10, 5, ?, 1000, ?)",
+            1_600_000_000_000 + offset * day + card_id % 997,
+            card_id,
+            ease,
+            factor,
+            kind,
+        )
+
+
+def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
+    tmp_path: Path,
+) -> None:
+    col = Collection(str(tmp_path / "rwkv-replay-parts.anki2"))
+    try:
+        learning = (3, 0, 2500)
+        shapes = [
+            [learning, RATED_REVIEW, RATED_RELEARNING, RATED_REVIEW],
+            [RATED_REVIEW, RATED_REVIEW, FORGET, RATED_REVIEW, RATED_RELEARNING],
+            [learning, learning, RATED_REVIEW, FORGET, learning, RATED_REVIEW],
+            [RATED_REVIEW, RATED_RELEARNING],
+        ]
+        for n in range(25):
+            _add_card_with_history(col, 1_700_000_000_000 + n * 7_919, shapes[n % 4])
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        whole = rwkv_scheduler._historical_rwkv_review_rows(reviewer)
+        calls = []
+        parts = rwkv_scheduler._historical_rwkv_review_rows(
+            reviewer, between_parts=lambda: calls.append(1)
+        )
+        assert len(whole) > 50
+        # the same rows, in the same order, value for value
+        assert [tuple(row) for row in parts] == [tuple(row) for row in whole]
+        ranges = rwkv_scheduler._card_id_ranges(col, rwkv_scheduler.HISTORY_QUERY_PARTS)
+        assert len(calls) == len(ranges) > 1
+
+        # a caller that raises stops the query before its next part
+        def stop() -> None:
+            if calls:
+                raise InterruptedError()
+            calls.append(1)
+
+        calls.clear()
+        try:
+            rwkv_scheduler._historical_rwkv_review_rows(reviewer, between_parts=stop)
+        except InterruptedError:
+            stopped = True
+        else:
+            stopped = False
+        assert stopped and len(calls) == 1
+    finally:
+        col.close()

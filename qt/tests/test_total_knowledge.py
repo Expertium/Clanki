@@ -331,7 +331,7 @@ def test_a_closed_page_stops_the_job_while_the_history_is_built(
     job = total_knowledge._Job(job_id=1, key=(), curve=False)
     reached_rows = []
 
-    def history(reviewer: Any, *, progress: Any) -> Any:
+    def history(reviewer: Any, *, progress: Any, between_parts: Any) -> Any:
         progress("Preparing RWKV review inputs", 0, 2000)
         job.cancel_event.set()  # the page closes here
         progress("Preparing RWKV review inputs", 1000, 2000)
@@ -359,3 +359,27 @@ def test_a_page_closed_before_the_job_starts_builds_no_history(
     with pytest.raises(InterruptedError):
         total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
     assert built == []
+
+
+def test_a_closed_page_stops_the_history_query_between_its_parts(
+    rwkv_history: FakeRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The history starts with one 3-4 s query that the collection cannot
+    interrupt. It runs in card-id ranges, and the job stops it between two
+    of them once the page is closed, so the main window waits for one range
+    at most."""
+    job = total_knowledge._Job(job_id=1, key=(), curve=False)
+    parts_run = []
+
+    def history(reviewer: Any, *, progress: Any, between_parts: Any) -> Any:
+        between_parts()
+        parts_run.append(1)
+        job.cancel_event.set()  # the page closes during the first range
+        between_parts()
+        parts_run.append(2)  # never reached
+        raise AssertionError("the query went on after the page closed")
+
+    monkeypatch.setattr(aqt.rwkv_scheduler, "_historical_rwkv_review_inputs", history)
+    with pytest.raises(InterruptedError):
+        total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
+    assert parts_run == [1]

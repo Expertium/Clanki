@@ -8,6 +8,7 @@ import bisect
 import enum
 import gzip
 import hashlib
+import heapq
 import inspect
 import json
 import logging
@@ -17539,7 +17540,7 @@ def _rwkv_historical_review_fingerprint(
     )
 
 
-def _historical_rwkv_review_inputs(
+def _historical_rwkv_review_inputs(  # noqa: PLR0913
     reviewer: object,
     *,
     after_review_id: int | None = None,
@@ -17553,6 +17554,7 @@ def _historical_rwkv_review_inputs(
     first_review_elapsed_source: RwkvFirstReviewElapsedSource = RwkvFirstReviewElapsedSource.DECK_CONFIG,
     ignored_review_ids: AbstractSet[int] = frozenset(),
     prepare_recovery_checkpoint: bool = False,
+    between_parts: Callable[[], None] | None = None,
 ) -> RwkvHistoricalReviewInputs:
     start = time.monotonic()
     requested_deck_id = deck_id
@@ -17635,6 +17637,7 @@ def _historical_rwkv_review_inputs(
         _historical_rwkv_review_rows(
             reviewer,
             deck_id=deck_id,
+            between_parts=between_parts,
         )
     )
     active_ignored_review_ids = tuple(
@@ -18159,13 +18162,76 @@ def _historical_rwkv_review_rows(
     deck_id: int | None = None,
     card_ids: Sequence[int] | None = None,
     limit: int | None = None,
+    between_parts: Callable[[], None] | None = None,
 ) -> list[Sequence[object]]:
+    """`between_parts`, when given, runs the whole-history query in
+    HISTORY_QUERY_PARTS card-id ranges and is called between them, so that a
+    caller can stop it (by raising) after one part instead of the whole
+    3-4 s query. Every value of a row depends only on its own card's rows,
+    and review ids are unique, so the parts merged in (id, cid) order are
+    exactly the rows of the single query."""
     col = _collection(reviewer)
     db = getattr(col, "db", None)
     all_rows = getattr(db, "all", None)
     if not callable(all_rows):
         return []
+    if between_parts is not None and card_ids is None and limit is None:
+        parts = []
+        for low, high in _card_id_ranges(col, HISTORY_QUERY_PARTS):
+            between_parts()
+            parts.append(
+                _historical_rwkv_review_rows_query(
+                    reviewer,
+                    all_rows,
+                    after_review_id,
+                    deck_id,
+                    None,
+                    None,
+                    (low, high),
+                )
+            )
+        return list(heapq.merge(*parts, key=lambda row: (row[0], row[1])))
+    return _historical_rwkv_review_rows_query(
+        reviewer, all_rows, after_review_id, deck_id, card_ids, limit, None
+    )
 
+
+# how many card-id ranges a stoppable whole-history query runs in
+HISTORY_QUERY_PARTS = 16
+
+
+def _card_id_ranges(col: Any, parts: int) -> list[tuple[int, int]]:
+    """Up to `parts` consecutive, inclusive card-id ranges that together cover
+    every card with a review, with about the same number of reviews each (the
+    query's time follows the reviews, not the cards)."""
+    counts = col.db.all("select cid, count() from revlog group by cid order by cid")
+    if not counts:
+        return []
+    per_part = -(-sum(count for _, count in counts) // parts)
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    filled = 0
+    for cid, count in counts:
+        if start is None:
+            start = cid
+        filled += count
+        if filled >= per_part:
+            ranges.append((start, cid))
+            start, filled = None, 0
+    if start is not None:
+        ranges.append((start, counts[-1][0]))
+    return ranges
+
+
+def _historical_rwkv_review_rows_query(
+    reviewer: object,
+    all_rows: Callable[..., list[Sequence[object]]],
+    after_review_id: int | None,
+    deck_id: int | None,
+    card_ids: Sequence[int] | None,
+    limit: int | None,
+    card_range: tuple[int, int] | None,
+) -> list[Sequence[object]]:
     after_clause = "and e.id > ?" if after_review_id is not None else ""
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
@@ -18179,8 +18245,16 @@ def _historical_rwkv_review_rows(
         if not valid_card_ids:
             return []
         card_clause = f"and r.cid in {ids2str(valid_card_ids)}"
+    elif card_range is not None:
+        card_clause = f"and r.cid between {int(card_range[0])} and {int(card_range[1])}"
     else:
         card_clause = ""
+    # a card range narrows the Forget scan to the same cards (it is per card)
+    forget_range = (
+        f" and cid between {int(card_range[0])} and {int(card_range[1])}"
+        if card_range is not None
+        else ""
+    )
     limit_clause = f"limit {max(0, limit)}" if limit is not None else ""
     # The start-row rule has ONE implementation: this SQL, which restates the
     # backend's `rwkv_historical_review_rows` (`rslib/src/storage/revlog/mod.rs`)
@@ -18214,7 +18288,7 @@ with eligible as (
 ), last_forgets as (
   select cid, max(id) as forget_id
   from revlog
-  where type = 4 and factor = 0
+  where type = 4 and factor = 0{forget_range}
   group by cid
 ), fallback_starts as (
   select e.cid as cid, min(e.id) as start_id
