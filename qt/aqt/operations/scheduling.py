@@ -456,14 +456,18 @@ def _prepare_filtered_deck_retrievability_scores(
 
 
 def _filtered_deck_preparation_failed_message(col: Collection) -> str:
-    """Simple mode never says "retrievability" (spec ui.simple-recall-wording);
-    both name the algorithm (spec ui.rwkv-algorithm-names)."""
+    """The plain wording never says "retrievability" (spec
+    ui.simple-recall-wording); both name the algorithm (spec
+    ui.rwkv-algorithm-names)."""
     from aqt import rwkv_scheduler
+    from aqt.ui_split import plain_recall_wording
 
     algorithm = rwkv_scheduler.rwkv_algorithm_name(col)
-    if col.get_config_bool(Config.Bool.ADVANCED_UI):
-        return tr.qt_misc_rwkv_filtered_deck_preparation_failed(algorithm=algorithm)
-    return tr.qt_misc_rwkv_filtered_deck_preparation_failed_simple(algorithm=algorithm)
+    if plain_recall_wording(col):
+        return tr.qt_misc_rwkv_filtered_deck_preparation_failed_plain(
+            algorithm=algorithm
+        )
+    return tr.qt_misc_rwkv_filtered_deck_preparation_failed(algorithm=algorithm)
 
 
 def unbury_deck(

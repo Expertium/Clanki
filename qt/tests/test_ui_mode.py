@@ -273,11 +273,12 @@ def test_filtered_deck_failure_avoids_retrievability_in_simple_mode() -> None:
     """Pins spec/ui.md#ui.simple-recall-wording."""
     from aqt.operations.scheduling import _filtered_deck_preparation_failed_message
 
-    def col(advanced: bool) -> Any:
+    def col(advanced: bool, wording: str = "") -> Any:
         return cast(
             Any,
             SimpleNamespace(
-                get_config_bool=lambda key: advanced and key == Config.Bool.ADVANCED_UI
+                get_config_bool=lambda key: advanced and key == Config.Bool.ADVANCED_UI,
+                get_config_string=lambda key: wording,
             ),
         )
 
@@ -287,6 +288,16 @@ def test_filtered_deck_failure_avoids_retrievability_in_simple_mode() -> None:
 
     advanced = _filtered_deck_preparation_failed_message(col(True))
     assert "retrievability" in advanced.lower()
+
+    # the setting overrides the mode, in both directions
+    for advanced in (False, True):
+        technical = _filtered_deck_preparation_failed_message(
+            col(advanced, "technical")
+        )
+        assert "retrievability" in technical.lower()
+        plain = _filtered_deck_preparation_failed_message(col(advanced, "plain"))
+        assert "retrievability" not in plain.lower()
+        assert "probability of recall" in plain.lower()
 
 
 TOOLS_ADVANCED_ONLY = [

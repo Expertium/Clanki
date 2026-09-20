@@ -79,6 +79,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let tableData: TableDatum[] = [];
     let simulating: boolean = false;
     const fsrs = state.fsrs;
+    // spec ui.simple-recall-wording
+    const plainRecall = state.plainRecall;
     const bounds = defaultGraphBounds();
 
     let svg: HTMLElement | SVGElement | null = null;
@@ -832,7 +834,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         <EnumSelectorRow
                             bind:value={simulateFsrsRequest.reviewOrder}
                             defaultValue={$config.reviewOrder}
-                            choices={reviewOrderChoices($fsrs)}
+                            choices={reviewOrderChoices($fsrs, false, $plainRecall)}
                         >
                             <SettingTitle
                                 on:click={() => openHelpModal("reviewSortOrder")}

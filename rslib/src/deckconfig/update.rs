@@ -222,6 +222,7 @@ impl Collection {
             scheduling_algorithm: SchedulingAlgorithmProto::from(
                 self.effective_scheduling_algorithm()?,
             ) as i32,
+            recall_wording: self.recall_wording() as i32,
         })
     }
 

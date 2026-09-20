@@ -21,6 +21,7 @@ import anki.lang
 # several aqt modules read translated strings at import time
 anki.lang.set_lang("en")
 
+from anki.config import Config  # noqa: E402
 from aqt import ui_split  # noqa: E402
 
 # Today's split, restated from the spec entries that set it
@@ -264,11 +265,25 @@ TODAY: dict[str, bool] = {
 class ConfigCol:
     """A collection's config, enough for the split."""
 
-    def __init__(self, advanced: bool = False, stored: Any = None) -> None:
+    def __init__(
+        self,
+        advanced: bool = False,
+        stored: Any = None,
+        recall_wording: str | None = None,
+    ) -> None:
         self.advanced = advanced
         self.conf: dict[str, Any] = {}
+        self.strings: dict[Any, str] = {}
         if stored is not None:
             self.conf[ui_split.CONFIG_KEY] = stored
+        if recall_wording is not None:
+            self.strings[Config.String.RECALL_WORDING] = recall_wording
+
+    def get_config_string(self, key: Any) -> str:
+        return self.strings.get(key, "")
+
+    def set_config_string(self, key: Any, value: str) -> None:
+        self.strings[key] = value
 
     def get_config(self, key: str, default: Any = None) -> Any:
         return copy.deepcopy(self.conf.get(key, default))
@@ -770,9 +785,114 @@ def test_tab_reset_restores_the_defaults(
 
     monkeypatch.setattr(aqt.ui_split_prefs, "askUser", lambda *a, **k: True)
     tab, mw = _tab(qapp, {"reviewer.flag": True})
+    mw.col.strings[Config.String.RECALL_WORDING] = ui_split.RECALL_PLAIN
     tab.on_reset()
     assert ui_split.CONFIG_KEY not in mw.col.conf
+    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_BY_MODE
+    assert tab.recall_wording.currentData() == ui_split.RECALL_BY_MODE
     assert (
         _leaf(tab, "reviewer.flag").checkState(CHECK_COLUMN) == Qt.CheckState.Unchecked
     )
     mw.redraw_for_ui_split.assert_called_once()
+
+
+# The recall wording (spec ui.simple-recall-wording)
+######################################################################
+
+
+def test_the_wording_setting_and_the_mode_together_choose_the_words() -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording."""
+    cases = [
+        (ui_split.RECALL_BY_MODE, False, True),
+        (ui_split.RECALL_BY_MODE, True, False),
+        (ui_split.RECALL_TECHNICAL, False, False),
+        (ui_split.RECALL_TECHNICAL, True, False),
+        (ui_split.RECALL_PLAIN, False, True),
+        (ui_split.RECALL_PLAIN, True, True),
+    ]
+    for wording, advanced, plain in cases:
+        col = ConfigCol(advanced=advanced, recall_wording=wording)
+        assert ui_split.plain_recall_wording(cast(Any, col)) is plain, (
+            wording,
+            advanced,
+        )
+
+
+def test_an_unset_or_unknown_wording_reads_as_by_mode() -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording."""
+    assert ui_split.recall_wording(ConfigCol()) == ui_split.RECALL_BY_MODE
+    assert (
+        ui_split.recall_wording(ConfigCol(recall_wording="nonsense"))
+        == ui_split.RECALL_BY_MODE
+    )
+    assert ui_split.recall_wording(None) == ui_split.RECALL_BY_MODE
+
+    col = ConfigCol()
+    ui_split.set_recall_wording(col, ui_split.RECALL_PLAIN)
+    assert col.strings[Config.String.RECALL_WORDING] == ui_split.RECALL_PLAIN
+    assert ui_split.recall_wording(col) == ui_split.RECALL_PLAIN
+    with pytest.raises(ValueError):
+        ui_split.set_recall_wording(col, "nonsense")
+
+
+def test_the_item_labels_follow_the_wording_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording: the Browser's Retrievability
+    column and the Stats graph are named by the setting, in both modes."""
+    import aqt
+    from aqt.utils import tr
+
+    def labels(wording: str, advanced: bool) -> tuple[str, str]:
+        col = ConfigCol(advanced=advanced, recall_wording=wording)
+        monkeypatch.setattr(
+            aqt, "mw", SimpleNamespace(col=col, advanced_ui=lambda: advanced), False
+        )
+        return (
+            ui_split.ITEMS_BY_ID["browser.column.retrievability"].label(),
+            ui_split.ITEMS_BY_ID["stats.retrievability"].label(),
+        )
+
+    technical = (
+        tr.card_stats_fsrs_retrievability(),
+        tr.statistics_card_retrievability_title(),
+    )
+    plain = (
+        tr.card_stats_fsrs_retrievability_plain(),
+        tr.statistics_card_retrievability_title_plain(),
+    )
+    assert labels(ui_split.RECALL_BY_MODE, False) == plain
+    assert labels(ui_split.RECALL_BY_MODE, True) == technical
+    assert labels(ui_split.RECALL_TECHNICAL, False) == technical
+    assert labels(ui_split.RECALL_TECHNICAL, True) == technical
+    assert labels(ui_split.RECALL_PLAIN, False) == plain
+    assert labels(ui_split.RECALL_PLAIN, True) == plain
+
+
+def test_the_tab_offers_three_choices_and_stores_one_at_once(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording: the one item of the tab that
+    is not a "Show in Simple mode" checkbox."""
+    import aqt
+
+    tab, mw = _tab(qapp)
+    monkeypatch.setattr(aqt, "mw", mw, False)
+    combo = tab.recall_wording
+    assert [combo.itemData(i) for i in range(combo.count())] == list(
+        ui_split.RECALL_WORDING_CHOICES
+    )
+    assert combo.currentData() == ui_split.RECALL_BY_MODE
+
+    combo.setCurrentIndex(combo.findData(ui_split.RECALL_TECHNICAL))
+    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_TECHNICAL
+    mw.redraw_for_ui_split.assert_called_once()
+    # the tab's own item names follow at once
+    from aqt.utils import tr
+
+    column = _leaf(tab, "browser.column.retrievability")
+    assert column.text(0) == tr.card_stats_fsrs_retrievability()
+
+    combo.setCurrentIndex(combo.findData(ui_split.RECALL_PLAIN))
+    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_PLAIN
+    assert column.text(0) == tr.card_stats_fsrs_retrievability_plain()

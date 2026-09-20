@@ -4,7 +4,6 @@ use anki_proto::decks::deck::kind_container::Kind as DeckKind;
 use anki_proto::generic;
 
 use crate::collection::Collection;
-use crate::config::BoolKey;
 use crate::decks::filtered::search_order_labels;
 use crate::decks::Deck;
 use crate::decks::DeckId;
@@ -218,8 +217,8 @@ impl crate::services::DecksService for Collection {
     }
 
     fn filtered_deck_order_labels(&mut self) -> error::Result<generic::StringList> {
-        let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
-        Ok(search_order_labels(&self.tr, advanced_ui).into())
+        let plain_recall = self.plain_recall_wording();
+        Ok(search_order_labels(&self.tr, plain_recall).into())
     }
 
     fn set_deck_collapsed(
@@ -335,6 +334,7 @@ mod tests {
     use strum::IntoEnumIterator;
 
     use super::*;
+    use crate::config::BoolKey;
     use crate::decks::FilteredDeck;
     use crate::decks::FilteredSearchOrder;
     use crate::decks::FilteredSearchTerm;
@@ -1046,6 +1046,31 @@ mod tests {
         assert!(advanced
             .vals
             .contains(&"Descending retrievability".to_string()));
+    }
+
+    /// spec/ui.md, `ui.simple-recall-wording`.
+    #[test]
+    fn the_wording_setting_names_the_filtered_deck_orders_in_both_modes() {
+        use crate::config::StringKey;
+
+        for (setting, expected) in [
+            ("technical", "Ascending retrievability"),
+            ("plain", "Ascending probability of recall"),
+        ] {
+            let mut col = Collection::new();
+            col.set_config_string(StringKey::RecallWording, setting, false)
+                .unwrap();
+            for advanced in [false, true] {
+                col.set_config_bool(BoolKey::AdvancedUi, advanced, false)
+                    .unwrap();
+                let labels = DecksService::filtered_deck_order_labels(&mut col).unwrap();
+                assert!(
+                    labels.vals.contains(&expected.to_string()),
+                    "{setting}, advanced={advanced}: got {:?}",
+                    labels.vals
+                );
+            }
+        }
     }
 
     #[test]

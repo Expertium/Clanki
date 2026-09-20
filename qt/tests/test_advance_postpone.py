@@ -28,10 +28,19 @@ from anki.scheduler.base import (  # noqa: E402
 from aqt.browser.browser import Browser  # noqa: E402
 
 
-def _mw(*, advanced: bool = True, algorithm: str | None = "fsrs7") -> Any:
+def _mw(
+    *,
+    advanced: bool = True,
+    algorithm: str | None = "fsrs7",
+    recall_wording: str = "",
+) -> Any:
     return SimpleNamespace(
         advanced_ui=lambda: advanced,
-        col=SimpleNamespace(get_config=lambda key, default=None: algorithm),
+        col=SimpleNamespace(
+            get_config=lambda key, default=None: algorithm,
+            get_config_bool=lambda key: advanced,
+            get_config_string=lambda key: recall_wording,
+        ),
     )
 
 
@@ -241,7 +250,9 @@ def test_the_move_is_one_collection_op_with_the_chosen_cards(monkeypatch: Any) -
         return FakeOp()
 
     class FakeDialog:
-        def __init__(self, _parent: Any, plan: Any) -> None:
+        def __init__(
+            self, _parent: Any, plan: Any, _plain_recall: bool = False
+        ) -> None:
             self.plan = plan
 
         def exec(self) -> bool:
@@ -333,3 +344,17 @@ def test_the_effect_is_the_mean_retrievability_of_the_chosen_cards() -> None:
     assert effect(0) == ""
     assert effect(2) == "Mean retrievability at review: 90.0% → 80.5%"
     assert effect(3) == "Mean retrievability at review: 90.0% → 81.0%"
+
+
+def test_the_effect_follows_the_recall_wording_setting() -> None:
+    """Pins spec/ui.md#ui.simple-recall-wording."""
+    technical = without_unicode_isolation(ap.effect_text(0.9, 0.8, False))
+    plain = without_unicode_isolation(ap.effect_text(0.9, 0.8, True))
+
+    assert technical == "Mean retrievability at review: 90.0% → 80.0%"
+    assert "retrievability" not in plain.lower()
+    assert plain == "Mean probability of recall at review: 90.0% → 80.0%"
+    assert (
+        without_unicode_isolation(ap.effect_for_count(_preview([1, 2, 3]), 3, True))
+        == "Mean probability of recall at review: 90.0% → 81.0%"
+    )

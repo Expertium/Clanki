@@ -538,26 +538,26 @@ export function calculateMaxDays(filteredRevlog: RevlogEntry[], timeRange: TimeR
 
 /**
  * The name the forgetting curve's tooltip gives to the card's chance of recall
- * now. Simple mode never says "retrievability" (spec/ui.md,
- * `ui.simple-recall-wording`); Advanced mode keeps the technical word.
+ * now. The plain wording never says "retrievability" (spec/ui.md,
+ * `ui.simple-recall-wording`).
  */
-export function recallLabel(advancedUi: boolean): string {
-    return advancedUi
-        ? tr.cardStatsFsrsRetrievability()
-        : tr.cardStatsRecallProbability();
+export function recallLabel(plainRecall: boolean): string {
+    return plainRecall
+        ? tr.cardStatsFsrsRetrievabilityPlain()
+        : tr.cardStatsFsrsRetrievability();
 }
 
 /** The hover text of one point of the forgetting curve. */
 export function forgettingCurveTooltip(
     d: DataPoint,
     maxDays: number,
-    advancedUi: boolean,
+    plainRecall: boolean,
 ): string {
     return `${maxDays >= 365 ? "Date" : "Date Time"}: ${
         maxDays >= 365 ? d.date.toLocaleDateString() : d.date.toLocaleString()
     }<br>
         ${tr.cardStatsReviewLogElapsedTime()}: ${timeSpan(d.elapsedDaysSinceLastReview * 86400)}<br>${
-        recallLabel(advancedUi)
+        recallLabel(plainRecall)
     }: ${d.retrievability.toFixed(2)}%<br>${tr.cardStatsFsrsStability()} (S90): ${timeSpan(d.stabilityS90 * 86400)}`;
 }
 
@@ -569,7 +569,7 @@ export function renderForgettingCurve(
     desiredRetention: number,
     params?: number[],
     rwkvCurve?: RwkvCurvePoints,
-    advancedUi = false,
+    plainRecall = false,
 ) {
     const svg = select(svgElem);
     const trans = svg.transition().duration(600) as any;
@@ -696,7 +696,7 @@ export function renderForgettingCurve(
         .style("opacity", 0);
 
     function tooltipText(d: DataPoint): string {
-        return forgettingCurveTooltip(d, maxDays, advancedUi);
+        return forgettingCurveTooltip(d, maxDays, plainRecall);
     }
 
     // hover/tooltip

@@ -27,7 +27,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let rwkvCurve: RwkvCurvePoints | undefined = undefined;
     // Simple mode's tooltip says "Probability of recall" (spec
     // ui.simple-recall-wording)
-    export let advancedUi: boolean = false;
+    /** Whether the tooltip says "probability of recall" instead of
+     * "retrievability" (spec ui.simple-recall-wording). */
+    export let plainRecall: boolean = false;
     let svg: HTMLElement | SVGElement | null = null;
     const bounds = defaultGraphBounds();
     const title = tr.cardStatsFsrsForgettingCurveTitle();
@@ -59,7 +61,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         desiredRetention,
         fsrsParams,
         rwkvCurve,
-        advancedUi,
+        plainRecall,
     );
 </script>
 

@@ -12,6 +12,7 @@ package anki.deck_config;
 import "anki/generic.proto";
 import "anki/collection.proto";
 import "anki/decks.proto";
+import "anki/config.proto";
 
 service DeckConfigService {
   rpc AddOrUpdateDeckConfigLegacy(generic.Json) returns (DeckConfigId);
@@ -312,6 +313,9 @@ message DeckConfigsForUpdate {
   // The collection's algorithm; a collection without one reads as its
   // Default preset's.
   SchedulingAlgorithm scheduling_algorithm = 23;
+  // How the page names the chance of recall (spec
+  // ui.simple-recall-wording).
+  config.RecallWording recall_wording = 24;
 }
 
 enum UpdateDeckConfigsMode {

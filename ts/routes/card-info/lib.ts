@@ -4,6 +4,7 @@
 import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
 import type { CardStatsResponse } from "@generated/anki/stats_pb";
 import * as tr2 from "@generated/ftl";
+import { plainRecallWording } from "@tslib/recall-wording";
 import { DAY, timeSpan, TimespanUnit, Timestamp } from "@tslib/time";
 
 function dateString(timestamp: bigint): string {
@@ -39,8 +40,13 @@ function stabilityRow(days: number): StatsRow {
  * R. RWKV has no difficulty and RWKV-Instant no stability.
  */
 function memoryStateRows(stats: CardStatsResponse, rwkvR: string | undefined): StatsRow[] {
+    // the plain wording never says "retrievability" (spec
+    // ui.simple-recall-wording)
+    const label = plainRecallWording(stats.recallWording, stats.advancedUi)
+        ? tr2.cardStatsFsrsRetrievabilityPlain()
+        : tr2.cardStatsFsrsRetrievability();
     const retrievability = (value: string): StatsRow => ({
-        label: tr2.cardStatsFsrsRetrievability(),
+        label,
         value,
     });
     switch (stats.schedulingAlgorithm) {

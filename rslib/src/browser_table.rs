@@ -158,12 +158,12 @@ impl Note {
 }
 
 impl Column {
-    /// The column's name in the browser's Cards mode. In Simple mode
-    /// (`spec/ui.md`, `ui.simple-recall-wording`) the Retrievability column is
-    /// named in plain words instead; Advanced mode keeps the technical word.
-    pub fn cards_mode_label(self, tr: &I18n, advanced_ui: bool) -> String {
-        if self == Self::Retrievability && !advanced_ui {
-            return tr.card_stats_recall_probability().into();
+    /// The column's name in the browser's Cards mode. When the recall
+    /// wording is the plain one (`spec/ui.md`, `ui.simple-recall-wording`)
+    /// the Retrievability column is named in plain words instead.
+    pub fn cards_mode_label(self, tr: &I18n, plain_recall: bool) -> String {
+        if self == Self::Retrievability && plain_recall {
+            return tr.card_stats_fsrs_retrievability_plain().into();
         }
         match self {
             Self::Answer => tr.browsing_answer(),
@@ -190,12 +190,12 @@ impl Column {
         .into()
     }
 
-    pub fn notes_mode_label(self, tr: &I18n, advanced_ui: bool) -> String {
+    pub fn notes_mode_label(self, tr: &I18n, plain_recall: bool) -> String {
         match self {
             Self::Cards => tr.editing_cards(),
             Self::Ease => tr.browsing_average_ease(),
             Self::Interval => tr.browsing_average_interval(),
-            _ => return self.cards_mode_label(tr, advanced_ui),
+            _ => return self.cards_mode_label(tr, plain_recall),
         }
         .into()
     }
@@ -213,10 +213,10 @@ impl Column {
         .into()
     }
 
-    pub fn notes_mode_tooltip(self, tr: &I18n, advanced_ui: bool) -> String {
+    pub fn notes_mode_tooltip(self, tr: &I18n, plain_recall: bool) -> String {
         match self {
             Self::Cards => tr.browsing_tooltip_cards(),
-            _ => return self.cards_mode_label(tr, advanced_ui),
+            _ => return self.cards_mode_label(tr, plain_recall),
         }
         .into()
     }
@@ -277,7 +277,7 @@ impl Column {
 
 impl Collection {
     pub fn all_browser_columns(&self) -> anki_proto::search::BrowserColumns {
-        let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
+        let plain_recall = self.plain_recall_wording();
         // under RWKV, Stability and Difficulty have no values to sort by:
         // RWKV-Instant has neither, and RWKV-Curve's S90 lives only in RWKV's
         // own state (spec ui.browser-memory-columns)
@@ -287,7 +287,7 @@ impl Collection {
         let mut columns: Vec<anki_proto::search::browser_columns::Column> = Column::iter()
             .filter(|&c| c != Column::Custom)
             .map(|c| {
-                let mut column = c.to_pb_column(&self.tr, advanced_ui);
+                let mut column = c.to_pb_column(&self.tr, plain_recall);
                 if rwkv && matches!(c, Column::Stability | Column::Difficulty) {
                     column.sorting_cards =
                         anki_proto::search::browser_columns::Sorting::None as i32;
@@ -785,6 +785,32 @@ mod tests {
 
         col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
         assert_eq!(retrievability_column_label(&col), "Retrievability");
+        Ok(())
+    }
+
+    /// spec/ui.md, `ui.simple-recall-wording`.
+    #[test]
+    fn the_wording_setting_names_the_retrievability_column_in_both_modes() -> Result<()> {
+        use crate::config::StringKey;
+
+        for (setting, simple, advanced) in [
+            ("technical", "Retrievability", "Retrievability"),
+            ("plain", "Probability of recall", "Probability of recall"),
+        ] {
+            let mut col = Collection::new();
+            col.set_config_string(StringKey::RecallWording, setting, false)?;
+            assert_eq!(
+                retrievability_column_label(&col),
+                simple,
+                "{setting} simple"
+            );
+            col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+            assert_eq!(
+                retrievability_column_label(&col),
+                advanced,
+                "{setting} advanced"
+            );
+        }
         Ok(())
     }
 

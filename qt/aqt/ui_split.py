@@ -31,6 +31,17 @@ from aqt.utils import tr
 
 CONFIG_KEY = "uiSplit"
 
+# The recall-wording setting (spec ui.simple-recall-wording): one setting,
+# three choices, stored in the collection config beside CONFIG_KEY under the
+# string key Config.String.RECALL_WORDING. The three names are the same in
+# Python, Rust (rslib/src/config/recall_wording.rs) and TypeScript
+# (ts/lib/tslib/recall-wording.ts). An unset or unknown value means BY_MODE,
+# so nothing changes for a collection that never set it.
+RECALL_BY_MODE = "by_mode"
+RECALL_TECHNICAL = "technical"
+RECALL_PLAIN = "plain"
+RECALL_WORDING_CHOICES = (RECALL_BY_MODE, RECALL_TECHNICAL, RECALL_PLAIN)
+
 
 class Area(Enum):
     MAIN_WINDOW = "main"
@@ -87,21 +98,25 @@ def _both(first: Callable[[], str], second: Callable[[], str]) -> Callable[[], s
     return lambda: f"{first()} / {second()}"
 
 
-def _recall_wording(technical: Callable[[], str]) -> Callable[[], str]:
-    """Simple mode never says "retrievability" (spec
-    ui.simple-recall-wording): there the name is "Probability of recall"."""
+def _recall_wording(
+    technical: Callable[[], str], plain: Callable[[], str]
+) -> Callable[[], str]:
+    """A label that follows the recall-wording setting (spec
+    ui.simple-recall-wording)."""
 
     def label() -> str:
         import aqt
 
         mw = aqt.mw
-        advanced = bool(mw and mw.col and mw.advanced_ui())
-        return technical() if advanced else tr.card_stats_recall_probability()
+        col = getattr(mw, "col", None) if mw else None
+        return plain() if col is not None and plain_recall_wording(col) else technical()
 
     return label
 
 
-_retrievability_column = _recall_wording(tr.card_stats_fsrs_retrievability)
+_retrievability_column = _recall_wording(
+    tr.card_stats_fsrs_retrievability, tr.card_stats_fsrs_retrievability_plain
+)
 
 
 _MAIN = Area.MAIN_WINDOW
@@ -389,7 +404,10 @@ STATS_GRAPHS: list[tuple[str, Callable[[], str], bool]] = [
     ("difficulty", tr.statistics_card_difficulty_title, False),
     (
         "retrievability",
-        _recall_wording(tr.statistics_card_retrievability_title),
+        _recall_wording(
+            tr.statistics_card_retrievability_title,
+            tr.statistics_card_retrievability_title_plain,
+        ),
         False,
     ),
     ("totalKnowledge", tr.statistics_total_knowledge_title, True),
@@ -646,9 +664,45 @@ def set_shown_in_simple(col: Any, item_id: str, shown: bool) -> None:
         col.remove_config(CONFIG_KEY)
 
 
+def recall_wording(col: Any) -> str:
+    """The stored choice; an unset or unknown value means BY_MODE."""
+    if col is None:
+        return RECALL_BY_MODE
+    try:
+        stored = col.get_config_string(Config.String.RECALL_WORDING)
+    except Exception:
+        return RECALL_BY_MODE
+    return stored if stored in RECALL_WORDING_CHOICES else RECALL_BY_MODE
+
+
+def set_recall_wording(col: Any, wording: str) -> None:
+    if wording not in RECALL_WORDING_CHOICES:
+        raise ValueError(f"unknown recall wording: {wording}")
+    col.set_config_string(Config.String.RECALL_WORDING, wording)
+
+
+def plain_recall_wording(col: Any, advanced: bool | None = None) -> bool:
+    """Whether the interface names the chance of recall in plain words. This
+    is the one helper the Python side resolves the setting with: plain words
+    when the setting is PLAIN, or when it is BY_MODE and the UI is in Simple
+    mode (spec ui.simple-recall-wording)."""
+    wording = recall_wording(col)
+    if wording == RECALL_PLAIN:
+        return True
+    if wording == RECALL_TECHNICAL:
+        return False
+    if advanced is None:
+        advanced = bool(
+            col is not None and col.get_config_bool(Config.Bool.ADVANCED_UI)
+        )
+    return not advanced
+
+
 def reset(col: Any) -> None:
-    """Back to the defaults. Choices for ids this version does not know (a
-    newer Clanki's items, synced here) are kept."""
+    """Back to the defaults, the recall wording with them. Choices for ids
+    this version does not know (a newer Clanki's items, synced here) are
+    kept."""
+    set_recall_wording(col, RECALL_BY_MODE)
     raw = col.get_config(CONFIG_KEY, {})
     stored = dict(raw) if isinstance(raw, dict) else {}
     kept = {key: value for key, value in stored.items() if key not in ITEMS_BY_ID}
