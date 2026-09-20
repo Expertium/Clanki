@@ -80,7 +80,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigRwkvReviewMinElapsedSecsTooltip(),
         },
     };
-    const settingKeys = Object.keys(settings);
+    $: settingKeys = Object.keys(settings);
     $: helpSections = Object.values(settings) as HelpItem[];
 
     let modal: Modal;
