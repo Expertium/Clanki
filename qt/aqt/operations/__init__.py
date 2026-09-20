@@ -75,6 +75,7 @@ class CollectionOp(Generic[ResultWithChanges]):
     _success: Callable[[ResultWithChanges], Any] | None = None
     _failure: Callable[[Exception], Any] | None = None
     _progress_update: Callable[[Progress, ProgressUpdate], None] | None = None
+    _waiting_window: bool = True
 
     def __init__(self, parent: QWidget, op: Callable[[Collection], ResultWithChanges]):
         self._parent = parent
@@ -96,6 +97,15 @@ class CollectionOp(Generic[ResultWithChanges]):
         self, progress_update: Callable[[Progress, ProgressUpdate], None] | None
     ) -> CollectionOp[ResultWithChanges]:
         self._progress_update = progress_update
+        return self
+
+    def without_waiting_window(self) -> CollectionOp[ResultWithChanges]:
+        """Never open the "Processing..." window for this operation.
+
+        For the operations a click starts on the way from the deck list to a
+        card: they must not put a window in front of the user, however long
+        they wait for something else (spec ui.no-waiting-windows)."""
+        self._waiting_window = False
         return self
 
     def run_in_background(self, *, initiator: object | None = None) -> None:
@@ -143,8 +153,10 @@ class CollectionOp(Generic[ResultWithChanges]):
             mw.taskman.with_backend_progress(
                 op, self._progress_update, on_done=on_done, parent=self._parent
             )
-        else:
+        elif self._waiting_window:
             mw.taskman.with_progress(op, on_done, parent=self._parent)
+        else:
+            mw.taskman.run_in_background(op, on_done)
 
 
 def on_op_finished(
