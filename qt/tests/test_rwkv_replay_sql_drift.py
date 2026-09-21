@@ -189,7 +189,10 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
         # the same rows, in the same order, value for value
         assert [tuple(row) for row in parts] == [tuple(row) for row in whole]
         ranges = rwkv_scheduler._card_id_ranges(col, rwkv_scheduler.HISTORY_QUERY_PARTS)
-        assert len(calls) == len(ranges) > 1
+        # one step before each part, and at least one more for merging them
+        # (spec sched.rwkv-recordings-automatic: every step is bounded, not
+        # only the query)
+        assert len(calls) > len(ranges) > 1
 
         # a caller that raises stops the query before its next part
         def stop() -> None:

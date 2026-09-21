@@ -303,7 +303,137 @@ def test_not_recorded_text_does_not_ask_the_user_to_rebuild() -> None:
         assert instruction not in line
 
 
-# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the page that wants
+# the rows is what starts the pass that records them. Nothing about reviewing
+# needs them, so no pass runs until a screen asks.
+def test_the_stats_graphs_start_the_recording_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt.rwkv_scheduler
+
+    asked: list[object] = []
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "start_rwkv_recordings_pass_if_needed", asked.append
+    )
+    started: list[object] = []
+    monkeypatch.setattr(
+        metrics.threading,
+        "Thread",
+        lambda **kwargs: SimpleNamespace(start=lambda: started.append(kwargs)),
+    )
+
+    class _Collection:
+        mod = 1
+        sched = SimpleNamespace(today=1)
+
+        def find_cards(self, search: str) -> list[int]:
+            return [1, 2, 3]
+
+    mw = SimpleNamespace(col=_Collection())
+    metrics.start(mw, "deck:current", 365)
+
+    assert asked == [mw]
+    assert started, "the job still runs"
+
+    # and again on a second visit, even when a reading is already kept
+    metrics.start(mw, "deck:current", 365)
+    assert asked == [mw, mw]
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a reading that
+# says an algorithm's numbers are being computed, or that nothing recorded
+# them, is not kept for the session. A pass can change it, and a kept one
+# showed "being computed" on every later visit to the page.
+def test_a_reading_the_pass_can_still_change_is_not_kept() -> None:
+    computing = metrics.Progress(
+        series=[
+            Series(algorithm=metrics.FSRS_7, auc=0.7),
+            Series(
+                algorithm=metrics.RWKV_CURVE,
+                unavailable=metrics.Unavailable.COMPUTING_PREDICTIONS,
+            ),
+        ]
+    )
+    not_recorded = metrics.Progress(
+        series=[
+            Series(
+                algorithm=metrics.RWKV_CURVE,
+                unavailable=metrics.Unavailable.NOT_RECORDED,
+            )
+        ]
+    )
+    settled = metrics.Progress(
+        series=[
+            Series(algorithm=metrics.FSRS_7, auc=0.7),
+            Series(
+                algorithm=metrics.RWKV_CURVE,
+                unavailable=metrics.Unavailable.NO_MODEL,
+            ),
+        ]
+    )
+
+    assert not metrics._will_not_change(computing)
+    assert not metrics._will_not_change(not_recorded)
+    assert metrics._will_not_change(settled)
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: while the pass
+# writes the rows the job stays COMPUTING, so the page keeps saying
+# "Calculating..." and reads the numbers once the pass has finished. It used
+# to end at once with "being computed" frozen on the graph for ever.
+def test_the_graphs_read_their_numbers_again_when_the_pass_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt.rwkv_scheduler
+
+    # the pass is running while the first reading is taken and through one
+    # turn of the wait, and has finished by the second reading
+    asked = [0]
+
+    def pass_running() -> bool:
+        asked[0] += 1
+        return asked[0] <= 2
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "rwkv_recordings_pass_running", pass_running
+    )
+    monkeypatch.setattr(metrics, "_RWKV_PASS_CHECK_SECS", 0.01)
+    readings = [
+        ReviewPredictionsResponse(
+            series=[
+                _absent(metrics.FSRS_7),
+                _absent(metrics.RWKV_CURVE),
+                _absent(metrics.RWKV_INSTANT),
+            ]
+        ),
+        ReviewPredictionsResponse(
+            series=[
+                _absent(metrics.FSRS_7),
+                _series(metrics.RWKV_CURVE, auc=0.8, reviews=9, role="final_fit"),
+                _absent(metrics.RWKV_INSTANT),
+            ]
+        ),
+    ]
+    read = [0]
+
+    class _Backend:
+        def review_predictions(self, search: str, days: int) -> object:
+            read[0] += 1
+            return readings[min(read[0], len(readings)) - 1]
+
+    class _Collection:
+        _backend = _Backend()
+
+    job = metrics._Job(job_id=1, key=("test",))
+    metrics._run(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+
+    assert read[0] == 2, "the numbers are read again, once, after the pass"
+    assert job.state == metrics.State.DONE
+    by_algorithm = {series.algorithm: series for series in job.progress().series}
+    # the second reading, the one taken after the pass finished
+    assert by_algorithm[metrics.RWKV_CURVE].auc == pytest.approx(0.8)
+
+
 def test_while_the_recording_pass_runs_the_graphs_say_it_is_computing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

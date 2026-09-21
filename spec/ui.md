@@ -775,6 +775,13 @@ model is stale and is never drawn. The sources live in the
 other per-review recordings: a cache, never synced, never read by official
 Anki or AnkiDroid.
 
+Opening card info for such a card is one of the two things that start the
+recording pass that saves those sources (`sched.rwkv-recordings-automatic`);
+the other is opening Stats. A card's own past curves cannot be worked out
+from the card alone, because RWKV's state after one review depends on every
+review of the collection before it, so nothing but that pass can fill the
+chart.
+
 A review with no saved source (older than the recording, recorded by
 another model, or a review the RWKV replay does not read) gets no segment: the line breaks there, no curve is invented
 for it, and no FSRS-7 curve stands in. The chart starts at the oldest review
@@ -830,7 +837,8 @@ saved sources for his 656k reviews, so that the chart can draw them.
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_card_info_gets_rwkv_curves_own_curve_and_s90`,
 `test_card_info_sends_rwkv_curves_of_the_earlier_reviews`,
-`test_card_info_has_no_rwkv_curve_for_other_algorithms`
+`test_card_info_has_no_rwkv_curve_for_other_algorithms`,
+`test_card_info_starts_the_recording_pass`
 (`qt/tests/test_mediasrv.py`); "an RWKV-Curve card shows its curve's S90
 and R, and no difficulty", "an RWKV-Curve card without a curve shows no
 stability and a calculating R" (`ts/routes/card-info/lib.test.ts`);

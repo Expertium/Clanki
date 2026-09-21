@@ -9348,9 +9348,10 @@ def test_startup_loads_usable_rwkv_state_cache_without_a_window(
     ]
     assert rwkv_scheduler.rwkv_state_cache_loading(reviewer.mw) is False
     assert history_builds == 1
-    # the whole-history query runs in parts, so the collection is free
-    # between them while the user works
-    assert [kwargs.get("between_parts") for kwargs in history_kwargs] == [
+    # the whole-history read runs in short steps, so the collection and the
+    # machine are free between them while the user works (spec
+    # sched.rwkv-recordings-automatic)
+    assert [kwargs.get("between_steps") for kwargs in history_kwargs] == [
         rwkv_scheduler._split_whole_history_query
     ]
 
@@ -20460,8 +20461,14 @@ def test_a_full_recording_pass_marks_the_recordings_current(
     assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
 
     saved = json.loads(marker.read_text(encoding="utf-8"))
-    assert saved == rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
+    tag = rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
+    assert tag is not None
+    assert all(saved[key] == value for key, value in tag.items())
     assert (saved["model"], saved["format"], saved["kernel"]) == ("abc", 1, 1)
+    # and how much it recorded, so that "the rows are still there" is a count
+    # rather than the question whether one row exists (spec
+    # sched.rwkv-recordings-automatic)
+    assert (saved["reviews"], saved["lastReviewId"]) == (len(rows), rows[-1][0])
 
 
 class _BulkRecordingRuntime(_TaggedCurveCacheRuntime):
@@ -20548,9 +20555,11 @@ def test_a_full_recording_build_leaves_no_recording_pass_due(
         )
         is True
     )
-    assert json.loads(marker.read_text(encoding="utf-8")) == (
-        rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
-    )
+    recorded_with = json.loads(marker.read_text(encoding="utf-8"))
+    build_tag = rwkv_scheduler._rwkv_recordings_tag(reviewer.mw)
+    assert build_tag is not None
+    assert all(recorded_with[key] == value for key, value in build_tag.items())
+    assert recorded_with["reviews"] == len(rows)
     col = reviewer.mw.col
     assert col.rwkv_retrievability_rows and col.review_prediction_rows
     assert [list(batch.revlog_ids) for batch in saved_sources][-1] == [
@@ -20558,7 +20567,7 @@ def test_a_full_recording_build_leaves_no_recording_pass_due(
     ]
     passes: list[object] = []
     monkeypatch.setattr(
-        rwkv_scheduler, "recompute_rwkv_calibration_data_with_progress", passes.append
+        rwkv_scheduler, "recompute_rwkv_calibration_data_in_background", passes.append
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_recordings_pass_started", False)
     monkeypatch.setattr(
@@ -20569,7 +20578,7 @@ def test_a_full_recording_build_leaves_no_recording_pass_due(
     monkeypatch.setattr(
         rwkv_scheduler, "rwkv_recordings_current", lambda mw: marker.exists()
     )
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(reviewer.mw)
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(reviewer.mw)
     assert passes == []
 
 
@@ -20577,6 +20586,9 @@ def _recordings_mw(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, rows_present: bool = True
 ) -> tuple[SimpleNamespace, list[object]]:
     """A profile whose RWKV state is ready, with the recording pass watched."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
     monkeypatch.setattr(
         rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"sha256": "abc"}
     )
@@ -20594,6 +20606,7 @@ def _recordings_mw(
         lambda reviewer: SimpleNamespace(review_enabled=True),
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_recordings_pass_started", False)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_recordings_known_current", False)
     passes: list[object] = []
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -20609,14 +20622,17 @@ def _recordings_mw(
         timers.append(fn)
         return SimpleNamespace()
 
+    counted = (1, 1, 1) if rows_present else (0, 0, 0)
     mw = SimpleNamespace(
         col=SimpleNamespace(
-            db=SimpleNamespace(scalar=lambda sql, *args: int(rows_present))
+            db=SimpleNamespace(
+                scalar=lambda sql, *args: int(rows_present),
+                all=lambda sql, *args: [counted],
+            )
         ),
         pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
         state="deckBrowser",
         progress=SimpleNamespace(timer=timer),
-        # left alone long ago: the pass may start
         app=SimpleNamespace(last_input_at=time.monotonic() - 600),
         fire_timer=lambda: timers.pop()(),
         timers=timers,
@@ -20624,32 +20640,112 @@ def _recordings_mw(
     return mw, passes
 
 
-# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
+def _recordings_marker(mw: object, **fields: object) -> None:
+    """Writes the marker a finished pass leaves, with `fields` overriding it."""
+    tag = rwkv_scheduler._rwkv_recordings_tag(mw)
+    assert tag is not None
+    rows = fields.get("rows", (1, 1, 1))
+    assert isinstance(rows, tuple)
+    rwkv_scheduler._write_rwkv_recordings_marker(
+        mw,
+        dict(
+            tag,
+            **{
+                key: value
+                for key, value in fields.items()
+                if key in tag and value is not None
+            },
+        ),
+        reviews=int(fields.get("reviews", 1)),  # type: ignore[arg-type]
+        last_review_id=int(fields.get("last_review_id", 1)),  # type: ignore[arg-type]
+        rows=rows,
+    )
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a screen that
+# reads the rows starts the pass, and the rows decide whether it is needed.
 @pytest.mark.parametrize(
     "case", ["never_recorded", "other_model", "rows_gone", "current"]
 )
-def test_missing_or_stale_recordings_start_the_recording_pass_by_itself(
+def test_a_screen_that_reads_the_rows_starts_the_recording_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
     mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=case != "rows_gone")
-    tag = rwkv_scheduler._rwkv_recordings_tag(mw)
-    assert tag is not None
     if case != "never_recorded":
-        marker = dict(tag, model="old") if case == "other_model" else tag
-        rwkv_scheduler._write_rwkv_recordings_marker(mw, marker)
+        _recordings_marker(mw, model="old" if case == "other_model" else None)
+
+    expected: list[object] = [] if case == "current" else [mw]
+    counts: list[object] = []
+    inner = rwkv_scheduler._rwkv_recorded_row_counts
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_recorded_row_counts",
+        lambda *args: counts.append(args) or inner(*args),
+    )
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
+    assert passes == expected
+    # and only one pass at a time, however often a screen asks
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
+    assert passes == expected
+    # Counting the rows takes about 200 ms on a large cache, so it happens
+    # at most once: a marker that is missing or another model's is answered
+    # without counting at all, and an answer of "they are the running
+    # model's" is remembered rather than asked for again.
+    assert len(counts) == (1 if case in ("current", "rows_gone") else 0)
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: nothing starts the
+# pass at profile open. Start-up is never the moment for minutes of work, and
+# nothing about reviewing needs these rows.
+def test_nothing_starts_the_recording_pass_at_profile_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache_metadata", lambda reviewer: None
+    )
 
     rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    # never at start-up: the pass waits for the user to leave Clanki alone
     assert passes == []
-    expected: list[object] = [] if case == "current" else [mw]
-    if mw.timers:
-        mw.fire_timer()
-    assert passes == expected
-    # once per profile open, however often the state becomes ready
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    if mw.timers:
-        mw.fire_timer()
-    assert passes == expected
+    # not on a timer either: there is no timer to fire
+    assert mw.timers == []
+
+    # the Stats page is what starts it
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
+    assert passes == [mw]
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the rows of one
+# review do not stand for the whole history. Andrew's collection held 38
+# curve sources, every one written by an answer in the reviewer, next to
+# 656,402 reviews.
+def test_rows_of_one_review_do_not_make_the_recordings_current(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    asked: list[str] = []
+
+    def all_rows(sql: str, *args: object) -> list[tuple[int, int, int]]:
+        asked.append(sql)
+        # one row of each kind is on disk, as one answered card leaves
+        return [(1, 1, 1)]
+
+    mw, passes = _recordings_mw(monkeypatch, tmp_path)
+    mw.col.db.all = all_rows
+    # what a finished pass over 656,402 reviews would have written
+    _recordings_marker(
+        mw, reviews=656_402, last_review_id=99, rows=(656_402, 600_000, 656_402)
+    )
+
+    # 1 row of each kind is not the whole history
+    assert rwkv_scheduler.rwkv_recordings_current(mw) is False
+    assert asked and "count(" in asked[0], (
+        "the test counts rows rather than asking whether one exists"
+    )
+
+    # and a pass that really did record one review of each kind is current
+    _recordings_marker(mw, reviews=1, last_review_id=99, rows=(1, 1, 1))
+    assert rwkv_scheduler.rwkv_recordings_current(mw) is True
+    del passes
 
 
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic
@@ -20659,13 +20755,12 @@ def test_the_recording_pass_waits_until_no_card_is_being_reviewed(
     mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
     mw.state = "review"
 
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    mw.fire_timer()
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
     assert passes == []
 
     # the card is answered and the review screen closes
     mw.state = "deckBrowser"
-    mw.fire_timer()
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
     assert passes == [mw]
 
 
@@ -20673,14 +20768,13 @@ def test_the_recording_pass_waits_until_no_card_is_being_reviewed(
 def test_nothing_starts_while_the_main_window_is_disabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    mw, passes = _recordings_mw(monkeypatch, tmp_path)
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
     # a sync, or the profile closing
     mw.isEnabled = lambda: False
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
     assert passes == []
     mw.isEnabled = lambda: True
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    mw.fire_timer()
+    rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
     assert passes == [mw]
 
 
@@ -20942,25 +21036,198 @@ def test_filtered_deck_prepares_rwkv_scores_for_relative_overdueness() -> None:
     )
 
 
-# Pins spec/scheduling.md#sched.rwkv-recordings-automatic
-def test_the_recording_pass_waits_until_the_user_leaves_clanki_alone(
+# Pins spec/scheduling.md#sched.rwkv-recordings-progress: a stopped pass goes
+# on where it stopped. Measured on Andrew's 656,402 reviews, one snapshot of
+# the RWKV state is 3.3 GB, so the pass cannot store where it was; it stores
+# how far its rows reach and replays the prefix again with nothing recorded.
+def test_a_stopped_pass_goes_on_where_it_stopped(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=False)
-    # the user is typing: start-up is never the moment for a pass of minutes
-    mw.app.last_input_at = time.monotonic()
-    rwkv_scheduler.start_rwkv_maintenance_if_needed(mw)
-    mw.fire_timer()
-    assert passes == []
-    # a card on the review screen keeps it waiting too
-    mw.app.last_input_at = time.monotonic() - 600
-    mw.state = "review"
-    mw.fire_timer()
-    assert passes == []
-    # left alone, outside the reviewer: now it starts
-    mw.state = "deckBrowser"
-    mw.fire_timer()
-    assert passes == [mw]
+    mw = _resume_mw(monkeypatch, tmp_path)
+    review_ids = [100, 200, 300, 400, 500]
+    _write_resume_point(mw, reviews=3, last_review_id=300, rows=(3, 2, 3))
+
+    point = rwkv_scheduler.rwkv_recordings_resume_point(mw, review_ids)
+    assert point is not None
+    assert (point.reviews, point.rows) == (3, (3, 2, 3))
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-progress: a pass writes its
+# first step before it reads the resume point, so that write must carry the
+# point forward. Dropping it destroyed the work the pass was about to carry
+# on from, and every run then started over.
+def test_a_starting_pass_keeps_the_resume_point_it_has_not_read_yet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mw = _resume_mw(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "recompute_rwkv_calibration_data", lambda mw, **kwargs: False
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_run_on_main", lambda mw, fn: fn())
+    _write_resume_point(mw, reviews=3, last_review_id=300, rows=(3, 2, 3))
+
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    for _ in range(200):
+        if not rwkv_scheduler.rwkv_recordings_pass_running():
+            break
+        time.sleep(0.01)
+
+    kept = rwkv_scheduler.rwkv_recordings_progress(mw)
+    assert kept is not None
+    assert (kept["reviews"], kept["lastReviewId"]) == (3, 300)
+    assert rwkv_scheduler.rwkv_recordings_resume_point(mw, [100, 200, 300, 400]) == (
+        rwkv_scheduler.RwkvRecordingsResumePoint(reviews=3, rows=(3, 2, 3))
+    )
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-progress: correctness first.
+@pytest.mark.parametrize(
+    "case", ["other_model", "history_changed", "too_few_reviews", "rows_gone"]
+)
+def test_a_resume_point_that_no_longer_matches_starts_the_pass_over(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    mw = _resume_mw(
+        monkeypatch,
+        tmp_path,
+        # the rows of one kind were deleted under the pass
+        counted=(3, 1, 3) if case == "rows_gone" else (3, 2, 3),
+    )
+    review_ids = [100, 200, 300, 400, 500]
+    if case == "history_changed":
+        # a review inside the prefix was deleted, so the one at the resume
+        # point is another review
+        review_ids = [100, 300, 400, 500]
+    if case == "too_few_reviews":
+        review_ids = [100, 200]
+    _write_resume_point(
+        mw,
+        reviews=3,
+        last_review_id=300,
+        rows=(3, 2, 3),
+        model="another" if case == "other_model" else None,
+    )
+
+    assert rwkv_scheduler.rwkv_recordings_resume_point(mw, review_ids) is None
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: no step of the
+# read is long. Every part of the query, and every block of the preparation
+# that follows it, ends a step. Before this the preparation was one step:
+# 11.9 s on 656,402 reviews, next to 0.3 s for a query part.
+def test_every_step_of_the_history_read_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rows = [
+        ((40 * 86_400 + 100 + index) * 1000, index, 10, 100, 2, 1234, 1, 3, 2500)
+        for index in range(1, 200)
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler, "RECORDINGS_PASS_PREPARE_STEP_ROWS", 16, raising=True
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    steps: list[int] = []
+
+    history = rwkv_scheduler._historical_rwkv_review_inputs(
+        reviewer,
+        between_steps=lambda: steps.append(len(steps)),
+    )
+
+    assert len(history.reviews) == len(rows)
+    # the 16 parts of the query, and then the preparation in blocks: far
+    # more steps than the query alone would give
+    assert len(steps) > rwkv_scheduler.HISTORY_QUERY_PARTS * 3, len(steps)
+
+    # and a caller that passes nothing still gets the same reviews
+    quiet = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+    assert [review.identity.card_id for review in quiet.reviews] == [
+        review.identity.card_id for review in history.reviews
+    ]
+    assert quiet.review_ids == history.review_ids
+    assert quiet.history_hash == history.history_hash
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a pass that cannot
+# save the curve sources refuses, as one that cannot record RWKV-Curve's
+# values does. A silently dropped recorder let the pass walk the whole
+# history writing no source, and card info then drew one segment for a card
+# with years of reviews.
+def test_a_pass_that_cannot_record_curve_sources_refuses() -> None:
+    class _NoSources:
+        resident_warm_up_state = True
+
+        def warm_up_reviews(
+            self,
+            reviews: Sequence[RwkvReviewInput],
+            *,
+            review_ids: Sequence[int] | None = None,
+            prediction_recorder: object = None,
+            curve_recorder: object = None,
+            progress: object = None,
+            return_snapshot: bool = True,
+        ) -> None:
+            # a runtime that takes no curve_source_recorder: it would replay
+            # the whole history and save no source at all
+            raise AssertionError("the replay must not start")
+
+    backend = RwkvStatefulReviewerBackend(_NoSources())
+    with pytest.raises(rwkv_scheduler.RwkvCurveRecordingUnavailable):
+        backend.warm_up(
+            [],
+            review_ids=[],
+            curve_recorder=lambda review_id, value: None,
+            curve_source_recorder=lambda sources: None,
+        )
+
+
+def _resume_mw(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    counted: tuple[int, int, int] = (3, 2, 3),
+) -> SimpleNamespace:
+    """A profile whose cache holds `counted` rows of the three kinds."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"sha256": "abc"}
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_reviewer_backend",
+        SimpleNamespace(curve_source_tag=lambda: (1, 1)),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_replay_semantics_key", lambda reviewer, **_: "replay"
+    )
+    return SimpleNamespace(
+        col=SimpleNamespace(db=SimpleNamespace(all=lambda sql, *args: [counted])),
+        pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+    )
+
+
+def _write_resume_point(
+    mw: object,
+    *,
+    reviews: int,
+    last_review_id: int,
+    rows: tuple[int, int, int],
+    model: str | None = None,
+) -> None:
+    tag = rwkv_scheduler._rwkv_recordings_tag(mw)
+    assert tag is not None
+    rwkv_scheduler._write_rwkv_recordings_progress(
+        mw,
+        state="stopped",
+        batches=7,
+        reviews=reviews,
+        lastReviewId=last_review_id,
+        rows=list(rows),
+        tag=dict(tag, model=model) if model else tag,
+    )
 
 
 # Pins spec/scheduling.md#sched.rwkv-recordings-progress

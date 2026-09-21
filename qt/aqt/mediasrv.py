@@ -1435,6 +1435,14 @@ def card_stats() -> bytes:
     for row in rows:
         response.extra_rows.add(label=row.label, value=row.value)
     _add_rwkv_curve(response, reviewer, card)
+    # Card info's forgetting curve is the other reader of the per-review
+    # recordings: it draws one segment per answered review from the curve
+    # source the replay saved for it. A card's own past curves cannot be
+    # worked out from the card alone -- RWKV's state after a review depends
+    # on every review of the collection before it -- so the only thing that
+    # fills the chart is the pass, and opening card info asks for it (spec
+    # ui.card-info-rwkv-curve, sched.rwkv-recordings-automatic).
+    aqt.rwkv_scheduler.start_rwkv_recordings_pass_if_needed(aqt.mw)
 
     logger.debug(
         "card stats served: card_id=%s hook_count=%s extra_rows=%s backend_elapsed_ms=%.1f "
