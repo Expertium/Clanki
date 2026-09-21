@@ -31,6 +31,8 @@ use crate::stats::algorithms::RWKV_CURVE;
 use crate::stats::algorithms::RWKV_INSTANT;
 use crate::stats::roc::roc_curve;
 use crate::stats::roc::CURVE_POINTS;
+use crate::storage::SearchedRating;
+use crate::storage::SqliteStorage;
 
 /// One model's cached predictions for the searched ratings, and the role
 /// they came from. The predictions are in ascending review order, one
@@ -223,12 +225,10 @@ impl Collection {
                 .db
                 .query_row("select count() from cards", [], |row| row.get(0))?;
         let many_cards = guard.cards * 2 >= collection_cards as usize;
-        let mut ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards)?;
         // each algorithm names itself; no read can reach another
         // algorithm's rows without saying whose they are
-        let fsrs = read_predictions(storage, &FSRS7, cutoff)?;
-        let rwkv = read_predictions(storage, &RWKV_INSTANT, cutoff)?;
-        let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff)?;
+        let (mut ratings, fsrs, rwkv, rwkv_curve) =
+            read_ratings_and_predictions(storage, cutoff, many_cards)?;
 
         let mut rows = ScoredRatings {
             fsrs_role: fsrs.role.clone(),
@@ -1252,11 +1252,63 @@ fn weighted_slope(
     }
 }
 
+/// The four reads the graphs are made of: the search's ratings, and each
+/// algorithm's predictions of them.
+///
+/// The two big prediction reads ask the retrievability-cache sidecar alone
+/// and need no temporary table, so each takes a read-only connection of its
+/// own and runs beside the review-log read, which asks for the search's
+/// temporary table and so has to stay on the collection's connection. The
+/// four reads are of committed rows and write nothing, so which connection
+/// reads what changes no value and no order; only the waiting is shared
+/// out. With no second connection to be had (a cache in memory, an open
+/// transaction) all four run on the collection's connection, one after
+/// another, and give the same four lists.
+fn read_ratings_and_predictions(
+    storage: &SqliteStorage,
+    cutoff: TimestampMillis,
+    many_cards: bool,
+) -> Result<(
+    Vec<SearchedRating>,
+    CachedPredictions,
+    CachedPredictions,
+    CachedPredictions,
+)> {
+    let readers = storage
+        .open_retrievability_cache_reader()
+        .zip(storage.open_retrievability_cache_reader());
+    let Some((fsrs_reader, rwkv_reader)) = readers else {
+        let ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards)?;
+        return Ok((
+            ratings,
+            read_predictions(storage, &FSRS7, cutoff)?,
+            read_predictions(storage, &RWKV_INSTANT, cutoff)?,
+            read_predictions(storage, &RWKV_CURVE, cutoff)?,
+        ));
+    };
+    std::thread::scope(|scope| {
+        let fsrs = scope.spawn(move || read_predictions(&fsrs_reader, &FSRS7, cutoff));
+        let rwkv = scope.spawn(move || read_predictions(&rwkv_reader, &RWKV_INSTANT, cutoff));
+        // RWKV-Curve's rows are in the table every algorithm shares, whose
+        // reader creates it when it is missing; a write belongs on the
+        // collection's connection, so this read stays here
+        let ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards);
+        let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff);
+        let joined = |thread: std::thread::ScopedJoinHandle<'_, Result<CachedPredictions>>| {
+            thread.join().unwrap_or_else(|payload| {
+                std::panic::resume_unwind(payload);
+            })
+        };
+        let (fsrs, rwkv) = (joined(fsrs), joined(rwkv));
+        Ok((ratings?, fsrs?, rwkv?, rwkv_curve?))
+    })
+}
+
 /// One algorithm's rows, from a single sample role: the role its own
 /// contract chooses out of the roles it has rows for. Roles are never
 /// mixed, and no other algorithm's rows are reachable from here.
 fn read_predictions(
-    storage: &crate::storage::SqliteStorage,
+    storage: &SqliteStorage,
     algorithm: &PredictsRecall,
     after: TimestampMillis,
 ) -> Result<CachedPredictions> {

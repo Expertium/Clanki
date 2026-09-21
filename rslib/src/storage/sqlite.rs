@@ -67,7 +67,13 @@ fn open_or_create_collection_db(
 
     db.busy_timeout(std::time::Duration::from_secs(0))?;
 
-    db.pragma_update(None, "locking_mode", "exclusive")?;
+    // The collection itself, and only it: one process at a time opens a
+    // collection, and this is the lock that says so. Without the schema name
+    // the mode would also cover every database attached later, which is what
+    // the retrievability-cache sidecar below must not have. SQLite refuses to
+    // take an exclusive database back to normal once it is in WAL mode, so
+    // the sidecar has to be left out here rather than freed afterwards.
+    db.pragma_update(Some("main"), "locking_mode", "exclusive")?;
     db.pragma_update(None, "page_size", 4096)?;
     db.pragma_update(None, "cache_size", -40 * 1024)?;
     // Read pages through a memory map instead of one read call per page: the
@@ -130,6 +136,65 @@ impl SqliteStorage {
     /// using it.
     pub fn db(&self) -> &Connection {
         &self.db
+    }
+
+    /// A second connection that reads the retrievability-cache sidecar and
+    /// nothing else, so a read of it can run beside a read of the
+    /// collection instead of after it. The sidecar keeps its schema name,
+    /// so the cache's queries run on this connection unchanged, and the
+    /// connection can only read: it runs no schema setup and no migration,
+    /// and `query_only` refuses a write however it is asked for.
+    ///
+    /// `None` means "read on the collection's own connection instead",
+    /// which gives the same rows:
+    /// - A collection in memory, and one opened for a database check, keep the
+    ///   cache in memory, and a memory database belongs to the one connection
+    ///   that made it.
+    /// - An open transaction may hold cache rows that are not committed yet.
+    ///   Another connection cannot see those, and reading them is what this is
+    ///   for.
+    pub(crate) fn open_retrievability_cache_reader(&self) -> Option<Self> {
+        if !self.db.is_autocommit() {
+            return None;
+        }
+        match self.try_open_retrievability_cache_reader() {
+            Ok(reader) => reader,
+            Err(err) => {
+                tracing::debug!(?err, "could not open a second reader of the cache");
+                None
+            }
+        }
+    }
+
+    fn try_open_retrievability_cache_reader(&self) -> Result<Option<Self>> {
+        let path: String = self.db.query_row(
+            "select file from pragma_database_list where name = ?1",
+            [RETRIEVABILITY_CACHE_DB_SCHEMA],
+            |row| row.get(0),
+        )?;
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let db = Connection::open_with_flags(
+            ":memory:",
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        // the sidecar is opened for writing and then forbidden to write: a
+        // reader that may not create the wal-index cannot open a database
+        // in WAL mode at all
+        db.busy_timeout(std::time::Duration::from_secs(1))?;
+        db.execute(
+            &format!("ATTACH DATABASE ? AS {RETRIEVABILITY_CACHE_DB_SCHEMA}"),
+            [path.as_str()],
+        )?;
+        db.pragma_update(
+            Some(RETRIEVABILITY_CACHE_DB_SCHEMA),
+            "mmap_size",
+            1_i64 << 30,
+        )?;
+        db.pragma_update(None, "query_only", true)?;
+        db.set_prepared_statement_cache_capacity(8);
+        Ok(Some(Self { db }))
     }
 }
 /// Adds sql function field_at_index(flds, index)
@@ -830,5 +895,62 @@ mod sort_field_index_test {
         assert!(exists, "the index was not created again");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod collection_lock_test {
+    use tempfile::tempdir;
+
+    use crate::collection::CollectionBuilder;
+    use crate::error::Result;
+    use crate::storage::sqlite::retrievability_cache_path;
+    use crate::storage::sqlite::RETRIEVABILITY_CACHE_DB_SCHEMA;
+
+    /// Pins spec/database.md#database.collection-file-locked.
+    #[test]
+    fn the_collection_is_locked_and_the_sidecar_is_not() -> Result<()> {
+        let dir = tempdir()?;
+        let col_path = dir.path().join("locked.anki2");
+        let col = CollectionBuilder::new(&col_path).build()?;
+        // a row of the sidecar, so that it exists and holds something the
+        // second connection can be asked for
+        col.storage.set_rwkv_review_retrievability_prediction(
+            crate::prelude::RevlogId(1),
+            0.25,
+            "test",
+        )?;
+
+        let second = rusqlite::Connection::open(&col_path)?;
+        let locked = second.query_row("select count() from col", [], |row| row.get::<_, i64>(0));
+        assert!(
+            locked.is_err(),
+            "a second connection read the open collection"
+        );
+
+        let reader = col
+            .storage
+            .open_retrievability_cache_reader()
+            .expect("no reader of the sidecar");
+        let rows: i64 = reader.db.query_row(
+            "select count() from retrievability_cache.search_stats_rwkv_review_retrievability",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rows, 1, "the second connection did not see the row");
+        assert!(
+            retrievability_cache_path(&col_path).exists(),
+            "the sidecar is not a file"
+        );
+        assert_eq!(RETRIEVABILITY_CACHE_DB_SCHEMA, "retrievability_cache");
+        Ok(())
+    }
+
+    /// A collection in memory keeps its cache in memory too, and a memory
+    /// database belongs to the one connection that made it.
+    #[test]
+    fn a_collection_in_memory_has_no_second_reader() {
+        let col = crate::collection::Collection::new();
+        assert!(col.storage.open_retrievability_cache_reader().is_none());
     }
 }
