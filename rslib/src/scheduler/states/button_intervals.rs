@@ -4,9 +4,9 @@
 //! What each answer button schedules under FSRS-7 and RWKV-Curve (spec
 //! `sched.sub-day-intervals`).
 //!
-//! A button whose unrounded interval is under 12 hours stays unrounded: it
+//! A button whose unrounded interval is under 18 hours stays unrounded: it
 //! goes to the intraday learning queue, in seconds, without review fuzz. A
-//! button at 12 hours or more gets whole days (at least one) after review
+//! button at 18 hours or more gets whole days (at least one) after review
 //! fuzz. Among the day
 //! buttons each is at least one day above the day button before it (Again <
 //! Hard < Good < Easy); among the sub-day buttons each is at least as long as
@@ -16,15 +16,16 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
-/// Unrounded intervals from this many days on are scheduled in whole days:
-/// "Anything >=12h rounds up to 1d" (Andrew, 2026-09-15).
-pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
+/// Unrounded intervals from this many days on are scheduled in whole days.
+/// Andrew, 2026-09-15: "Anything >=12h rounds up to 1d"; 2026-09-21: "Raise
+/// that to 18h".
+pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ButtonInterval {
-    /// Under 12 hours: the intraday learning queue, in seconds.
+    /// Under 18 hours: the intraday learning queue, in seconds.
     Secs(u32),
-    /// 12 hours or more: whole days after fuzz, and how far fuzz moved them.
+    /// 18 hours or more: whole days after fuzz, and how far fuzz moved them.
     Days { days: u32, fuzz_delta_days: i32 },
 }
 
@@ -162,19 +163,41 @@ mod test {
         assert_eq!(out, [secs(8640), secs(17_280), days(1), days(2)]);
     }
 
-    // Pins spec/scheduling.md#sched.sub-day-intervals: 12 hours or more is
-    // a whole day, for review cards too.
+    // Pins spec/scheduling.md#sched.sub-day-intervals: 18 hours or more is
+    // a whole day, for review cards too, and below it stays in seconds.
     #[test]
-    fn twelve_hours_or_more_is_a_whole_day() {
+    fn eighteen_hours_or_more_is_a_whole_day() {
         for rule in [
             DayRule::Graduating,
             DayRule::Review {
                 previous_interval: 1,
             },
         ] {
+            // 6h and 12h stay sub-day; 18h and 23.76h become whole days
             let out = button_intervals(&ctx(), all(0.25, 0.5, 0.75, 0.99), rule);
-            assert_eq!(out, [secs(21_600), days(1), days(2), days(3)], "{rule:?}");
+            assert_eq!(
+                out,
+                [secs(21_600), secs(43_200), days(1), days(2)],
+                "{rule:?}"
+            );
         }
+    }
+
+    // The boundary itself: just under 18 hours is seconds, exactly 18 hours
+    // is a day.
+    #[test]
+    fn the_sub_day_limit_is_eighteen_hours() {
+        assert_eq!(SUB_DAY_LIMIT_DAYS, 0.75);
+        let out = button_intervals(
+            &ctx(),
+            [Some(0.749_99), None, None, None],
+            DayRule::Graduating,
+        );
+        let Some(ButtonInterval::Secs(_)) = out[0] else {
+            panic!("just under 18 hours should stay in seconds");
+        };
+        let out = button_intervals(&ctx(), [Some(0.75), None, None, None], DayRule::Graduating);
+        assert_eq!(out[0], days(1));
     }
 
     #[test]

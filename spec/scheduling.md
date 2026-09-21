@@ -23,7 +23,7 @@ Given a card whose preset has **"Use RWKV-Curve for answer intervals"**
 enabled, the unrounded interval RWKV-Curve supplies for each button replaces
 FSRS's interval for that button, and the answer states are then built by the
 same rules as FSRS intervals (`sched.sub-day-intervals`): a sub-day interval
-goes to the intraday queue; an interval of 12 hours or more gets the same
+goes to the intraday queue; an interval of 18 hours or more gets the same
 review fuzz, the same load balancer, the same sibling dispersal
 (`sched.sibling-dispersal-gate`), the same 90-day load-balance limit, and the
 same floors — Again on a review card, and on a relearning card without
@@ -865,7 +865,7 @@ Good, Easy:
 
 - a button decided by a remaining learning or relearning step keeps the
   step's delay and takes no part in what follows;
-- a button whose unrounded interval is under 12 hours goes to the
+- a button whose unrounded interval is under 18 hours goes to the
   intraday learning queue with that interval in seconds, unrounded and
   without review fuzz (at least the preset's minimum interval, 1 second by
   default), and at least as long as the sub-day button before it; a
@@ -873,9 +873,9 @@ Good, Easy:
   relearning card with no remaining steps (a passing answer keeps its lapse
   count, and the card's interval field holds a whole number of days, at
   least 1);
-- a button of 12 hours or more gets whole days (at least 1) after review
+- a button of 18 hours or more gets whole days (at least 1) after review
   fuzz, and at least one day more than the day button before it: with all
-  four at 12 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
+  four at 18 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
   Easy ≥ Good + 1. The fuzz range and the load balancer take the unrounded
   interval for every card (new, learning, relearning and review), so, with
   the same fuzz, 6.6 days gives the same range (5–8 days) on a new card as
@@ -904,17 +904,24 @@ ordering rule for mixed sub-day and day buttons is the one he approved.
 Later the same day, after an audit showed that a sub-day interval longer
 than the time left until the day rollover is cut short at the rollover:
 "Anything >=12h rounds up to 1d" (a shorter interval that crosses the
-rollover stays due at the rollover). The same audit showed the straight
-line between grid points overshooting; Andrew chose to find the crossing on
-RWKV-Curve's curve itself.
-Before this entry only learning and relearning answers under half a day
-went intraday, a review card's Again never did (it was clamped to the
-minimum lapse interval first), and RWKV-Curve rounded up to whole days.
-The FSRS-7 interval audit (2026-09-15; Andrew: fix it) found new, learning
-and relearning buttons fuzzed from the interval rounded to whole days (6.6
-days gave the range 5–9 days, a review card 5–8), an upstream leftover.
+rollover stays due at the rollover). Andrew, 2026-09-21: "Currently, any
 
-**Pinned by:** `button_intervals::test::*`
+> =12h interval is rounded to 1d. Raise that to 18h." The rollover reason
+> still holds and now covers a wider band: an interval between 12 and 18 hours
+> stays intraday, so one given in the morning is cut short at the rollover
+> rather than rounding to a day. The same audit showed the straight
+> line between grid points overshooting; Andrew chose to find the crossing on
+> RWKV-Curve's curve itself.
+> Before this entry only learning and relearning answers under half a day
+> went intraday, a review card's Again never did (it was clamped to the
+> minimum lapse interval first), and RWKV-Curve rounded up to whole days.
+> The FSRS-7 interval audit (2026-09-15; Andrew: fix it) found new, learning
+> and relearning buttons fuzzed from the interval rounded to whole days (6.6
+> days gave the range 5–9 days, a review card 5–8), an upstream leftover.
+
+**Pinned by:** `button_intervals::test::*`, and for the threshold itself
+`eighteen_hours_or_more_is_a_whole_day` and
+`the_sub_day_limit_is_eighteen_hours`
 (`rslib/src/scheduler/states/button_intervals.rs`),
 `scheduling_states_with_intervals_apply_the_fsrs_rules`
 (`rslib/src/scheduler/answering/mod.rs`),
