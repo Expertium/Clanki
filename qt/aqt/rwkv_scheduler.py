@@ -13034,12 +13034,39 @@ def _run_in_background(
     calls `on_done` back on the main thread (spec
     sched.rwkv-startup-no-window). Raises where the task manager cannot take
     it, so the caller can fall back the same way it does for a window that
-    fails to open."""
+    fails to open.
+
+    NOT on the task manager's collection worker. There is one of those and it
+    runs one task at a time, so the start-up restore, which takes seconds on a
+    large collection, holds it with clicking a deck, the deck list, the Browser
+    and answering a card queued behind it (report B-011: the first click on a
+    deck took 2.3 s, and the restore was nearly all of it). The recordings pass
+    learned the same lesson and took a thread of its own.
+
+    The collection-use count is kept by hand instead, so that a periodic backup
+    still waits for this work as it did before (spec ui.periodic-backup-waits).
+    """
     taskman = getattr(mw, "taskman", None)
     run_in_background = getattr(taskman, "run_in_background", None)
     if not callable(run_in_background):
         raise RuntimeError("no task manager to run the RWKV work in the background")
-    run_in_background(task, on_done, uses_collection=True)
+    use_started = getattr(taskman, "collection_use_started", None)
+    use_finished = getattr(taskman, "collection_use_finished", None)
+    counted = callable(use_started) and callable(use_finished)
+    if counted:
+        use_started()
+
+    def finished(future: Future[_T]) -> None:
+        if counted:
+            use_finished()
+        on_done(future)
+
+    try:
+        run_in_background(task, finished, uses_collection=False)
+    except Exception:
+        if counted:
+            use_finished()
+        raise
 
 
 def refresh_rwkv_state_after_sync(
