@@ -122,13 +122,21 @@ class RwkvColumnValues:
     ) -> None:
         """Put the card's RWKV text into the row's cells (column indices, or
         None when the column is not shown), and ask for a fresh value if the
-        one it has is missing or stale."""
+        one it has is missing or stale.
+
+        A column index that the row does not reach writes nothing. The table
+        keeps its rows in a cache and draws a stale one while it waits for
+        the new one, so a row built when fewer columns were shown can arrive
+        here with fewer cells than the columns shown now. That row is
+        replaced by itself a moment later, with every column in it (Andrew,
+        2026-09-21, report B-013)."""
         value = self._values.get(card_id)
         if value is not None:
-            if retrievability is not None:
-                row.cells[retrievability].text = value.retrievability
-            if stability is not None:
-                row.cells[stability].text = (
+            cells = row.cells
+            if retrievability is not None and retrievability < len(cells):
+                cells[retrievability].text = value.retrievability
+            if stability is not None and stability < len(cells):
+                cells[stability].text = (
                     value.stability if self.algorithm == "rwkvCurve" else ""
                 )
         if value is None or self._stale(value):

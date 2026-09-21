@@ -395,3 +395,34 @@ def test_the_collection_algorithm_is_read_as_the_backend_reads_it(
         decks=SimpleNamespace(get_config=lambda conf_id: default_preset),
     )
     assert rwkv_scheduler.collection_algorithm(col) == algorithm
+
+
+# Andrew, 2026-09-21 (report B-013): opening Browse filled the log with
+#     File "qt/aqt/browser/table/rwkv_values.py", line 129, in fill
+#       row.cells[retrievability].text = value.retrievability
+#     IndexError: tuple index out of range
+# The table keeps rows in a cache and hands back a stale one while it waits
+# for the new one, but the column indices come from the columns shown NOW. A
+# row built when fewer columns were shown has fewer cells than those indices
+# reach.
+def test_a_row_from_an_older_column_layout_is_left_alone(clock: list[float]) -> None:
+    harness = Harness("rwkvCurve")
+    harness.results = {
+        7: RwkvBrowserValue(retrievability=0.95, s90=318.0, elapsed_seconds=40 * DAY)
+    }
+    # ask for the value and let the background work finish
+    harness.fill(7)
+    harness.run_timers()
+    assert harness.changed == [[7]]
+
+    # now the same card is drawn in a row of two cells, while Retrievability
+    # and Stability sit at indices 3 and 4 of the columns shown now
+    short = Row()
+    short.cells = short.cells[:2]
+    harness.values.fill(7, short, 3, 4)  # type: ignore[arg-type]
+    assert [cell.text for cell in short.cells] == ["front", ""]
+
+    # a row that does hold the columns still gets the values
+    row = harness.fill(7)
+    assert row.cells[1].text == "95%"
+    assert row.cells[2].text != ""
