@@ -1504,7 +1504,8 @@ user's own rebuild, never to opening a page.
 `bulk_warm_up_curve_values_match_sequential_over_a_batch`
 (`rslib/src/rwkv/mod.rs`),
 `the_same_reviews_always_give_the_same_interval`,
-`the_parallel_bootstrap_draws_what_one_thread_drew`
+`the_parallel_bootstrap_draws_what_one_thread_drew`,
+`the_ratings_read_are_the_searched_cards_ratings`
 (`rslib/src/stats/review_metrics.rs`),
 `the_newest_row_of_each_review_is_the_one_read`
 (`rslib/src/storage/revlog/mod.rs`);

@@ -152,6 +152,55 @@ impl FromSql for RevlogReviewKind {
     }
 }
 
+/// One rating of the search, as the model-quality graphs read it.
+pub(crate) struct SearchedRating {
+    pub id: RevlogId,
+    pub cid: CardId,
+    pub button_chosen: u8,
+}
+
+/// One prediction per review, from rows that arrive in review order.
+///
+/// This is the row `row_number() over (partition by revlog_id order by
+/// updated_at desc, fold_index desc, source)` numbered 1, picked while the
+/// rows stream instead of by sorting them: the ordering index already
+/// groups a review's rows together, so the sorter the window function
+/// needed was the whole extra cost. Two rows of one review differ in
+/// `fold_index` or in `source`, because both are part of the key, so the
+/// order is total and the winner is the same row either way.
+fn newest_prediction_of_each_review(mut rows: rusqlite::Rows<'_>) -> Result<Vec<(RevlogId, f32)>> {
+    let mut newest: Vec<(RevlogId, f32)> = vec![];
+    // the winning row's ordering columns; `best_source` is one buffer that
+    // is written over, so a review with a single row allocates nothing
+    let (mut best_updated_at, mut best_fold_index) = (0i64, 0i64);
+    let mut best_source = String::new();
+    while let Some(row) = rows.next()? {
+        let review: RevlogId = row.get(0)?;
+        let prediction: f32 = row.get(1)?;
+        let updated_at: i64 = row.get(2)?;
+        let fold_index: i64 = row.get(3)?;
+        let source = row.get_ref(4)?.as_str().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, error.into())
+        })?;
+        if newest.last().is_some_and(|(last, _)| *last == review) {
+            // a later row of the review being read wins only if it sorts
+            // before the winner so far: newer first, then the higher fold,
+            // then the lower source
+            let (key, best) = ((updated_at, fold_index), (best_updated_at, best_fold_index));
+            if key < best || (key == best && source >= best_source.as_str()) {
+                continue;
+            }
+            newest.last_mut().expect("just read").1 = prediction;
+        } else {
+            newest.push((review, prediction));
+        }
+        (best_updated_at, best_fold_index) = (updated_at, fold_index);
+        best_source.clear();
+        best_source.push_str(source);
+    }
+    Ok(newest)
+}
+
 fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
     Ok(RevlogEntry {
         id: row.get(0)?,
@@ -603,7 +652,24 @@ impl SqliteStorage {
             .collect()
     }
 
-    /// One algorithm's newest prediction of each review, from one role.
+    /// Whether ONE algorithm and ONE role have a row at all.
+    ///
+    /// An algorithm that takes the first role it has rows for asks only
+    /// this. Counting the rows of every role instead reads the whole index
+    /// of a table that holds a row per review.
+    pub(crate) fn review_prediction_role_exists(&self, algorithm: i32, role: &str) -> Result<bool> {
+        self.ensure_review_predictions_schema()?;
+        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+        self.db
+            .prepare_cached(&format!(
+                "select exists(select 1 from {table} where algorithm = ?1 and sample_role = ?2)"
+            ))?
+            .query_row((algorithm, role), |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    /// One algorithm's newest prediction of each review, from one role, by
+    /// ascending review id.
     pub(crate) fn review_predictions_of(
         &self,
         algorithm: i32,
@@ -612,22 +678,14 @@ impl SqliteStorage {
     ) -> Result<Vec<(RevlogId, f32)>> {
         self.ensure_review_predictions_schema()?;
         let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
-        self.db
-            .prepare_cached(&format!(
-                "select revlog_id, prediction from (
-                     select revlog_id, prediction, row_number() over (
-                         partition by revlog_id
-                         order by updated_at desc, fold_index desc, source
-                     ) as rank
-                     from {table}
-                     where algorithm = ?1 and sample_role = ?2 and revlog_id > ?3
-                 )
-                 where rank = 1"
-            ))?
-            .query_and_then((algorithm, sample_role, after.0), |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
-            .collect()
+        let mut statement = self.db.prepare_cached(&format!(
+            "select revlog_id, prediction, updated_at, fold_index, source
+             from {table}
+             where algorithm = ?1 and sample_role = ?2 and revlog_id > ?3
+             order by revlog_id"
+        ))?;
+        let rows = statement.query((algorithm, sample_role, after.0))?;
+        newest_prediction_of_each_review(rows)
     }
 
     /// The curve-source tables live in the cache file beside the
@@ -771,8 +829,9 @@ impl SqliteStorage {
 
     /// The cached per-review predictions of one model and one sample role,
     /// for the ratings of the cards in `search_cids` from `after` on: the
-    /// newest row of each review (spec ui.stats-model-metrics). The caller
-    /// picks the role; rows of other roles are never mixed in.
+    /// newest row of each review, by ascending review id (spec
+    /// ui.stats-model-metrics). The caller picks the role; rows of other
+    /// roles are never mixed in.
     pub(crate) fn cached_review_predictions(
         &self,
         table: &str,
@@ -780,21 +839,14 @@ impl SqliteStorage {
         after: TimestampMillis,
     ) -> Result<Vec<(RevlogId, f32)>> {
         let table = Self::qualified_retrievability_cache_table(table);
-        self.db
-            .prepare_cached(&format!(
-                "select revlog_id, prediction from (
-                     select revlog_id, prediction, row_number() over (
-                         partition by revlog_id
-                         order by updated_at desc, fold_index desc, source
-                     ) as rank
-                     from {table}
-                     where sample_role = ?1
-                       and revlog_id > ?2
-                 )
-                 where rank = 1"
-            ))?
-            .query_and_then((sample_role, after.0), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
+        let mut statement = self.db.prepare_cached(&format!(
+            "select revlog_id, prediction, updated_at, fold_index, source
+             from {table}
+             where sample_role = ?1 and revlog_id > ?2
+             order by revlog_id"
+        ))?;
+        let rows = statement.query((sample_role, after.0))?;
+        newest_prediction_of_each_review(rows)
     }
 
     /// The decks whose cards hold rated reviews that no `validation_fold`
@@ -844,6 +896,22 @@ impl SqliteStorage {
                  );"
         ))?;
         Ok(self.db.changes() as usize)
+    }
+
+    /// Whether ONE role of a legacy table has a row at all; see
+    /// `review_prediction_role_exists`.
+    pub(crate) fn cached_review_prediction_role_exists(
+        &self,
+        table: &str,
+        role: &str,
+    ) -> Result<bool> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        self.db
+            .prepare_cached(&format!(
+                "select exists(select 1 from {table} where sample_role = ?1)"
+            ))?
+            .query_row((role,), |row| row.get(0))
+            .map_err(Into::into)
     }
 
     /// How many predictions each sample role holds, newest first by count:
@@ -1123,6 +1191,53 @@ order by e.id, e.cid"
             .prepare_cached(sql)?
             .query_and_then([after.0 * 1000], row_to_revlog_entry)?
             .collect()
+    }
+
+    /// The searched cards' ratings that affect scheduling, from `after` on,
+    /// in no particular order (spec ui.stats-model-metrics).
+    ///
+    /// The model-quality graphs read three columns of a review and test two
+    /// more; the full review-log row carries four the graphs never look at,
+    /// and a large collection decodes 800000 of them.
+    ///
+    /// `many_cards`: the search matched a large part of the collection, so
+    /// the review log is read in id order and the searched cards' rows are
+    /// kept, as `get_revlog_entries_for_searched_cards_after_stamp` explains.
+    pub(crate) fn searched_ratings_that_affect_scheduling(
+        &self,
+        after: TimestampMillis,
+        many_cards: bool,
+    ) -> Result<Vec<SearchedRating>> {
+        let sql = if many_cards {
+            "select id, cid, ease, factor, type from revlog
+             where id > ?1 and +cid in (select cid from search_cids)"
+        } else {
+            "select id, cid, ease, factor, type from revlog
+             where cid in (select cid from search_cids) and id > ?1"
+        };
+        let mut statement = self.db.prepare_cached(sql)?;
+        let mut rows = statement.query([after.0])?;
+        let mut ratings = vec![];
+        while let Some(row) = rows.next()? {
+            // `factor` and `type` only decide whether the rating counts;
+            // the kept row carries the answer alone
+            let entry = RevlogEntry {
+                id: row.get(0)?,
+                cid: row.get(1)?,
+                button_chosen: row.get(2)?,
+                ease_factor: row.get(3)?,
+                review_kind: row.get(4).unwrap_or_default(),
+                ..Default::default()
+            };
+            if entry.has_rating_and_affects_scheduling() {
+                ratings.push(SearchedRating {
+                    id: entry.id,
+                    cid: entry.cid,
+                    button_chosen: entry.button_chosen,
+                });
+            }
+        }
+        Ok(ratings)
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards(&self) -> Result<Vec<RevlogEntry>> {
