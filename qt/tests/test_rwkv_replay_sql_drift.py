@@ -210,3 +210,131 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
         assert stopped and len(calls) == 1
     finally:
         col.close()
+
+
+def _build_replay_collection(col: Collection) -> None:
+    learning = (3, 0, 2500)
+    shapes = [
+        [learning, RATED_REVIEW, RATED_RELEARNING, RATED_REVIEW],
+        [RATED_REVIEW, RATED_REVIEW, FORGET, RATED_REVIEW, RATED_RELEARNING],
+        [learning, learning, RATED_REVIEW, FORGET, learning, RATED_REVIEW],
+        [RATED_REVIEW, RATED_RELEARNING],
+    ]
+    for n in range(25):
+        _add_card_with_history(col, 1_700_000_000_000 + n * 7_919, shapes[n % 4])
+
+
+def test_a_read_after_a_review_id_returns_the_same_rows_as_the_whole_read(
+    tmp_path: Path,
+) -> None:
+    """The rows of a read after a review id, kept equal to the whole read.
+
+    The query for a read after a review id scans only the cards that have a
+    review that late. The rows it returns must still be exactly the rows the
+    whole-history read returns after the same point, start rows included: a
+    card's start row comes from its whole history, and the restriction is by
+    card, never by review id.
+    """
+    col = Collection(str(tmp_path / "rwkv-replay-after.anki2"))
+    try:
+        _build_replay_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        whole = rwkv_scheduler._historical_rwkv_review_rows(reviewer)
+        assert len(whole) > 50
+        review_ids = sorted({int(row[0]) for row in whole})
+
+        for cutoff in (
+            review_ids[0],
+            review_ids[len(review_ids) // 3],
+            review_ids[len(review_ids) // 2],
+            review_ids[-2],
+        ):
+            after = rwkv_scheduler._historical_rwkv_review_rows(
+                reviewer, after_review_id=cutoff
+            )
+            expected = [row for row in whole if int(row[0]) > cutoff]
+            assert [tuple(row) for row in after] == [tuple(row) for row in expected], (
+                f"the read after {cutoff} disagrees with the whole read"
+            )
+            # the cut has to be doing something, or this proves nothing
+            assert 0 < len(after) < len(whole)
+
+        # the same, in parts, because the start-up read runs the query split
+        split = rwkv_scheduler._historical_rwkv_review_rows(
+            reviewer,
+            after_review_id=review_ids[len(review_ids) // 2],
+            between_parts=lambda: None,
+        )
+        expected = [
+            row for row in whole if int(row[0]) > review_ids[len(review_ids) // 2]
+        ]
+        assert [tuple(row) for row in split] == [tuple(row) for row in expected]
+    finally:
+        col.close()
+
+
+def test_an_incremental_read_matches_a_whole_read_of_the_enlarged_history(
+    tmp_path: Path,
+) -> None:
+    """The result of an incremental read, kept equal to the whole read.
+
+    This is the post-sync path: the state cache holds the history up to a
+    review id, new reviews arrive, and only they are read. The result must be
+    the whole history's result, value for value -- including `review_count`,
+    which counts every review in the collection and not only the new ones.
+    """
+    col = Collection(str(tmp_path / "rwkv-replay-incremental.anki2"))
+    try:
+        _build_replay_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        before = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        assert before.review_count > 50
+
+        # reviews arrive for cards that already have a history, and for one
+        # that does not, which is the shape a sync brings
+        day = 86_400 * 1000
+        for n, card_id in enumerate(
+            (1_700_000_000_000, 1_700_000_000_000 + 7_919, 1_700_000_999_999)
+        ):
+            if card_id == 1_700_000_999_999:
+                # the card itself, with no history: its only review is the
+                # one below, which arrives after the cutoff
+                _add_card_with_history(col, card_id, [])
+            col.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, "
+                "time, type) values (?, ?, -1, 3, 12, 10, 2500, 1000, 1)",
+                before.last_review_id + (n + 1) * day,
+                card_id,
+            )
+
+        after_whole = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        incremental = rwkv_scheduler._historical_rwkv_review_inputs(
+            reviewer,
+            after_review_id=before.last_review_id,
+            previous_review_id_by_card=dict(before.previous_review_id_by_card),
+            previous_interval_days_by_card=dict(before.previous_interval_days_by_card),
+            review_count_by_card=dict(before.review_count_by_card),
+            previous_history_hash=before.history_hash,
+            previous_replay_key=before.replay_key,
+        )
+
+        new_review_count = after_whole.review_count - before.review_count
+        assert new_review_count > 0
+        assert len(incremental.reviews) == new_review_count
+        assert incremental.reviews == after_whole.reviews[-new_review_count:]
+        assert incremental.review_ids == after_whole.review_ids[-new_review_count:]
+        # the counts and the identity are of the whole collection, not of the
+        # part that was read
+        assert incremental.review_count == after_whole.review_count
+        assert incremental.last_review_id == after_whole.last_review_id
+        assert incremental.history_hash == after_whole.history_hash
+        assert incremental.replay_key == after_whole.replay_key
+        assert (
+            incremental.previous_review_id_by_card
+            == after_whole.previous_review_id_by_card
+        )
+        assert incremental.review_count_by_card == after_whole.review_count_by_card
+    finally:
+        col.close()
