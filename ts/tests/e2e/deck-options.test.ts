@@ -55,7 +55,7 @@ test("Simple mode shows desired retention but no Algorithm dropdown", async ({ p
     await expect.poll(() => visibleCount(page, "Desired retention")).toBeGreaterThan(0);
 
     await expect(page.getByRole("checkbox", { name: /^FSRS\b/ })).toHaveCount(0);
-    expect(await visibleCount(page, "Bury siblings")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Hide related cards until tomorrow")).toBeGreaterThan(0);
     expect(await visibleCount(page, "Algorithm")).toBe(0);
     expect(await visibleCount(page, "Algorithm (global)")).toBe(0);
     await expect(
@@ -234,4 +234,38 @@ test("a kept page switched to a deck shows the collection's current settings", a
     } finally {
         await setAdvancedUi(page, false);
     }
+});
+
+// Pins spec/deck-options.md#deck-options.simple-view (one bury switch) and
+// #deck-options.glossary-term (the underlined words).
+test("burying is one switch with the same name in both modes", async ({ page }) => {
+    for (const advanced of [false, true]) {
+        await setAdvancedUi(page, advanced);
+        await page.goto("/deck-options/1");
+        await expect
+            .poll(() => visibleCount(page, "Hide related cards until tomorrow"))
+            .toBe(1);
+        // the three per-type switches are gone from both modes
+        for (
+            const gone of [
+                "Bury new siblings",
+                "Bury review siblings",
+                "Bury interday learning siblings",
+            ]
+        ) {
+            expect(await visibleCount(page, gone)).toBe(0);
+        }
+    }
+});
+
+test("the words \"related cards\" explain themselves on hover", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    await page.goto("/deck-options/1");
+    const term = page.locator(".glossary-term", { hasText: "related cards" }).first();
+    await expect(term).toBeVisible();
+
+    await term.hover();
+    await expect(
+        page.getByText("cards that belong to the same note"),
+    ).toBeVisible();
 });

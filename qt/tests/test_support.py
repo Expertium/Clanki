@@ -56,6 +56,15 @@ def test_support_window_labels_the_manual_link_as_ankis() -> None:
     assert "not clanki's" in lowered
 
 
+def test_support_window_heading_names_the_project_not_the_author() -> None:
+    """The heading asks for support for Clanki's development, not for Andrew
+    by name (spec branding.support-window)."""
+    html = aqt.support._support_html()
+    lowered = html.lower()
+    assert "support development of clanki specifically" in lowered
+    assert "andrew" not in lowered
+
+
 def test_support_window_shows_the_address_kept_apart_from_the_manual_link() -> None:
     """The Ethereum section comes after a visual separator, not interleaved
     with the manual link (spec branding.support-window: "kept visually

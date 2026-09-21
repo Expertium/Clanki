@@ -349,6 +349,35 @@ knobs have defaults that suit nearly everyone.
 (`rslib/src/deckconfig/update.rs`) for the flag plumbing. The visibility
 itself is markup and has no unit test.
 
+## deck-options.glossary-term
+
+Given a deck-options label that contains a word the user may not know, that
+word carries a dotted underline and a short explanation that appears when the
+pointer rests on it or the word takes keyboard focus. The underline is drawn
+at all times, so the word says it can be asked about before it is hovered.
+The explanation is a few words with no full stop, and is plain text: a
+translation cannot put markup in it. Clicking the label still opens the
+setting's own help, as any label does.
+
+Today one label uses this: "Hide related cards until tomorrow", where
+"related cards" reads "cards that belong to the same note"
+(`deck-options.simple-view`).
+
+The words to underline are a translated string of their own. When that string
+is not inside the translated label -- a translation free to word the label its
+own way -- nothing is underlined and the label is shown plain, rather than
+underlining the wrong words.
+
+**Why:** Andrew, 2026-09-21: "'Related cards' is underlined and it displays
+'cards that belong to the same note'. This way the user will get what this
+setting does even without clicking on the tooltip." A setting's help opens on
+a click the user has to decide to make, and one word in a label is often the
+whole difficulty. He noted that nothing in Anki does this today, which is why
+it is one component rather than markup repeated per setting.
+
+**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the label is
+split around the term, and a label without the term is left plain).
+
 ## deck-options.simple-view
 
 Given the collection flag `advancedUi` off (Simple mode, the default;
@@ -399,7 +428,26 @@ by default). A setting the user adds goes where it belongs:
   mode's order; a section is drawn only when it has such a setting, and
   it shows only those.
 
-The Bury siblings switch stands for three stored settings: it reads as on
+Burying is one switch, drawn the same way in both modes and named "Hide
+related cards until tomorrow". Its help says what a related card is and what
+the switch does, in two short paragraphs. Neither the name nor the help says
+"bury" or "sibling", because a new user has to be taught both words first.
+The words "related cards" inside the label carry a dotted underline and
+explain themselves on hover, with "cards that belong to the same note"
+(`deck-options.glossary-term`); the underline is always drawn, so the label
+answers the question without a click. A translation that words the label
+differently, so that the term is not inside it, underlines nothing and shows
+the label plain.
+
+Advanced mode draws that same switch in its "Burying" section and has no
+others: the three per-type switches ("Bury new siblings", "Bury review
+siblings", "Bury interday learning siblings") are gone from the screen, so
+no mode can set the three stored settings individually. A preset that
+arrives with some but not all of them on, from another client, shows "Partly
+on" and is normalised by toggling the switch. Preferences > UI split lists
+one item for burying, under the switch's name.
+
+That switch stands for three stored settings: it reads as on
 only while `buryNew`, `buryReviews` and `buryInterdayLearning` are all on;
 turning it on or off writes all three. Showing a preset writes nothing: a
 preset with some but not all three bury settings on keeps them until the
@@ -428,9 +476,17 @@ the settings a new user needs; everything else belongs to Advanced mode.
 One bury switch is enough there, because the split settings only matter to
 power users. Andrew, 2026-09-15: "Stop on-screen timer on answer" is gone
 from both modes (`review.timer-keeps-running`), so the timer switch stands
-for one setting and needs no "Partly on" caption.
+for one setting and needs no "Partly on" caption. Andrew, 2026-09-21:
+Simple mode needed a beginner-friendly name for the bury switch, so it
+says "Hide related cards until tomorrow" with a shorter help. Later the
+same day he collapsed the three Advanced switches into that one and gave
+it the same name in both modes: "This way the user will get what this
+setting does even without clicking on the tooltip." Told that no mode
+could then set the three settings individually, he kept the design: a
+per-card-type bury choice is a power-user knob Clanki is shedding.
 
-**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined switch);
+**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined
+switch, and Simple mode's name and help);
 `ts/routes/deck-options/ui-split.test.ts` (the default draws the Simple
 section only; added settings go to the Simple section or their own
 section, once; Advanced mode draws every setting) and

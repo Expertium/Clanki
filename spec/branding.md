@@ -89,9 +89,10 @@ to link straight to Anki's own support page), a small dialog is shown
 instead, holding three things in order: a fork clarification consistent
 with the About window; a link to Anki's own manual
 (`https://docs.ankiweb.net`), labelled as Anki's, not Clanki's; and, kept
-visually apart from the other two (a horizontal rule, its own heading),
-Andrew's Ethereum address for anyone who wants to support Clanki's author
-specifically, plus a "Copy address" button that copies it to the clipboard.
+visually apart from the other two (a horizontal rule, its own heading
+"Support development of Clanki specifically", which names the project and
+not a person), Andrew's Ethereum address for anyone who wants to support
+Clanki, plus a "Copy address" button that copies it to the clipboard.
 The address is a Python constant
 (`aqt.support.CLANKI_AUTHOR_ETHEREUM_ADDRESS`, EIP-55 checksummed —
 its mixed upper/lower-case letters are not to be normalised), never
@@ -104,9 +105,11 @@ that says: 1) A clarification that this is a fork 2) A link to the
 official Anki manual 3) My Ethereum address, in case somebody wants to
 support me specifically." The address must be exact and copyable: a wrong
 character sends a stranger's money to nobody, and retyping 42 characters by
-hand is how people lose money.
+hand is how people lose money. Andrew, 2026-09-21: the heading asks for
+support for Clanki's development, not for him by name.
 
 **Pinned by:** `test_support_window_states_it_is_a_fork`,
+`test_support_window_heading_names_the_project_not_the_author`,
 `test_support_window_labels_the_manual_link_as_ankis`,
 `test_support_window_ethereum_address_is_exact`,
 `test_support_window_ethereum_address_is_not_in_any_ftl_file`

@@ -724,14 +724,20 @@ deck-config-bury-siblings = Bury siblings
 # Caption under a Simple-mode switch that stands for several Advanced-mode
 # settings, when only some of them are on.
 deck-config-partly-on = Partly on (set in Advanced mode)
-# Help text of the Simple-mode "Bury siblings" switch, shown before the
-# three per-type explanations.
-deck-config-bury-siblings-simple-tooltip =
-    Siblings are the other cards made from the same note: for example the reverse card of a "Basic (and reversed card)" note, or the other cloze deletions of one cloze note.
+# The one burying switch, in both UI modes. It replaced "Bury siblings" and
+# the three per-type switches, and avoids the words "bury" and "sibling".
+deck-config-hide-related-cards = Hide related cards until tomorrow
+# The part of the label above that explains itself on hover. It must appear
+# in deck-config-hide-related-cards exactly, or no word is underlined and the
+# label is shown plain.
+deck-config-hide-related-cards-term = related cards
+# Shown when the underlined words above are hovered. A few words, no period.
+deck-config-hide-related-cards-hover = cards that belong to the same note
+# Help text of the "Hide related cards until tomorrow" switch.
+deck-config-hide-related-cards-tooltip =
+    Related cards are the other cards made from the same note, such as a reverse card or another cloze deletion.
 
-    Burying a card hides it until the next day. So when you have just answered one card of a note, its siblings wait until tomorrow, and the card you just saw cannot give away the answer to the next one.
-
-    In Simple mode this one switch stands for the three burying settings of Advanced mode (Bury new siblings, Bury review siblings, Bury interday learning siblings). Turning it on turns all three on; turning it off turns all three off. The three settings are explained below.
+    When this is on, you answer one card and its related cards wait until the next day. The card you just saw cannot give away the next answer.
 deck-config-do-not-bury = Do not bury siblings
 deck-config-bury-if-new = Bury if new
 deck-config-bury-if-new-or-review = Bury if new or review

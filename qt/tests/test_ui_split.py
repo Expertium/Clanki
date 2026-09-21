@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -239,9 +240,6 @@ TODAY: dict[str, bool] = {
             "rwkvRefreshInterval",
             "rwkvRefreshOnExit",
             "rwkvMaintenance",
-            "buryNew",
-            "buryReviews",
-            "buryInterdayLearning",
             "skipQuestionWhenReplaying",
             "maximumAnswerSecs",
             "secondsToShowQuestion",
@@ -896,3 +894,96 @@ def test_the_tab_offers_three_choices_and_stores_one_at_once(
     combo.setCurrentIndex(combo.findData(ui_split.RECALL_PLAIN))
     assert ui_split.recall_wording(mw.col) == ui_split.RECALL_PLAIN
     assert column.text(0) == tr.card_stats_fsrs_retrievability_plain()
+
+
+# Pins spec/deck-options.md#deck-options.simple-view (Simple mode's name for
+# the bury switch). The English text is read from the ftl source rather than
+# through tr.*(): other tests in this folder change the language for the
+# process, so a tr.*() assertion here passes or fails by test order. The
+# wiring to the key is checked separately, which no language affects.
+# It is not in ts/routes/deck-options/bury-siblings.test.ts because vitest
+# loads no Fluent bundle: there every tr.*() returns "missing key: <key>".
+
+DECK_CONFIG_FTL = Path(__file__).parents[2] / "ftl" / "core" / "deck-config.ftl"
+
+
+def english_message(key: str, path: Path = DECK_CONFIG_FTL) -> str:
+    """The message's English text, straight out of the ftl source.
+
+    Fluent puts a one-line message after "key = " and an indented block under
+    "key =", with blank lines allowed inside the block.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{key} ="):
+            continue
+        head = line.split("=", 1)[1].strip()
+        if head:
+            return head
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following.strip() and not following.startswith(" "):
+                break
+            body.append(following.strip())
+        return "\n".join(body).strip()
+    raise AssertionError(f"{key} is not in {path.name}")
+
+
+def test_simple_mode_names_the_bury_switch_without_bury_or_sibling() -> None:
+    title = english_message("deck-config-hide-related-cards")
+    assert title == "Hide related cards until tomorrow"
+    assert "bury" not in title.lower()
+    assert "sibling" not in title.lower()
+
+
+def test_the_ui_split_row_uses_simple_modes_name() -> None:
+    from aqt.utils import tr
+
+    rows = [
+        row
+        for _section, items in ui_split.DECK_OPTIONS_SETTINGS
+        for row in items
+        if row[0] == "burySiblings"
+    ]
+    assert len(rows) == 1
+    # bound methods of the same object are equal but not identical
+    assert rows[0][1] == tr.deck_config_hide_related_cards
+
+
+def test_the_three_per_type_bury_switches_are_gone() -> None:
+    """One switch in both modes, so no mode sets the three settings on their
+    own (spec deck-options.simple-view)."""
+    ids = {
+        row[0] for _section, items in ui_split.DECK_OPTIONS_SETTINGS for row in items
+    }
+    assert "burySiblings" in ids
+    for gone in ("buryNew", "buryReviews", "buryInterdayLearning"):
+        assert gone not in ids
+
+
+def test_the_underlined_term_is_inside_the_label() -> None:
+    """Otherwise nothing is underlined and the label shows plain
+    (spec deck-options.glossary-term)."""
+    title = english_message("deck-config-hide-related-cards")
+    term = english_message("deck-config-hide-related-cards-term")
+    assert term in title
+    assert term == "related cards"
+
+
+def test_the_hover_explains_the_term_without_using_it() -> None:
+    hover = english_message("deck-config-hide-related-cards-hover")
+    assert hover == "cards that belong to the same note"
+    # a few words, and no full stop: it sits in a tooltip, not a paragraph
+    assert len(hover.split()) <= 8
+    assert not hover.endswith(".")
+    # the word it exists to avoid
+    assert "sibling" not in hover.lower()
+
+
+def test_the_simple_bury_help_is_short_and_says_related_cards() -> None:
+    help_text = english_message("deck-config-hide-related-cards-tooltip")
+    assert "related cards" in help_text.lower()
+    assert "sibling" not in help_text.lower()
+    # two short paragraphs, not the five-part Advanced text
+    assert len(help_text) < 400
+    assert help_text.count("\n\n") == 1
