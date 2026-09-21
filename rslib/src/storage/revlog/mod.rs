@@ -830,10 +830,14 @@ impl SqliteStorage {
     }
 
     /// The cached per-review predictions of one model and one sample role,
-    /// for the ratings of the cards in `search_cids` from `after` on: the
-    /// newest row of each review, by ascending review id (spec
-    /// ui.stats-model-metrics). The caller picks the role; rows of other
-    /// roles are never mixed in.
+    /// from `after` on: the newest row of each review, by ascending review
+    /// id (spec ui.stats-model-metrics). The caller picks the role; rows of
+    /// other roles are never mixed in.
+    ///
+    /// This asks the retrievability-cache sidecar and nothing else. It does
+    /// not name the search's `search_cids` table - the caller joins the two
+    /// lists, which are both in review order - so it can run on a
+    /// connection that has only the sidecar attached.
     pub(crate) fn cached_review_predictions(
         &self,
         table: &str,
