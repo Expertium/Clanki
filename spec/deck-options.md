@@ -359,6 +359,12 @@ The explanation is a few words with no full stop, and is plain text: a
 translation cannot put markup in it. Clicking the label still opens the
 setting's own help, as any label does.
 
+Such a label is not underlined as a whole while the pointer is on it, unlike
+every other deck-options label. Two dotted underlines at once, one under the
+label and one under the term, read as a single underline and neither says
+anything. A label whose translation does not contain the term underlines
+nothing of its own and keeps the ordinary whole-label hover underline.
+
 Today one label uses this: "Hide related cards until tomorrow", where
 "related cards" reads "cards that belong to the same note"
 (`deck-options.simple-view`).
@@ -376,7 +382,8 @@ whole difficulty. He noted that nothing in Anki does this today, which is why
 it is one component rather than markup repeated per setting.
 
 **Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the label is
-split around the term, and a label without the term is left plain).
+split around the term, and a label without the term is left plain);
+`ts/tests/e2e/deck-options.test.ts` ("only the term is underlined").
 
 ## deck-options.simple-view
 
