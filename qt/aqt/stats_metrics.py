@@ -11,6 +11,14 @@ them again, and only rows that nothing fitted on the review produced are
 used. Each algorithm is scored on every rating it has a row for, and the
 graph names the ratings the algorithms share.
 
+The backend also draws each algorithm's curves from those rows and sends
+the finished series. The rows themselves never cross the boundary: Andrew's
+collection has about 2.3 million of them per algorithm, and sweeping them in
+Python cost about five seconds per algorithm on top of the transfer.
+
+This module turns those series into the page's message: it adds the reasons
+an absent series is absent, which depend on what is running in this process.
+
 The page starts the job, polls it and cancels it when it closes. The reading
 is quick, but it is still a background job: the window never waits for it,
 and a finished result is kept for the session.
@@ -20,10 +28,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 import threading
 from array import array
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,8 +53,6 @@ RWKV_INSTANT = Algorithm.RWKV_INSTANT
 # menu order, and the order of the series in the progress message
 ALGORITHMS = (FSRS_7, RWKV_CURVE, RWKV_INSTANT)
 
-# points of a drawn ROC curve; the AUC uses every point
-_CURVE_POINTS = 512
 _MAX_CACHED_RESULTS = 4
 
 
@@ -194,7 +199,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
     if job.cancel_event.is_set():
         raise InterruptedError()
     with job.lock:
-        job.scored = len(data.revlog_ids)
+        job.scored = data.scored
         job.shared = data.shared
         job.fsrs_only = data.fsrs_only
         job.rwkv_only = data.rwkv_only
@@ -204,13 +209,9 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
         job.shared_ratings = data.shared_ratings
         job.um_plus = [_copied(item) for item in data.um_plus]
 
-    fsrs = _series(
-        FSRS_7,
-        data.fsrs_predictions,
-        data.remembered,
-        data.fsrs_role,
-        data.fsrs_bins,
-    )
+    # copies, so nothing below keeps the response alive or writes into it
+    by_algorithm = {series.algorithm: _copied(series) for series in data.series}
+    fsrs = by_algorithm[FSRS_7]
     # A pass is writing FSRS-7's rows: either it has never run, or the
     # parameters changed and the backend dropped the rows they produced. Say
     # that rather than "no review it predicts", which would be wrong, and
@@ -223,13 +224,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
     # (spec sched.rwkv-recordings-automatic)
     rwkv_pass_running = aqt.rwkv_scheduler.rwkv_recordings_pass_running()
     job.set_series(fsrs)
-    instant = _series(
-        RWKV_INSTANT,
-        data.rwkv_predictions,
-        data.remembered,
-        data.rwkv_role,
-        data.rwkv_bins,
-    )
+    instant = by_algorithm[RWKV_INSTANT]
     if instant.unavailable == Unavailable.NO_REVIEWS and rwkv_pass_running:
         instant = Series(
             algorithm=RWKV_INSTANT, unavailable=Unavailable.COMPUTING_PREDICTIONS
@@ -241,13 +236,7 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
     # series is read like any other; when no row exists yet the reason says
     # that Clanki has not recorded them, never that the model cannot
     # compute them (spec ui.stats-model-metrics).
-    curve = _series(
-        RWKV_CURVE,
-        data.rwkv_curve_predictions,
-        data.remembered,
-        data.rwkv_curve_role,
-        data.rwkv_curve_bins,
-    )
+    curve = by_algorithm[RWKV_CURVE]
     if curve.unavailable == Unavailable.NO_REVIEWS:
         curve = Series(
             algorithm=RWKV_CURVE,
@@ -267,105 +256,9 @@ def _compute(mw: Any, job: _Job, search: str, days: int) -> None:
 
 def _copied(message: Any) -> Any:
     """A copy that owns its memory. A sub-message taken straight out of a
-    response shares the response's memory, so keeping it keeps the whole
-    response alive: every per-review prediction of the search, hundreds of
-    megabytes on a large collection, held after the Stats window closed."""
+    response shares the response's memory, so keeping one keeps the whole
+    response alive after the Stats window has closed, and writing to one
+    writes into the response."""
     copy = type(message)()
     copy.CopyFrom(message)
     return copy
-
-
-def _series(
-    algorithm: Algorithm.ValueType,
-    predictions: Sequence[float],
-    remembered: Sequence[bool],
-    role: str = "",
-    bins: Sequence[Any] = (),
-) -> Series:
-    """One algorithm's curves: its ROC curve with the area under it, and
-    its calibration bins as the backend binned them.
-
-    The backend sends one entry per rating that any algorithm scored, and
-    marks a rating this algorithm has no row for with NaN. Those ratings are
-    dropped here, so the series covers exactly the ratings this algorithm
-    predicted and never borrows another algorithm's value.
-    """
-    # An algorithm that sent no list at all has no rows, which is not an
-    # error: zip stops at the shorter of the two, so an empty list gives an
-    # empty series rather than an exception.
-    scored = [
-        (prediction, answer)
-        for prediction, answer in zip(predictions, remembered)
-        if math.isfinite(prediction)
-    ]
-    if not role or not scored:
-        return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
-    own_predictions = [prediction for prediction, _ in scored]
-    own_remembered = [answer for _, answer in scored]
-    points, auc = roc_curve(own_predictions, own_remembered)
-    if not points:
-        return Series(algorithm=algorithm, unavailable=Unavailable.NO_REVIEWS)
-    return Series(
-        algorithm=algorithm,
-        reviews=len(scored),
-        sample_role=role,
-        false_positive_rate=[point[0] for point in points],
-        true_positive_rate=[point[1] for point in points],
-        auc=auc,
-        bins=bins,
-        average_predicted=sum(own_predictions) / len(own_predictions),
-        actual_recall=sum(1 for answer in own_remembered if answer)
-        / len(own_remembered),
-    )
-
-
-def roc_curve(
-    predictions: Sequence[float],
-    remembered: Sequence[bool],
-    max_points: int = _CURVE_POINTS,
-) -> tuple[list[tuple[float, float]], float]:
-    """The ROC curve of one algorithm and the area under it.
-
-    A point is one threshold: the share of forgotten reviews it calls
-    remembered (x) against the share of remembered reviews it calls
-    remembered (y). Reviews with the same prediction are one step, so ties
-    move the curve diagonally and the area follows the trapezoid rule. With
-    only one kind of answer there is no curve and the area is 0.
-    """
-    pairs = sorted(zip(predictions, remembered, strict=True), reverse=True)
-    positives = sum(1 for _, value in pairs if value)
-    negatives = len(pairs) - positives
-    if not positives or not negatives:
-        return [], 0.0
-
-    points: list[tuple[float, float]] = [(0.0, 0.0)]
-    area = 0.0
-    true_positives = 0
-    false_positives = 0
-    index = 0
-    while index < len(pairs):
-        threshold = pairs[index][0]
-        while index < len(pairs) and pairs[index][0] == threshold:
-            if pairs[index][1]:
-                true_positives += 1
-            else:
-                false_positives += 1
-            index += 1
-        x = false_positives / negatives
-        y = true_positives / positives
-        previous_x, previous_y = points[-1]
-        area += (x - previous_x) * (y + previous_y) / 2
-        points.append((x, y))
-    return _thinned(points, max_points), area
-
-
-def _thinned(
-    points: list[tuple[float, float]], max_points: int
-) -> list[tuple[float, float]]:
-    """Every nth point of a long curve, with both ends kept."""
-    if len(points) <= max_points:
-        return points
-    step = (len(points) - 1) / (max_points - 1)
-    thinned = [points[round(index * step)] for index in range(max_points - 1)]
-    thinned.append(points[-1])
-    return thinned
