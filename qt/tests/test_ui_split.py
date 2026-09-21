@@ -240,9 +240,6 @@ TODAY: dict[str, bool] = {
             "rwkvRefreshInterval",
             "rwkvRefreshOnExit",
             "rwkvMaintenance",
-            "buryNew",
-            "buryReviews",
-            "buryInterdayLearning",
             "skipQuestionWhenReplaying",
             "maximumAnswerSecs",
             "secondsToShowQuestion",
@@ -953,13 +950,34 @@ def test_the_ui_split_row_uses_simple_modes_name() -> None:
     assert rows[0][1] == tr.deck_config_hide_related_cards
 
 
-def test_advanced_mode_keeps_the_word_sibling() -> None:
-    for key in (
-        "deck-config-bury-new-siblings",
-        "deck-config-bury-review-siblings",
-        "deck-config-bury-interday-learning-siblings",
-    ):
-        assert "sibling" in english_message(key).lower()
+def test_the_three_per_type_bury_switches_are_gone() -> None:
+    """One switch in both modes, so no mode sets the three settings on their
+    own (spec deck-options.simple-view)."""
+    ids = {
+        row[0] for _section, items in ui_split.DECK_OPTIONS_SETTINGS for row in items
+    }
+    assert "burySiblings" in ids
+    for gone in ("buryNew", "buryReviews", "buryInterdayLearning"):
+        assert gone not in ids
+
+
+def test_the_underlined_term_is_inside_the_label() -> None:
+    """Otherwise nothing is underlined and the label shows plain
+    (spec deck-options.glossary-term)."""
+    title = english_message("deck-config-hide-related-cards")
+    term = english_message("deck-config-hide-related-cards-term")
+    assert term in title
+    assert term == "related cards"
+
+
+def test_the_hover_explains_the_term_without_using_it() -> None:
+    hover = english_message("deck-config-hide-related-cards-hover")
+    assert hover == "cards that belong to the same note"
+    # a few words, and no full stop: it sits in a tooltip, not a paragraph
+    assert len(hover.split()) <= 8
+    assert not hover.endswith(".")
+    # the word it exists to avoid
+    assert "sibling" not in hover.lower()
 
 
 def test_the_simple_bury_help_is_short_and_says_related_cards() -> None:

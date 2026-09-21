@@ -84,7 +84,7 @@ export const SECTIONS = {
         "rwkvRefreshOnExit",
         "rwkvMaintenance",
     ],
-    burying: ["buryNew", "buryReviews", "buryInterdayLearning"],
+    burying: ["burySiblings"],
     audio: ["playAudio", "skipQuestionWhenReplaying"],
     timers: ["maximumAnswerSecs", "showTimer"],
     autoAdvance: ["secondsToShowQuestion", "secondsToShowAnswer", "waitForAudio", "questionAction", "answerAction"],

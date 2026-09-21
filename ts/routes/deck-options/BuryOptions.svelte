@@ -11,11 +11,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
-    import SettingTitle from "$lib/components/SettingTitle.svelte";
-    import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
+    import { hideRelatedCardsHelp, hideRelatedCardsTitle } from "./bury-siblings";
+    import HideRelatedCardsRow from "./HideRelatedCardsRow.svelte";
     import type { DeckOptionsState } from "./lib";
 
     export let state: DeckOptionsState;
@@ -26,20 +26,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const shown = state.settingShown;
     const defaults = state.defaults;
 
-    const priorityTooltip = "\n\n" + tr.deckConfigBuryPriorityTooltip();
-
+    // One switch, the same one Simple mode draws: the three stored settings
+    // are no longer separately settable (spec deck-options.simple-view).
     const settings = {
-        buryNewSiblings: {
-            title: tr.deckConfigBuryNewSiblings(),
-            help: tr.deckConfigBuryNewTooltip() + priorityTooltip,
-        },
-        buryReviewSiblings: {
-            title: tr.deckConfigBuryReviewSiblings(),
-            help: tr.deckConfigBuryReviewTooltip() + priorityTooltip,
-        },
-        buryInterdayLearningSiblings: {
-            title: tr.deckConfigBuryInterdayLearningSiblings(),
-            help: tr.deckConfigBuryInterdayLearningTooltip() + priorityTooltip,
+        burySiblings: {
+            title: hideRelatedCardsTitle(),
+            help: hideRelatedCardsHelp(),
         },
     };
     const helpSections: HelpItem[] = Object.values(settings);
@@ -65,56 +57,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        {#if $shown("buryNew", "section")}
+        {#if $shown("burySiblings", "section")}
             <Item>
-                <SwitchRow bind:value={$config.buryNew} defaultValue={defaults.buryNew}>
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("buryNewSiblings"),
-                            )}
-                    >
-                        {settings.buryNewSiblings.title}
-                    </SettingTitle>
-                </SwitchRow>
-            </Item>
-        {/if}
-
-        {#if $shown("buryReviews", "section")}
-            <Item>
-                <SwitchRow
-                    bind:value={$config.buryReviews}
-                    defaultValue={defaults.buryReviews}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("buryReviewSiblings"),
-                            )}
-                    >
-                        {settings.buryReviewSiblings.title}
-                    </SettingTitle>
-                </SwitchRow>
-            </Item>
-        {/if}
-
-        {#if $shown("buryInterdayLearning", "section")}
-            <Item>
-                <SwitchRow
-                    bind:value={$config.buryInterdayLearning}
-                    defaultValue={defaults.buryInterdayLearning}
-                >
-                    <SettingTitle
-                        on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf(
-                                    "buryInterdayLearningSiblings",
-                                ),
-                            )}
-                    >
-                        {settings.buryInterdayLearningSiblings.title}
-                    </SettingTitle>
-                </SwitchRow>
+                <HideRelatedCardsRow
+                    {config}
+                    {defaults}
+                    onHelp={() => openHelpModal(0)}
+                />
             </Item>
         {/if}
     </DynamicallySlottable>

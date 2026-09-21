@@ -564,18 +564,6 @@ DECK_OPTIONS_SETTINGS: list[
         ],
     ),
     (
-        tr.deck_config_bury_title,
-        [
-            ("buryNew", tr.deck_config_bury_new_siblings, False),
-            ("buryReviews", tr.deck_config_bury_review_siblings, False),
-            (
-                "buryInterdayLearning",
-                tr.deck_config_bury_interday_learning_siblings,
-                False,
-            ),
-        ],
-    ),
-    (
         tr.deck_config_audio_title,
         [
             (

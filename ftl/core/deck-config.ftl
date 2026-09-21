@@ -724,10 +724,16 @@ deck-config-bury-siblings = Bury siblings
 # Caption under a Simple-mode switch that stands for several Advanced-mode
 # settings, when only some of them are on.
 deck-config-partly-on = Partly on (set in Advanced mode)
-# Simple-mode name of the switch Advanced mode calls "Bury siblings". Simple
-# mode avoids the word "sibling" and says what the switch does.
+# The one burying switch, in both UI modes. It replaced "Bury siblings" and
+# the three per-type switches, and avoids the words "bury" and "sibling".
 deck-config-hide-related-cards = Hide related cards until tomorrow
-# Help text of the Simple-mode "Hide related cards until tomorrow" switch.
+# The part of the label above that explains itself on hover. It must appear
+# in deck-config-hide-related-cards exactly, or no word is underlined and the
+# label is shown plain.
+deck-config-hide-related-cards-term = related cards
+# Shown when the underlined words above are hovered. A few words, no period.
+deck-config-hide-related-cards-hover = cards that belong to the same note
+# Help text of the "Hide related cards until tomorrow" switch.
 deck-config-hide-related-cards-tooltip =
     Related cards are the other cards made from the same note, such as a reverse card or another cloze deletion.
 

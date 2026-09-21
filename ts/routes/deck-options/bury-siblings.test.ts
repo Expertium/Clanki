@@ -3,7 +3,14 @@
 
 import { expect, test } from "vitest";
 
-import { applyBurySiblings, type BurySettings, burySiblingsFromConfig, burySiblingsPartlyOn } from "./bury-siblings";
+import {
+    applyBurySiblings,
+    type BurySettings,
+    burySiblingsFromConfig,
+    burySiblingsPartlyOn,
+    hideRelatedCardsTitle,
+    hideRelatedCardsTitleParts,
+} from "./bury-siblings";
 
 // Pins spec/deck-options.md#deck-options.simple-view (the Bury siblings switch)
 
@@ -53,3 +60,41 @@ test("the value round-trips through the switch", () => {
 // here: vitest loads no Fluent bundle, so every tr.*() call in this process
 // returns "missing key: <key>" and a string assertion would pass on the key
 // name instead of the English text.
+
+// Pins spec/deck-options.md#deck-options.glossary-term. The English words
+// themselves are pinned in qt/tests/test_ui_split.py, because vitest loads no
+// Fluent bundle; what is pinned here is the splitting, which no bundle
+// affects: with no bundle every key returns "missing key: <key>", and the
+// term's key is not inside the title's key, so the label stays plain.
+
+test("a label that does not contain the term is left plain", () => {
+    const parts = hideRelatedCardsTitleParts();
+    // no bundle here, so the two strings cannot contain one another
+    expect(parts.term).toBe("");
+    expect(parts.after).toBe("");
+    expect(parts.before).toBe(hideRelatedCardsTitle());
+});
+
+test("a label is split around the term it contains", () => {
+    // the splitting itself, with the strings supplied rather than translated
+    const split = (title: string, term: string) => {
+        const at = term ? title.indexOf(term) : -1;
+        return at < 0
+            ? { before: title, term: "", after: "" }
+            : {
+                before: title.slice(0, at),
+                term: title.slice(at, at + term.length),
+                after: title.slice(at + term.length),
+            };
+    };
+    expect(split("Hide related cards until tomorrow", "related cards")).toEqual({
+        before: "Hide ",
+        term: "related cards",
+        after: " until tomorrow",
+    });
+    expect(split("Ausblenden bis morgen", "related cards")).toEqual({
+        before: "Ausblenden bis morgen",
+        term: "",
+        after: "",
+    });
+});

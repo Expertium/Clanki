@@ -21,12 +21,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { applyPlayAudio, playAudioFromConfig } from "./autoplay-switch";
     import AlgorithmRows from "./AlgorithmRows.svelte";
     import {
-        applyBurySiblings,
-        burySiblingsFromConfig,
-        burySiblingsPartlyOn,
         hideRelatedCardsHelp,
         hideRelatedCardsTitle,
     } from "./bury-siblings";
+    import HideRelatedCardsRow from "./HideRelatedCardsRow.svelte";
     import DailyLimitRows from "./DailyLimitRows.svelte";
     import EasyDaysRows from "./EasyDaysRows.svelte";
     import type { DeckOptionsState } from "./lib";
@@ -57,20 +55,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrs = state.fsrs;
     // which of this section's settings the split shows (ui-split.ts)
     const shown = state.settingShown;
-
-    // One switch stands for the three bury settings. The switch value follows
-    // the preset; a toggle writes every setting it stands for; showing a
-    // preset writes nothing, because the writes are skipped when the preset
-    // already reads as the switch value (the same pattern as the Algorithm
-    // dropdown).
-    let burySiblings = burySiblingsFromConfig($config);
-    $: burySiblings = burySiblingsFromConfig($config);
-    function setBurySiblings(on: boolean): void {
-        if (burySiblingsFromConfig(get(config)) !== on) {
-            config.update((current) => applyBurySiblings(current, on));
-        }
-    }
-    $: setBurySiblings(burySiblings);
 
     // "Play audio automatically" is `disableAutoplay` turned the other way
     // round (spec deck-options.play-audio-switch).
@@ -165,17 +149,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         {#if $shown("burySiblings", "simple")}
             <Item>
-                <SwitchRow
-                    bind:value={burySiblings}
-                    defaultValue={burySiblingsFromConfig(defaults)}
-                >
-                    <SettingTitle on:click={() => openHelp("burySiblings")}>
-                        {settings.burySiblings.title}
-                    </SettingTitle>
-                </SwitchRow>
-                {#if burySiblingsPartlyOn($config)}
-                    <div class="partly-on">{tr.deckConfigPartlyOn()}</div>
-                {/if}
+                <HideRelatedCardsRow
+                    {config}
+                    {defaults}
+                    onHelp={() => openHelp("burySiblings")}
+                />
             </Item>
         {/if}
 

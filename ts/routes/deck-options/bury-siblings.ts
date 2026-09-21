@@ -47,20 +47,47 @@ export function applyBurySiblings<T extends BurySettings>(config: T, on: boolean
 }
 
 /**
- * Simple mode's name for the switch. Advanced mode keeps "Bury siblings" and
- * its three per-type switches; Simple mode says what happens instead, because
- * "sibling" and "bury" are words a new user has to be taught first
+ * The switch's name, the same in both modes. It says what happens instead of
+ * saying "bury siblings", because both words have to be taught first
  * (spec deck-options.simple-view).
  */
 export function hideRelatedCardsTitle(): string {
     return tr.deckConfigHideRelatedCards();
 }
 
-/**
- * Simple mode's help for the switch: what a related card is, and what the
- * switch does. The per-type explanations belong to Advanced mode, so Simple
- * mode does not append them.
- */
+/** The switch's help: what a related card is, and what the switch does. */
 export function hideRelatedCardsHelp(): string {
     return tr.deckConfigHideRelatedCardsTooltip();
+}
+
+/** The short explanation shown when the underlined words are hovered. */
+export function hideRelatedCardsHover(): string {
+    return tr.deckConfigHideRelatedCardsHover();
+}
+
+export interface TitleParts {
+    before: string;
+    term: string;
+    after: string;
+}
+
+/**
+ * The title split around the words that explain themselves on hover.
+ *
+ * A translation is free to word the label its own way, and then the term is
+ * not in it. That is not an error: `term` comes back empty and the label is
+ * shown plain, rather than underlining the wrong words.
+ */
+export function hideRelatedCardsTitleParts(): TitleParts {
+    const title = hideRelatedCardsTitle();
+    const term = tr.deckConfigHideRelatedCardsTerm();
+    const at = term ? title.indexOf(term) : -1;
+    if (at < 0) {
+        return { before: title, term: "", after: "" };
+    }
+    return {
+        before: title.slice(0, at),
+        term: title.slice(at, at + term.length),
+        after: title.slice(at + term.length),
+    };
 }
