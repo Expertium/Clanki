@@ -20,6 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { leechChoices } from "./choices";
     import type { DeckOptionsState } from "./lib";
+    import { intervalSettingsApply } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -32,6 +33,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+
+    // RWKV-Instant has no intervals, so a step has nothing to measure
+    // (spec sched.rwkv-instant-no-steps)
+    $: intervalSettings = intervalSettingsApply($config);
 
     let stepsExceedMinimumInterval: string;
     let stepsTooLargeForFsrs: string;
@@ -101,7 +106,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        {#if $shown("relearningSteps", "section")}
+        {#if intervalSettings && $shown("relearningSteps", "section")}
             <Item>
                 <StepsInputRow
                     bind:value={$config.relearnSteps}

@@ -508,8 +508,8 @@ struct RemainingStepsAdjuster<'a> {
 impl<'a> RemainingStepsAdjuster<'a> {
     fn new(new_config: &'a DeckConfig) -> Self {
         RemainingStepsAdjuster {
-            learn_steps: &new_config.inner.learn_steps,
-            relearn_steps: &new_config.inner.relearn_steps,
+            learn_steps: new_config.effective_learn_steps(),
+            relearn_steps: new_config.effective_relearn_steps(),
             configs: HashMap::new(),
         }
     }
@@ -518,11 +518,11 @@ impl<'a> RemainingStepsAdjuster<'a> {
         if let Some(remaining) = match card.ctype {
             CardType::Learn => card.new_remaining_steps(
                 self.learn_steps,
-                &self.config_for_card(col, card)?.inner.learn_steps,
+                self.config_for_card(col, card)?.effective_learn_steps(),
             ),
             CardType::Relearn => card.new_remaining_steps(
                 self.relearn_steps,
-                &self.config_for_card(col, card)?.inner.relearn_steps,
+                self.config_for_card(col, card)?.effective_relearn_steps(),
             ),
             _ => None,
         } {

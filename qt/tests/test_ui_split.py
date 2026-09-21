@@ -568,10 +568,26 @@ def test_learn_count_follows_the_split() -> None:
     browser._rwkv_pending_deck_ids = set()
     browser.mw = _mw(False, {"main.learn_count": True})
     node = DeckTreeNode(deck_id=1, name="d", learn_count=2, review_count=3, level=1)
-    ctx = RenderDeckNodeContext(current_deck_id=0, review_limit_labels={1: ("", "")})
+    # the tree reads the split once and hands the answer to every row, so the
+    # row takes it from the context rather than asking again
+    ctx = RenderDeckNodeContext(
+        current_deck_id=0,
+        review_limit_labels={1: ("", "")},
+        show_learn_count=True,
+    )
     row = browser._render_deck_node(node, ctx)
     assert 'id="deck-1-learn-count"' in row
     assert 'id="deck-1-review-count" class="review-count">3<' in row
+
+    # Simple mode: no Learn column, and Learn folded into Due
+    ctx = RenderDeckNodeContext(
+        current_deck_id=0,
+        review_limit_labels={1: ("", "")},
+        show_learn_count=False,
+    )
+    row = browser._render_deck_node(node, ctx)
+    assert 'id="deck-1-learn-count"' not in row
+    assert 'id="deck-1-review-count" class="review-count">5<' in row
 
 
 def test_overview_bottom_bar_follows_the_split() -> None:

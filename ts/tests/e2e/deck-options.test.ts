@@ -298,3 +298,37 @@ test("only \"related cards\" is underlined, not the whole label", async ({ page 
         expect(labelDecoration).toBe("none");
     }
 });
+
+// Pins spec/scheduling.md#sched.rwkv-instant-no-steps: the settings that
+// shape an interval are not shown while RWKV-Instant schedules the preset.
+test("RWKV-Instant hides the settings that shape an interval", async ({ page }) => {
+    const INTERVAL_SETTINGS = [
+        "Learning steps",
+        "Relearning steps",
+        "Maximum interval",
+        "Minimum interval",
+        "Maximum number of same-day reviews",
+    ];
+
+    await setAdvancedUi(page, true);
+    await page.goto("/deck-options/1");
+
+    // RWKV-Curve, the default for a new collection: the rows are there
+    await chooseAlgorithm(page, "RWKV-Curve");
+    await expect.poll(() => visibleCount(page, "Learning steps")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Maximum interval")).toBeGreaterThan(0);
+
+    await chooseAlgorithm(page, "RWKV-Instant");
+    for (const setting of INTERVAL_SETTINGS) {
+        await expect
+            .poll(() => visibleCount(page, setting), {
+                message: `${setting} should be hidden under RWKV-Instant`,
+            })
+            .toBe(0);
+    }
+
+    // and they come back with an algorithm that has intervals
+    await chooseAlgorithm(page, "FSRS-7");
+    await expect.poll(() => visibleCount(page, "Learning steps")).toBeGreaterThan(0);
+    expect(await visibleCount(page, "Maximum interval")).toBeGreaterThan(0);
+});

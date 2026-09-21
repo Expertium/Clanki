@@ -179,11 +179,43 @@ impl DeckConfig {
         effective_fsrs7_params(&self.inner.fsrs_params_7)
     }
 
+    /// Whether RWKV-Instant schedules this preset. It decides when a card is
+    /// due from its own score rather than from an interval, so the settings
+    /// that shape an interval do not apply (spec sched.rwkv-instant-no-steps).
+    pub(crate) fn runs_rwkv_instant(&self) -> bool {
+        self.inner.rwkv_review_instant_order_enabled && !self.inner.rwkv_review_enabled
+    }
+
+    /// The preset's learning steps. RWKV-Instant has none: a step is an
+    /// interval, and RWKV-Instant has no intervals
+    /// (spec sched.rwkv-instant-no-steps).
+    pub(crate) fn effective_learn_steps(&self) -> &[f32] {
+        if self.runs_rwkv_instant() {
+            &[]
+        } else {
+            &self.inner.learn_steps
+        }
+    }
+
+    /// The preset's relearning steps, on the same rule as the learning steps.
+    pub(crate) fn effective_relearn_steps(&self) -> &[f32] {
+        if self.runs_rwkv_instant() {
+            &[]
+        } else {
+            &self.inner.relearn_steps
+        }
+    }
+
     /// The preset's "Max number of same-day reviews". It applies only while
     /// the preset has no learning steps; with steps, the steps decide the
-    /// same-day reviews (spec sched.max-same-day-reviews).
+    /// same-day reviews (spec sched.max-same-day-reviews). Under RWKV-Instant
+    /// it never applies: the score decides when a card comes back, so a limit
+    /// on same-day returns has nothing to limit
+    /// (spec sched.rwkv-instant-no-steps).
     pub(crate) fn effective_max_same_day_reviews(&self) -> Option<u32> {
-        if self.inner.learn_steps.is_empty() {
+        if self.runs_rwkv_instant() {
+            None
+        } else if self.inner.learn_steps.is_empty() {
             self.inner.max_same_day_reviews
         } else {
             None
@@ -512,6 +544,42 @@ mod tests {
         let back = DeckConfig::from(serde_json::from_str::<DeckConfSchema11>(&json)?);
         assert_eq!(back.inner.max_same_day_reviews, Some(2));
         Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-instant-no-steps
+    #[test]
+    fn rwkv_instant_has_no_steps_and_no_same_day_limit() {
+        let mut config = DeckConfig::default();
+        config.inner.learn_steps = vec![1.0, 10.0];
+        config.inner.relearn_steps = vec![10.0];
+        config.inner.max_same_day_reviews = Some(2);
+
+        // RWKV-Curve, the default: the stored settings apply
+        assert!(!config.runs_rwkv_instant());
+        assert_eq!(config.effective_learn_steps(), &[1.0, 10.0]);
+        assert_eq!(config.effective_relearn_steps(), &[10.0]);
+
+        // FSRS-7: the same
+        config.inner.rwkv_review_enabled = false;
+        assert!(!config.runs_rwkv_instant());
+        assert_eq!(config.effective_learn_steps(), &[1.0, 10.0]);
+
+        // RWKV-Instant: no steps, and no same-day limit to apply
+        config.inner.rwkv_review_instant_order_enabled = true;
+        assert!(config.runs_rwkv_instant());
+        assert!(config.effective_learn_steps().is_empty());
+        assert!(config.effective_relearn_steps().is_empty());
+        assert_eq!(config.effective_max_same_day_reviews(), None);
+        // the stored values are untouched, so turning the algorithm back
+        // brings the user's steps back
+        assert_eq!(config.inner.learn_steps, vec![1.0, 10.0]);
+        assert_eq!(config.inner.relearn_steps, vec![10.0]);
+
+        // a preset that carries both switches runs RWKV-Curve, and keeps its
+        // steps
+        config.inner.rwkv_review_enabled = true;
+        assert!(!config.runs_rwkv_instant());
+        assert_eq!(config.effective_learn_steps(), &[1.0, 10.0]);
     }
 
     // Pins spec/deck-options.md#deck-options.new-preset-defaults

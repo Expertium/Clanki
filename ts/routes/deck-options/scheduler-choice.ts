@@ -53,3 +53,27 @@ export function schedulerChoices(): SchedulerChoiceOption[] {
         },
     ];
 }
+
+/** The two switches that say which algorithm a preset runs. */
+export interface AlgorithmSwitches {
+    rwkvReviewEnabled: boolean;
+    rwkvReviewInstantOrderEnabled: boolean;
+}
+
+/** Whether RWKV-Instant schedules this preset. */
+export function runsRwkvInstant(config: AlgorithmSwitches): boolean {
+    return config.rwkvReviewInstantOrderEnabled && !config.rwkvReviewEnabled;
+}
+
+/**
+ * Whether the settings that shape an interval apply to this preset.
+ *
+ * RWKV-Instant decides when a card comes back from the card's own score, not
+ * from an interval, so learning steps, relearning steps, the maximum and
+ * minimum interval and the same-day review limit have nothing to act on. They
+ * are hidden, and the scheduler ignores them (spec/scheduling.md,
+ * `sched.rwkv-instant-no-steps`).
+ */
+export function intervalSettingsApply(config: AlgorithmSwitches): boolean {
+    return !runsRwkvInstant(config);
+}
