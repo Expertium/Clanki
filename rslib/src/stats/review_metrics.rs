@@ -22,7 +22,6 @@ use anki_proto::stats::ReviewPredictionsResponse;
 use rayon::prelude::*;
 
 use crate::prelude::*;
-use crate::revlog::RevlogEntry;
 use crate::search::SortMode;
 use crate::stats::algorithms::PredictionStore;
 use crate::stats::algorithms::PredictsRecall;
@@ -34,17 +33,52 @@ use crate::stats::roc::roc_curve;
 use crate::stats::roc::CURVE_POINTS;
 
 /// One model's cached predictions for the searched ratings, and the role
-/// they came from.
+/// they came from. The predictions are in ascending review order, one
+/// entry per review.
 struct CachedPredictions {
     role: String,
-    by_review: HashMap<RevlogId, f32>,
+    by_review: Vec<(RevlogId, f32)>,
 }
 
 impl CachedPredictions {
     fn none() -> Self {
         Self {
             role: String::new(),
-            by_review: HashMap::new(),
+            by_review: vec![],
+        }
+    }
+}
+
+/// Walks one model's predictions beside the ratings. Both lists are in
+/// ascending review order, so each model is joined to the ratings in one
+/// pass. A hash map would have to be built first, and a collection with a
+/// million ratings builds three of them only to read each entry once.
+struct PredictionCursor<'a> {
+    by_review: &'a [(RevlogId, f32)],
+    next: usize,
+}
+
+impl<'a> PredictionCursor<'a> {
+    fn new(predictions: &'a CachedPredictions) -> Self {
+        Self {
+            by_review: &predictions.by_review,
+            next: 0,
+        }
+    }
+
+    /// This model's prediction of `review`, if it has one. The reviews are
+    /// asked for in ascending order, so the cursor only ever moves on.
+    fn of(&mut self, review: RevlogId) -> Option<f32> {
+        while self
+            .by_review
+            .get(self.next)
+            .is_some_and(|(id, _)| *id < review)
+        {
+            self.next += 1;
+        }
+        match self.by_review.get(self.next) {
+            Some(&(id, prediction)) if id == review => Some(prediction),
+            _ => None,
         }
     }
 }
@@ -86,35 +120,37 @@ impl Collection {
         days: u32,
     ) -> Result<ReviewPredictionsResponse> {
         let rows = self.scored_ratings(search, days)?;
-        let bins =
-            |predictions: &[f32]| calibration_bins(predictions, &rows.remembered, &rows.card_ids);
+        // Each algorithm's finished series: the curve, its area, the
+        // calibration bins and the tiles' averages, all computed here so
+        // the predictions themselves never cross the boundary. The three
+        // read the same lists and write nothing, so they are computed at
+        // the same time; the page waits for the slowest of them instead of
+        // for all three, and every number is the one a single thread gave.
+        let finished = [
+            (
+                SchedulingAlgorithmProto::Fsrs7,
+                &rows.fsrs_predictions,
+                &rows.fsrs_role,
+            ),
+            (
+                SchedulingAlgorithmProto::RwkvCurve,
+                &rows.rwkv_curve_predictions,
+                &rows.rwkv_curve_role,
+            ),
+            (
+                SchedulingAlgorithmProto::RwkvInstant,
+                &rows.rwkv_predictions,
+                &rows.rwkv_role,
+            ),
+        ]
+        .into_par_iter()
+        .map(|(algorithm, predictions, role)| {
+            let bins = calibration_bins(predictions, &rows.remembered, &rows.card_ids);
+            series(algorithm, predictions, &rows.remembered, role, bins)
+        })
+        .collect();
         let mut response = ReviewPredictionsResponse {
-            // Each algorithm's finished series: the curve, its area, the
-            // calibration bins and the tiles' averages, all computed here
-            // so the predictions themselves never cross the boundary.
-            series: vec![
-                series(
-                    SchedulingAlgorithmProto::Fsrs7,
-                    &rows.fsrs_predictions,
-                    &rows.remembered,
-                    &rows.fsrs_role,
-                    bins(&rows.fsrs_predictions),
-                ),
-                series(
-                    SchedulingAlgorithmProto::RwkvCurve,
-                    &rows.rwkv_curve_predictions,
-                    &rows.remembered,
-                    &rows.rwkv_curve_role,
-                    bins(&rows.rwkv_curve_predictions),
-                ),
-                series(
-                    SchedulingAlgorithmProto::RwkvInstant,
-                    &rows.rwkv_predictions,
-                    &rows.remembered,
-                    &rows.rwkv_role,
-                    bins(&rows.rwkv_predictions),
-                ),
-            ],
+            series: finished,
             scored: rows.revlog_ids.len().try_into().unwrap_or(u32::MAX),
             shared: rows.shared,
             fsrs_only: rows.fsrs_only,
@@ -179,11 +215,15 @@ impl Collection {
             Some(search),
         )?;
         let storage = &guard.col.storage;
-        let mut ratings: Vec<RevlogEntry> = storage
-            .get_revlog_entries_for_searched_cards()?
-            .into_iter()
-            .filter(|entry| entry.has_rating_and_affects_scheduling() && entry.id.0 > cutoff.0)
-            .collect();
+        // the same rule the other Stats reads use: once the search covers
+        // much of the collection, one pass over the review log beats an
+        // index lookup per card
+        let collection_cards: u32 =
+            storage
+                .db
+                .query_row("select count() from cards", [], |row| row.get(0))?;
+        let many_cards = guard.cards * 2 >= collection_cards as usize;
+        let mut ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards)?;
         // each algorithm names itself; no read can reach another
         // algorithm's rows without saying whose they are
         let fsrs = read_predictions(storage, &FSRS7, cutoff)?;
@@ -202,23 +242,32 @@ impl Collection {
         // they are the ones the graph compares the two models on (spec
         // ui.stats-model-metrics).
         ratings.sort_unstable_by_key(|entry| entry.id);
-        for entry in &ratings {
-            let fsrs_value = fsrs.by_review.get(&entry.id);
-            let rwkv_value = rwkv.by_review.get(&entry.id);
-            let curve_value = rwkv_curve.by_review.get(&entry.id);
+        let mut fsrs_cursor = PredictionCursor::new(&fsrs);
+        let mut rwkv_cursor = PredictionCursor::new(&rwkv);
+        let mut curve_cursor = PredictionCursor::new(&rwkv_curve);
+        // where the ratings the models reach begin and end, for the two
+        // freshness counts below
+        let mut last_scored: Option<usize> = None;
+        let mut first_curve: Option<usize> = None;
+        for (index, entry) in ratings.iter().enumerate() {
+            let fsrs_value = fsrs_cursor.of(entry.id);
+            let rwkv_value = rwkv_cursor.of(entry.id);
+            let curve_value = curve_cursor.of(entry.id);
             if fsrs_value.is_some() || rwkv_value.is_some() || curve_value.is_some() {
+                last_scored = Some(index);
                 rows.revlog_ids.push(entry.id.0);
                 rows.card_ids.push(entry.cid.0);
                 rows.remembered.push(entry.button_chosen > 1);
                 // a model without a row for this rating has no number
                 // here, and its series simply skips the rating rather
                 // than borrowing the other model's value
-                rows.fsrs_predictions
-                    .push(fsrs_value.copied().unwrap_or(f32::NAN));
-                rows.rwkv_predictions
-                    .push(rwkv_value.copied().unwrap_or(f32::NAN));
+                rows.fsrs_predictions.push(fsrs_value.unwrap_or(f32::NAN));
+                rows.rwkv_predictions.push(rwkv_value.unwrap_or(f32::NAN));
                 rows.rwkv_curve_predictions
-                    .push(curve_value.copied().unwrap_or(f32::NAN));
+                    .push(curve_value.unwrap_or(f32::NAN));
+            }
+            if curve_value.is_some() && first_curve.is_none() {
+                first_curve = Some(index);
             }
             match (fsrs_value, rwkv_value) {
                 (Some(_), Some(_)) => rows.shared += 1,
@@ -230,25 +279,13 @@ impl Collection {
 
         // how fresh the predictions are: the newest rating either model has
         // scored, and the ratings of the search after it
-        let newest = ratings
-            .iter()
-            .filter(|entry| {
-                fsrs.by_review.contains_key(&entry.id)
-                    || rwkv.by_review.contains_key(&entry.id)
-                    || rwkv_curve.by_review.contains_key(&entry.id)
-            })
-            .map(|entry| entry.id)
-            .max();
-        if let Some(newest) = newest {
-            rows.newest_scored_secs = newest.as_secs().0;
-            rows.newer_reviews = ratings
-                .iter()
-                .filter(|entry| entry.id > newest)
-                .count()
-                .try_into()
-                .unwrap_or(u32::MAX);
-        } else {
-            rows.newer_reviews = ratings.len().try_into().unwrap_or(u32::MAX);
+        let counted = |count: usize| count.try_into().unwrap_or(u32::MAX);
+        match last_scored {
+            Some(index) => {
+                rows.newest_scored_secs = ratings[index].id.as_secs().0;
+                rows.newer_reviews = counted(ratings.len() - 1 - index);
+            }
+            None => rows.newer_reviews = counted(ratings.len()),
         }
 
         // How far back the curve recording reaches. A collection that has
@@ -256,18 +293,9 @@ impl Collection {
         // history; one that has not has rows only from the day it started,
         // and the graph must say so rather than show three days of data
         // looking like three years.
-        let oldest_curve = ratings
-            .iter()
-            .find(|entry| rwkv_curve.by_review.contains_key(&entry.id))
-            .map(|entry| entry.id);
-        if let Some(oldest) = oldest_curve {
-            rows.rwkv_curve_oldest_secs = oldest.as_secs().0;
-            rows.rwkv_curve_earlier_reviews = ratings
-                .iter()
-                .filter(|entry| entry.id < oldest)
-                .count()
-                .try_into()
-                .unwrap_or(u32::MAX);
+        if let Some(index) = first_curve {
+            rows.rwkv_curve_oldest_secs = ratings[index].id.as_secs().0;
+            rows.rwkv_curve_earlier_reviews = counted(index);
         }
         Ok(rows)
     }
@@ -278,6 +306,7 @@ mod tests {
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
+    use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
     use crate::storage::FsrsReviewRetrievabilityCacheRow;
     use crate::storage::FsrsReviewRetrievabilitySampleRole;
@@ -372,6 +401,96 @@ mod tests {
                 "test",
             )
             .unwrap();
+    }
+
+    /// A review-log row of any kind, on the day `day` (0 = today).
+    fn log_entry(
+        col: &mut Collection,
+        card: CardId,
+        day: i32,
+        button: u8,
+        ease_factor: u32,
+        review_kind: RevlogReviewKind,
+    ) -> RevlogId {
+        let next_day_at = col.timing_today().unwrap().next_day_at;
+        let entry = RevlogEntry {
+            id: RevlogId((next_day_at.0 + day as i64 * 86_400 - 43_200) * 1000),
+            cid: card,
+            button_chosen: button,
+            interval: 3,
+            ease_factor,
+            review_kind,
+            ..Default::default()
+        };
+        col.storage.add_revlog_entry(&entry, false).unwrap();
+        entry.id
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics: the graphs read the ratings
+    // of the searched cards that affect scheduling - the same ones the
+    // whole review-log row gives, by either of the two read plans.
+    #[test]
+    fn the_ratings_read_are_the_searched_cards_ratings() -> Result<()> {
+        let mut col = Collection::new();
+        let cards: Vec<CardId> = (0..4).map(|_| add_card(&mut col)).collect();
+        let mut rated = vec![];
+        for (index, card) in cards.iter().enumerate() {
+            for day in 0..5 {
+                rated.push(rate(
+                    &mut col,
+                    *card,
+                    -40 + day * 4 + index as i32,
+                    1 + (day % 4) as u8,
+                ));
+            }
+        }
+        // a set due date, a reset and a cram answer are not ratings; a
+        // filtered review that kept its ease is one
+        let due_date = log_entry(&mut col, cards[0], -12, 0, 2500, RevlogReviewKind::Manual);
+        let reset = log_entry(&mut col, cards[0], -11, 0, 0, RevlogReviewKind::Manual);
+        let cram = log_entry(&mut col, cards[1], -10, 3, 0, RevlogReviewKind::Filtered);
+        let kept = log_entry(&mut col, cards[1], -9, 3, 2500, RevlogReviewKind::Filtered);
+
+        for search in ["", "deck:Default", "deck:none"] {
+            let guard = col.search_cards_into_table(search, SortMode::NoOrder)?;
+            let storage = &guard.col.storage;
+            let mut expected: Vec<(RevlogId, CardId, u8)> = storage
+                .get_revlog_entries_for_searched_cards()?
+                .into_iter()
+                .filter(|entry| entry.has_rating_and_affects_scheduling())
+                .map(|entry| (entry.id, entry.cid, entry.button_chosen))
+                .collect();
+            expected.sort_unstable();
+            for many_cards in [false, true] {
+                let mut read: Vec<(RevlogId, CardId, u8)> = storage
+                    .searched_ratings_that_affect_scheduling(TimestampMillis(0), many_cards)?
+                    .into_iter()
+                    .map(|rating| (rating.id, rating.cid, rating.button_chosen))
+                    .collect();
+                read.sort_unstable();
+                assert_eq!(read, expected, "search {search:?}, many_cards {many_cards}");
+            }
+            // the period is exclusive of its own moment, as the graphs ask
+            let after =
+                storage.searched_ratings_that_affect_scheduling(TimestampMillis(kept.0), false)?;
+            assert!(after.iter().all(|rating| rating.id.0 > kept.0));
+            drop(guard);
+        }
+        // every rating is there, the three rows that are not ratings are
+        // not, and the fixture is not accidentally empty
+        let guard = col.search_cards_into_table("", SortMode::NoOrder)?;
+        let all = guard
+            .col
+            .storage
+            .searched_ratings_that_affect_scheduling(TimestampMillis(0), true)?;
+        let ids: Vec<RevlogId> = all.iter().map(|rating| rating.id).collect();
+        assert_eq!(ids.len(), rated.len() + 1);
+        assert!(rated.iter().all(|review| ids.contains(review)));
+        assert!(ids.contains(&kept));
+        for absent in [due_date, reset, cram] {
+            assert!(!ids.contains(&absent));
+        }
+        Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-model-metrics
@@ -1141,26 +1260,41 @@ fn read_predictions(
     algorithm: &PredictsRecall,
     after: TimestampMillis,
 ) -> Result<CachedPredictions> {
-    let stored = match algorithm.store {
-        PredictionStore::Generic => storage.review_prediction_roles(algorithm.id())?,
-        PredictionStore::Legacy(table) => storage.cached_review_prediction_roles(table)?,
-    };
-    let count_of = |role: &str| {
-        stored
-            .iter()
-            .find(|(stored, _)| stored == role)
-            .map_or(0, |(_, count)| *count)
+    // an algorithm that takes the first role it has rows for only asks
+    // whether each role has one, which an index answers at once; counting
+    // every role's reviews reads a row per review of the collection
+    let has_any_row = |role: &str| match algorithm.store {
+        PredictionStore::Generic => storage.review_prediction_role_exists(algorithm.id(), role),
+        PredictionStore::Legacy(table) => storage.cached_review_prediction_role_exists(table, role),
     };
     let chosen = match algorithm.role_choice {
-        RoleChoice::MostRows => algorithm
-            .honest_roles
-            .iter()
-            .filter(|role| count_of(role) > 0)
-            .max_by_key(|role| count_of(role)),
-        RoleChoice::FirstHonest => algorithm
-            .honest_roles
-            .iter()
-            .find(|role| count_of(role) > 0),
+        RoleChoice::FirstHonest => {
+            let mut first = None;
+            for role in algorithm.honest_roles {
+                if has_any_row(role)? {
+                    first = Some(role);
+                    break;
+                }
+            }
+            first
+        }
+        RoleChoice::MostRows => {
+            let stored = match algorithm.store {
+                PredictionStore::Generic => storage.review_prediction_roles(algorithm.id())?,
+                PredictionStore::Legacy(table) => storage.cached_review_prediction_roles(table)?,
+            };
+            let count_of = |role: &str| {
+                stored
+                    .iter()
+                    .find(|(stored, _)| stored == role)
+                    .map_or(0, |(_, count)| *count)
+            };
+            algorithm
+                .honest_roles
+                .iter()
+                .filter(|role| count_of(role) > 0)
+                .max_by_key(|role| count_of(role))
+        }
     };
     let Some(role) = chosen else {
         return Ok(CachedPredictions::none());
@@ -1171,6 +1305,6 @@ fn read_predictions(
     };
     Ok(CachedPredictions {
         role: (*role).to_string(),
-        by_review: rows.into_iter().collect(),
+        by_review: rows,
     })
 }
