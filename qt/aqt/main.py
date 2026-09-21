@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import sys
+import time
 import traceback
 import weakref
 from argparse import Namespace
@@ -52,6 +53,7 @@ from anki.utils import (
 )
 from aqt import gui_hooks
 from aqt.addons import DownloadLogEntry, check_and_prompt_for_updates, show_log_to_user
+from aqt.branding import APP_NAME
 from aqt.debug_console import show_debug_console
 from aqt.flags import FlagManager
 from aqt.legacy import install_pylib_legacy
@@ -1344,6 +1346,8 @@ title="{}" {}>{}</button>""".format(
         self._mainThread = QThread.currentThread()
         self._background_op_count = 0
         self._unload_profile_and_exit_pending = False
+        self._close_wait_started = 0.0
+        self._close_wait_window_shown = False
 
     def inMainThread(self) -> bool:
         return self._mainThread == QThread.currentThread()
@@ -1582,15 +1586,68 @@ title="{}" {}>{}</button>""".format(
             return
 
         self._unload_profile_and_exit_pending = True
+        self._close_wait_started = time.monotonic()
+        self._close_wait_window_shown = False
         self._unloadProfileAndExitWhenIdleOnce()
+
+    # How long a close may wait in silence. A close with nothing running is
+    # well under this, so the usual close still shows no window at all
+    # (spec ui.no-waiting-windows).
+    CLOSE_WAIT_GRACE_SECS = 1.0
 
     def _unloadProfileAndExitWhenIdleOnce(self) -> None:
         if self._background_op_count:
-            self.progress.single_shot(100, self._unloadProfileAndExitWhenIdleOnce)
+            # The close is deferred, not refused: a close-time collection read
+            # on this thread would block behind the running operation. Without
+            # a window that is indistinguishable from a dead X, because the
+            # close event was already ignored (spec
+            # ui.close-says-what-it-waits-for).
+            self._show_close_wait_window_if_slow()
+            if self.progress.want_cancel():
+                self._abandon_close_and_stay_open()
+                return
+            # even_with_progress, because the window this loop would wait for
+            # is the one this loop opened: the ordinary rule would make the
+            # close wait for itself and never finish
+            self.progress.single_shot(
+                100,
+                self._unloadProfileAndExitWhenIdleOnce,
+                even_with_progress=True,
+            )
             return
 
+        self._finish_close_wait_window()
         self._unload_profile_and_exit_pending = False
         self.unloadProfileAndExit()
+
+    def _show_close_wait_window_if_slow(self) -> None:
+        if self._close_wait_window_shown:
+            return
+        if time.monotonic() - self._close_wait_started < self.CLOSE_WAIT_GRACE_SECS:
+            return
+        self._close_wait_window_shown = True
+        self.progress.start(
+            label=tr.qt_misc_finishing_background_work_before_closing(),
+            title=tr.qt_misc_closing_app(app=APP_NAME),
+            immediate=True,
+            cancel_label=tr.qt_misc_keep_app_open(app=APP_NAME),
+        )
+
+    def _finish_close_wait_window(self) -> None:
+        if not self._close_wait_window_shown:
+            return
+        self._close_wait_window_shown = False
+        self.progress.finish()
+
+    def _abandon_close_and_stay_open(self) -> None:
+        """Cancel means "keep Clanki open", not "close anyway".
+
+        The background operation is what the close waits for, and nothing
+        here can end it; closing regardless is what the wait exists to
+        prevent (docs/collection-shutdown.MD).
+        """
+        self._finish_close_wait_window()
+        self._unload_profile_and_exit_pending = False
 
     # Undo & autosave
     ##########################################################################

@@ -1322,6 +1322,61 @@ them.
 **Pinned by:** `test_the_click_path_operations_open_no_waiting_window`
 (`qt/tests/test_operations_no_waiting_window.py`).
 
+## ui.close-says-what-it-waits-for
+
+Given the user closes the main window, closing may wait twice, and neither
+wait is silent.
+
+**First, for background work.** The close is deferred while any `CollectionOp`
+or `QueryOp` is still running, because a close-time collection read on the GUI
+thread would block behind it. The close event itself is already ignored, so
+until the wait ends the window simply stays. After one second of waiting,
+Clanki opens a window titled "Closing Clanki", labelled "Finishing background
+work before closing...", with a button "Keep Clanki open". The button
+abandons the close and returns the user to Clanki: the running operation is
+what the close waits for and nothing here can end it. Pressing Escape or the
+title-bar X does the same. A close with nothing running finishes well inside
+the second, so the usual close still opens no window
+(`ui.no-waiting-windows`). Closing again starts the wait again.
+
+**Then, for the sync.** The collection sync that runs on close (and the one a
+user starts) opens its progress window titled "Syncing with AnkiWeb" and
+labelled "Contacting AnkiWeb...", with a "Cancel" button. Before the server
+answers there is nothing to report, and that label is what the window shows
+for as long as the wait lasts; the sync replaces the title with its own stage
+and the label with its added/removed counts as soon as it reports either.
+Cancel aborts the sync, and closing then goes on: it is the sync that is
+cancelled, not the close. Escape and the title-bar X do the same as Cancel,
+as before.
+
+A progress window shows a Cancel button only when it is asked for one. Escape
+and the X have always set the cancel flag on every progress window; the
+button makes that visible on the two waits above, and no other window gains
+one.
+
+**Why:** Andrew, 2026-09-21: "Clanki becomes unresponsive when I try to close
+it", with a screenshot of a modal "Checking..." box and an indeterminate bar.
+Told that the close waits for the sync, he answered that official Anki does
+not freeze this way — correctly: upstream `closeEvent` calls
+`unloadProfileAndExit()` at once, and the wait for background operations came
+from the JSchoreels fork (`31a00619a`, `docs/collection-shutdown.MD`). That
+trade was cheap in the fork and expensive in Clanki, which added RWKV
+operations that run for minutes. Asked what closing should do, he chose "say
+what it is doing and allow cancel". The old "Checking..." named neither the
+step nor who was being waited for, and nothing on either wait said it could
+be stopped at all.
+
+**Pinned by:** `test_a_close_with_nothing_running_opens_no_window`,
+`test_a_close_that_waits_says_what_it_waits_for`,
+`test_cancelling_the_close_wait_keeps_the_app_open`,
+`test_the_close_wait_window_closes_when_the_work_finishes`
+(`qt/tests/test_main.py`);
+`test_the_collection_sync_names_ankiweb_and_offers_cancel`
+(`qt/tests/test_sync.py`);
+`test_a_progress_window_has_no_cancel_button_unless_asked`,
+`test_the_cancel_button_sets_the_same_flag_as_escape`
+(`qt/tests/test_progress.py`).
+
 ## ui.tooltip-style
 
 Given a short message over the current window (a finished sync, a

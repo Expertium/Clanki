@@ -89,6 +89,8 @@ class ProgressManager:
         ms: int,
         func: Callable[[], None],
         requires_collection: bool = True,
+        *,
+        even_with_progress: bool = False,
     ) -> None:
         """Create and start a one-off Anki timer. For an alternative and more
         documentation, see `timer()`.
@@ -106,10 +108,23 @@ class ProgressManager:
         you likely want to use `single_shot()`, which will fire even if the calling
         widget is already destroyed.
         """
-        QTimer.singleShot(ms, self._get_handler(func, False, requires_collection))
+        QTimer.singleShot(
+            ms,
+            self._get_handler(
+                func,
+                False,
+                requires_collection,
+                even_with_progress=even_with_progress,
+            ),
+        )
 
     def _get_handler(
-        self, func: Callable[[], None], repeat: bool, requires_collection: bool
+        self,
+        func: Callable[[], None],
+        repeat: bool,
+        requires_collection: bool,
+        *,
+        even_with_progress: bool = False,
     ) -> Callable[[], None]:
         def handler() -> None:
             if requires_collection and not self.mw.col:
@@ -117,7 +132,12 @@ class ProgressManager:
                 print(f"Ignored progress func as collection unloaded: {repr(func)}")
                 return
 
-            if not self._levels:
+            if even_with_progress:
+                # the caller owns the progress window it would be waiting on,
+                # so waiting for it to close would wait for itself (spec
+                # ui.close-says-what-it-waits-for)
+                func()
+            elif not self._levels:
                 # no current progress; safe to fire
                 func()
             elif repeat:
@@ -140,6 +160,7 @@ class ProgressManager:
         parent: QWidget | None = None,
         immediate: bool = False,
         title: str = APP_NAME,
+        cancel_label: str | None = None,
     ) -> ProgressDialog | None:
         self._levels += 1
         if self._levels > 1:
@@ -156,6 +177,8 @@ class ProgressManager:
         self._win.form.progressBar.setTextVisible(False)
         self._win.form.label.setText(label)
         self._win.setWindowTitle(title)
+        if cancel_label:
+            self._win.add_cancel_button(cancel_label)
         self._win.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._win.setMinimumWidth(520)
         self._busy_cursor_timer = QTimer(self.mw)
@@ -358,6 +381,7 @@ class ProgressDialog(QDialog):
         self.form.setupUi(self)
         self._closingDown = False
         self.wantCancel = False
+        self._cancel_button: QPushButton | None = None
         self._details_text: QPlainTextEdit | None = None
         self._multi_progress_widgets: list[tuple[QLabel, QProgressBar]] = []
         # required for smooth progress bars
@@ -452,6 +476,31 @@ class ProgressDialog(QDialog):
         if removed_widgets:
             self.form.verticalLayout.invalidate()
             self.adjustSize()
+
+    def add_cancel_button(self, label: str) -> None:
+        """Show a button that does what Escape and the title-bar X already do.
+
+        Escape and the X have always set `wantCancel`, but nothing on the
+        window says so, so a wait that the user is allowed to stop reads as a
+        wait they are stuck in (spec ui.close-says-what-it-waits-for). Only
+        the waits that can really be stopped ask for the button.
+        """
+        if self._cancel_button:
+            self._cancel_button.setText(label)
+            return
+        self._cancel_button = QPushButton(label)
+        self._cancel_button.setAutoDefault(False)
+        qconnect(self._cancel_button.clicked, self._on_cancel_clicked)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self._cancel_button)
+        self.form.verticalLayout.addLayout(row)
+
+    def _on_cancel_clicked(self) -> None:
+        self.wantCancel = True
+        if self._cancel_button:
+            # the work stops when it next looks, which is not instant
+            self._cancel_button.setEnabled(False)
 
     def cancel(self) -> None:
         self._closingDown = True

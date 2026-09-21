@@ -41,14 +41,32 @@ class CloseEvent:
 class Progress:
     def __init__(self) -> None:
         self.scheduled: list[Callable[[], None]] = []
+        self.started: list[dict[str, object]] = []
+        self.finished = 0
+        self.cancel_wanted = False
 
     def single_shot(
         self,
         ms: int,
         func: Callable[[], None],
         requires_collection: bool = True,
+        *,
+        even_with_progress: bool = False,
     ) -> None:
+        # the real manager swallows a callback while a progress window is up,
+        # so a loop that opened its own window must say so or never run again
+        if self.started and self.finished == 0 and not even_with_progress:
+            return
         self.scheduled.append(func)
+
+    def start(self, **kwargs: object) -> None:
+        self.started.append(kwargs)
+
+    def finish(self) -> None:
+        self.finished += 1
+
+    def want_cancel(self) -> bool:
+        return self.cancel_wanted
 
 
 def setup_mw() -> tuple[AnkiQt, list[str], Progress]:
@@ -60,6 +78,8 @@ def setup_mw() -> tuple[AnkiQt, list[str], Progress]:
     mw.progress = progress
     mw._background_op_count = 0
     mw._unload_profile_and_exit_pending = False
+    mw._close_wait_started = 0.0
+    mw._close_wait_window_shown = False
     mw.unloadProfileAndExit = lambda: calls.append("unload")  # type: ignore[method-assign]
 
     return mw, calls, progress
@@ -706,3 +726,133 @@ def test_focus_undims_the_deck_list_and_the_overview() -> None:
 
         assert refreshed == [state]
         assert faded == ["in"]
+
+
+# Pins spec/ui.md#ui.close-says-what-it-waits-for
+
+
+def test_a_close_with_nothing_running_opens_no_window() -> None:
+    """The usual close is instant, so it still shows nothing
+    (spec ui.no-waiting-windows)."""
+    mw, calls, progress = setup_mw()
+
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+
+    assert calls == ["unload"]
+    assert progress.started == []
+
+
+def test_a_close_that_waits_says_what_it_waits_for(monkeypatch) -> None:
+    mw, calls, progress = setup_mw()
+    mw._background_op_count = 1
+    clock = [1000.0]
+    monkeypatch.setattr(aqt.main.time, "monotonic", lambda: clock[0])
+
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+    # inside the grace period: still silent
+    assert progress.started == []
+
+    clock[0] += AnkiQt.CLOSE_WAIT_GRACE_SECS + 0.1
+    progress.scheduled.pop()()
+
+    assert len(progress.started) == 1
+    started = progress.started[0]
+    assert "Clanki" in str(started["title"])
+    assert "background work" in str(started["label"]).lower()
+    # the wait can be stopped, and the window says so
+    assert started["cancel_label"]
+    assert calls == []
+
+    # the window is opened once, not on every retry
+    clock[0] += 5
+    progress.scheduled.pop()()
+    assert len(progress.started) == 1
+
+
+def test_the_close_wait_window_closes_when_the_work_finishes(monkeypatch) -> None:
+    mw, calls, progress = setup_mw()
+    mw._background_op_count = 1
+    clock = [1000.0]
+    monkeypatch.setattr(aqt.main.time, "monotonic", lambda: clock[0])
+
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+    clock[0] += AnkiQt.CLOSE_WAIT_GRACE_SECS + 0.1
+    progress.scheduled.pop()()
+    assert len(progress.started) == 1
+
+    mw._background_op_count = 0
+    progress.scheduled.pop()()
+
+    assert progress.finished == 1
+    assert calls == ["unload"]
+
+
+def test_cancelling_the_close_wait_keeps_the_app_open(monkeypatch) -> None:
+    """Cancel abandons the close. Closing regardless is what the wait exists
+    to prevent (docs/collection-shutdown.MD)."""
+    mw, calls, progress = setup_mw()
+    mw._background_op_count = 1
+    clock = [1000.0]
+    monkeypatch.setattr(aqt.main.time, "monotonic", lambda: clock[0])
+
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+    clock[0] += AnkiQt.CLOSE_WAIT_GRACE_SECS + 0.1
+    progress.scheduled.pop()()
+
+    progress.cancel_wanted = True
+    progress.scheduled.pop()()
+
+    assert progress.finished == 1
+    assert calls == []
+    assert progress.scheduled == []
+    # the app stays open, and closing again starts a new wait
+    assert not mw._unload_profile_and_exit_pending
+
+    progress.cancel_wanted = False
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+    assert len(progress.scheduled) == 1
+
+
+def test_the_close_wait_keeps_polling_while_its_own_window_is_open(
+    monkeypatch,
+) -> None:
+    """The window this loop opens must not stop the loop.
+
+    ProgressManager.single_shot swallows a callback while a progress window
+    is up. The close-wait loop opens that window itself, so without
+    even_with_progress it would wait for itself and never close
+    (spec ui.close-says-what-it-waits-for).
+    """
+    mw, calls, progress = setup_mw()
+    mw._background_op_count = 1
+    clock = [1000.0]
+    monkeypatch.setattr(aqt.main.time, "monotonic", lambda: clock[0])
+    asked: list[bool] = []
+    real_single_shot = progress.single_shot
+
+    def recording_single_shot(
+        ms: int,
+        func: Callable[[], None],
+        requires_collection: bool = True,
+        *,
+        even_with_progress: bool = False,
+    ) -> None:
+        asked.append(even_with_progress)
+        real_single_shot(
+            ms, func, requires_collection, even_with_progress=even_with_progress
+        )
+
+    progress.single_shot = recording_single_shot  # type: ignore[method-assign]
+
+    mw.closeEvent(CloseEvent())  # type: ignore[arg-type]
+    clock[0] += AnkiQt.CLOSE_WAIT_GRACE_SECS + 0.1
+    progress.scheduled.pop()()
+    assert len(progress.started) == 1
+
+    # the retry after the window opened asked to run anyway, and was scheduled
+    assert asked[-1] is True
+    assert len(progress.scheduled) == 1
+
+    mw._background_op_count = 0
+    progress.scheduled.pop()()
+    assert calls == ["unload"]
