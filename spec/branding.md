@@ -61,6 +61,27 @@ explicit disclaimer is needed and must come first, not last.
 `test_about_window_disclaimer_is_shown_before_clankis_own_description`
 (`qt/tests/test_about.py`).
 
+## branding.about-window-credit
+
+The contributor list further down the About window is introduced as Anki's
+credit, not Clanki's: "Clanki is built on Anki, which was written by Damien
+Elmes, with patches, translation, testing and design from:", followed by the
+same contributor list as upstream, unchanged. The ftl key is
+`about-anki-written-by-damien-elmes-with-patches`, a Clanki string of its
+own, so every language reads the corrected sentence until it is translated.
+
+**Why:** Andrew, 2026-09-21: "The description 'Written by Damien Elmes' is
+conflicting with 'Clanki is a fork of Anki...'". The window renames the app
+to Clanki throughout, so upstream's "Written by Damien Elmes" reads as a
+claim about Clanki and contradicts the disclaimer eight lines above it
+(`branding.about-window-disclaimer`). Naming the work the credit belongs to
+keeps Anki's credit intact, which the AGPL-3 licence requires, and removes
+the contradiction.
+
+**Pinned by:** `test_about_window_credits_anki_not_clanki_to_damien_elmes`,
+`test_about_window_keeps_ankis_own_contributor_list`
+(`qt/tests/test_about.py`).
+
 ## branding.support-window
 
 Given Help > Support Anki & Clanki (renamed from "Support Anki", which used
