@@ -166,12 +166,18 @@ def sync_collection(
                 ),
             )
 
+    # Before the server answers there is no progress to report, and the old
+    # label said only "Checking...". On a large collection that is a long
+    # wait with nothing on screen that says what is being waited for, or that
+    # Cancel stops it (spec ui.close-says-what-it-waits-for). The stage title
+    # and the counts replace these as soon as the sync reports anything.
     mw.taskman.with_progress(
         lambda: mw.col.sync_collection(auth, mw.pm.media_syncing_enabled()),
         on_future_done,
-        label=tr.sync_checking(),
+        label=tr.sync_contacting_ankiweb(),
         immediate=True,
-        title=tr.sync_checking(),
+        title=tr.sync_syncing_with_ankiweb(),
+        cancel_label=tr.actions_cancel(),
     )
 
 

@@ -12,6 +12,15 @@ qt-misc-check-the-files-in-the-media = Check the files in the media directory
 qt-misc-choose-deck = Choose Deck
 qt-misc-choose-note-type = Choose Note Type
 qt-misc-closing = Closing...
+# Title of the window shown when closing has to wait for background work.
+# $app is the application name.
+qt-misc-closing-app = Closing { $app }
+# Label of that window: what the close is waiting for.
+qt-misc-finishing-background-work-before-closing = Finishing background work before closing...
+# Button on that window. It abandons the close, because the background work
+# is what the close waits for and cannot be ended from here. $app is the
+# application name.
+qt-misc-keep-app-open = Keep { $app } open
 qt-misc-configure-interface-language-and-options = Configure interface language and options
 qt-misc-copy-to-clipboard = Copy to Clipboard
 qt-misc-create-filtered-deck = Create Filtered Deck...
