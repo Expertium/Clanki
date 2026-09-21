@@ -17,6 +17,62 @@ index, which costs 3.5 MB of file (measured 2026-09-16).
 **Pinned by:** `sort_field_index_exists_and_the_browser_sort_uses_it`
 (`rslib/src/storage/sqlite.rs`)
 
+## database.prediction-read-index
+
+Each of the two per-review prediction tables in the retrievability-cache
+sidecar (`search_stats_fsrs_review_retrievability`,
+`search_stats_rwkv_review_retrievability`) carries one index,
+`ix_fsrs_review_retrievability_covering` and
+`ix_rwkv_review_retrievability_covering`, on
+`(sample_role, revlog_id, prediction, updated_at, fold_index, source)`.
+Those are the five columns the stats read selects plus the two it filters
+and orders by, so the read never touches the table. Clanki creates the index
+when it is missing and drops the narrow
+`ix_*_review_retrievability_role_revlog` that came before it, so a cache
+written by an earlier build is upgraded at the next collection open. A
+collection with no cache yet gets the index on an empty table, at no cost.
+
+**The one-time cost.** A cache that already holds rows pays for the build
+once. Measured on Andrew's cache (1,351,016 RWKV rows and 967,048 FSRS rows,
+2026-09-21): **4.47 s on the first open, and 0.1 ms on every open after**.
+This is the one-time first-start work that CLAUDE.md item 11 allows, and it
+is inside that rule's 15-second limit.
+
+**Why:** the narrow index held only `(sample_role, revlog_id)`, so the read
+found each row in the index and then seeked into the table for the other
+four columns, once per row. Measured on 2026-09-21, 120 paired reads each,
+alternating on one pinned core:
+
+| Read                    | Rows      | Before  | After   | Gain  | p     |
+| ----------------------- | --------- | ------- | ------- | ----- | ----- |
+| FSRS, storage cost only | 527,441   | 2176 ms | 164 ms  | 92.6% | 2e-21 |
+| FSRS, rows returned     | 527,441   | 3022 ms | 750 ms  | 75.1% | 2e-21 |
+| RWKV, storage cost only | 1,153,609 | 663 ms  | 374 ms  | 43.5% | 2e-21 |
+| RWKV, rows returned     | 1,153,609 | 2044 ms | 1646 ms | 19.3% | 3e-20 |
+
+The two shapes differ because the probe returns its rows into Python, which
+costs about a microsecond each and is charged to both arms alike. Clanki
+reads these rows in Rust, where that cost is far lower, so the storage
+figure is the one the app sees and the row figure is a floor.
+
+The protocol's own shape, the two arms in parallel on pinned cores with the
+assignment swapped, was run as well on the FSRS storage read and agreed:
+1896 ms against 126 ms, a 93.5% gain. That run also showed why the swap is
+required here. The same read measured 2169 ms on one core set of the 5950X
+and 1707 ms on the other, so one unswapped run would have reported a number
+21% off.
+
+The FSRS table gains most although it holds half the rows: its `final_fit`
+rows sit between five folds of `validation_fold` rows, so the seeks the old
+index needed landed on scattered pages. The index costs 98 MB on that cache,
+after the narrow one it replaces is dropped: the file goes from 332 MB to
+430 MB.
+
+**Pinned by:** `the_prediction_read_uses_a_covering_index`,
+`the_narrow_prediction_index_is_replaced_not_joined`,
+`a_collection_that_arrives_with_the_narrow_index_is_upgraded`
+(`rslib/src/storage/revlog/mod.rs`).
+
 ## database.collection-file-locked
 
 While Clanki has a collection open, the collection file itself is locked

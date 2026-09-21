@@ -196,6 +196,25 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
     instead of a modal window. This is item 10 seen from the user's side:
     "There is too much stuff that interrupts the user's experience."
 
+    **Amendment (Andrew, 2026-09-21): a one-time first-start bar is
+    allowed.** A loading bar at start-up is fine when it meets both
+    conditions: (1) the work is expected to finish in under 15 seconds, and
+    (2) it runs only on the very first start ever and is expected never to
+    run again, unless Clanki's code changes in a major way or the user's
+    data got corrupted.
+
+    Andrew's words: "A loading bar is ok if it meets 2 conditions: 1) The
+    process is expected to finish in <15 seconds 2) It runs ONLY on the
+    first ever startup, and is expected to never run again, unless there is
+    a major change to Clanki's code or unless the user's data got corrupted
+    somehow."
+
+    This covers one-time preparation, such as building a database index on
+    a collection that has none. It does not reopen recurring work: a bar
+    that can appear a second time in normal use fails condition 2, and work
+    that is only "usually fast" fails condition 1. Measure both before
+    claiming them, and say the measured number in the pull request.
+
 12. **The CPU is the main source of compute** (Andrew, 2026-09-20). Clanki
     must work well with no GPU at all, "especially on mobile devices". A
     GPU path may exist and may be much faster, but it is a bonus: optional,
@@ -212,6 +231,30 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
       GPU path as the answer to a slow CPU path.
     - Andrew's own machine has an RTX 4070 with 12 GB. A measurement on it
       is not evidence about users; the phone clients are the hardest case.
+
+13. **Performance-critical code belongs in Rust** (Andrew, 2026-09-20,
+    restated 2026-09-21). Moving code from Python to Rust needs no
+    permission: "feel free to move as much code as you want from Python into
+    Rust if that improves performance", and "if some Python code is slow,
+    feel free to rewrite it in Rust. Ideally, everything performance-critical
+    in Clanki should be rewritten in Rust."
+
+    Read that as a direction, not only a permission. Python on a hot path is
+    something to plan out of the codebase, not something to leave until it
+    complains. Python holds the GIL and blocks the UI thread, so the heavy
+    loops -- replay, scoring, writing rows, anything that touches every
+    review -- belong in `rslib`, with a thin Python layer that calls them.
+
+    Three limits stay:
+    - Measure first. A Rust rewrite of code that is not on a hot path spends
+      effort and buys nothing. Item 7's protocol still decides.
+    - `rslib/src/rwkv` is the RWKV session's area. Measure freely there and
+      hand the change over rather than making it.
+    - A move that changes observable behavior is still a `behavior:` change,
+      with a spec entry and a pinning test.
+
+    When a change touches slow Python for another reason, say in the pull
+    request whether that code belongs in Rust, and file it if it does.
 
 ## Changes already made in Clanki
 
