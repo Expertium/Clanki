@@ -196,6 +196,25 @@ Clanki = **Anki + clanker**: a fork of Anki in which every change is made by AI.
     instead of a modal window. This is item 10 seen from the user's side:
     "There is too much stuff that interrupts the user's experience."
 
+    **Amendment (Andrew, 2026-09-21): a one-time first-start bar is
+    allowed.** A loading bar at start-up is fine when it meets both
+    conditions: (1) the work is expected to finish in under 15 seconds, and
+    (2) it runs only on the very first start ever and is expected never to
+    run again, unless Clanki's code changes in a major way or the user's
+    data got corrupted.
+
+    Andrew's words: "A loading bar is ok if it meets 2 conditions: 1) The
+    process is expected to finish in <15 seconds 2) It runs ONLY on the
+    first ever startup, and is expected to never run again, unless there is
+    a major change to Clanki's code or unless the user's data got corrupted
+    somehow."
+
+    This covers one-time preparation, such as building a database index on
+    a collection that has none. It does not reopen recurring work: a bar
+    that can appear a second time in normal use fails condition 2, and work
+    that is only "usually fast" fails condition 1. Measure both before
+    claiming them, and say the measured number in the pull request.
+
 12. **The CPU is the main source of compute** (Andrew, 2026-09-20). Clanki
     must work well with no GPU at all, "especially on mobile devices". A
     GPU path may exist and may be much faster, but it is a bonus: optional,
