@@ -875,6 +875,45 @@ def test_card_info_has_no_rwkv_curve_for_other_algorithms(
     assert response.revlog[2].memory_state.stability == 12.0
 
 
+# Pins spec/ui.md#ui.card-info-rwkv-curve and
+# spec/scheduling.md#sched.rwkv-recordings-automatic: card info is the other
+# reader of the per-review recordings, so opening it asks for the pass that
+# saves them. A card's own past curves cannot be worked out from the card
+# alone: RWKV's state after one review depends on every review before it.
+def test_card_info_starts_the_recording_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aqt
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import card_stats
+
+    asked: list[object] = []
+    monkeypatch.setattr(rwkv, "start_rwkv_recordings_pass_if_needed", asked.append)
+    monkeypatch.setattr(rwkv, "rwkv_review_active", lambda reviewer, card: True)
+    monkeypatch.setattr(rwkv, "has_reviewer_backend", lambda: True)
+    monkeypatch.setattr(rwkv, "rwkv_card_info_rows", lambda **kwargs: [])
+    monkeypatch.setattr("aqt.mediasrv._add_rwkv_curve", lambda *args: None)
+    response = _card_stats_with_two_reviews()
+
+    class _Backend:
+        def card_stats_raw(self, data: bytes) -> bytes:
+            return response.SerializeToString()
+
+    mw = SimpleNamespace(
+        col=SimpleNamespace(
+            _backend=_Backend(), get_card=lambda card_id: SimpleNamespace(id=card_id)
+        ),
+        reviewer=None,
+    )
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+    from aqt.mediasrv import app
+
+    with app.test_request_context(method="POST", data=b""):
+        card_stats()
+
+    assert asked == [mw]
+
+
 class TestCheckDynamicRequestPermissions:
     """A missing Content-type header must abort(403), not raise KeyError."""
 

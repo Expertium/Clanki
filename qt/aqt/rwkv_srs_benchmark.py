@@ -20,6 +20,7 @@ from typing import Any, cast
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
+    RwkvCurveRecordingUnavailable,
     RwkvCurveSourceRecorder,
     RwkvCurveSources,
     RwkvIntervalOverride,
@@ -517,11 +518,17 @@ class _RustRwkvRuntime:
         warm_up_packed = getattr(self._process, "warm_up_reviews_packed", None)
         # each answered review's curve source, for card info (spec
         # ui.card-info-rwkv-curve): the replay copies it as it goes
-        record_sources = (
-            curve_source_recorder is not None
-            and review_ids is not None
-            and callable(getattr(self._process, "record_curve_sources", None))
-        )
+        record_sources = curve_source_recorder is not None and review_ids is not None
+        if record_sources and not callable(
+            getattr(self._process, "record_curve_sources", None)
+        ):
+            # say so rather than replay the whole history saving no source:
+            # card info would then draw one segment per card and nothing
+            # would explain why
+            raise RwkvCurveRecordingUnavailable(
+                "this RWKV runtime cannot record curve sources, so the "
+                "curves card info draws cannot be saved"
+            )
 
         self._warm_up_batches(
             reviews,

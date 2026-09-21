@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -54,6 +55,10 @@ RWKV_INSTANT = Algorithm.RWKV_INSTANT
 ALGORITHMS = (FSRS_7, RWKV_CURVE, RWKV_INSTANT)
 
 _MAX_CACHED_RESULTS = 4
+# How often the job looks again while the RWKV recording pass writes the rows
+# it is waiting for. The wait is a sleep, not a read: reading again costs a
+# sweep of millions of rows, so it happens once, when the pass has finished.
+_RWKV_PASS_CHECK_SECS = 1.0
 
 
 @dataclass
@@ -125,6 +130,13 @@ def start(mw: Any, search: str, days: int) -> Progress:
 
     global _job, _next_job_id
 
+    # The page asking for these numbers is what starts the pass that records
+    # them: nothing about reviewing needs the rows, so no pass runs until a
+    # screen wants them (spec sched.rwkv-recordings-automatic). Before the
+    # kept results are looked at, so that a page opened a second time asks
+    # for the pass again.
+    aqt.rwkv_scheduler.start_rwkv_recordings_pass_if_needed(mw)
+
     col = mw.col
     card_ids = sorted(col.find_cards(search))
     # a digest, not the ids: four kept keys of a large search held megabytes
@@ -176,6 +188,9 @@ def cancel(job_id: int | None = None) -> None:
 def _run(mw: Any, job: _Job, search: str, days: int) -> None:
     try:
         _compute(mw, job, search, days)
+        if _wait_for_the_rwkv_pass(job):
+            # it has written the rest of its rows: read them once
+            _compute(mw, job, search, days)
     except InterruptedError:
         with job.lock:
             job.state = State.CANCELLED
@@ -188,10 +203,51 @@ def _run(mw: Any, job: _Job, search: str, days: int) -> None:
         with job.lock:
             job.state = State.DONE
         finished = job.progress()
-        with _lock:
-            _results[job.key] = finished
-            while len(_results) > _MAX_CACHED_RESULTS:
-                del _results[next(iter(_results))]
+        if _will_not_change(finished):
+            with _lock:
+                _results[job.key] = finished
+                while len(_results) > _MAX_CACHED_RESULTS:
+                    del _results[next(iter(_results))]
+
+
+def _will_not_change(finished: Progress) -> bool:
+    """Whether a finished reading is worth keeping for the session.
+
+    A series that is being computed, or that nothing has recorded, is not a
+    result: a recording pass can change it. Keeping one meant that a page
+    opened before the pass finished showed "being computed" for the rest of
+    the session, however often it was reopened (spec
+    sched.rwkv-recordings-automatic).
+    """
+    return not any(
+        series.unavailable
+        in (Unavailable.COMPUTING_PREDICTIONS, Unavailable.NOT_RECORDED)
+        for series in finished.series
+    )
+
+
+def _wait_for_the_rwkv_pass(job: _Job) -> bool:
+    """Waits while the RWKV recording pass writes the rows a series is
+    missing, and says whether it wrote any.
+
+    The job stays COMPUTING for the wait, so the page keeps polling and
+    keeps saying "Calculating..." for that series, and draws the series it
+    already has. Without the wait the job ended at once with "being
+    computed" frozen on the graph, and only another visit to the page ever
+    showed the numbers (spec sched.rwkv-recordings-automatic).
+    """
+    with job.lock:
+        waiting = any(
+            series.unavailable == Unavailable.COMPUTING_PREDICTIONS
+            for series in job.series.values()
+        )
+    if not waiting:
+        return False
+    while aqt.rwkv_scheduler.rwkv_recordings_pass_running():
+        if job.cancel_event.is_set():
+            raise InterruptedError()
+        time.sleep(_RWKV_PASS_CHECK_SECS)
+    return True
 
 
 def _compute(mw: Any, job: _Job, search: str, days: int) -> None:

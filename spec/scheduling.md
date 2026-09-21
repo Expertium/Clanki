@@ -259,23 +259,47 @@ built again after every answer.
 
 The RWKV recording pass leaves a record of what it did, in
 `recordings-progress.json` beside the state cache in the profile folder. It
-holds the moment of the last step (`at`), the `state`, the number of batches
+holds the moment of the last step (`at`), the `state`, the number of steps
 finished, and, once the pass ends, how many seconds it took.
 
 The state is one of:
 
 | State                | Meaning                                             |
 | -------------------- | --------------------------------------------------- |
-| `started`            | the pass has begun and finished no batch yet        |
+| `started`            | the pass has begun and finished no step yet         |
 | `running`            | it is working; `batches` says how far it has got    |
 | `finished`           | it replayed the whole history and recorded the rows |
 | `stopped_for_review` | a card appeared, so it stepped aside                |
 | `stopped`            | it ended without recording, for another reason      |
 
 Each step replaces the last, so the file says where the pass is now rather
-than where it has been. A record that cannot be written, or that is read back
-damaged, is not an error and never fails the pass: the pass is the work, the
-record is only the account of it.
+than where it has been. A record that cannot be written, or that is read
+back damaged, is not an error and never fails the pass: the pass is the
+work, the record is only the account of it.
+
+**The record is also the pass's resume point.** Every 32,768 recorded
+reviews the pass writes its rows to the collection and then records how far
+they reach: `reviews` (how many of the replayed reviews are recorded),
+`lastReviewId` (the newest of them), `rows` (how many rows of each of the
+three kinds reach that far) and `tag` (the model, curve-source format,
+kernel and replay semantics they were recorded with). A record that
+ends in any state other than `finished` keeps those four fields, and the
+next pass reads them and carries on instead of starting over.
+
+It carries on only when all of this still holds, and starts over otherwise:
+
+- the `tag` is the running model's, exactly as the finished-pass marker's
+  is;
+- the history still begins with the same reviews: it holds at least
+  `reviews` of them, and the one at that position is `lastReviewId`;
+- the cache beside the collection still holds as many rows of each of the
+  three kinds, up to `lastReviewId`, as the pass had written there.
+
+Correctness first: any doubt starts the pass over, because a pass that
+carried on from a different history would record every later row from the
+wrong state. Carrying on replays the reviews before the resume point again
+with nothing recorded, and records only what is left. The rows it writes
+are the same rows, value for value, as an uninterrupted pass writes.
 
 **Why:** Andrew, 2026-09-20, asked why RWKV-Curve had no rows in his graphs.
 Answering it took a copy of the prediction database, a row count per table, a
@@ -283,8 +307,22 @@ process's CPU and memory watched over minutes, and two wrong guesses, because
 nothing on disk said whether the pass had run, been interrupted, or never
 started. One file answers it in one step.
 
+The resume point is what makes an on-demand pass possible at all
+(`sched.rwkv-recordings-automatic`): a user who closes Stats half way
+through must keep the work, or the pass never finishes on a large
+collection. A pass cannot store the RWKV state it stopped in -- measured on
+Andrew's 656,402 reviews, one snapshot of that state is 3.3 GB, and 573 MB
+after only 65,536 reviews -- so it stores how far its rows reach instead.
+Replaying the earlier reviews again with nothing recorded runs at 14,900
+reviews a second against 6,200 while recording, both measured on that
+collection in a release build, so carrying on from half way costs about
+half of what starting over costs, and every run gets further than the last.
+
 **Pinned by:** `test_the_pass_leaves_a_record_of_what_it_did`,
-`test_an_unreadable_record_is_not_an_error`
+`test_an_unreadable_record_is_not_an_error`,
+`test_a_stopped_pass_goes_on_where_it_stopped`,
+`test_a_starting_pass_keeps_the_resume_point_it_has_not_read_yet`,
+`test_a_resume_point_that_no_longer_matches_starts_the_pass_over`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-startup-no-window
@@ -349,70 +387,97 @@ keeps its window: the user asked for it and waits for it.
 ## sched.rwkv-recordings-automatic
 
 Given a collection that runs RWKV-Curve or RWKV-Instant and a usable RWKV
-model, whenever its RWKV state becomes ready (loaded or built at start-up,
-read again, or refreshed after a sync), Clanki itself does the RWKV work
-that would otherwise need a button, without asking and without a message:
+model, Clanki itself does the RWKV work that would otherwise need a button,
+without asking and without a message. There are two such jobs, and they
+start in different ways.
 
-- when the state skips synced reviews that are older than the replay window,
-  it reads the whole review history again, in the "Getting Ready" progress
-  window, once the sync has finished;
-- otherwise, when the per-review recordings (the RWKV-Instant and RWKV-Curve
-  rows the Stats graphs read, `ui.stats-model-metrics`, and the curve
-  sources card info draws, `ui.card-info-rwkv-curve`) were not made by a
-  full recording pass with the running model (the SHA-256 of its weights),
-  the running curve-source format and kernel and the current replay
-  semantics, or their rows are gone from the cache file beside the
-  collection, it runs that pass at most once per profile open. That pass is
-  minutes of work on a large collection, so it never runs at start-up and
-  never in a progress window: it starts only after the user has left Clanki
-  alone for ten seconds and no card is on the review screen, and it runs on
-  a thread of its own. **That thread is its own, never the task manager's
-  collection worker.** There is one collection worker, and answering a card,
-  clicking a deck, the deck list, the Browser and the Stats all go through
-  it; a pass that walked the whole history on it would put every one of them
-  behind it for minutes.
+**The re-read of the whole history is scheduling, and starts by itself.**
+Whenever the RWKV state becomes ready (loaded or built at start-up, read
+again, or refreshed after a sync) and that state skips synced reviews older
+than the replay window, Clanki reads the whole review history again, in the
+"Getting Ready" progress window, once the sync has finished. Without it the
+state the reviewer predicts from is wrong, so it cannot wait for a screen.
 
-  **The pass replays in a model runtime of its own.** It loads a second
-  runtime from the same weights file, with the same settings and the same
-  entry point, replays the whole history into that one, and releases it as
-  soon as it is done. The shared runtime, the one the reviewer predicts
-  from, is neither claimed, locked, rested against nor invalidated: a
-  prediction asked for while the pass runs is served, from a state the pass
-  never touched. The rows the pass records are the same rows either way,
-  because the model and the replay are the same.
+**The recording pass is statistics, and starts from the screen that wants
+it.** The per-review recordings are the RWKV-Instant and RWKV-Curve rows
+the Stats model-quality graphs read (`ui.stats-model-metrics`) and the
+curve sources card info draws (`ui.card-info-rwkv-curve`). Nothing about
+reviewing needs them: scheduling reads the state cache, which is built on
+its own. So the pass runs when one of those two screens asks for them --
+the Stats model-quality request, and card info -- and at no other time. It
+never runs at start-up, never on a timer, and never while a card is on the
+review screen.
 
-  It reads the review history before it loads that runtime, in parts, and
-  then replays in short batches of about a thousand reviews. **Between two
-  batches it rests**, so the pass takes a known, small share of the machine
-  while the user works: the rest is a multiple of the batch just done.
-  While the user is away it is the shortest rest there is. **It is never a
-  wait for the user to stop.** The pass stops by itself once the profile it
-  started in has closed, checked both between two batches and at every
-  progress report. Nothing is shown while it runs, except
-  that the model-quality graphs say their numbers are being computed
-  instead of saying that nothing recorded them; a finished pass shows one
-  short message. A finished pass remembers what it recorded
-  with (`rwkv-state-cache/recordings.json` in the profile folder), so the
-  next start-up runs none. A state-cache build that replays the whole
-  history and records all three (RWKV-Instant's rows, RWKV-Curve's rows and
-  the curve sources), such as the build on a first start, is that pass too:
-  it remembers the same, and no recording pass runs right after it.
+The pass runs when the rows are not the running model's: when they were not
+made by a full pass with the running model (the SHA-256 of its weights),
+the running curve-source format and kernel and the current replay
+semantics, or when **fewer of them survive than that pass recorded**. A
+finished pass writes down how many rows of each of the three kinds it
+recorded and the newest review they reach, and the question "are the rows
+still there" is answered by counting the rows of each kind up to that
+review, never by asking whether one row exists. The three counts are kept
+apart, because RWKV-Curve has no value for a card's first review and so
+writes fewer rows than the other two. Counting them is work of its own, so
+an answer of "they are the running model's" is remembered until Clanki
+writes or clears the marker again: a screen that opens twice does not count
+twice.
 
-Neither starts while a card is on the review screen: each waits until the
-review screen closes. Neither starts while the main window is disabled (a
-sync in progress, or the profile closing); the next time the state becomes
-ready finds the same reason and starts it then. A sync that skipped old
-reviews shows no message. The deck-options buttons "Read Review History
-Again" and "Prepare Stats Graphs" stay, as a manual fallback.
+The pass runs on a thread of its own. **That thread is its own, never the
+task manager's collection worker.** There is one collection worker, and
+answering a card, clicking a deck, the deck list, the Browser and the Stats
+all go through it; a pass that walked the whole history on it would put
+every one of them behind it for minutes.
 
-A card on the screen stops the pass rather than resting it, and the pass
-starts again once the user leaves the reviewer. Reviewing always wins. This
-is a safety net: a pass that has a runtime of its own leaves the reviewer's
-state alone, so a card shown while it runs gets its intervals and the stop
-changes nothing.
+**The pass replays in a model runtime of its own.** It loads a second
+runtime from the same weights file, with the same settings and the same
+entry point, replays the whole history into that one, and releases it as
+soon as it is done. The shared runtime, the one the reviewer predicts from,
+is neither claimed, locked, rested against nor invalidated: a prediction
+asked for while the pass runs is served, from a state the pass never
+touched. The rows the pass records are the same rows either way, because
+the model and the replay are the same.
 
-_Limitation:_ a backend that cannot load a second runtime — a test double,
-or a backend of another kind — falls back to the shared one, claimed and
+**Every step of the pass is bounded.** It reads the review history before
+it loads that runtime, in parts; it turns those rows into replay inputs in
+blocks; and it replays in short batches of about a thousand reviews.
+**Between two steps it rests**, so the pass takes a known, small share of
+the machine while the user works: the rest is a multiple of the step just
+done. While the user is away it is the shortest rest there is. **It is
+never a wait for the user to stop.** No step of the pass may hold the
+collection or the machine for longer than about half a second, whichever
+step it is. The pass stops by itself once the profile it started in has
+closed, checked both between two steps and at every progress report.
+
+**A pass that is stopped goes on where it stopped.** How far its rows reach
+is written down as it works, and the next screen that asks for the rows
+starts a pass that carries on from there (`sched.rwkv-recordings-progress`).
+
+Nothing is shown while it runs, except that the model-quality graphs say
+their numbers are being computed instead of saying that nothing recorded
+them, and keep saying it until the pass has finished and their numbers are
+read again. A reading that says an algorithm's numbers are being computed,
+or that nothing has recorded them, is not kept for the session: a pass can
+change it. A finished pass shows one short message. A finished pass
+remembers what it recorded with (`rwkv-state-cache/recordings.json` in the
+profile folder), so no later screen starts another. A state-cache build
+that replays the whole history and records all three (RWKV-Instant's rows,
+RWKV-Curve's rows and the curve sources), such as the build on a first
+start, is that pass too: it remembers the same, and no recording pass runs
+after it.
+
+A pass that cannot record all three kinds of row refuses before the replay
+starts, rather than walking the whole history and writing none of one kind.
+
+A card on the screen stops the pass, and no screen starts one while a card
+is shown. Reviewing always wins. This is a safety net: a pass that has a
+runtime of its own leaves the reviewer's state alone, so a card shown while
+it runs gets its intervals and the stop changes nothing.
+
+The deck-options buttons "Read Review History Again" and "Prepare Stats
+Graphs" stay, as a manual fallback.
+
+_Limitation:_ a backend that cannot load a second runtime -- a test double,
+or a backend of another kind -- falls back to the shared one, claimed and
 restored as it was before. Such a pass owns the half-replayed state, so a
 prediction asked for while it runs is refused and falls back, it hands the
 backend back between two batches so a click waits for one batch at most,
@@ -429,16 +494,21 @@ not recorded its predictions" on AUC-ROC, and a sync warned that "synced
 reviews are older than 8 days" and asked him to press "Read Review History
 Again".
 
+Andrew chose the trigger on 2026-09-21, out of a loading bar at first
+launch, a permanent background thread, and running the pass on demand. On
+demand is the only one of the three that costs a user who never opens
+Stats anything at all, and it cannot compete with reviewing, because
+nobody reviews and reads Stats at the same time. He had already refused a
+one-off headless backfill of his own collection: "That's not a great idea
+if we plan to share the fork (and I do)."
+
 The batches and the short rest are the same rule seen from the other side.
 A pass that waited for ten seconds of quiet between two batches made no
 progress at all while he studied, because every key press restarted the
 wait: measured on his collection, 0 of 656,402 reviews in five minutes of
-use, and a job of two minutes stood unfinished for an hour. Because
-it never finished, RWKV-Curve's per-review rows stayed empty (0 rows, next
-to 966,964 for FSRS-7 and 1,350,982 for RWKV-Instant) and RWKV-Curve was
-missing from the AUC-ROC graph and greyed out in the Calibration menu.
-Holding the backend for the whole pass cost the same: a click waited for it
-for longer than 30 s, the pass's whole length.
+use, and a job of two minutes stood unfinished for an hour. Holding the
+backend for the whole pass cost the same: a click waited for it for longer
+than 30 s, the pass's whole length.
 
 Resting and stopping were both workarounds for one runtime shared between
 two jobs. A second runtime costs 11 MB of weights, measured, and the pass
@@ -446,7 +516,26 @@ no longer replaces the reviewer's state at all, so it no longer needs the
 copy of that state it used to take and restore. That is what removes the
 conflict instead of scheduling around it.
 
-**Pinned by:** `test_missing_or_stale_recordings_start_the_recording_pass_by_itself`,
+Bounding every step, rather than only the batches, came from the same
+collection on 2026-09-21: each of the 16 parts of the history query took
+0.2-0.4 s and each replay batch 0.19 s, but turning 656,402 rows into
+replay inputs between them took 11.9 s in one step. His live Clanki was
+stopped in exactly that step, with the progress record reading
+`{"state": "running", "batches": 16}`, one core busy and nothing written
+for five minutes; Stats would not open and the deck list was slow, because
+that step holds the collection. A rule that bounds only the part that was
+easy to bound is not a bound.
+
+Counting the rows, rather than asking whether one exists, came from the
+same day. The test read `exists(select 1 from rwkv_curve_sources ...)`, and
+Andrew's collection held 38 such rows, every one of them written by an
+answer he gave in the reviewer, next to 656,402 reviews. One answered card
+made the pass look finished for ever, and it is why his Stats graphs and
+his forgetting curves stayed empty however often the pass was started.
+
+**Pinned by:** `test_a_screen_that_reads_the_rows_starts_the_recording_pass`,
+`test_nothing_starts_the_recording_pass_at_profile_open`,
+`test_rows_of_one_review_do_not_make_the_recordings_current`,
 `test_the_pass_replays_in_a_runtime_of_its_own`,
 `test_a_prediction_is_served_while_the_pass_runs`,
 `test_the_pass_releases_its_own_runtime`,
@@ -454,15 +543,21 @@ conflict instead of scheduling around it.
 `test_the_pass_records_the_same_rows_in_either_runtime`,
 `test_a_backend_that_cannot_load_a_second_runtime_falls_back`,
 `test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
-`test_the_recording_pass_waits_until_the_user_leaves_clanki_alone`,
 `test_the_pass_rests_a_bounded_time_between_batches`,
+`test_every_step_of_the_history_read_is_bounded`,
+`test_a_pass_that_cannot_record_curve_sources_refuses`,
 `test_the_pass_hands_the_backend_back_while_it_rests`,
 `test_the_pass_reads_the_history_before_it_claims_the_backend`,
 `test_the_pass_runs_in_the_background_without_a_progress_window`,
 `test_the_recording_pass_leaves_the_collection_worker_free`,
 `test_the_recording_pass_stops_when_the_profile_closes`,
-`test_while_the_recording_pass_runs_the_graphs_say_it_is_computing`
+`test_while_the_recording_pass_runs_the_graphs_say_it_is_computing`,
+`test_the_graphs_read_their_numbers_again_when_the_pass_finishes`,
+`test_a_reading_the_pass_can_still_change_is_not_kept`,
+`test_the_stats_graphs_start_the_recording_pass`
 (`qt/tests/test_stats_metrics.py`),
+`test_card_info_starts_the_recording_pass`
+(`qt/tests/test_mediasrv.py`),
 `test_nothing_starts_while_the_main_window_is_disabled`,
 `test_a_full_recording_pass_marks_the_recordings_current`,
 `test_a_full_recording_build_leaves_no_recording_pass_due`,

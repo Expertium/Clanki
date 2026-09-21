@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import heapq
 import inspect
+import itertools
 import json
 import logging
 import math
@@ -202,7 +203,7 @@ _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 # pass ran with (spec sched.rwkv-recordings-automatic)
 _RWKV_RECORDINGS_MARKER_FILE = "recordings.json"
 _RWKV_RECORDINGS_PROGRESS_FILE = "recordings-progress.json"
-_RWKV_RECORDINGS_MARKER_VERSION = 1
+_RWKV_RECORDINGS_MARKER_VERSION = 2
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
     "state-v1.json",
@@ -322,6 +323,11 @@ _rwkv_history_reread_started = False
 # true while the recording pass is writing rows, so the graphs can say that
 # their numbers are being computed instead of showing the algorithm as absent
 _rwkv_recordings_pass_running = False
+# True once the rows have been found to be the running model's. Counting them
+# takes about 200 ms on 656,402 reviews, measured, and a screen that reads
+# them asks every time it opens; only Clanki itself writes or clears the
+# marker, so the answer is remembered until it does.
+_rwkv_recordings_known_current = False
 # the pass starts only after the user has left Clanki alone this long (spec
 # sched.rwkv-recordings-automatic)
 RECORDINGS_PASS_IDLE_SECS = 10.0
@@ -332,6 +338,20 @@ RECORDINGS_PASS_CHECK_MS = 5000
 # RWKV backend, which the pass holds while a batch runs, is never held for
 # longer than that (spec sched.rwkv-recordings-automatic).
 RECORDINGS_PASS_BATCH_REVIEWS = 1024
+# The work that turns the history rows into replay inputs is cut into steps
+# of this many rows, and the pass rests between two of them exactly as it
+# rests between two replay batches (spec sched.rwkv-recordings-automatic).
+RECORDINGS_PASS_PREPARE_STEP_ROWS = 16_384
+# How many rows of each kind a recording pass wrote: RWKV-Instant's
+# per-review values, RWKV-Curve's, and the curve sources card info draws.
+# The three differ: RWKV-Curve has no value for a card's first review, so its
+# count is lower than the other two, and a test that expected one row per
+# review for all three would fail on a pass that did everything right.
+RecordedRows = tuple[int, int, int]
+# A pass saves where it has got every this many recorded reviews, so a pass
+# that is stopped loses at most that much work. Saving it costs one flush of
+# the three writers (spec sched.rwkv-recordings-progress).
+RECORDINGS_PASS_RESUME_REVIEWS = 32_768
 # the user counts as working for this long after a key press, a click or a
 # scroll
 RECORDINGS_PASS_ACTIVE_SECS = 2.0
@@ -1398,9 +1418,20 @@ class RwkvStatefulReviewerBackend:
                         "predictions cannot be recorded"
                     )
                 kwargs["curve_recorder"] = curve_recorder
-            if curve_source_recorder is not None and _callable_accepts_keyword(
-                bulk_parameters, "curve_source_recorder"
-            ):
+            if curve_source_recorder is not None:
+                if not _callable_accepts_keyword(
+                    bulk_parameters, "curve_source_recorder"
+                ):
+                    # Refuse, as a missing curve_recorder does. A silently
+                    # dropped recorder let the pass walk the whole history
+                    # writing no curve source, and card info then drew one
+                    # segment for a card with years of reviews, with
+                    # nothing said anywhere.
+                    raise RwkvCurveRecordingUnavailable(
+                        "the RWKV runtime's bulk warm-up does not take a "
+                        "curve_source_recorder, so the curves card info "
+                        "draws cannot be saved"
+                    )
                 # the replay saves each review's curve source as it goes
                 # (spec ui.card-info-rwkv-curve)
                 kwargs["curve_source_recorder"] = curve_source_recorder
@@ -3654,6 +3685,7 @@ def _invalidate_reviewer_backend_runtime_state_for_profile_open() -> None:
         _rwkv_startup_build_started = False
         _rwkv_recordings_pass_started = False
         _rwkv_history_reread_started = False
+        _forget_that_the_recordings_are_current()
 
 
 def _finish_reviewer_backend_warmup(
@@ -10479,7 +10511,7 @@ def _warm_up_reviewer_backend(
             reviewer,
             progress=progress,
             prepare_recovery_checkpoint=state_cache_available,
-            between_parts=_split_whole_history_query,
+            between_steps=_split_whole_history_query,
         )
         history_elapsed_ms = (time.monotonic() - history_start) * 1000
         _require_reviewer_backend_warmup_current(is_current)
@@ -10517,7 +10549,7 @@ def _warm_up_reviewer_backend(
         _require_reviewer_backend_warmup_current(is_current)
         # what the rows are recorded with, taken before the replay
         recordings_tag = _rwkv_recordings_tag(getattr(reviewer, "mw", None))
-        recorded_all = _warm_up_rwkv_reviews(
+        recorded_rows = _warm_up_rwkv_reviews(
             reviewer,
             backend,
             warm_up,
@@ -10555,11 +10587,17 @@ def _warm_up_reviewer_backend(
             expected_generation=warmup_generation,
         ):
             return False
-        if recorded_all and recordings_tag is not None:
+        if recorded_rows is not None and recordings_tag is not None:
             # this build replayed the whole history with every recorder, so
             # it is the recording pass too: none runs after it (spec
             # sched.rwkv-recordings-automatic)
-            _write_rwkv_recordings_marker(getattr(reviewer, "mw", None), recordings_tag)
+            _write_rwkv_recordings_marker(
+                getattr(reviewer, "mw", None),
+                recordings_tag,
+                reviews=len(history.reviews),
+                last_review_id=history.last_review_id,
+                rows=recorded_rows,
+            )
         logger.debug(
             "warmed RWKV reviewer state: reviews=%s restore_elapsed_ms=%.1f "
             "history_elapsed_ms=%.1f warm_up_elapsed_ms=%.1f "
@@ -10797,11 +10835,12 @@ def _warm_up_rwkv_reviews(
     snapshot_after_reviews: Sequence[int] = (),
     snapshot_recorder: RwkvStateCacheSnapshotCallback | None = None,
     is_current: Callable[[], bool] | None = None,
-) -> bool:
-    """Replays `reviews`. True when it recorded every per-review row the
-    automatic recording pass would (RWKV-Instant's and RWKV-Curve's rows and
-    the curve sources, spec sched.rwkv-recordings-automatic), so that a
-    replay of the whole history can stand in for that pass."""
+) -> RecordedRows | None:
+    """Replays `reviews`. Returns how many rows of each kind it recorded when
+    it recorded every per-review row the automatic recording pass would
+    (RWKV-Instant's and RWKV-Curve's rows and the curve sources, spec
+    sched.rwkv-recordings-automatic), so that a replay of the whole history
+    can stand in for that pass, and None when it did not."""
     started_at = time.monotonic()
 
     def progress_reporter(replay_progress: RwkvWarmUpProgress) -> None:
@@ -10821,6 +10860,7 @@ def _warm_up_rwkv_reviews(
             _RwkvCurveSourceWriter(reviewer) if review_ids is not None else None
         )
         recorded_all = False
+        written_rows: RecordedRows = (0, 0, 0)
         try:
             if not record_retrievability_cache:
                 backend.warm_up(
@@ -10858,10 +10898,14 @@ def _warm_up_rwkv_reviews(
                 recorded_all = curve_writer is not None and all(
                     written > 0 for written in (writer.written, curve_writer.written)
                 )
+                if recorded_all and curve_writer is not None:
+                    written_rows = (writer.written, curve_writer.written, 0)
         finally:
             if source_writer is not None:
                 source_writer.flush()
-        return recorded_all and source_writer is not None and source_writer.written > 0
+        if not (recorded_all and source_writer is not None and source_writer.written):
+            return None
+        return (written_rows[0], written_rows[1], source_writer.written)
 
     if callable(warm_up):
         warm_up_callable = cast(Callable[..., Any], warm_up)
@@ -10880,10 +10924,10 @@ def _warm_up_rwkv_reviews(
                 warm_up_callable(reviews, **kwargs)
             finally:
                 writer.flush()
-            return False
+            return None
 
         warm_up_callable(reviews, **kwargs)
-    return False
+    return None
 
 
 def _backend_records_curve_predictions(backend: RwkvStatefulReviewerBackend) -> bool:
@@ -11044,6 +11088,10 @@ def recompute_rwkv_calibration_data(
     *,
     progress: RwkvStateCacheProgressCallback | None = None,
     between_batches: Callable[[], None] | None = None,
+    resume_from: (
+        Callable[[Sequence[int]], RwkvRecordingsResumePoint | None] | None
+    ) = None,
+    recorded_through: Callable[[int, int, RecordedRows], None] | None = None,
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state.
 
@@ -11053,11 +11101,19 @@ def recompute_rwkv_calibration_data(
     sched.rwkv-recordings-automatic). A backend that cannot load a second
     runtime falls back to the shared one, claimed and restored as before.
 
-    `between_batches` is called between two batches of reviews, and between
-    the parts of the history query. The automatic pass passes the one that
-    rests, so that the pass takes a small share of the machine while the
-    user works; a pass the user asked for and watches passes nothing and
-    runs straight through.
+    `between_batches` is called between two steps: two batches of reviews,
+    two parts of the history query, and every
+    RECORDINGS_PASS_PREPARE_STEP_ROWS rows of the preparation between them.
+    The automatic pass passes the one that rests, so that the pass takes a
+    small share of the machine while the user works; a pass the user asked
+    for and watches passes nothing and runs straight through.
+
+    `resume_from` says how many reviews a stopped pass already recorded, and
+    `recorded_through(reviews, last_review_id, rows)` is told how far this
+    one has got, and how many rows of each kind reach that far, once they are
+    in the collection. Together they let a pass that
+    was stopped go on instead of starting over (spec
+    sched.rwkv-recordings-progress).
     """
 
     configure_reviewer_backend_from_environment()
@@ -11110,10 +11166,10 @@ def recompute_rwkv_calibration_data(
         history = _historical_rwkv_review_inputs(
             reviewer,
             progress=progress,
-            # the whole-history query in short parts, so that the pass can
-            # rest between them instead of holding the collection for one
-            # query of several seconds
-            between_parts=between_batches,
+            # the read in short steps, so that the pass can rest between
+            # them instead of holding the collection for one query of
+            # several seconds and the machine for the preparation after it
+            between_steps=between_batches,
         )
         logger.debug(
             "RWKV calibration recompute inputs prepared: reviews=%s",
@@ -11140,6 +11196,10 @@ def recompute_rwkv_calibration_data(
             sample_role_by_review_id, fold_index_by_review_id = (
                 _rwkv_calibration_fold_role_maps(reviewer, history)
             )
+            # the last step before the replay begins: reading FSRS-7's folds
+            # is a query over the whole prediction cache
+            if between_batches is not None:
+                between_batches()
             writer = _RwkvReviewRetrievabilityCacheWriter(
                 reviewer,
                 source="rwkv_calibration_recompute",
@@ -11157,15 +11217,62 @@ def recompute_rwkv_calibration_data(
             # ui.card-info-rwkv-curve)
             source_writer = _RwkvCurveSourceWriter(reviewer)
             started_at = time.monotonic()
+            total = len(history.reviews)
+            resume_point = (
+                resume_from(history.review_ids) if resume_from is not None else None
+            )
+            resume_after = (
+                min(resume_point.reviews, total) if resume_point is not None else 0
+            )
+            # where the replay is now, counted over the whole history, and
+            # how far the rows on disk reach
+            replayed_before = [0]
+            recording = [False]
+            saved_through = [resume_after]
+            # what a pass that stopped earlier had already written, so that
+            # the counts a resume point carries are the whole prefix's and
+            # not only this run's
+            rows_before = resume_point.rows if resume_point is not None else (0, 0, 0)
+
+            def recorded_rows() -> RecordedRows:
+                return (
+                    rows_before[0] + writer.written,
+                    rows_before[1] + curve_writer.written,
+                    rows_before[2] + source_writer.written,
+                )
+
+            def save_resume_point(replayed: int) -> None:
+                """The rows up to `replayed` are in the collection, so a pass
+                that is stopped now can go on from there."""
+                writer.flush()
+                curve_writer.flush()
+                source_writer.flush()
+                saved_through[0] = replayed
+                if recorded_through is not None:
+                    recorded_through(
+                        replayed,
+                        history.review_ids[replayed - 1],
+                        recorded_rows(),
+                    )
 
             def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
                 runtime.require_current()
+                replayed = replayed_before[0] + replay_progress.processed_reviews
                 _report_rwkv_review_replay_progress(
                     progress,
                     label=_tr().qt_misc_stats_data_preparing(),
-                    replay_progress=replay_progress,
+                    replay_progress=RwkvWarmUpProgress(
+                        processed_reviews=replayed,
+                        total_reviews=total,
+                    ),
                     elapsed_seconds=time.monotonic() - started_at,
                 )
+                if (
+                    recording[0]
+                    and 0 < replayed < total
+                    and replayed - saved_through[0] >= RECORDINGS_PASS_RESUME_REVIEWS
+                ):
+                    save_resume_point(replayed)
                 _recording_pass_rest(
                     between_batches,
                     hand_the_shared_backend_back=runtime.is_the_shared_runtime,
@@ -11173,7 +11280,7 @@ def recompute_rwkv_calibration_data(
 
             try:
                 warm_up_kwargs: dict[str, Any] = {
-                    "review_ids": history.review_ids,
+                    "review_ids": history.review_ids[resume_after:],
                     "prediction_recorder": writer.record,
                     "curve_recorder": curve_writer.record,
                     "progress": replay_progress,
@@ -11190,8 +11297,27 @@ def recompute_rwkv_calibration_data(
                     "curve_source_recorder",
                 ):
                     warm_up_kwargs["curve_source_recorder"] = source_writer
+                if 0 < resume_after < total:
+                    # The state RWKV is in after a review depends on every
+                    # review before it, and one snapshot of that state is
+                    # 3.3 GB on this history (measured), so a stopped pass
+                    # cannot store where it was. It replays what it already
+                    # recorded again instead, with nothing recorded, which
+                    # runs at 14,900 reviews a second against 6,200 while
+                    # recording (spec sched.rwkv-recordings-progress).
+                    cast(Callable[..., object], warm_up)(
+                        history.reviews[:resume_after],
+                        **{
+                            key: value
+                            for key, value in warm_up_kwargs.items()
+                            if key in ("progress", "batch_rows")
+                        },
+                    )
+                    runtime.require_current()
+                    replayed_before[0] = resume_after
+                recording[0] = True
                 cast(Callable[..., object], warm_up)(
-                    history.reviews,
+                    history.reviews[resume_after:],
                     **warm_up_kwargs,
                 )
                 runtime.require_current()
@@ -11199,20 +11325,28 @@ def recompute_rwkv_calibration_data(
                 writer.flush()
                 curve_writer.flush()
                 source_writer.flush()
-            if curve_writer.written == 0 and len(history.reviews) > 1:
+            if curve_writer.written == 0 and total - resume_after > 1:
                 # the replay ran and recorded nothing: say so in the log
                 # rather than leave an empty series to be found in the UI
                 logger.error(
                     "RWKV-Curve recorded no prediction over %s replayed reviews",
-                    len(history.reviews),
+                    total - resume_after,
                 )
             logger.debug(
-                "RWKV calibration data recomputed: reviews=%s elapsed_ms=%.1f",
-                len(history.reviews),
+                "RWKV calibration data recomputed: reviews=%s resumed_after=%s "
+                "elapsed_ms=%.1f",
+                total,
+                resume_after,
                 (time.monotonic() - start) * 1000,
             )
             if recordings_tag is not None:
-                _write_rwkv_recordings_marker(mw, recordings_tag)
+                _write_rwkv_recordings_marker(
+                    mw,
+                    recordings_tag,
+                    reviews=total,
+                    last_review_id=history.last_review_id,
+                    rows=recorded_rows(),
+                )
             return True
     except _ReviewerBackendWarmupInvalidated:
         logger.debug("RWKV calibration data recompute invalidated")
@@ -11300,7 +11434,12 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     in short batches, and rests between two of them, so a click is never
     behind it and the reviewer predicts from the shared runtime all along.
     The Stats graphs say that their numbers are being computed while it
-    runs; nothing else is shown."""
+    runs; nothing else is shown.
+
+    It writes where it has got as it goes, so a pass that is stopped -- by
+    a card, by the profile closing, by Clanki being closed -- goes on from
+    there the next time a screen asks for the rows (spec
+    sched.rwkv-recordings-progress)."""
 
     global _rwkv_recordings_pass_running
 
@@ -11322,7 +11461,37 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     batch_started = [time.monotonic()]
     stopped_for_review = [False]
     batches_done = [0]
-    _write_rwkv_recordings_progress(mw, state="started", batches=0)
+    # What the record says, carried from one write to the next: every write
+    # replaces the file, so the resume point goes into each of them (spec
+    # sched.rwkv-recordings-progress). It starts as the resume point the
+    # last pass left, because this pass writes its first step before it
+    # reads that point -- and a write that dropped it would destroy the
+    # work it is about to carry on from.
+    stopped = rwkv_recordings_progress(mw) or {}
+    record: dict[str, object] = {
+        key: stopped[key]
+        for key in ("reviews", "lastReviewId", "rows", "tag")
+        if key in stopped
+    }
+
+    def write_record(state: str, **fields: object) -> None:
+        _write_rwkv_recordings_progress(
+            mw, state=state, batches=batches_done[0], **record, **fields
+        )
+
+    def resume_from(review_ids: Sequence[int]) -> RwkvRecordingsResumePoint | None:
+        return rwkv_recordings_resume_point(mw, review_ids)
+
+    def recorded_through(reviews: int, last_review_id: int, rows: RecordedRows) -> None:
+        """The rows up to `reviews` are in the collection, so a pass that is
+        stopped now goes on from there."""
+        record["reviews"] = reviews
+        record["lastReviewId"] = last_review_id
+        record["rows"] = list(rows)
+        record["tag"] = _rwkv_recordings_tag(mw)
+        write_record("running")
+
+    write_record("started")
 
     def between_batches() -> None:
         """One batch done: rest, so the pass takes a small, known share of
@@ -11350,7 +11519,7 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         # rest, in `recompute_rwkv_calibration_data`.
         time.sleep(rest)
         batches_done[0] += 1
-        _write_rwkv_recordings_progress(mw, state="running", batches=batches_done[0])
+        write_record("running")
         batch_started[0] = time.monotonic()
 
     def finish(recorded: bool) -> None:
@@ -11363,28 +11532,21 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         )
         if recorded and collection_open():
             tooltip(_tr().qt_misc_stats_data_ready(), parent=cast(QWidget | None, mw))
-        _write_rwkv_recordings_progress(
-            mw,
-            state=(
-                "finished"
-                if recorded
-                else "stopped_for_review"
-                if stopped_for_review[0]
-                else "stopped"
-            ),
-            batches=batches_done[0],
+        if recorded:
+            # nothing is left to go on with: the marker now says the rows
+            # are the running model's
+            record.clear()
+        write_record(
+            "finished"
+            if recorded
+            else "stopped_for_review"
+            if stopped_for_review[0]
+            else "stopped",
             seconds=round(time.monotonic() - started, 1),
         )
-        if stopped_for_review[0] and collection_open():
-            # it stopped so the user could review; start it again when the
-            # reviewer closes (spec sched.rwkv-recordings-automatic)
-            global _rwkv_recordings_pass_started
-
-            _rwkv_recordings_pass_started = False
-            _run_when_not_reviewing(mw, lambda: start_rwkv_maintenance_if_needed(mw))
 
     def run() -> None:
-        global _rwkv_recordings_pass_running
+        global _rwkv_recordings_pass_running, _rwkv_recordings_pass_started
 
         recorded = False
         try:
@@ -11392,11 +11554,18 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
                 mw,
                 progress=progress,
                 between_batches=between_batches,
+                resume_from=resume_from,
+                recorded_through=recorded_through,
             )
         except Exception:
             logger.exception("the RWKV recording pass failed")
         finally:
             _rwkv_recordings_pass_running = False
+            # a stopped pass may be started again by the next screen that
+            # asks for the rows; a finished one is held back by the marker,
+            # which the next screen reads once
+            _rwkv_recordings_pass_started = False
+            _forget_that_the_recordings_are_current()
         _run_on_main(mw, lambda: finish(recorded))
 
     _rwkv_recordings_pass_running = True
@@ -12260,21 +12429,20 @@ def rwkv_state_cache_store_needs_upgrade(mw: object) -> bool:
 
 
 def start_rwkv_maintenance_if_needed(mw: object) -> None:
-    """Does the RWKV work that the user must never be asked for (spec
-    sched.rwkv-recordings-automatic), once the RWKV state is ready:
+    """Reads the whole review history again when the RWKV state skips synced
+    reviews older than the replay window (spec
+    sched.rwkv-recordings-automatic), once the state is ready.
 
-    - the state skips synced reviews older than the replay window: read the
-      whole history again, in the progress window;
-    - otherwise, the per-review recordings (the Stats graphs' RWKV-Instant
-      and RWKV-Curve rows, card info's curve sources) were not made by a
-      full pass with the running model, or are gone: run that pass, once
-      per profile open.
+    That is scheduling work: without it the state the reviewer predicts from
+    is wrong. The per-review recordings are not: nothing about reviewing
+    needs them, so their pass starts from the screens that read them
+    (`start_rwkv_recordings_pass_if_needed`) and never from here.
 
     Never while a card is being reviewed: the work then waits until the
     review screen closes. Nothing starts while the main window is disabled
     (a sync or the profile closing): the next start-up finds the same
     reason and does it then."""
-    global _rwkv_recordings_pass_started, _rwkv_history_reread_started
+    global _rwkv_history_reread_started
 
     reviewer = SimpleNamespace(mw=mw)
     is_enabled = getattr(mw, "isEnabled", None)
@@ -12289,11 +12457,49 @@ def start_rwkv_maintenance_if_needed(mw: object) -> None:
                 mw,
                 lambda: build_rwkv_state_cache_with_progress(mw, force_rebuild=True),
             )
+
+
+def start_rwkv_recordings_pass_if_needed(mw: object) -> None:
+    """Records the per-review rows a screen has just asked for (spec
+    sched.rwkv-recordings-automatic).
+
+    The Stats model-quality graphs and card info's forgetting curve are the
+    only readers of those rows. Nothing about reviewing needs them --
+    scheduling reads the state cache, which is built on its own -- so the
+    pass runs when one of those screens is opened and never before. A user
+    who opens neither pays nothing, start-up stays instant, and the pass
+    never competes with the reviewer, because nobody reviews and reads
+    Stats at the same time.
+
+    Does nothing while a pass runs, while a card is on the review screen,
+    while the main window is disabled, or when the rows are already the
+    running model's.
+    """
+    global _rwkv_recordings_pass_started, _rwkv_recordings_known_current
+
+    reviewer = SimpleNamespace(mw=mw)
+    is_enabled = getattr(mw, "isEnabled", None)
+    if _collection(reviewer) is None or (callable(is_enabled) and not is_enabled()):
         return
-    if _rwkv_recordings_pass_started or rwkv_recordings_current(mw) is not False:
+    if _rwkv_recordings_known_current:
+        return
+    if not _rwkv_collection_config_state(reviewer).review_enabled:
+        return
+    if _rwkv_recordings_pass_started or _rwkv_recordings_pass_running:
+        return
+    if _reviewer_is_showing_a_card(mw):
+        return
+    # the tag the rows must carry is the running model's, so the model has
+    # to be loaded before the question can be answered at all
+    configure_reviewer_backend_from_environment()
+    current = rwkv_recordings_current(mw)
+    if current is not False:
+        # counting the rows again on every card info and every Stats would
+        # cost 200 ms of the collection each time
+        _rwkv_recordings_known_current = bool(current)
         return
     _rwkv_recordings_pass_started = True
-    _run_when_idle(mw, lambda: recompute_rwkv_calibration_data_in_background(mw))
+    recompute_rwkv_calibration_data_in_background(mw)
 
 
 def _reviewer_is_showing_a_card(mw: object) -> bool:
@@ -12476,6 +12682,127 @@ def rwkv_recordings_progress(mw: object) -> dict[str, object] | None:
     return stored if isinstance(stored, dict) else None
 
 
+@dataclass(frozen=True)
+class RwkvRecordingsResumePoint:
+    """Where a stopped recording pass left off: how many reviews its rows
+    cover, and how many rows of each kind that is."""
+
+    reviews: int
+    rows: RecordedRows
+
+
+def rwkv_recordings_resume_point(
+    mw: object,
+    review_ids: Sequence[int],
+) -> RwkvRecordingsResumePoint | None:
+    """Where a stopped recording pass left off in `review_ids`, or None when
+    a new pass must start over (spec sched.rwkv-recordings-progress).
+
+    A pass cannot store the RWKV state it stopped in -- one snapshot of that
+    state is 3.3 GB on a history of 656,402 reviews -- so what it stores is
+    how far its rows reach. A pass that goes on from there replays the same
+    prefix again with nothing recorded, which is 2.4 times the speed of
+    recording it, and records only what is left.
+
+    Three things must still hold, or the pass starts over:
+
+    - the record was written with the running model, curve-source format,
+      kernel and replay semantics (the same tag the marker carries);
+    - the history still begins with the same reviews: the review at the
+      resume point is the one the record names, and there are at least that
+      many;
+    - the cache beside the collection still holds as many rows of each of
+      the three kinds, up to that review, as the pass had written there; it
+      can be deleted or replaced at any time.
+
+    Correctness first: any doubt starts the pass over, because a pass that
+    resumed onto a different history would record every later row from the
+    wrong state.
+    """
+    stored = rwkv_recordings_progress(mw)
+    if not stored:
+        return None
+    reviews = stored.get("reviews")
+    last_review_id = stored.get("lastReviewId")
+    if not isinstance(reviews, int) or isinstance(reviews, bool):
+        return None
+    if not isinstance(last_review_id, int) or isinstance(last_review_id, bool):
+        return None
+    if not 0 < reviews <= len(review_ids):
+        return None
+    if review_ids[reviews - 1] != last_review_id:
+        return None
+    tag = _rwkv_recordings_tag(mw)
+    if tag is None or stored.get("tag") != tag:
+        return None
+    wrote = _rwkv_recorded_rows_of(stored)
+    counted = _rwkv_recorded_row_counts(mw, tag, last_review_id)
+    if wrote is None or counted is None:
+        return None
+    if any(now < then for now, then in zip(counted, wrote, strict=True)):
+        return None
+    return RwkvRecordingsResumePoint(reviews=reviews, rows=wrote)
+
+
+def _rwkv_recorded_row_counts(
+    mw: object,
+    tag: Mapping[str, object],
+    last_review_id: int,
+) -> RecordedRows | None:
+    """How many reviews up to `last_review_id` each of the three kinds of row
+    covers now, or None when the question cannot be put to the collection.
+
+    This is the measure of "the rows are still there", for a finished pass
+    and for a stopped one alike. It has to be a count. Asking whether one row
+    existed said yes to a collection holding 38 curve sources for 656,402
+    reviews, all 38 written by answers in the reviewer.
+    """
+    db = getattr(_collection(SimpleNamespace(mw=mw)), "db", None)
+    all_rows = getattr(db, "all", None)
+    if not callable(all_rows):
+        return None
+    try:
+        rows = all_rows(
+            f"""
+select (select count(distinct revlog_id)
+        from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+        where revlog_id <= ?),
+       (select count(distinct revlog_id)
+        from retrievability_cache.review_predictions
+        where algorithm = ? and revlog_id <= ?),
+       (select count(*)
+        from retrievability_cache.rwkv_curve_sources s
+        join retrievability_cache.rwkv_curve_source_tags t on t.id = s.tag
+        where t.model = ? and t.format = ? and t.kernel = ? and s.revlog_id <= ?)
+""",
+            last_review_id,
+            int(_RWKV_CURVE_ALGORITHM),
+            last_review_id,
+            tag["model"],
+            tag["format"],
+            tag["kernel"],
+            last_review_id,
+        )
+    except Exception:
+        # a table that was never created holds no rows
+        return (0, 0, 0)
+    if not rows:
+        return (0, 0, 0)
+    counted = tuple(int(value or 0) for value in rows[0][:3])
+    return cast(RecordedRows, counted)
+
+
+def _rwkv_recorded_rows_of(stored: Mapping[str, object]) -> RecordedRows | None:
+    """The three counts a marker or a resume point saved, or None when it
+    saved none that can be read."""
+    rows = stored.get("rows")
+    if not isinstance(rows, list) or len(rows) != 3:
+        return None
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in rows):
+        return None
+    return cast(RecordedRows, tuple(rows))
+
+
 def _write_rwkv_recordings_progress(mw: object, **fields: object) -> None:
     """Records one step of the pass. Never fails the pass."""
     path = _rwkv_recordings_progress_path(mw)
@@ -12490,15 +12817,48 @@ def _write_rwkv_recordings_progress(mw: object, **fields: object) -> None:
         logger.exception("failed to save the RWKV recordings progress")
 
 
-def _write_rwkv_recordings_marker(mw: object, tag: dict[str, object]) -> None:
+def _write_rwkv_recordings_marker(
+    mw: object,
+    tag: dict[str, object],
+    *,
+    reviews: int,
+    last_review_id: int,
+    rows: RecordedRows,
+) -> None:
+    """What a finished pass recorded: the tag the rows carry, how many
+    reviews it replayed, and the newest of them.
+
+    The counts are what makes "the rows are there" checkable. Asking only
+    whether one row exists said yes to Andrew's collection on the strength
+    of 38 rows written by 38 answers in the reviewer, next to 656,402
+    reviews, so the pass looked finished and never ran again (spec
+    sched.rwkv-recordings-automatic).
+    """
     path = _rwkv_recordings_marker_path(mw)
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(tag), encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    **tag,
+                    "reviews": reviews,
+                    "lastReviewId": last_review_id,
+                    "rows": list(rows),
+                }
+            ),
+            encoding="utf-8",
+        )
     except OSError:
         logger.exception("failed to save the RWKV recordings marker")
+
+
+def _forget_that_the_recordings_are_current() -> None:
+    """The next screen that reads the rows counts them again."""
+    global _rwkv_recordings_known_current
+
+    _rwkv_recordings_known_current = False
 
 
 def _clear_rwkv_recordings_marker(mw: object) -> None:
@@ -12508,6 +12868,7 @@ def _clear_rwkv_recordings_marker(mw: object) -> None:
 
     _rwkv_recordings_pass_started = False
     _rwkv_history_reread_started = False
+    _forget_that_the_recordings_are_current()
     path = _rwkv_recordings_marker_path(mw)
     if path is not None:
         try:
@@ -12518,9 +12879,17 @@ def _clear_rwkv_recordings_marker(mw: object) -> None:
 
 def rwkv_recordings_current(mw: object) -> bool | None:
     """Whether the per-review recordings come from a full pass with the
-    running model, format, kernel and replay semantics, and are still there
-    (the cache file beside the collection can be deleted or replaced).
-    None when that cannot be told (spec sched.rwkv-recordings-automatic)."""
+    running model, format, kernel and replay semantics, and are all still
+    there (the cache file beside the collection can be deleted or
+    replaced). None when that cannot be told (spec
+    sched.rwkv-recordings-automatic).
+
+    "All still there" is a count: each of the three kinds of row must still
+    cover as many reviews as the finished pass recorded of that kind. The
+    three counts differ, because RWKV-Curve has no value for a card's first
+    review, so one count for all three would never be met. Asking whether one
+    row existed made one answer in the reviewer stand for the whole history.
+    """
     tag = _rwkv_recordings_tag(mw)
     path = _rwkv_recordings_marker_path(mw)
     if tag is None or path is None:
@@ -12529,32 +12898,20 @@ def rwkv_recordings_current(mw: object) -> bool | None:
         marker = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    if marker != tag:
+    if not isinstance(marker, dict):
         return False
-    db = getattr(_collection(SimpleNamespace(mw=mw)), "db", None)
-    scalar = getattr(db, "scalar", None)
-    if not callable(scalar):
+    if any(marker.get(key) != value for key, value in tag.items()):
+        return False
+    last_review_id = marker.get("lastReviewId")
+    wrote = _rwkv_recorded_rows_of(marker)
+    if wrote is None:
+        return False
+    if not isinstance(last_review_id, int) or isinstance(last_review_id, bool):
+        return False
+    counted = _rwkv_recorded_row_counts(mw, tag, last_review_id)
+    if counted is None:
         return None
-    try:
-        return bool(
-            scalar(
-                f"""
-select exists(select 1 from {_RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE})
-  and exists(select 1 from retrievability_cache.review_predictions
-             where algorithm = ?)
-  and exists(select 1 from retrievability_cache.rwkv_curve_sources s
-             join retrievability_cache.rwkv_curve_source_tags t on t.id = s.tag
-             where t.model = ? and t.format = ? and t.kernel = ?)
-""",
-                int(_RWKV_CURVE_ALGORITHM),
-                tag["model"],
-                tag["format"],
-                tag["kernel"],
-            )
-        )
-    except Exception:
-        # a table that was never created holds no rows
-        return False
+    return all(now >= then for now, then in zip(counted, wrote, strict=True))
 
 
 def load_rwkv_state_cache_with_progress(
@@ -14632,7 +14989,7 @@ def _restore_reviewer_backend_cache(
                 review_count_by_card=stored_history.review_count_by_card,
                 previous_history_hash=stored_history.history_hash,
                 previous_replay_key=stored_history.replay_key,
-                between_parts=_split_whole_history_query,
+                between_steps=_split_whole_history_query,
             )
         _require_reviewer_backend_warmup_current(is_current)
         if history.reviews:
@@ -15645,7 +16002,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
             ignored_review_ids=frozenset(
                 (*existing_ignored_review_ids, *newly_ignored_review_ids)
             ),
-            between_parts=_split_whole_history_query,
+            between_steps=_split_whole_history_query,
         )
     except Exception:
         logger.exception("failed to validate current RWKV replay history")
@@ -18080,6 +18437,96 @@ def _rwkv_historical_review_fingerprint(
     )
 
 
+class _RwkvPreparationSteps:
+    """Cuts the preparation of the replay inputs into steps of a bounded size.
+
+    The whole-history query already runs in parts. Everything after it --
+    merging those parts, reading each row's state, the deck configs, the
+    presets, and the loop that builds one replay input per row -- was one
+    step of its own. Measured on 656,402 reviews it took 11.9 s, while each
+    part of the query took 0.3 s and each replay batch 0.19 s: the one
+    unbounded step in a job that is otherwise bounded everywhere, and the
+    step the recording pass was seen stopped in with one core busy and
+    nothing written for five minutes (spec sched.rwkv-recordings-automatic).
+    """
+
+    def __init__(self, between_steps: Callable[[], None] | None) -> None:
+        self._between_steps = between_steps
+        self._rows = 0
+
+    def step(self) -> None:
+        """One step done, whatever its size."""
+        if self._between_steps is None:
+            return
+        self._rows = 0
+        self._between_steps()
+
+    def row(self) -> None:
+        """One row done. Every RECORDINGS_PASS_PREPARE_STEP_ROWS of them end
+        a step."""
+        if self._between_steps is None:
+            return
+        self._rows += 1
+        if self._rows >= RECORDINGS_PASS_PREPARE_STEP_ROWS:
+            self.step()
+
+    def rows(self, count: int) -> None:
+        """`count` rows done at once, for a loop that counts its own."""
+        if self._between_steps is None:
+            return
+        self._rows += count
+        if self._rows >= RECORDINGS_PASS_PREPARE_STEP_ROWS:
+            self.step()
+
+    def blocks(self, rows: Sequence[_T]) -> Iterator[Sequence[_T]]:
+        """`rows` in blocks of a bounded size, a step between two blocks."""
+        if self._between_steps is None:
+            yield rows
+            return
+        for start in range(0, len(rows), RECORDINGS_PASS_PREPARE_STEP_ROWS):
+            yield rows[start : start + RECORDINGS_PASS_PREPARE_STEP_ROWS]
+            self.step()
+
+
+def _recovery_cutoff_review_id(
+    raw_rows: Sequence[Sequence[object]],
+    after_review_id: int | None,
+) -> int | None:
+    """The review id before which a recovery checkpoint may be taken: one
+    checkpoint age before the newest replayed review."""
+    for raw_row_index in range(len(raw_rows) - 1, -1, -1):
+        row = raw_rows[raw_row_index]
+        if (
+            _retained_historical_review_state(row) is None
+            or len(row) < 9
+            or not isinstance(row[0], int)
+            or (after_review_id is not None and row[0] <= after_review_id)
+        ):
+            continue
+        return row[0] - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+    return None
+
+
+def _active_ignored_review_ids(
+    raw_rows: Sequence[Sequence[object]],
+    ignored_review_ids: AbstractSet[int],
+    steps: _RwkvPreparationSteps,
+) -> tuple[int, ...]:
+    """Which of the reviews the state cache ignores are in `raw_rows`."""
+    return tuple(
+        sorted(
+            {
+                review_id
+                for block in steps.blocks(raw_rows)
+                for row in block
+                if row
+                and isinstance((review_id := row[0]), int)
+                and review_id in ignored_review_ids
+            }
+        )
+    )
+
+
 def _historical_rwkv_review_inputs(  # noqa: PLR0913
     reviewer: object,
     *,
@@ -18094,9 +18541,17 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     first_review_elapsed_source: RwkvFirstReviewElapsedSource = RwkvFirstReviewElapsedSource.DECK_CONFIG,
     ignored_review_ids: AbstractSet[int] = frozenset(),
     prepare_recovery_checkpoint: bool = False,
-    between_parts: Callable[[], None] | None = None,
+    between_steps: Callable[[], None] | None = None,
 ) -> RwkvHistoricalReviewInputs:
+    """`between_steps`, when given, runs between two steps of the read: the
+    parts of the whole-history query, and then every
+    RECORDINGS_PASS_PREPARE_STEP_ROWS rows of the preparation that turns the
+    rows into replay inputs. The recording pass passes the one that rests, so
+    that no step of it holds the machine for long (spec
+    sched.rwkv-recordings-automatic)."""
+
     start = time.monotonic()
+    steps = _RwkvPreparationSteps(between_steps)
     requested_deck_id = deck_id
     previous_ids = dict(previous_review_id_by_card or {})
     previous_intervals = dict(previous_interval_days_by_card or {})
@@ -18173,23 +18628,17 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
         )
 
     rows_start = time.monotonic()
+    # a copy of its own: the loop below empties the rows as it goes, and the
+    # query may hand back a list something else still holds
     raw_rows = list(
         _historical_rwkv_review_rows(
             reviewer,
             deck_id=deck_id,
-            between_parts=between_parts,
+            between_parts=between_steps,
         )
     )
-    active_ignored_review_ids = tuple(
-        sorted(
-            {
-                review_id
-                for row in raw_rows
-                if row
-                and isinstance((review_id := row[0]), int)
-                and review_id in ignored_review_ids
-            }
-        )
+    active_ignored_review_ids = _active_ignored_review_ids(
+        raw_rows, ignored_review_ids, steps
     )
     if active_ignored_review_ids:
         active_ignored_review_id_set = set(active_ignored_review_ids)
@@ -18202,28 +18651,23 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                 and row[0] in active_ignored_review_id_set
             )
         ]
-    recovery_cutoff_review_id: int | None = None
-    if prepare_recovery_checkpoint:
-        for raw_row_index in range(len(raw_rows) - 1, -1, -1):
-            row = raw_rows[raw_row_index]
-            if (
-                _retained_historical_review_state(row) is None
-                or len(row) < 9
-                or not isinstance(row[0], int)
-                or (after_review_id is not None and row[0] <= after_review_id)
-            ):
-                continue
-            recovery_cutoff_review_id = (
-                row[0] - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-            )
-            break
+    recovery_cutoff_review_id = (
+        _recovery_cutoff_review_id(raw_rows, after_review_id)
+        if prepare_recovery_checkpoint
+        else None
+    )
 
     # each row's state, worked out once: the passes below walk the rows five
     # times, and the state of a row does not change between them
-    retained_states = [_retained_historical_review_state(row) for row in raw_rows]
+    retained_states = [
+        _retained_historical_review_state(row)
+        for block in steps.blocks(raw_rows)
+        for row in block
+    ]
 
     def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
         for index, row in enumerate(raw_rows):
+            steps.row()
             historical_state = retained_states[index]
             if historical_state is None:
                 continue
@@ -18452,6 +18896,11 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                 total=row_count,
                 started_at=prepare_started_at,
             )
+            # the loop over the rows is the longest part of the preparation
+            # (9.9 s of 15.8 s, measured): it ends a step too. Counted here
+            # rather than per row, so a caller that passes nothing pays
+            # nothing.
+            steps.rows(prepare_report_every)
     logger.debug(
         "RWKV historical review inputs built: rows=%s reviews=%s "
         "dynamic_preset_replay=%s historical_preset_rules=%s "
@@ -18705,20 +19154,23 @@ def _historical_rwkv_review_rows(
     between_parts: Callable[[], None] | None = None,
 ) -> list[Sequence[object]]:
     """`between_parts`, when given, runs the whole-history query in
-    HISTORY_QUERY_PARTS card-id ranges and is called between them, so that a
-    caller can stop it (by raising) after one part instead of the whole
-    3-4 s query. Every value of a row depends only on its own card's rows,
-    and review ids are unique, so the parts merged in (id, cid) order are
-    exactly the rows of the single query."""
+    HISTORY_QUERY_PARTS card-id ranges and is called between two of them,
+    so that a caller can stop it (by raising) after one part instead of the
+    whole 3-4 s query. Merging the parts calls it again every
+    RECORDINGS_PASS_PREPARE_STEP_ROWS rows, because merging 656,402 of them
+    at once took 0.45 s. Every value of a row depends only on its own card's
+    rows, and review ids are unique, so the parts merged in (id, cid) order
+    are exactly the rows of the single query."""
     col = _collection(reviewer)
     db = getattr(col, "db", None)
     all_rows = getattr(db, "all", None)
     if not callable(all_rows):
         return []
     if between_parts is not None and card_ids is None and limit is None:
+        steps = _RwkvPreparationSteps(between_parts)
         parts = []
         for low, high in _card_id_ranges(col, HISTORY_QUERY_PARTS):
-            between_parts()
+            steps.step()
             parts.append(
                 _historical_rwkv_review_rows_query(
                     reviewer,
@@ -18730,7 +19182,14 @@ def _historical_rwkv_review_rows(
                     (low, high),
                 )
             )
-        return list(heapq.merge(*parts, key=lambda row: (row[0], row[1])))
+        merged = heapq.merge(*parts, key=lambda row: (row[0], row[1]))
+        rows: list[Sequence[object]] = []
+        while block := list(
+            itertools.islice(merged, RECORDINGS_PASS_PREPARE_STEP_ROWS)
+        ):
+            rows.extend(block)
+            steps.step()
+        return rows
     return _historical_rwkv_review_rows_query(
         reviewer, all_rows, after_review_id, deck_id, card_ids, limit, None
     )
@@ -18741,13 +19200,14 @@ HISTORY_QUERY_PARTS = 16
 
 
 def _split_whole_history_query() -> None:
-    """A `between_parts` callback with nothing to do between the parts.
+    """A `between_steps` callback with nothing to do between the steps.
 
-    A caller passes it to split the whole-history query into
-    HISTORY_QUERY_PARTS short queries, so the collection is free between them
-    instead of held for one query of several seconds. The start-up restore and
-    the start-up build pass it because they now run while the user works (spec
-    sched.rwkv-startup-no-window)."""
+    A caller passes it to split the whole-history read into short steps: the
+    query into HISTORY_QUERY_PARTS short queries, and the preparation that
+    follows it into blocks, so the collection and the machine are free
+    between them instead of held for one step of several seconds. The
+    start-up restore and the start-up build pass it because they now run
+    while the user works (spec sched.rwkv-startup-no-window)."""
 
 
 def _card_id_ranges(col: Any, parts: int) -> list[tuple[int, int]]:
