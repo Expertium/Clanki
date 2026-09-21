@@ -16,6 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     import type { DeckOptionsState } from "./lib";
+    import { intervalSettingsApply } from "./scheduler-choice";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import MinimumIntervalInputRow from "./MinimumIntervalInputRow.svelte";
     import MaximumIntervalInputRow from "./MaximumIntervalInputRow.svelte";
@@ -32,6 +33,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
+
+    // RWKV-Instant has no intervals, so the maximum and the minimum interval
+    // are not shown (spec sched.rwkv-instant-no-steps)
+    $: intervalSettings = intervalSettingsApply($config);
 
     const settings = {
         maximumInterval: {
@@ -173,7 +178,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        {#if $shown("maximumInterval", "section")}
+        {#if intervalSettings && $shown("maximumInterval", "section")}
             <Item>
                 <MaximumIntervalInputRow
                     bind:value={$config.maximumReviewInterval}
@@ -191,7 +196,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
         {/if}
 
-        {#if $fsrs}
+        {#if intervalSettings && $fsrs}
             {#if $shown("fsrsMinimumInterval", "section")}
                 <Item>
                     <MinimumIntervalInputRow
@@ -213,7 +218,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             {/if}
         {/if}
 
-        {#if $shown("maximumInterval", "section")}
+        {#if intervalSettings && $shown("maximumInterval", "section")}
             <Item>
                 <Warning
                     warning={maxIntervalWarning}

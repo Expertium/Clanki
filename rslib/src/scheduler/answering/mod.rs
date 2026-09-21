@@ -166,11 +166,11 @@ impl CardStateUpdater {
     }
 
     fn learn_steps(&self) -> LearningSteps<'_> {
-        LearningSteps::new(&self.config.inner.learn_steps)
+        LearningSteps::new(self.config.effective_learn_steps())
     }
 
     fn relearn_steps(&self) -> LearningSteps<'_> {
-        LearningSteps::new(&self.config.inner.relearn_steps)
+        LearningSteps::new(self.config.effective_relearn_steps())
     }
 
     fn secs_until_rollover(&self) -> u32 {
@@ -1075,6 +1075,54 @@ pub(crate) mod test {
         col.clear_study_queues();
 
         Ok(card.id)
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-instant-no-steps: the steps a preset
+    // stores do not reach the scheduler while RWKV-Instant runs it.
+    #[test]
+    fn rwkv_instant_answers_a_new_card_without_a_learning_step() -> Result<()> {
+        fn first_state_after_good(col: &mut Collection) -> Result<CardState> {
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            col.clear_study_queues();
+            let card_id = col.get_first_card().id;
+            Ok(col.get_scheduling_states(card_id)?.good)
+        }
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.learn_steps = vec![1.0, 10.0];
+            config.relearn_steps = vec![10.0];
+        });
+
+        // RWKV-Curve, the default: Good puts the card on its second learning
+        // step, because the preset has steps
+        let state = first_state_after_good(&mut col)?;
+        assert!(
+            matches!(state, CardState::Normal(NormalState::Learning(_))),
+            "RWKV-Curve should keep the preset's learning steps, got {state:?}"
+        );
+
+        // RWKV-Instant: the same preset, the same steps stored, but the card
+        // goes straight to Review because the steps do not apply
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = false;
+            config.rwkv_review_instant_order_enabled = true;
+        });
+        let state = first_state_after_good(&mut col)?;
+        assert!(
+            matches!(state, CardState::Normal(NormalState::Review(_))),
+            "RWKV-Instant should have no learning steps, got {state:?}"
+        );
+
+        // the preset still holds the user's steps, so the other algorithms
+        // get them back
+        let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(config.inner.learn_steps, vec![1.0, 10.0]);
+        assert_eq!(config.inner.relearn_steps, vec![10.0]);
+        Ok(())
     }
 
     // With a custom scheduling script the answer's own memory state is stored

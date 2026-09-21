@@ -26,6 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         maxSameDayReviewsShown,
     } from "./same-day-reviews";
     import type { DeckOptionsState } from "./lib";
+    import { intervalSettingsApply } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -68,6 +69,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // Unset (no limit) shows as 9999; editing writes the number (spec
     // sched.max-same-day-reviews).
     let maxSameDayReviews = maxSameDayReviewsFromConfig($config);
+    // RWKV-Instant has no intervals, so the settings that shape one are not
+    // shown (spec sched.rwkv-instant-no-steps)
+    $: intervalSettings = intervalSettingsApply($config);
     $: maxSameDayReviews = maxSameDayReviewsFromConfig($config);
     function setMaxSameDayReviews(value: number): void {
         if (maxSameDayReviewsFromConfig(get(config)) !== value) {
@@ -129,7 +133,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        {#if $shown("learningSteps", "section")}
+        {#if intervalSettings && $shown("learningSteps", "section")}
             <Item>
                 <StepsInputRow
                     bind:value={$config.learnSteps}
@@ -151,7 +155,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
         {/if}
 
-        {#if $fsrs && maxSameDayReviewsShown($config)}
+        {#if intervalSettings && $fsrs && maxSameDayReviewsShown($config)}
             {#if $shown("maxSameDayReviews", "section")}
                 <Item>
                     <SpinBoxRow

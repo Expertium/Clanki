@@ -1027,9 +1027,8 @@ suggestions"): it still ranked RWKV cards by FSRS-7's memory state.
 
 ## sched.max-same-day-reviews
 
-Given a card whose preset is scheduled by FSRS (any version, RWKV-Curve and
-RWKV-Instant included), has no learning steps, and has a "Max number of
-same-day reviews" N, and k, the number of the card's reviews logged since
+Given a card whose preset is scheduled by FSRS-7 or RWKV-Curve, has no
+learning steps, and has a "Max number of same-day reviews" N, and k, the number of the card's reviews logged since
 the start of the current day (answers 1-4, not counting filtered-deck
 reviews that did not reschedule):
 when k ≥ N, every answer button schedules the card as it would with no
@@ -1045,7 +1044,9 @@ steps has no limit, whatever N it stores: its steps decide the same-day
 reviews, and its relearning steps apply as usual. A preset with no stored
 value has no limit; the deck-options row, in Advanced mode under Learning
 steps, shows only while Learning steps is empty, shows the unset value as
-9999, and editing it stores the number shown. The First intervals preview
+9999, and editing it stores the number shown. RWKV-Instant has no limit and
+no row, because it has no intervals to limit
+(`sched.rwkv-instant-no-steps`). The First intervals preview
 of a new card treats only N = 0 as a limit, since a new card has no
 reviews yet. The limit is stored with the preset and syncs with it. SM-2
 presets are unaffected.
@@ -1060,7 +1061,8 @@ steps keeps its steps after this, where the switch skipped them.
 per-preset limit on same-day reviews replaces it, and 0 gives the old
 behavior. The limit is for presets without learning steps, because with
 steps the steps already decide the same-day reviews; it applies to
-RWKV-Curve as well as FSRS.
+RWKV-Curve as well as FSRS-7. Andrew, 2026-09-21: not to RWKV-Instant, which
+has no intervals at all.
 
 **Pinned by:** `max_same_day_reviews_limits_intraday_answers`,
 `max_same_day_reviews_limits_rwkv_curve_intervals`,
@@ -1069,6 +1071,33 @@ RWKV-Curve as well as FSRS.
 `learning_queues_switch_becomes_a_zero_limit_on_open`,
 `max_same_day_reviews_survives_storage_and_schema11`
 (`rslib/src/deckconfig/mod.rs`); `ts/routes/deck-options/same-day-reviews.test.ts`.
+
+## sched.rwkv-instant-no-steps
+
+Given a preset that RWKV-Instant schedules, the preset has no learning steps
+and no relearning steps, whatever steps it stores: a card it answers never
+enters the learning or relearning queue, and the deck-options rows for
+Learning steps, Relearning steps, Maximum interval, Minimum interval and
+Maximum number of same-day reviews are not shown. The stored values are kept
+untouched, so a preset that returns to FSRS-7 or RWKV-Curve gets its steps
+and its intervals back, and other clients still read them. A preset carrying
+both RWKV switches runs RWKV-Curve and keeps its steps
+(`sched.one-global-algorithm`).
+
+**Why:** Andrew, 2026-09-21: "'Learning steps' as a setting should be hidden
+entirely when RWKV-Instant is enabled, since Instant doesn't have intervals.
+Same goes for 'maximum interval' and 'Minimum interval'." Asked whether the
+steps should merely be hidden or should stop working, he answered that they
+must not exist under Instant. RWKV-Instant decides when a card comes back
+from the card's own score, so every setting that shapes an interval has
+nothing to act on; a setting that is shown but does nothing is worse than no
+setting.
+
+**Pinned by:** `rwkv_instant_has_no_steps_and_no_same_day_limit`
+(`rslib/src/deckconfig/mod.rs`),
+`rwkv_instant_answers_a_new_card_without_a_learning_step`
+(`rslib/src/scheduler/answering/mod.rs`) and
+`ts/routes/deck-options/scheduler-choice.test.ts`.
 
 ## sched.fsrs7-only
 
