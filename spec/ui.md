@@ -448,6 +448,20 @@ in the virtual environment's own directory, because the interpreter finds
 `pyvenv.cfg` beside itself and refuses to start anywhere else. The installed
 build is unaffected; its executable is named by the installer.
 
+Writing the copy is not enough: a source run starts the interpreter, so
+`tools/run.py` hands over to the copy with `os.execv`, passing the same
+arguments. The hand-over happens before `import aqt`, so the interpreter
+that steps aside has done nothing but start, and the environment variable
+`CLANKI_LAUNCHED` stops the copy handing over to itself. Four things stop
+the hand-over and none of them is an error, because the name is cosmetic:
+another platform, a run that already handed over, a run that is already the
+copy, and a build that has not written the copy yet.
+
+On Windows, `os.execv` starts a new process and ends the old one instead of
+replacing it, so the shell that ran the launcher gets its prompt back while
+the app keeps running. The app itself is unaffected: it has the same
+arguments, the same working directory and the same virtual environment.
+
 **Why:** Andrew, 2026-09-20: "Clanki doesn't show up as a process named
 'Clanki'. It should." Task Manager shows a process's description resource
 rather than its file name, so a renamed copy of the interpreter still reads
@@ -456,7 +470,12 @@ list.
 
 **Pinned by:** `test_the_copy_describes_itself_as_the_app`,
 `test_the_copy_is_the_same_size_and_still_runs`
-(`qt/tests/test_win_app_exe.py`).
+(`qt/tests/test_win_app_exe.py`); `test_a_source_run_starts_again_as_the_app`,
+`test_the_app_does_not_hand_over_to_itself`,
+`test_a_build_without_the_copy_runs_unchanged`,
+`test_other_platforms_are_left_alone`,
+`test_run_py_hands_over_before_it_imports_the_app`
+(`qt/tests/test_clanki_launch.py`).
 
 ## ui.simple-recall-wording
 

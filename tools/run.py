@@ -3,6 +3,15 @@
 
 import os
 import sys
+from pathlib import Path
+
+# The process must be named Clanki before anything else happens, so this
+# comes before `import aqt` (spec ui.process-name).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from clanki_launch import run_as_the_app  # noqa: E402
+
+run_as_the_app()
 
 sys.path.extend(["pylib", "qt", "out/pylib", "out/qt"])
 
