@@ -1254,6 +1254,80 @@ mod tests {
         Ok((col, tempdir, col_path))
     }
 
+    /// Pins spec/ui.md#ui.stats-model-metrics: one prediction per review,
+    /// the newest row of the role, and the reviews in ascending order.
+    ///
+    /// Of several rows of one review the newest wins, then the higher fold,
+    /// then the source whose name sorts first. This writes rows that make
+    /// each of the three ordering columns decide on its own.
+    #[test]
+    fn the_newest_row_of_each_review_is_the_one_read() -> Result<()> {
+        let (col, _dir, _path) = temp_collection("newest_prediction")?;
+        // creates the table, and leaves a row of another role behind
+        col.storage.set_fsrs_review_retrievability_predictions(
+            &[FsrsReviewRetrievabilityCacheRow {
+                revlog_id: RevlogId(5),
+                prediction: 0.11,
+                sample_role: FsrsReviewRetrievabilitySampleRole::FinalFit,
+                fold_index: -1,
+            }],
+            "other_role",
+        )?;
+        let table = SqliteStorage::qualified_retrievability_cache_table(
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+        );
+        let write = |revlog_id: i64,
+                     prediction: f64,
+                     fold_index: i64,
+                     source: &str,
+                     updated_at: i64|
+         -> Result<()> {
+            col.storage.db.execute(
+                &format!(
+                    "insert into {table}
+                     (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+                     values (?1, ?2, ?3, ?4, 'validation_fold', ?5)"
+                ),
+                params![revlog_id, prediction, source, updated_at, fold_index],
+            )?;
+            Ok(())
+        };
+        // review 20: the newest row wins, whatever its fold or source
+        write(20, 0.20, 9, "aaa", 100)?;
+        write(20, 0.21, 0, "zzz", 200)?;
+        // review 10: same moment, so the higher fold wins
+        write(10, 0.10, 1, "zzz", 100)?;
+        write(10, 0.11, 7, "aaa", 100)?;
+        // review 30: same moment and fold, so the lower source wins
+        write(30, 0.30, 3, "bbb", 100)?;
+        write(30, 0.31, 3, "aaa", 100)?;
+        // review 40: one row, and it is below the cutoff of the read below
+        write(40, 0.40, 0, "aaa", 100)?;
+
+        let read = col.storage.cached_review_predictions(
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            "validation_fold",
+            0.into(),
+        )?;
+        assert_eq!(
+            read,
+            vec![
+                (RevlogId(10), 0.11),
+                (RevlogId(20), 0.21),
+                (RevlogId(30), 0.31),
+                (RevlogId(40), 0.40),
+            ]
+        );
+        // `after` is exclusive, and the other role is never mixed in
+        let later = col.storage.cached_review_predictions(
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            "validation_fold",
+            30.into(),
+        )?;
+        assert_eq!(later, vec![(RevlogId(40), 0.40)]);
+        Ok(())
+    }
+
     fn curve_tag(model: &str) -> RwkvCurveSourceTag {
         RwkvCurveSourceTag {
             model: model.into(),

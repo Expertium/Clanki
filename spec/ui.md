@@ -1378,7 +1378,12 @@ only when nothing that produced it was fitted on that very review:
 Each algorithm uses one role only, and the graph names the role it used.
 FSRS-7 takes the first role of its list that has any row, because that list
 is in order of honesty. RWKV's roles carry no such order, so it takes the
-role with the most rows and rests on as many ratings as it can.
+role with the most rows and rests on as many ratings as it can. One rating
+gets one number from that role: when the role holds several rows for it,
+the graph takes the one written last, and of two written at the same moment
+the higher fold, and of two of the same fold the one whose source name
+sorts first. A recording that runs again therefore replaces what the
+earlier one left, instead of the two of them deciding the graph by chance.
 
 Each algorithm is scored on every rating of the search and period it has a
 usable row for, whatever the other algorithms have. A rating one algorithm
@@ -1500,7 +1505,9 @@ user's own rebuild, never to opening a page.
 (`rslib/src/rwkv/mod.rs`),
 `the_same_reviews_always_give_the_same_interval`,
 `the_parallel_bootstrap_draws_what_one_thread_drew`
-(`rslib/src/stats/review_metrics.rs`);
+(`rslib/src/stats/review_metrics.rs`),
+`the_newest_row_of_each_review_is_the_one_read`
+(`rslib/src/storage/revlog/mod.rs`);
 `test_rwkv_calibration_recompute_records_the_curve_of_every_review`,
 `test_the_state_cache_build_records_rwkv_curve_rows_too`,
 `test_rwkv_calibration_recompute_refuses_a_backend_that_cannot_record_the_curve`,
