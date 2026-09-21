@@ -385,8 +385,10 @@ impl SqliteStorage {
                 fold_index INTEGER NOT NULL DEFAULT -1,
                 PRIMARY KEY (revlog_id, sample_role, fold_index, source)
             );
-            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_fsrs_review_retrievability_role_revlog
-                ON {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} (sample_role, revlog_id);
+            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_fsrs_review_retrievability_covering
+                ON {FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (sample_role, revlog_id, prediction, updated_at, fold_index, source);
+            DROP INDEX IF EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_fsrs_review_retrievability_role_revlog;
             "
         ))?;
         Ok(())
@@ -506,8 +508,10 @@ impl SqliteStorage {
                 fold_index INTEGER NOT NULL DEFAULT -1,
                 PRIMARY KEY (revlog_id, sample_role, fold_index, source)
             );
-            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_rwkv_review_retrievability_role_revlog
-                ON {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE} (sample_role, revlog_id);
+            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_rwkv_review_retrievability_covering
+                ON {RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+                (sample_role, revlog_id, prediction, updated_at, fold_index, source);
+            DROP INDEX IF EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.ix_rwkv_review_retrievability_role_revlog;
             "
         ))?;
         Ok(())
@@ -2315,6 +2319,101 @@ mod tests {
         // `rwkv_replay_learning_start_wins_over_a_later_forget` on purpose: see
         // the spec entry.
         assert_eq!(replay_start_rows(&col, 700)?, vec![]);
+        Ok(())
+    }
+
+    /// The read the stats pages make: the same columns, the same filter and
+    /// the same order as `cached_review_predictions`.
+    const PREDICTION_READ: &str = "select revlog_id, prediction, updated_at, fold_index, source
+         from {table} where sample_role = ?1 and revlog_id > ?2 order by revlog_id";
+
+    fn index_names(storage: &SqliteStorage, table: &str) -> Result<Vec<String>> {
+        let mut statement = storage.db.prepare(
+            "select name from retrievability_cache.sqlite_master
+             where type = 'index' and tbl_name = ? and name not like 'sqlite_%'
+             order by name",
+        )?;
+        let names = statement
+            .query_map([table], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names)
+    }
+
+    fn read_plan(storage: &SqliteStorage, table: &str) -> Result<String> {
+        let plan: String = storage.db.query_row(
+            &format!(
+                "explain query plan {}",
+                PREDICTION_READ.replace("{table}", table)
+            ),
+            params!["final_fit", 0i64],
+            |row| row.get(3),
+        )?;
+        Ok(plan)
+    }
+
+    #[test]
+    fn the_prediction_read_uses_a_covering_index() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("prediction-read-covering-index")?;
+        col.storage
+            .ensure_fsrs_review_retrievability_cache_schema()?;
+        col.storage
+            .ensure_rwkv_review_retrievability_cache_schema()?;
+
+        for table in [
+            FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+            RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+        ] {
+            let plan = read_plan(&col.storage, table)?;
+            // "COVERING" is the word that says the read never touches the
+            // table: without it every row costs a separate seek, which is the
+            // whole point of the index (spec database.prediction-read-index)
+            assert!(
+                plan.contains("USING COVERING INDEX"),
+                "{table} does not read from a covering index: {plan}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_narrow_prediction_index_is_replaced_not_joined() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("prediction-read-one-index")?;
+        col.storage
+            .ensure_fsrs_review_retrievability_cache_schema()?;
+
+        // the covering index starts with the narrow one's columns, so keeping
+        // both would cost disk and buy nothing
+        assert_eq!(
+            index_names(&col.storage, FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE)?,
+            vec!["ix_fsrs_review_retrievability_covering".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_collection_that_arrives_with_the_narrow_index_is_upgraded() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("prediction-read-upgrade")?;
+        col.storage
+            .ensure_fsrs_review_retrievability_cache_schema()?;
+
+        // what an existing cache looks like: the narrow index, and no covering
+        // one. The next open must replace it, once.
+        col.storage.db.execute_batch(
+            "drop index retrievability_cache.ix_fsrs_review_retrievability_covering;
+             create index retrievability_cache.ix_fsrs_review_retrievability_role_revlog
+                 on search_stats_fsrs_review_retrievability (sample_role, revlog_id);",
+        )?;
+        col.storage
+            .ensure_fsrs_review_retrievability_cache_schema()?;
+
+        assert_eq!(
+            index_names(&col.storage, FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE)?,
+            vec!["ix_fsrs_review_retrievability_covering".to_string()]
+        );
+        assert!(
+            read_plan(&col.storage, FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE)?
+                .contains("USING COVERING INDEX")
+        );
         Ok(())
     }
 }
