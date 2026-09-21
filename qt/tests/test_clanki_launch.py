@@ -1,11 +1,13 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""Pins spec/ui.md#ui.process-name: the source run hands over to Clanki.exe.
+"""Pins spec/ui.md#ui.process-name: the launchers start Clanki.exe.
 
 PR #203 wrote the copy but nothing started it, so the process kept the
-interpreter's name. These tests pin the hand-over itself, which is a
-decision about paths and environment variables and needs no Windows.
+interpreter's name. PR #222 then made `tools/run.py` hand over with
+`os.execv`, which on Windows ends the process and starts a new one, so
+whatever launched the app stopped seeing it. These tests pin the choice the
+launchers make instead, which is a decision about paths and needs no Windows.
 """
 
 from __future__ import annotations
@@ -29,71 +31,55 @@ def _pyenv(tmp_path: Path, *, with_app: bool = True) -> Path:
     return scripts
 
 
-def test_a_source_run_starts_again_as_the_app(tmp_path: Path) -> None:
+def test_a_launcher_starts_the_app_under_its_own_name(tmp_path: Path) -> None:
     scripts = _pyenv(tmp_path)
 
-    command = clanki_launch.handover_command(
-        "win32",
-        str(scripts / "python.exe"),
-        ["tools/run.py", "-b", "base"],
-        {},
-    )
+    chosen = clanki_launch.app_interpreter("win32", str(scripts / "python.exe"))
 
-    assert command == [
-        str(scripts / clanki_launch.APP_EXE),
-        "tools/run.py",
-        "-b",
-        "base",
-    ]
+    assert chosen == str(scripts / clanki_launch.APP_EXE)
 
 
-def test_the_app_does_not_hand_over_to_itself(tmp_path: Path) -> None:
+def test_the_app_is_not_asked_to_find_itself(tmp_path: Path) -> None:
     scripts = _pyenv(tmp_path)
+    app = str(scripts / clanki_launch.APP_EXE)
 
-    # the copy itself, and then any run that already handed over
-    assert (
-        clanki_launch.handover_command(
-            "win32", str(scripts / clanki_launch.APP_EXE), ["tools/run.py"], {}
-        )
-        is None
-    )
-    assert (
-        clanki_launch.handover_command(
-            "win32",
-            str(scripts / "python.exe"),
-            ["tools/run.py"],
-            {clanki_launch.ALREADY_LAUNCHED: "1"},
-        )
-        is None
-    )
+    assert clanki_launch.app_interpreter("win32", app) == app
 
 
 def test_a_build_without_the_copy_runs_unchanged(tmp_path: Path) -> None:
     scripts = _pyenv(tmp_path, with_app=False)
+    interpreter = str(scripts / "python.exe")
 
     # the name is cosmetic, so a missing copy is not an error
-    assert (
-        clanki_launch.handover_command(
-            "win32", str(scripts / "python.exe"), ["tools/run.py"], {}
-        )
-        is None
-    )
+    assert clanki_launch.app_interpreter("win32", interpreter) == interpreter
 
 
 def test_other_platforms_are_left_alone(tmp_path: Path) -> None:
     scripts = _pyenv(tmp_path)
+    interpreter = str(scripts / "python.exe")
 
     for platform in ("linux", "darwin"):
-        assert (
-            clanki_launch.handover_command(
-                platform, str(scripts / "python.exe"), ["tools/run.py"], {}
-            )
-            is None
-        )
+        assert clanki_launch.app_interpreter(platform, interpreter) == interpreter
 
 
-def test_run_py_hands_over_before_it_imports_the_app() -> None:
-    lines = (TOOLS / "run.py").read_text(encoding="utf8").splitlines()
+def test_no_launcher_replaces_its_own_process() -> None:
+    # On Windows `os.execv` does not replace the process: it starts a new one
+    # and ends this one, so a launcher waiting on it stops seeing the app.
+    # That broke the e2e harness, whose temporary ANKI_BASE was deleted while
+    # the app was still starting. Nothing on the launch path may call it.
+    for name in ("run.py", "clanki_launch.py"):
+        source = (TOOLS / name).read_text(encoding="utf8")
+        assert "execv" not in source, f"{name} replaces its own process"
 
-    # the interpreter that steps aside must have done nothing but start
-    assert lines.index("run_as_the_app()") < lines.index("import aqt")
+    launcher = Path(__file__).resolve().parents[1] / "tests" / "launch_anki_for_e2e.py"
+    assert "execv" not in launcher.read_text(encoding="utf8")
+
+
+def test_the_e2e_launcher_starts_the_app_under_its_own_name() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "tests" / "launch_anki_for_e2e.py"
+    ).read_text(encoding="utf8")
+
+    # it must not go back to sys.executable, which is the plain interpreter
+    assert "app_interpreter_here()" in source
+    assert "sys.executable" not in source
