@@ -20072,6 +20072,7 @@ class _StartupTaskman:
     def __init__(self) -> None:
         self.windows: list[dict[str, object]] = []
         self.background_runs = 0
+        self.background_uses_collection: list[bool] = []
 
     def run_on_main(self, callback: Callable[[], None]) -> None:
         callback()
@@ -20093,7 +20094,7 @@ class _StartupTaskman:
         uses_collection: bool = True,
     ) -> None:
         self.background_runs += 1
-        assert uses_collection is True
+        self.background_uses_collection.append(uses_collection)
         self._run(task, on_done)
 
     def _run(
@@ -20140,6 +20141,9 @@ def test_the_startup_restore_opens_no_window(
 
     assert taskman.windows == []
     assert taskman.background_runs == 1
+    # and off the one collection worker, so a click does not queue behind the
+    # restore (report B-011); the collection-use count is kept by hand instead
+    assert taskman.background_uses_collection == [False]
     # nothing reports to a window that is not there
     assert reported == [None]
     assert progress_updates == []
@@ -21941,3 +21945,75 @@ def test_a_sync_of_old_reviews_still_reads_the_whole_history(
         is None
     )
     assert paths == ["whole history"]
+
+
+# Andrew, 2026-09-21 (report B-011): "the first click on a deck has a MASSIVE
+# delay, like 1-3 seconds." Measured at 2314 ms on a 656,402-review collection.
+# The task manager has ONE collection worker and runs one task at a time, so
+# the start-up restore held it with the click's own work queued behind it.
+def test_the_startup_load_stays_off_the_collection_worker_but_still_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    users = [0]
+    users_while_running: list[int] = []
+    users_at_done: list[int] = []
+
+    class Taskman:
+        def collection_use_started(self) -> None:
+            users[0] += 1
+
+        def collection_use_finished(self, *_args: object) -> None:
+            users[0] -= 1
+
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool = True,
+        ) -> None:
+            calls.append({"uses_collection": uses_collection})
+            future: Future[Any] = Future()
+            future.set_result(task())
+            on_done(future)
+
+    def task() -> str:
+        # a periodic backup asks `collection_busy()`, which reads this count
+        # (spec ui.periodic-backup-waits)
+        users_while_running.append(users[0])
+        return "done"
+
+    def on_done(future: Future[object]) -> None:
+        users_at_done.append(users[0])
+        assert future.result() == "done"
+
+    mw = SimpleNamespace(taskman=Taskman())
+    rwkv_scheduler._run_in_background(mw, task, on_done)
+
+    # off the one collection worker, so a click does not queue behind it
+    assert calls == [{"uses_collection": False}]
+    # and still counted as collection use while it runs
+    assert users_while_running == [1]
+    assert users_at_done == [0]
+    assert users[0] == 0
+
+
+def test_a_startup_load_that_cannot_start_leaves_no_collection_user_behind() -> None:
+    users = [0]
+
+    class Taskman:
+        def collection_use_started(self) -> None:
+            users[0] += 1
+
+        def collection_use_finished(self, *_args: object) -> None:
+            users[0] -= 1
+
+        def run_in_background(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("no worker")
+
+    mw = SimpleNamespace(taskman=Taskman())
+    with pytest.raises(RuntimeError):
+        rwkv_scheduler._run_in_background(mw, lambda: None, lambda _f: None)
+    # otherwise a periodic backup would wait for work that never started
+    assert users[0] == 0
