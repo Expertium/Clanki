@@ -21158,6 +21158,267 @@ def test_the_pass_reads_the_history_before_it_claims_the_backend(
     assert free == {"history": True, "replay": False}
 
 
+def _a_prediction_can_be_served() -> bool:
+    """Whether ANOTHER thread could be served an RWKV prediction right now.
+
+    Another thread, because the lock is reentrant and the pass's own thread
+    inherits its claim: asked there, a shared-runtime pass would look free.
+    """
+    served: list[bool] = []
+
+    def ask() -> None:
+        with rwkv_scheduler._try_reviewer_backend_prediction_access() as backend:
+            served.append(backend is not None)
+
+    thread = threading.Thread(target=ask)
+    thread.start()
+    thread.join()
+    return served[0]
+
+
+class _WatchingCurveRuntime(_CurveCacheRuntime):
+    """Records, at every review it replays, whether another thread could be
+    served a prediction right then."""
+
+    def __init__(self, served: list[bool]) -> None:
+        super().__init__()
+        self._served = served
+        self.replayed = 0
+        self.released = False
+
+    def review(self, **kwargs: Any) -> RwkvReviewTransition:
+        self.replayed += 1
+        self._served.append(_a_prediction_can_be_served())
+        return super().review(**kwargs)
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _TwinRuntimeBackend(RwkvStatefulReviewerBackend):
+    """A backend that can load a second runtime, as the embedded one can."""
+
+    def __init__(self, runtime_factory: Callable[[], Any]) -> None:
+        super().__init__(runtime_factory())
+        self._runtime_factory = runtime_factory
+        self.loaded: list[_TwinRuntimeBackend] = []
+        self.released = 0
+
+    def new_runtime(self) -> _TwinRuntimeBackend:
+        twin = _TwinRuntimeBackend(self._runtime_factory)
+        self.loaded.append(twin)
+        return twin
+
+    def release_runtime(self) -> None:
+        self.released += 1
+        super().release_runtime()
+
+
+def _a_recording_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    served: list[bool],
+    *,
+    own_runtime: bool,
+) -> tuple[Any, SimpleNamespace]:
+    """A collection of two reviews, and the backend the pass will use."""
+    first_review = (40 * 86_400 + 100) * 1000
+    second_review = (41 * 86_400 + 3_700) * 1000
+    rows = [
+        (first_review, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        (second_review, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+
+    def runtime_factory() -> _WatchingCurveRuntime:
+        return _WatchingCurveRuntime(served)
+
+    backend: Any
+    if own_runtime:
+        backend = _TwinRuntimeBackend(runtime_factory)
+    else:
+        # no `new_runtime`: the pass falls back to the shared runtime
+        backend = RwkvStatefulReviewerBackend(runtime_factory())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler.warm_up_rwkv_state(reviewer.mw) is True
+    reviewer.mw.col.review_prediction_rows.clear()
+    # the warm-up above is the reviewer's own, not the pass's
+    served.clear()
+    backend._runtime.replayed = 0
+    return backend, reviewer
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the pass replays
+# into a model runtime of its OWN, and releases it when it is done. It used
+# to replay into the shared one, which is why it had to claim it, rest
+# against it and stop for a card on the screen.
+def test_the_pass_replays_in_a_runtime_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    served: list[bool] = []
+    shared, reviewer = _a_recording_pass(
+        monkeypatch, tmp_path, served, own_runtime=True
+    )
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    # exactly one runtime loaded for the pass
+    assert len(shared.loaded) == 1
+    own = shared.loaded[0]
+    # and the replay ran in it, not in the shared one
+    assert own._runtime.replayed > 0
+    assert shared._runtime.replayed == 0
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a prediction asked
+# for WHILE the pass runs is served. That is the whole point of the pass
+# having a runtime of its own; before it, the answer was no for the pass's
+# whole length.
+def test_a_prediction_is_served_while_the_pass_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    served: list[bool] = []
+    _shared, reviewer = _a_recording_pass(
+        monkeypatch, tmp_path, served, own_runtime=True
+    )
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    assert served, "the pass replayed nothing"
+    assert all(served), "a prediction was refused while the pass replayed"
+    # and nothing was left set behind the pass
+    assert not rwkv_scheduler._reviewer_backend_resting.is_set()
+    assert _a_prediction_can_be_served()
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the pass releases
+# its own runtime as soon as it is done, so neither the weights nor the state
+# it replayed stay in memory behind it. It releases it when the pass fails
+# too.
+def test_the_pass_releases_its_own_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    served: list[bool] = []
+    shared, reviewer = _a_recording_pass(
+        monkeypatch, tmp_path, served, own_runtime=True
+    )
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    own = shared.loaded[0]
+    assert own.released == 1
+    assert own._runtime.released is True
+    # the shared runtime is left alone
+    assert shared.released == 0
+    assert shared._runtime.released is False
+
+    # a pass that fails releases it too
+    def failing_step(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the fold roles could not be read")
+
+    shared.loaded.clear()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            rwkv_scheduler,
+            "_rwkv_calibration_fold_role_maps",
+            failing_step,
+        )
+        assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is False
+    assert len(shared.loaded) == 1
+    assert shared.loaded[0].released == 1
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the runtime the
+# pass loads is the SAME model as the reviewer's - the same weights file and
+# the same settings - so the rows it records are the rows the shared runtime
+# would have recorded.
+def test_its_own_runtime_is_the_same_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aqt import rwkv_srs_benchmark
+
+    loaded: list[dict[str, Any]] = []
+
+    class _FakeRustRuntime:
+        resident_warm_up_state = True
+
+        def __init__(self, **kwargs: Any) -> None:
+            loaded.append(kwargs)
+
+    monkeypatch.setattr(rwkv_srs_benchmark, "_RustRwkvRuntime", _FakeRustRuntime)
+    model = tmp_path / "model.safetensors"
+    backend = rwkv_srs_benchmark.EmbeddedRwkvReviewerBackend(
+        model_path=model,
+        target_retention=0.87,
+        max_interval_days=1234,
+    )
+
+    second = backend.new_runtime()
+
+    assert isinstance(second, rwkv_srs_benchmark.EmbeddedRwkvReviewerBackend)
+    assert second is not backend
+    assert loaded[1] == loaded[0]
+    assert loaded[0] == {
+        "model_path": model,
+        "target_retention": 0.87,
+        "max_interval_days": 1234,
+    }
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic: the rows the pass
+# records are the same rows either way. A runtime of its own changes who
+# replays, never what is written.
+def test_the_pass_records_the_same_rows_in_either_runtime(
+    tmp_path: Path,
+) -> None:
+    rows: dict[bool, list[tuple[Any, ...]]] = {}
+    for own_runtime in (False, True):
+        with pytest.MonkeyPatch.context() as patch:
+            folder = tmp_path / ("own" if own_runtime else "shared")
+            folder.mkdir()
+            _backend, reviewer = _a_recording_pass(
+                patch, folder, [], own_runtime=own_runtime
+            )
+            assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+            rows[own_runtime] = list(reviewer.mw.col.review_prediction_rows)
+
+    assert rows[True] == rows[False]
+    assert rows[True], "the pass recorded nothing at all"
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-automatic, the LIMITATION: a
+# backend that cannot load a second runtime falls back to the shared one,
+# claimed and restored as before. A prediction asked for then is refused, and
+# a card on the screen really does have to stop the pass.
+def test_a_backend_that_cannot_load_a_second_runtime_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    served: list[bool] = []
+    backend, reviewer = _a_recording_pass(
+        monkeypatch, tmp_path, served, own_runtime=False
+    )
+    assert not hasattr(backend, "new_runtime")
+
+    assert rwkv_scheduler.recompute_rwkv_calibration_data(reviewer.mw) is True
+
+    assert served, "the pass replayed nothing"
+    assert not any(served), "the shared-runtime pass served a prediction"
+    # and the shared runtime is the one that replayed
+    assert backend._runtime.replayed > 0
+    # the claim is given back at the end
+    assert _a_prediction_can_be_served()
+
+
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic
 def test_the_pass_runs_in_the_background_without_a_progress_window(
     monkeypatch: pytest.MonkeyPatch,

@@ -1326,6 +1326,24 @@ class RwkvStatefulReviewerBackend:
         if callable(reset_warm_up_state):
             reset_warm_up_state()
 
+    def release_runtime(self) -> None:
+        """Give the model and its state back to the machine.
+
+        A runtime built for one piece of work, such as the recording pass's
+        own one, is released the moment that work is done, so nothing it
+        replayed stays in memory behind it (spec
+        sched.rwkv-recordings-automatic).
+        """
+        self._clear_python_state_cache()
+        self._resident_state_populated = False
+        self._undo_frames.clear()
+        self._redo_frames.clear()
+        self._clear_prediction_cache("runtime released")
+        self._initial_runtime_state = None
+        release = getattr(self._runtime, "release", None)
+        if callable(release):
+            release()
+
     def warm_up(
         self,
         reviews: Sequence[RwkvReviewInput],
@@ -4060,6 +4078,140 @@ def _temporary_reviewer_backend_operation(
                         _reviewer_backend_prediction_local.backend = (
                             previous_prediction_backend
                         )
+
+
+@dataclass(frozen=True)
+class _RecordingPassRuntime:
+    """The model runtime the recording pass replays into."""
+
+    backend: RwkvReviewerBackend
+    #: whether the shared runtime, the one the reviewer predicts from, is
+    #: the one being replayed into
+    is_the_shared_runtime: bool
+    _require_current: Callable[[], None]
+
+    def require_current(self) -> None:
+        """Raise once the pass's work has stopped being wanted."""
+        self._require_current()
+
+
+def _new_recording_pass_runtime(
+    backend: RwkvReviewerBackend,
+) -> RwkvReviewerBackend | None:
+    """A model runtime of the pass's own, or None when `backend` cannot
+    make a second one (a test double, or a backend of another kind)."""
+
+    new_runtime = getattr(backend, "new_runtime", None)
+    if not callable(new_runtime):
+        return None
+    started = time.monotonic()
+    try:
+        own = cast(RwkvReviewerBackend, new_runtime())
+    except Exception:
+        logger.exception("the RWKV recording pass could not load a runtime of its own")
+        return None
+    logger.debug(
+        "RWKV recording pass loaded its own runtime: elapsed_ms=%.1f",
+        (time.monotonic() - started) * 1000,
+    )
+    return own
+
+
+def _recording_pass_rest(
+    between_batches: Callable[[], None] | None,
+    *,
+    hand_the_shared_backend_back: bool,
+) -> None:
+    """One batch done: the user comes first.
+
+    A pass with a runtime of its own has nothing to hand back, because the
+    reviewer has had the shared runtime all along. A pass that fell back to
+    the shared runtime hands it back for the rest, so a click waits for one
+    batch at most (spec sched.rwkv-recordings-automatic).
+    """
+    if between_batches is None:
+        return
+    if not hand_the_shared_backend_back:
+        between_batches()
+        return
+    with _reviewer_backend_handed_back():
+        between_batches()
+
+
+def _release_recording_pass_runtime(backend: RwkvReviewerBackend) -> None:
+    release = getattr(backend, "release_runtime", None)
+    if not callable(release):
+        return
+    try:
+        release()
+    except Exception:
+        logger.exception("failed to release the RWKV recording pass runtime")
+
+
+@contextmanager
+def _recording_pass_runtime(
+    reviewer: object,
+    backend: RwkvReviewerBackend,
+    *,
+    cache_snapshot: Callable[[], _T],
+    restore_cache_snapshot: Callable[[_T], object],
+) -> Iterator[_RecordingPassRuntime | None]:
+    """The runtime the recording pass replays into, for the pass's length.
+
+    Its own, whenever the backend can load a second one: the same weights
+    file, the same settings, the same entry point, and a state of its own.
+    The reviewer keeps the shared runtime for the whole pass, so it answers
+    a card while the pass replays, and the pass claims, locks, rests against
+    and invalidates nothing (spec sched.rwkv-recordings-automatic).
+
+    A backend that cannot load a second runtime falls back to the shared
+    one, claimed and restored as before; the reviewer then cannot predict
+    while the pass runs.
+    """
+
+    own = _new_recording_pass_runtime(backend)
+    if own is None:
+        with _temporary_reviewer_backend_operation(
+            reviewer,
+            backend,
+            cache_snapshot=cache_snapshot,
+            restore_cache_snapshot=restore_cache_snapshot,
+        ) as temporary:
+            if temporary is None:
+                yield None
+                return
+            operation, _original_snapshot = temporary
+            yield _RecordingPassRuntime(
+                backend=backend,
+                is_the_shared_runtime=True,
+                _require_current=operation.require_current,
+            )
+        return
+
+    # the pass owns this runtime, so the only thing that can stop it is the
+    # collection going away under it
+    collection_owner = getattr(reviewer, "mw", None)
+    collection = _collection(reviewer)
+
+    def require_current() -> None:
+        col = _collection(reviewer)
+        if (
+            getattr(reviewer, "mw", None) is not collection_owner
+            or col is not collection
+            or col is None
+            or getattr(col, "db", None) is None
+        ):
+            raise _ReviewerBackendWarmupInvalidated
+
+    try:
+        require_current()
+        yield _RecordingPassRuntime(
+            backend=own,
+            is_the_shared_runtime=False,
+            _require_current=require_current,
+        )
+    finally:
+        _release_recording_pass_runtime(own)
 
 
 def configure_reviewer_backend_from_environment() -> bool:
@@ -10895,11 +11047,17 @@ def recompute_rwkv_calibration_data(
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state.
 
+    The replay runs in a model runtime of the pass's own, loaded from the
+    same weights and released at the end, so the reviewer keeps the shared
+    one and answers a card while the pass runs (spec
+    sched.rwkv-recordings-automatic). A backend that cannot load a second
+    runtime falls back to the shared one, claimed and restored as before.
+
     `between_batches` is called between two batches of reviews, and between
     the parts of the history query. The automatic pass passes the one that
-    rests and hands the backend back, so that the pass makes progress while
-    the user works (spec sched.rwkv-recordings-automatic); a pass the user
-    asked for and watches passes nothing and runs straight through.
+    rests, so that the pass takes a small share of the machine while the
+    user works; a pass the user asked for and watches passes nothing and
+    runs straight through.
     """
 
     configure_reviewer_backend_from_environment()
@@ -10961,20 +11119,23 @@ def recompute_rwkv_calibration_data(
             "RWKV calibration recompute inputs prepared: reviews=%s",
             len(history.reviews),
         )
-        with _temporary_reviewer_backend_operation(
+        with _recording_pass_runtime(
             reviewer,
             backend,
             cache_snapshot=cache_snapshot,
             restore_cache_snapshot=restore_cache_snapshot,
-        ) as temporary:
-            if temporary is None:
+        ) as runtime:
+            if runtime is None:
                 logger.debug(
                     "RWKV calibration data recompute skipped: backend state busy"
                 )
                 return False
-            operation, _original_snapshot = temporary
+            # the pass's own runtime when it has one, and then the shared
+            # one is never touched: the same class, so the same methods
+            warm_up = getattr(runtime.backend, "warm_up")
+            reset_cache_snapshot = getattr(runtime.backend, "reset_cache_snapshot")
 
-            operation.require_current()
+            runtime.require_current()
             reset_cache_snapshot()
             sample_role_by_review_id, fold_index_by_review_id = (
                 _rwkv_calibration_fold_role_maps(reviewer, history)
@@ -10998,16 +11159,17 @@ def recompute_rwkv_calibration_data(
             started_at = time.monotonic()
 
             def replay_progress(replay_progress: RwkvWarmUpProgress) -> None:
-                operation.require_current()
+                runtime.require_current()
                 _report_rwkv_review_replay_progress(
                     progress,
                     label=_tr().qt_misc_stats_data_preparing(),
                     replay_progress=replay_progress,
                     elapsed_seconds=time.monotonic() - started_at,
                 )
-                # one batch done: the user comes first
-                if between_batches is not None:
-                    between_batches()
+                _recording_pass_rest(
+                    between_batches,
+                    hand_the_shared_backend_back=runtime.is_the_shared_runtime,
+                )
 
             try:
                 warm_up_kwargs: dict[str, Any] = {
@@ -11032,7 +11194,7 @@ def recompute_rwkv_calibration_data(
                     history.reviews,
                     **warm_up_kwargs,
                 )
-                operation.require_current()
+                runtime.require_current()
             finally:
                 writer.flush()
                 curve_writer.flush()
@@ -11134,10 +11296,11 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     out of the user's way (spec sched.rwkv-recordings-automatic).
 
     The pass is minutes of work on a large collection. It must never hold
-    the window: it runs on a worker thread, in short batches, and rests
-    between two of them, handing the RWKV backend back, so a click is never
-    behind it. The Stats graphs say that their numbers are being computed
-    while it runs; nothing else is shown."""
+    the window: it runs on a worker thread, in a model runtime of its own,
+    in short batches, and rests between two of them, so a click is never
+    behind it and the reviewer predicts from the shared runtime all along.
+    The Stats graphs say that their numbers are being computed while it
+    runs; nothing else is shown."""
 
     global _rwkv_recordings_pass_running
 
@@ -11162,14 +11325,15 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     _write_rwkv_recordings_progress(mw, state="started", batches=0)
 
     def between_batches() -> None:
-        """One batch done: rest, with the backend handed back.
+        """One batch done: rest, so the pass takes a small, known share of
+        the machine while the user works.
 
-        A card on the screen stops the pass instead. While the pass runs it
-        owns the replayed state, so a prediction cannot be served from it
-        and the reviewer shows "Getting this card ready..." for as long as
-        the pass lasts. Reviewing wins: the pass gives up its claim, the
-        state it began with is restored, and it starts again once the user
-        leaves the reviewer (spec sched.rwkv-recordings-automatic).
+        A card on the screen stops the pass. That is a safety net now: the
+        pass replays in a runtime of its own, so the reviewer predicts from
+        the shared one throughout and never waits for the pass. It still
+        stops, because a pass that fell back to the shared runtime would
+        own the replayed state and the reviewer would wait (spec
+        sched.rwkv-recordings-automatic).
         """
         if not collection_open():
             raise _ReviewerBackendWarmupInvalidated
@@ -11180,8 +11344,11 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
             mw,
             time.monotonic() - batch_started[0],
         )
-        with _reviewer_backend_handed_back():
-            time.sleep(rest)
+        # the pass replays in a runtime of its own, so there is nothing to
+        # hand back; the rest is what keeps its share of the machine small.
+        # A pass that fell back to the shared runtime hands it back for the
+        # rest, in `recompute_rwkv_calibration_data`.
+        time.sleep(rest)
         batches_done[0] += 1
         _write_rwkv_recordings_progress(mw, state="running", batches=batches_done[0])
         batch_started[0] = time.monotonic()
@@ -12132,9 +12299,12 @@ def start_rwkv_maintenance_if_needed(mw: object) -> None:
 def _reviewer_is_showing_a_card(mw: object) -> bool:
     """True while the reviewer has a card on the screen.
 
-    The recording pass owns the RWKV state while it replays, so a card shown
-    during it cannot get its intervals. The pass stops rather than make the
-    user wait (spec sched.rwkv-recordings-automatic).
+    The recording pass stops rather than make the user wait (spec
+    sched.rwkv-recordings-automatic). It is a safety net: a pass that
+    replays in a runtime of its own leaves the reviewer's state alone, and
+    a card shown during it gets its intervals. A pass that fell back to the
+    shared runtime owns the replayed state, and then a card shown during it
+    could not.
     """
     return getattr(mw, "state", None) == "review"
 
@@ -12163,13 +12333,14 @@ def recordings_pass_rest_seconds(mw: object, batch_seconds: float) -> float:
 def _reviewer_backend_handed_back() -> Iterator[None]:
     """Hands the RWKV backend back for the length of the block.
 
-    The recording pass owns the backend while it replays a batch. Between
-    two batches it hands it back, so that answering a card, showing one or
-    an undo never waits for more than one batch (spec
-    sched.rwkv-recordings-automatic). Its claim stays: everything that takes
-    the lock finds the state pending and leaves it alone, and a prediction
-    finds `_reviewer_backend_resting` and falls back rather than read a
-    half-replayed state.
+    Only for a recording pass that fell back to the shared runtime. Such a
+    pass owns the backend while it replays a batch; between two batches it
+    hands it back, so that answering a card, showing one or an undo never
+    waits for more than one batch (spec sched.rwkv-recordings-automatic).
+    Its claim stays: everything that takes the lock finds the state pending
+    and leaves it alone, and a prediction finds `_reviewer_backend_resting`
+    and falls back rather than read a half-replayed state. A pass with a
+    runtime of its own never comes here: it has nothing to hand back.
     """
     # set first, then release: a prediction that gets in between the two must
     # find the flag already set

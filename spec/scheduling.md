@@ -372,20 +372,23 @@ that would otherwise need a button, without asking and without a message:
   it; a pass that walked the whole history on it would put every one of them
   behind it for minutes.
 
-  It reads the review history before it claims the RWKV backend, in parts,
-  and then replays in short batches of about a thousand reviews.
-  **Between two batches it rests and hands the
-  RWKV backend back**, so the user's own work — answering a card, showing
-  one, an undo, Grade Now — waits for one batch at most and never for the
-  pass. While the user works, the rest is a multiple of the batch just
-  done, so the pass takes a known, small share of the machine and still
-  finishes in minutes; while the user is away, it is only long enough to
-  hand a waiting click the backend first. **It is never a wait for the user
-  to stop.** While it rests it still owns the state it has half replayed, so
-  a prediction asked for in that moment is refused and falls back, the same
-  as during a batch. The pass stops by itself once the profile it started in
-  has closed, checked both between two batches and at every progress
-  report. Nothing is shown while it runs, except
+  **The pass replays in a model runtime of its own.** It loads a second
+  runtime from the same weights file, with the same settings and the same
+  entry point, replays the whole history into that one, and releases it as
+  soon as it is done. The shared runtime, the one the reviewer predicts
+  from, is neither claimed, locked, rested against nor invalidated: a
+  prediction asked for while the pass runs is served, from a state the pass
+  never touched. The rows the pass records are the same rows either way,
+  because the model and the replay are the same.
+
+  It reads the review history before it loads that runtime, in parts, and
+  then replays in short batches of about a thousand reviews. **Between two
+  batches it rests**, so the pass takes a known, small share of the machine
+  while the user works: the rest is a multiple of the batch just done.
+  While the user is away it is the shortest rest there is. **It is never a
+  wait for the user to stop.** The pass stops by itself once the profile it
+  started in has closed, checked both between two batches and at every
+  progress report. Nothing is shown while it runs, except
   that the model-quality graphs say their numbers are being computed
   instead of saying that nothing recorded them; a finished pass shows one
   short message. A finished pass remembers what it recorded
@@ -402,11 +405,21 @@ ready finds the same reason and starts it then. A sync that skipped old
 reviews shows no message. The deck-options buttons "Read Review History
 Again" and "Prepare Stats Graphs" stay, as a manual fallback.
 
-A card on the screen stops the pass rather than resting it. While the pass
-replays it owns the RWKV state, so a prediction cannot be served from it and
-the reviewer shows "Getting this card ready..." for as long as the pass
-lasts. The pass gives up its claim, the state it began with is restored, and
-it starts again once the user leaves the reviewer. Reviewing always wins.
+A card on the screen stops the pass rather than resting it, and the pass
+starts again once the user leaves the reviewer. Reviewing always wins. This
+is a safety net: a pass that has a runtime of its own leaves the reviewer's
+state alone, so a card shown while it runs gets its intervals and the stop
+changes nothing.
+
+_Limitation:_ a backend that cannot load a second runtime — a test double,
+or a backend of another kind — falls back to the shared one, claimed and
+restored as it was before. Such a pass owns the half-replayed state, so a
+prediction asked for while it runs is refused and falls back, it hands the
+backend back between two batches so a click waits for one batch at most,
+and a card on the screen really does have to stop it. Clanki's own
+embedded RWKV backend always loads its own runtime, so the fallback is for
+code that replaces it. It would go away if every backend could load a
+second runtime.
 
 **Why:** Andrew, 2026-09-19 (CLAUDE.md Planned direction 9, "Everything Just
 Works"): the user never decides to rebuild RWKV states; a message or a
@@ -427,7 +440,19 @@ missing from the AUC-ROC graph and greyed out in the Calibration menu.
 Holding the backend for the whole pass cost the same: a click waited for it
 for longer than 30 s, the pass's whole length.
 
+Resting and stopping were both workarounds for one runtime shared between
+two jobs. A second runtime costs 11 MB of weights, measured, and the pass
+no longer replaces the reviewer's state at all, so it no longer needs the
+copy of that state it used to take and restore. That is what removes the
+conflict instead of scheduling around it.
+
 **Pinned by:** `test_missing_or_stale_recordings_start_the_recording_pass_by_itself`,
+`test_the_pass_replays_in_a_runtime_of_its_own`,
+`test_a_prediction_is_served_while_the_pass_runs`,
+`test_the_pass_releases_its_own_runtime`,
+`test_its_own_runtime_is_the_same_model`,
+`test_the_pass_records_the_same_rows_in_either_runtime`,
+`test_a_backend_that_cannot_load_a_second_runtime_falls_back`,
 `test_the_recording_pass_waits_until_no_card_is_being_reviewed`,
 `test_the_recording_pass_waits_until_the_user_leaves_clanki_alone`,
 `test_the_pass_rests_a_bounded_time_between_batches`,

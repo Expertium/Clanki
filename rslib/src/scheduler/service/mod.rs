@@ -70,6 +70,8 @@ use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
+use crate::scheduler::fsrs::predictions::store_fsrs_review_predictions_in_batches;
+use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
@@ -1235,9 +1237,10 @@ fn fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
 }
 
 impl crate::services::BackendSchedulerService for Backend {
-    /// The collection is held to read the preset's reviews and to write the
-    /// rows, never while the folds are fitted, so a user action waits only
-    /// for the short read or write (spec ui.stats-fsrs-predictions-ready).
+    /// The collection is held to read the preset's reviews and to write one
+    /// batch of rows, never while the folds are fitted and never for a whole
+    /// preset's write, so a user action waits only for a short read or one
+    /// batch (spec ui.stats-fsrs-predictions-ready).
     fn refresh_fsrs_review_predictions(
         &self,
         input: scheduler::RefreshFsrsReviewPredictionsRequest,
@@ -1247,9 +1250,17 @@ impl crate::services::BackendSchedulerService for Backend {
             return Ok(0u32.into());
         };
         let rows = job.rows()?;
-        Ok(self
-            .with_col(|col| col.store_fsrs_review_prediction_rows(&job, &rows))?
-            .into())
+        let written = store_fsrs_review_predictions_in_batches(
+            &job,
+            &rows,
+            PREDICTION_WRITE_BATCH_ROWS,
+            |job, batch, already_written| {
+                self.with_col(|col| {
+                    col.store_fsrs_review_prediction_batch(job, batch, already_written)
+                })
+            },
+        )?;
+        Ok(written.into())
     }
 
     fn auto_optimize_fsrs_preset(

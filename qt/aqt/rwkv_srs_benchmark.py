@@ -355,12 +355,29 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
         max_interval_days: int = 36500,
     ) -> None:
         del device, dtype
+        self._model_path = Path(model_path)
+        self._target_retention = target_retention
+        self._max_interval_days = max_interval_days
         super().__init__(
             _RustRwkvRuntime(
-                model_path=Path(model_path),
+                model_path=self._model_path,
                 target_retention=target_retention,
                 max_interval_days=max_interval_days,
             ),
+        )
+
+    def new_runtime(self) -> "EmbeddedRwkvReviewerBackend":
+        """A second runtime of the same model: the same weights file, the
+        same settings, the same entry point, and a state of its own.
+
+        The recording pass replays into one of these, so the reviewer keeps
+        the shared runtime and answers a card while the pass runs (spec
+        sched.rwkv-recordings-automatic).
+        """
+        return EmbeddedRwkvReviewerBackend(
+            model_path=self._model_path,
+            target_retention=self._target_retention,
+            max_interval_days=self._max_interval_days,
         )
 
 
@@ -385,6 +402,16 @@ class _RustRwkvRuntime:
         self._process_lock = threading.RLock()
         # a constant of the model: asked once, never under the process lock
         self._curve_source_tag = self._read_curve_source_tag()
+
+    def release(self) -> None:
+        """Drop the model and everything it holds.
+
+        The recording pass owns a runtime of its own and releases it as soon
+        as it is done, so the weights and the state it replayed do not stay
+        in memory behind it.
+        """
+        with self._locked_process():
+            self._process = None
 
     def _locked_process(self) -> Any:
         lock = getattr(self, "_process_lock", None)

@@ -1,150 +1,190 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""The model-quality graphs' maths (spec ui.stats-model-metrics)."""
+"""The model-quality graphs' job (spec ui.stats-model-metrics).
+
+The curves themselves are the backend's now. `_reference_roc_curve` below is
+the sweep exactly as this module ran it in Python, kept as the oracle of
+`test_the_rust_curve_is_the_one_python_computed`: it and
+`a_large_curve_is_bit_for_bit_the_one_python_computed` in
+`rslib/src/stats/roc.rs` run on the same generated ratings and assert the
+same three numbers, so the two languages are pinned to each other.
+"""
 
 from __future__ import annotations
 
+import struct
 from types import SimpleNamespace
 
 import pytest
 
 import aqt.stats_metrics as metrics
+from anki.stats_pb2 import ReviewPredictionsResponse
+
+Series = metrics.Series
+
+_MASK = (1 << 64) - 1
+_MULTIPLIER = 0x2545F4914F6CDD1D
 
 
-def test_auc_ranks_remembered_reviews_above_forgotten_ones() -> None:
-    points, auc = metrics.roc_curve([0.9, 0.8, 0.7, 0.6], [True, False, True, False])
+def _dataset(count: int) -> tuple[list[float], list[bool]]:
+    """The ratings the Rust test generates, with the same generator:
+    xorshift64*, 20 bits of each draw as a prediction, and an answer drawn
+    against it, so the curve has a realistic shape and tens of thousands of
+    ties."""
+    state = _MULTIPLIER
 
-    assert auc == 0.75
-    assert points == [(0.0, 0.0), (0.0, 0.5), (0.5, 0.5), (0.5, 1.0), (1.0, 1.0)]
+    def advance() -> int:
+        nonlocal state
+        state ^= state >> 12
+        state ^= (state << 25) & _MASK
+        state ^= state >> 27
+        return (state * _MULTIPLIER) & _MASK
+
+    predictions = []
+    remembered = []
+    for _ in range(count):
+        bits = (advance() >> 40) & 0xFFFFF
+        predictions.append(bits / 1048576.0)
+        remembered.append(((advance() >> 40) & 0xFFFFF) < bits)
+    return predictions, remembered
 
 
-def test_a_perfect_order_has_auc_one_and_a_reversed_one_has_zero() -> None:
-    _, perfect = metrics.roc_curve([0.9, 0.8, 0.2, 0.1], [True, True, False, False])
-    _, reversed_order = metrics.roc_curve(
-        [0.9, 0.8, 0.2, 0.1], [False, False, True, True]
+def _reference_roc_curve(
+    predictions: list[float], remembered: list[bool], max_points: int = 512
+) -> tuple[list[tuple[float, float]], float]:
+    """The ROC curve as this module computed it in Python, unchanged."""
+    pairs = sorted(zip(predictions, remembered, strict=True), reverse=True)
+    positives = sum(1 for _, value in pairs if value)
+    negatives = len(pairs) - positives
+    if not positives or not negatives:
+        return [], 0.0
+
+    points: list[tuple[float, float]] = [(0.0, 0.0)]
+    area = 0.0
+    true_positives = 0
+    false_positives = 0
+    index = 0
+    while index < len(pairs):
+        threshold = pairs[index][0]
+        while index < len(pairs) and pairs[index][0] == threshold:
+            if pairs[index][1]:
+                true_positives += 1
+            else:
+                false_positives += 1
+            index += 1
+        x = false_positives / negatives
+        y = true_positives / positives
+        previous_x, previous_y = points[-1]
+        area += (x - previous_x) * (y + previous_y) / 2
+        points.append((x, y))
+    return _reference_thinned(points, max_points), area
+
+
+def _reference_thinned(
+    points: list[tuple[float, float]], max_points: int
+) -> list[tuple[float, float]]:
+    if len(points) <= max_points:
+        return points
+    step = (len(points) - 1) / (max_points - 1)
+    thinned = [points[round(index * step)] for index in range(max_points - 1)]
+    thinned.append(points[-1])
+    return thinned
+
+
+def _digest(points: list[tuple[float, float]]) -> int:
+    """The Rust test's fold over the raw bits of the points, so both
+    languages can pin the same curve without running the other."""
+    value = 0
+    for point in points:
+        for number in point:
+            bits = struct.unpack("<Q", struct.pack("<d", number))[0]
+            value = ((value * 0x100000001B3) & _MASK) ^ bits
+    return value
+
+
+# Pins spec/ui.md#ui.stats-model-metrics
+def test_the_rust_curve_is_the_one_python_computed() -> None:
+    """The three numbers `rslib/src/stats/roc.rs` asserts on the same
+    300000 generated ratings. If the backend's sweep ever stops matching
+    the Python one, one of the two tests fails."""
+    predictions, remembered = _dataset(300_000)
+    assert sum(remembered) == 150_021
+
+    points, auc = _reference_roc_curve(predictions, remembered)
+
+    assert struct.unpack("<Q", struct.pack("<d", auc))[0] == 0x3FEAA61E654A0E74
+    assert len(points) == 512
+    assert _digest(points) == 0x4F63F7982E49A3C1
+
+
+def _series(
+    algorithm: int,
+    *,
+    auc: float = 0.0,
+    reviews: int = 0,
+    role: str = "",
+    unavailable: int = metrics.Unavailable.AVAILABLE,
+    average_predicted: float = 0.0,
+) -> Series:
+    return Series(
+        algorithm=algorithm,
+        unavailable=unavailable,
+        reviews=reviews,
+        sample_role=role,
+        auc=auc,
+        average_predicted=average_predicted,
+        false_positive_rate=[0.0, 1.0] if reviews else [],
+        true_positive_rate=[0.0, 1.0] if reviews else [],
     )
 
-    assert perfect == 1.0
-    assert reversed_order == 0.0
+
+def _absent(algorithm: int) -> Series:
+    return _series(algorithm, unavailable=metrics.Unavailable.NO_REVIEWS)
 
 
-def test_reviews_with_the_same_prediction_are_one_step() -> None:
-    points, auc = metrics.roc_curve([0.5, 0.5], [True, False])
-
-    assert auc == 0.5
-    assert points == [(0.0, 0.0), (1.0, 1.0)]
-
-
-def test_one_kind_of_answer_has_no_curve() -> None:
-    assert metrics.roc_curve([0.9, 0.5], [True, True]) == ([], 0.0)
-    assert metrics.roc_curve([0.9, 0.5], [False, False]) == ([], 0.0)
-    assert metrics.roc_curve([], []) == ([], 0.0)
-
-
-def test_a_long_curve_is_thinned_but_keeps_its_ends() -> None:
-    predictions = [index / 5000 for index in range(5000)]
-    remembered = [index % 2 == 0 for index in range(5000)]
-
-    points, auc = metrics.roc_curve(predictions, remembered, max_points=64)
-
-    assert len(points) == 64
-    assert points[0] == (0.0, 0.0)
-    assert points[-1] == (1.0, 1.0)
-    assert 0.0 <= auc <= 1.0
-
-
-def test_a_series_carries_its_algorithm_its_count_and_its_role() -> None:
-    series = metrics._series(
-        metrics.FSRS_7,
-        [0.9, 0.8, 0.7, 0.6],
-        [True, False, True, False],
-        "validation_fold",
-    )
-
-    assert series.algorithm == metrics.FSRS_7
-    assert series.unavailable == metrics.Unavailable.AVAILABLE
-    assert series.reviews == 4
-    assert series.auc == 0.75
-    assert series.sample_role == "validation_fold"
-    assert len(series.false_positive_rate) == len(series.true_positive_rate)
-
-
-def test_a_series_without_a_curve_says_why() -> None:
-    series = metrics._series(
-        metrics.RWKV_INSTANT, [0.9, 0.5], [True, True], "final_fit"
-    )
-
-    assert series.algorithm == metrics.RWKV_INSTANT
-    assert series.unavailable == metrics.Unavailable.NO_REVIEWS
-    assert not series.false_positive_rate
-
-
-def test_a_series_skips_the_ratings_it_has_no_row_for() -> None:
-    # the backend sends one entry per rating ANY algorithm scored, and marks
-    # the ones this algorithm cannot score with NaN (spec
-    # ui.stats-model-metrics)
-    series = metrics._series(
-        metrics.RWKV_INSTANT,
-        [0.9, float("nan"), 0.6, float("nan")],
-        [True, True, False, False],
-        "final_fit",
-    )
-
-    assert series.unavailable == metrics.Unavailable.AVAILABLE
-    # only the two ratings it predicted, never the other algorithm's values
-    assert series.reviews == 2
-    assert series.auc == 1.0
-    assert series.average_predicted == pytest.approx(0.75)
-    assert series.actual_recall == pytest.approx(0.5)
-
-
-def test_one_row_of_another_algorithm_does_not_shrink_this_one() -> None:
-    # Andrew's collection: RWKV had rows for nearly every rating and FSRS-7
-    # for a handful; the handful must not take RWKV's ratings away
-    predictions = [0.9 - index * 0.01 for index in range(10)]
-    remembered = [index % 2 == 0 for index in range(10)]
-    series = metrics._series(metrics.RWKV_INSTANT, predictions, remembered, "final_fit")
-
-    assert series.reviews == 10
-
-
-def test_an_algorithm_with_no_usable_rows_is_absent() -> None:
-    # no role means the backend found no row the algorithm had not seen
-    series = metrics._series(metrics.FSRS_7, [0.9, 0.5], [True, False], "")
-
-    assert series.unavailable == metrics.Unavailable.NO_REVIEWS
-    assert series.reviews == 0
-
-
-def test_the_job_reads_each_algorithm_from_its_own_rows() -> None:
-    from anki.stats_pb2 import ReviewPredictionsResponse
-
+def _job_of(response: ReviewPredictionsResponse) -> metrics._Job:
     class _Backend:
         def review_predictions(self, search: str, days: int) -> object:
-            return ReviewPredictionsResponse(
-                revlog_ids=[1, 2, 3, 4],
-                card_ids=[1, 1, 2, 2],
-                remembered=[True, False, True, False],
-                fsrs_predictions=[0.9, 0.8, 0.7, 0.6],
-                rwkv_predictions=[0.6, 0.7, 0.8, 0.9],
-                rwkv_curve_predictions=[0.55, 0.65, 0.75, 0.85],
-                fsrs_role="validation_fold",
-                rwkv_role="final_fit",
-                rwkv_curve_role="final_fit",
-                fsrs_only=2,
-                rwkv_only=1,
-                unscored=3,
-                shared=4,
-                newest_scored_secs=1_700_000_000,
-                newer_reviews=5,
-            )
+            return response
 
     class _Collection:
         _backend = _Backend()
 
     job = metrics._Job(job_id=1, key=("test",))
     metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    return job
+
+
+def test_the_job_passes_each_algorithms_series_through() -> None:
+    job = _job_of(
+        ReviewPredictionsResponse(
+            series=[
+                _series(metrics.FSRS_7, auc=0.75, reviews=4, role="validation_fold"),
+                _series(
+                    metrics.RWKV_CURVE,
+                    auc=0.5,
+                    reviews=4,
+                    role="final_fit",
+                    average_predicted=0.7,
+                ),
+                _series(
+                    metrics.RWKV_INSTANT,
+                    auc=0.25,
+                    reviews=4,
+                    role="final_fit",
+                    average_predicted=0.75,
+                ),
+            ],
+            scored=4,
+            fsrs_only=2,
+            rwkv_only=1,
+            unscored=3,
+            shared=4,
+            newest_scored_secs=1_700_000_000,
+            newer_reviews=5,
+        )
+    )
     progress = job.progress()
 
     by_algorithm = {series.algorithm: series for series in progress.series}
@@ -168,14 +208,14 @@ def test_the_job_reads_each_algorithm_from_its_own_rows() -> None:
     assert progress.newer_reviews == 5
 
 
-def test_the_job_keeps_the_um_plus_pairs_after_the_response_is_gone() -> None:
-    """The UM+ pairs reach the page unchanged. The job keeps its own copy of
-    them, because a pair taken straight out of the response shares the
-    response's memory and kept all of it alive after the Stats window
-    closed; this pins that the copy is exact."""
+def test_the_job_keeps_its_own_copy_of_the_response() -> None:
+    """The series and the UM+ pairs reach the page unchanged. The job keeps
+    its own copies, because a sub-message taken straight out of the response
+    shares the response's memory and kept all of it alive after the Stats
+    window closed; this pins that the copies are exact."""
     import gc
 
-    from anki.stats_pb2 import ReviewPredictionsResponse, UmPlusBin, UmPlusPair
+    from anki.stats_pb2 import UmPlusBin, UmPlusPair
 
     pair = UmPlusPair(
         algorithm_a=metrics.FSRS_7,
@@ -186,49 +226,35 @@ def test_the_job_keeps_the_um_plus_pairs_after_the_response_is_gone() -> None:
         slope_a=0.5,
         reviews=7,
     )
-
-    class _Backend:
-        def review_predictions(self, search: str, days: int) -> object:
-            return ReviewPredictionsResponse(
-                revlog_ids=[1, 2],
-                card_ids=[1, 1],
-                remembered=[True, False],
-                fsrs_predictions=[0.9, 0.4],
-                fsrs_role="validation_fold",
-                um_plus=[pair],
-            )
-
-    class _Collection:
-        _backend = _Backend()
-
-    job = metrics._Job(job_id=1, key=("test",))
-    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    fsrs = _series(metrics.FSRS_7, auc=1.0, reviews=2, role="validation_fold")
+    job = _job_of(
+        ReviewPredictionsResponse(
+            series=[fsrs, _absent(metrics.RWKV_CURVE), _absent(metrics.RWKV_INSTANT)],
+            scored=2,
+            um_plus=[pair],
+        )
+    )
     gc.collect()
 
     assert list(job.um_plus) == [pair]
     assert list(job.progress().um_plus) == [pair]
+    by_algorithm = {series.algorithm: series for series in job.progress().series}
+    assert by_algorithm[metrics.FSRS_7] == fsrs
 
 
 # Pins spec/ui.md#ui.stats-model-metrics
 def test_an_algorithm_whose_rows_nothing_wrote_says_so() -> None:
-    from anki.stats_pb2 import ReviewPredictionsResponse
-
-    class _Backend:
-        def review_predictions(self, search: str, days: int) -> object:
-            # RWKV-Instant has rows; RWKV-Curve has none yet
-            return ReviewPredictionsResponse(
-                revlog_ids=[1, 2],
-                card_ids=[1, 1],
-                remembered=[True, False],
-                rwkv_predictions=[0.9, 0.4],
-                rwkv_role="final_fit",
-            )
-
-    class _Collection:
-        _backend = _Backend()
-
-    job = metrics._Job(job_id=1, key=("test",))
-    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    # RWKV-Instant has rows; RWKV-Curve has none yet
+    job = _job_of(
+        ReviewPredictionsResponse(
+            series=[
+                _absent(metrics.FSRS_7),
+                _absent(metrics.RWKV_CURVE),
+                _series(metrics.RWKV_INSTANT, auc=1.0, reviews=2, role="final_fit"),
+            ],
+            scored=2,
+        )
+    )
     by_algorithm = {series.algorithm: series for series in job.progress().series}
 
     # not "the model cannot compute it": nothing has recorded it yet
@@ -240,25 +266,18 @@ def test_an_algorithm_whose_rows_nothing_wrote_says_so() -> None:
 
 # Pins spec/ui.md#ui.stats-model-metrics
 def test_a_partly_recorded_algorithm_says_how_far_back_it_reaches() -> None:
-    from anki.stats_pb2 import ReviewPredictionsResponse
-
-    class _Backend:
-        def review_predictions(self, search: str, days: int) -> object:
-            return ReviewPredictionsResponse(
-                revlog_ids=[1, 2],
-                card_ids=[1, 1],
-                remembered=[True, False],
-                rwkv_curve_predictions=[0.9, 0.4],
-                rwkv_curve_role="final_fit",
-                rwkv_curve_oldest_secs=1_700_000_000,
-                rwkv_curve_earlier_reviews=4321,
-            )
-
-    class _Collection:
-        _backend = _Backend()
-
-    job = metrics._Job(job_id=1, key=("test",))
-    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    job = _job_of(
+        ReviewPredictionsResponse(
+            series=[
+                _absent(metrics.FSRS_7),
+                _series(metrics.RWKV_CURVE, auc=1.0, reviews=2, role="final_fit"),
+                _absent(metrics.RWKV_INSTANT),
+            ],
+            scored=2,
+            rwkv_curve_oldest_secs=1_700_000_000,
+            rwkv_curve_earlier_reviews=4321,
+        )
+    )
     curve = {series.algorithm: series for series in job.progress().series}[
         metrics.RWKV_CURVE
     ]
@@ -288,29 +307,22 @@ def test_not_recorded_text_does_not_ask_the_user_to_rebuild() -> None:
 def test_while_the_recording_pass_runs_the_graphs_say_it_is_computing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from anki.stats_pb2 import ReviewPredictionsResponse
-
-    class _Backend:
-        def review_predictions(self, search: str, days: int) -> object:
-            # RWKV-Instant has rows; RWKV-Curve has none yet
-            return ReviewPredictionsResponse(
-                revlog_ids=[1, 2],
-                card_ids=[1, 1],
-                remembered=[True, False],
-                rwkv_predictions=[0.9, 0.4],
-                rwkv_role="final_fit",
-            )
-
-    class _Collection:
-        _backend = _Backend()
-
     import aqt.rwkv_scheduler
 
     monkeypatch.setattr(
         aqt.rwkv_scheduler, "rwkv_recordings_pass_running", lambda: True
     )
-    job = metrics._Job(job_id=1, key=("test",))
-    metrics._compute(SimpleNamespace(col=_Collection()), job, "deck:current", 365)
+    # RWKV-Instant has rows; RWKV-Curve has none yet
+    job = _job_of(
+        ReviewPredictionsResponse(
+            series=[
+                _absent(metrics.FSRS_7),
+                _absent(metrics.RWKV_CURVE),
+                _series(metrics.RWKV_INSTANT, auc=1.0, reviews=2, role="final_fit"),
+            ],
+            scored=2,
+        )
+    )
     by_algorithm = {series.algorithm: series for series in job.progress().series}
 
     # the pass is writing the rows now, so the graph says that, not that
