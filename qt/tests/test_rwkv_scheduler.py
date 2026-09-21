@@ -21814,3 +21814,130 @@ def test_the_recording_pass_stops_when_the_profile_closes(
     _join_the_recording_pass()
 
     assert len(rested) == 1
+
+
+def _state_cache_read_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    metadata: dict[str, object],
+) -> tuple[list[tuple[int, ...]], list[str], object]:
+    """The state-cache read with its two cheap validations watched.
+
+    Returns the ignored-id tuples the Rust fingerprint was asked for, the
+    names of the paths that ran, and the object the fingerprint hands back.
+    """
+    fingerprint_calls: list[tuple[int, ...]] = []
+    paths: list[str] = []
+    restored = cast(Any, object())
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_binary_location",
+        lambda _reviewer: (tmp_path, metadata),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_metadata_compatible",
+        lambda *_args, **_kwargs: True,
+    )
+    # a sync always changes the collection, so this marker never matches
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_collection_unchanged",
+        lambda *_args, **_kwargs: False,
+    )
+
+    def fingerprint(
+        _reviewer: object,
+        *,
+        backend: object,
+        cache_dir: Path,
+        metadata: dict[str, object],
+        ignored_review_ids: tuple[int, ...],
+    ) -> object:
+        fingerprint_calls.append(ignored_review_ids)
+        paths.append("fingerprint")
+        return restored
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache_from_rust_fingerprint", fingerprint
+    )
+
+    def whole_history(*_args: object, **_kwargs: object) -> object:
+        paths.append("whole history")
+        raise _StopTheWholeHistoryRead()
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_historical_rwkv_review_inputs", whole_history
+    )
+    return fingerprint_calls, paths, restored
+
+
+class _StopTheWholeHistoryRead(Exception):
+    """Raised instead of reading every review, so the test can see it happen."""
+
+
+def test_a_sync_of_recent_reviews_validates_the_cache_without_reading_it_all(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A recent synchronized review changes no ignored id, so the cheap
+    validation speaks for the read.
+
+    A review newer than `_RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS` is
+    dropped from the ignored set again, so the set the read works with is the
+    set the cache already holds. Reading all 656k reviews to learn that cost
+    Andrew about 30 seconds behind a window after every sync (B-012).
+    """
+    last_review_id = 2_000_000_000_000
+    metadata: dict[str, object] = {
+        "lastReviewId": last_review_id,
+        "reviewCount": 2,
+        "historyHash": "b" * 64,
+        "replayKey": "replay-key",
+    }
+    fingerprint_calls, paths, restored = _state_cache_read_harness(
+        monkeypatch, tmp_path, metadata
+    )
+
+    stored = rwkv_scheduler._read_rwkv_state_cache_binary(
+        SimpleNamespace(),
+        backend=cast(Any, object()),
+        additional_ignored_review_ids=(last_review_id - 3 * 86_400_000,),
+    )
+
+    assert stored is restored
+    assert paths == ["fingerprint"]
+    # the cache's own ignored ids, and nothing added
+    assert fingerprint_calls == [()]
+
+
+def test_a_sync_of_old_reviews_still_reads_the_whole_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The other half of the rule above: a review old enough to be ignored
+    does change the set, and then only the whole history can say what the
+    history now is."""
+    last_review_id = 2_000_000_000_000
+    metadata: dict[str, object] = {
+        "lastReviewId": last_review_id,
+        "reviewCount": 2,
+        "historyHash": "b" * 64,
+        "replayKey": "replay-key",
+    }
+    _fingerprint_calls, paths, _restored = _state_cache_read_harness(
+        monkeypatch, tmp_path, metadata
+    )
+
+    # nine days old, past the eight-day cutoff
+    old_review_id = last_review_id - 9 * 86_400_000
+    assert (
+        rwkv_scheduler._read_rwkv_state_cache_binary(
+            SimpleNamespace(),
+            backend=cast(Any, object()),
+            additional_ignored_review_ids=(old_review_id,),
+        )
+        is None
+    )
+    assert paths == ["whole history"]

@@ -15962,7 +15962,27 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
     ):
         return None
-    if not additional_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
+    existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
+    metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
+    newest_known_review_id = max(
+        (metadata_last_review_id, *additional_ignored_review_ids)
+    )
+    ignore_cutoff = newest_known_review_id - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+    newly_ignored_review_ids = {
+        review_id
+        for review_id in additional_ignored_review_ids
+        if review_id > 0 and review_id <= ignore_cutoff
+    }
+    # Which ignored reviews the read works with decides whether the cheap
+    # validations below can speak for it. A sync that brought only recent
+    # reviews adds none: every id it carries is newer than the cutoff above,
+    # so the set is the set the cache already holds and the whole-history
+    # read at the end of this function would reach the same verdict, at the
+    # price of reading every review in the collection.
+    changes_ignored_review_ids = bool(
+        newly_ignored_review_ids.difference(existing_ignored_review_ids)
+    )
+    if not changes_ignored_review_ids and _rwkv_state_cache_collection_unchanged(
         reviewer,
         metadata,
     ):
@@ -15975,8 +15995,7 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         if stored is not None:
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
-    existing_ignored_review_ids = _rwkv_state_cache_ignored_review_ids(metadata)
-    if not additional_ignored_review_ids:
+    if not changes_ignored_review_ids:
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
             reviewer,
             backend=backend,
@@ -15986,16 +16005,6 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         )
         if stored is not None:
             return stored
-    metadata_last_review_id = _int_value(metadata.get("lastReviewId")) or 0
-    newest_known_review_id = max(
-        (metadata_last_review_id, *additional_ignored_review_ids)
-    )
-    ignore_cutoff = newest_known_review_id - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-    newly_ignored_review_ids = {
-        review_id
-        for review_id in additional_ignored_review_ids
-        if review_id > 0 and review_id <= ignore_cutoff
-    }
     try:
         current_history = _historical_rwkv_review_inputs(
             reviewer,
@@ -18628,11 +18637,17 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
         )
 
     rows_start = time.monotonic()
+    # An incremental read already holds the counts of everything before the
+    # cutoff, in `review_counts`, so it asks the query for the new rows only.
+    # Without that previous state the counts have to be derived, and only the
+    # whole history can derive them, so the whole history is read.
+    incremental = after_review_id is not None and have_previous_state
     # a copy of its own: the loop below empties the rows as it goes, and the
     # query may hand back a list something else still holds
     raw_rows = list(
         _historical_rwkv_review_rows(
             reviewer,
+            after_review_id=after_review_id if incremental else None,
             deck_id=deck_id,
             between_parts=between_steps,
         )
@@ -18711,8 +18726,12 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     reviews: list[RwkvReviewInput] = []
     review_ids: list[int] = []
     last_review_id = after_review_id or 0
-    retained_review_count = 0
-    review_count = 0
+    # An incremental read does not see the rows before the cutoff, so the
+    # count they would have produced comes from the stored per-card counts.
+    # The two agree: the counts were written by the read that stopped at this
+    # cutoff.
+    retained_review_count = sum(review_counts.values()) if incremental else 0
+    review_count = retained_review_count
     historical_preset_rule_matches = 0
     prepared_checkpoint_histories: dict[int, RwkvHistoricalReviewInputs] = {}
     prepare_started_at = time.monotonic()
@@ -19243,6 +19262,25 @@ def _historical_rwkv_review_rows_query(
     card_range: tuple[int, int] | None,
 ) -> list[Sequence[object]]:
     after_clause = "and e.id > ?" if after_review_id is not None else ""
+    # A read after a review id returns rows of that id or later, and only a
+    # card with a review that late can have one. Restricting the scan to those
+    # cards leaves every returned row the same and stops the query reading
+    # every review in the collection: 4.9 s of a 5.8 s read on a 656k-review
+    # collection went into rows the caller then threw away (B-012). The
+    # restriction is by CARD, never by review id, so a retained card still
+    # brings its whole history and its start row cannot move
+    # (spec sched.rwkv-replay-start-row).
+    recent_cards_sql = (
+        f"select cid from revlog where id > {int(after_review_id)}"
+        if after_review_id is not None
+        else ""
+    )
+    recent_cards_clause = (
+        f"and r.cid in ({recent_cards_sql})" if recent_cards_sql else ""
+    )
+    recent_cards_forget_clause = (
+        f" and cid in ({recent_cards_sql})" if recent_cards_sql else ""
+    )
     deck_ids = _deck_tree_ids(reviewer, deck_id)
     effective_deck_sql = "(case when c.odid != 0 then c.odid else c.did end)"
     deck_clause = f"and {effective_deck_sql} in {ids2str(deck_ids)}" if deck_ids else ""
@@ -19290,6 +19328,7 @@ with eligible as (
   where {_rwkv_historical_answer_sql_condition("r")}
     {deck_clause}
     {card_clause}
+    {recent_cards_clause}
 ), learning_starts as (
   select cid, max(id) as start_id
   from eligible
@@ -19298,7 +19337,7 @@ with eligible as (
 ), last_forgets as (
   select cid, max(id) as forget_id
   from revlog
-  where type = 4 and factor = 0{forget_range}
+  where type = 4 and factor = 0{forget_range}{recent_cards_forget_clause}
   group by cid
 ), fallback_starts as (
   select e.cid as cid, min(e.id) as start_id
