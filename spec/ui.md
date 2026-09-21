@@ -1576,21 +1576,36 @@ first. The same rest separates two automatic optimizations. The pass holds
 nothing across a rest: it takes the collection inside a backend call and
 gives it back when that call returns, so there is no lock to hand back.
 
-A click still waits for the preset that is being written when it arrives.
-That is a limitation, not a decision: one preset is the smallest piece the
-backend offers, and writing a preset's rows is one transaction. Measured on
-Andrew's collection, the largest preset (339,239 rows) held the collection
-for 6.2 seconds while its rows were written, and about 14 seconds of the
-pass's 25 seconds of work were spent holding it. Splitting that write into
-bounded chunks would remove the limitation, and is the only thing that
-would.
+**A click waits for one batch of rows, not for a preset.** A preset's rows
+go in in batches of at most ten thousand, each batch its own write, and the
+collection is free between two of them; the pass rests a moment there, long
+enough for a click that is already waiting to take the collection first.
+This is the shape the RWKV recording pass uses
+(`sched.rwkv-recordings-automatic`).
+
+Every batch checks again that the preset is still the one the job read: its
+saved time, its FSRS-7 parameters and the decks that use it. If any of them
+differs, the preset was saved while its rows were being written. The pass
+then deletes the batches it has already written for that preset, writes no
+more, and reports nothing written; the preset stays stale for the next pass.
+Only the rows this pass wrote go, named by review id, so another preset's
+rows are untouched. The cache therefore holds no mixture of rows from two
+sets of parameters: a parameter change deletes that preset's stored rows in
+the same transaction as the change, and whatever the pass wrote after that
+deletion it takes back itself.
+
+A pass cut off part way through a preset — the profile closes, Clanki stops
+— leaves the batches it had written. They are validation folds made by the
+parameters in force, so they are kept: the next pass finds the preset stale,
+because the reviews it never reached have no fold, and writes it again.
 
 It never starts while the RWKV state cache is loading or building. That load
 holds the collection, so a pass in front of it would make the user wait for
 a backfill before a restore that is already slow; the pass asks again every
 few seconds instead, and starts once the load is done. It recomputes ONE
-PRESET PER CALL, with the collection free between presets, so the main
-thread waits at most for one preset rather than for a whole backfill. It
+PRESET PER CALL, with the collection free between presets and free between
+the batches inside one of them, so the main thread waits at most for one
+batch rather than for a whole backfill. It
 reports no progress of its own and clears none, so it cannot wipe or fight
 the progress the main thread is showing; while it runs, the user sees
 nothing except the graphs' own "its predictions for these reviews are being
@@ -1652,6 +1667,16 @@ profile four times a second rather than once a countdown is the same fault
 again: the pass used to stay alive for nine seconds after the profile closed
 under it, and now stops within a quarter of a second.
 
+The batched write is the same rule once more. One write per preset held the
+collection for as long as that preset took: on Andrew's collection, headless
+with a simulated user acting every three seconds, the largest preset
+(339,239 rows) made a click wait 6.0 seconds, and about 15 of the 48 seconds
+of the run were spent holding the collection. With the write in batches the
+worst click of a whole pass is under half a second, its median under a
+tenth, and the collection is held for under two seconds of the run. The
+check per batch costs one read of the preset and of the deck list per batch,
+which is a few milliseconds beside the write it guards.
+
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
@@ -1664,7 +1689,9 @@ under it, and now stops within a quarter of a second.
 `a_parameter_change_drops_that_presets_predictions`,
 `another_presets_predictions_survive_a_parameter_change`
 (`rslib/src/deckconfig/update.rs`);
-`the_pass_covers_every_preset_with_uncovered_reviews`
+`the_pass_covers_every_preset_with_uncovered_reviews`,
+`a_presets_rows_are_written_one_bounded_batch_at_a_time`,
+`a_save_midway_through_the_write_takes_back_what_was_written`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 

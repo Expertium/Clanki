@@ -198,8 +198,11 @@ service BackendSchedulerService {
   // Recomputes one preset's stored per-review FSRS-7 predictions and
   // returns how many rows it wrote. The preset's whole card set, over the
   // whole collection; it never follows the Stats page's own search. It
-  // holds the collection only to read the reviews and to write the rows,
-  // not while it computes.
+  // holds the collection only to read the reviews and to write one batch of
+  // rows, not while it computes and not for a whole preset's write: the
+  // collection is free between two batches. If the preset is saved mid-write
+  // the batches already written are deleted, nothing more is written, and
+  // the count returned is 0.
   rpc RefreshFsrsReviewPredictions(RefreshFsrsReviewPredictionsRequest)
       returns (generic.UInt32);
   // Optimizes one due preset's FSRS-7 parameters and saves them, as a save

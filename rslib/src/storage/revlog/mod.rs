@@ -24,6 +24,8 @@ use crate::revlog::RevlogReviewKind;
 
 pub(crate) const FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
     "search_stats_fsrs_review_retrievability";
+/// How many review ids one delete statement names.
+const DELETE_REVIEW_PREDICTIONS_CHUNK: usize = 5_000;
 /// Every algorithm's per-review predictions, addressed BY ALGORITHM, so a
 /// query cannot reach a row without saying whose it is (spec
 /// ui.stats-model-metrics). FSRS-7 and RWKV-Instant still have tables of
@@ -912,6 +914,37 @@ impl SqliteStorage {
             ))?
             .query_row((role,), |row| row.get(0))
             .map_err(Into::into)
+    }
+
+    /// Deletes the rows this source stored for these reviews. The
+    /// prediction pass writes one preset a batch of rows at a time, and
+    /// uses this to take back the batches it had already written when the
+    /// preset is saved under it, so the cache never holds rows that two
+    /// different sets of parameters produced. A review belongs to one card
+    /// and a card to one deck, so this can only reach the preset's own
+    /// rows.
+    pub(crate) fn clear_fsrs_review_predictions_of_reviews(
+        &self,
+        revlogs: &[RevlogId],
+        source: &str,
+    ) -> Result<usize> {
+        if revlogs.is_empty() {
+            return Ok(0);
+        }
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        let mut deleted = 0;
+        // in pieces, so that the statement stays a sane length however many
+        // reviews a preset holds
+        for chunk in revlogs.chunks(DELETE_REVIEW_PREDICTIONS_CHUNK) {
+            let mut ids = String::new();
+            write_comma_separated_ids(&mut ids, chunk.iter().map(|id| id.0));
+            deleted += self.db.execute(
+                &format!("delete from {table} where source = ?1 and revlog_id in ({ids})"),
+                params![source],
+            )?;
+        }
+        Ok(deleted)
     }
 
     /// How many predictions each sample role holds, newest first by count:
