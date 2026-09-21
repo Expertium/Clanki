@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         applyBurySiblings,
         burySiblingsFromConfig,
         burySiblingsPartlyOn,
+        hideRelatedCardsHelp,
+        hideRelatedCardsTitle,
     } from "./bury-siblings";
     import DailyLimitRows from "./DailyLimitRows.svelte";
     import EasyDaysRows from "./EasyDaysRows.svelte";
@@ -96,17 +98,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fsrs: algorithmHelp.fsrs,
         desiredRetention: algorithmHelp.desiredRetention,
         burySiblings: {
-            title: tr.deckConfigBurySiblings(),
-            help:
-                tr.deckConfigBurySiblingsSimpleTooltip() +
-                "\n\n" +
-                tr.deckConfigBuryNewTooltip() +
-                "\n\n" +
-                tr.deckConfigBuryReviewTooltip() +
-                "\n\n" +
-                tr.deckConfigBuryInterdayLearningTooltip() +
-                "\n\n" +
-                tr.deckConfigBuryPriorityTooltip(),
+            title: hideRelatedCardsTitle(),
+            help: hideRelatedCardsHelp(),
             url: HelpPage.Studying.siblingsAndBurying,
         },
         disableAutoplay: {

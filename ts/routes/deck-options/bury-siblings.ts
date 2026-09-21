@@ -1,10 +1,13 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import * as tr from "@generated/ftl";
+
 /**
- * The Simple-mode "Bury siblings" switch stands for the three bury settings
- * of a preset (spec/deck-options.md, `deck-options.simple-view`). Advanced
- * mode keeps the three separate switches.
+ * The Simple-mode "Hide related cards until tomorrow" switch stands for the
+ * three bury settings of a preset (spec/deck-options.md,
+ * `deck-options.simple-view`). Advanced mode keeps the three separate
+ * switches and keeps the word "sibling".
  */
 export interface BurySettings {
     buryNew: boolean;
@@ -41,4 +44,23 @@ export function applyBurySiblings<T extends BurySettings>(config: T, on: boolean
     config.buryReviews = on;
     config.buryInterdayLearning = on;
     return config;
+}
+
+/**
+ * Simple mode's name for the switch. Advanced mode keeps "Bury siblings" and
+ * its three per-type switches; Simple mode says what happens instead, because
+ * "sibling" and "bury" are words a new user has to be taught first
+ * (spec deck-options.simple-view).
+ */
+export function hideRelatedCardsTitle(): string {
+    return tr.deckConfigHideRelatedCards();
+}
+
+/**
+ * Simple mode's help for the switch: what a related card is, and what the
+ * switch does. The per-type explanations belong to Advanced mode, so Simple
+ * mode does not append them.
+ */
+export function hideRelatedCardsHelp(): string {
+    return tr.deckConfigHideRelatedCardsTooltip();
 }

@@ -399,7 +399,16 @@ by default). A setting the user adds goes where it belongs:
   mode's order; a section is drawn only when it has such a setting, and
   it shows only those.
 
-The Bury siblings switch stands for three stored settings: it reads as on
+Simple mode calls the bury switch "Hide related cards until tomorrow", and
+its help says what a related card is and what the switch does, in two short
+paragraphs; it does not repeat Advanced mode's per-type explanations.
+Neither the name nor the help says "bury" or "sibling", because a new user
+has to be taught both words first. Advanced mode keeps them: its section is
+"Burying" and its three switches are "Bury new siblings", "Bury review
+siblings" and "Bury interday learning siblings". Preferences > UI split
+lists the row under Simple mode's name.
+
+That switch stands for three stored settings: it reads as on
 only while `buryNew`, `buryReviews` and `buryInterdayLearning` are all on;
 turning it on or off writes all three. Showing a preset writes nothing: a
 preset with some but not all three bury settings on keeps them until the
@@ -428,9 +437,13 @@ the settings a new user needs; everything else belongs to Advanced mode.
 One bury switch is enough there, because the split settings only matter to
 power users. Andrew, 2026-09-15: "Stop on-screen timer on answer" is gone
 from both modes (`review.timer-keeps-running`), so the timer switch stands
-for one setting and needs no "Partly on" caption.
+for one setting and needs no "Partly on" caption. Andrew, 2026-09-21:
+Simple mode needed a beginner-friendly name for the bury switch, so it
+says "Hide related cards until tomorrow" with a shorter help, and
+Advanced mode keeps "Bury siblings".
 
-**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined switch);
+**Pinned by:** `ts/routes/deck-options/bury-siblings.test.ts` (the combined
+switch, and Simple mode's name and help);
 `ts/routes/deck-options/ui-split.test.ts` (the default draws the Simple
 section only; added settings go to the Simple section or their own
 section, once; Advanced mode draws every setting) and

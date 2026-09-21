@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -896,3 +897,75 @@ def test_the_tab_offers_three_choices_and_stores_one_at_once(
     combo.setCurrentIndex(combo.findData(ui_split.RECALL_PLAIN))
     assert ui_split.recall_wording(mw.col) == ui_split.RECALL_PLAIN
     assert column.text(0) == tr.card_stats_fsrs_retrievability_plain()
+
+
+# Pins spec/deck-options.md#deck-options.simple-view (Simple mode's name for
+# the bury switch). The English text is read from the ftl source rather than
+# through tr.*(): other tests in this folder change the language for the
+# process, so a tr.*() assertion here passes or fails by test order. The
+# wiring to the key is checked separately, which no language affects.
+# It is not in ts/routes/deck-options/bury-siblings.test.ts because vitest
+# loads no Fluent bundle: there every tr.*() returns "missing key: <key>".
+
+DECK_CONFIG_FTL = Path(__file__).parents[2] / "ftl" / "core" / "deck-config.ftl"
+
+
+def english_message(key: str, path: Path = DECK_CONFIG_FTL) -> str:
+    """The message's English text, straight out of the ftl source.
+
+    Fluent puts a one-line message after "key = " and an indented block under
+    "key =", with blank lines allowed inside the block.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{key} ="):
+            continue
+        head = line.split("=", 1)[1].strip()
+        if head:
+            return head
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following.strip() and not following.startswith(" "):
+                break
+            body.append(following.strip())
+        return "\n".join(body).strip()
+    raise AssertionError(f"{key} is not in {path.name}")
+
+
+def test_simple_mode_names_the_bury_switch_without_bury_or_sibling() -> None:
+    title = english_message("deck-config-hide-related-cards")
+    assert title == "Hide related cards until tomorrow"
+    assert "bury" not in title.lower()
+    assert "sibling" not in title.lower()
+
+
+def test_the_ui_split_row_uses_simple_modes_name() -> None:
+    from aqt.utils import tr
+
+    rows = [
+        row
+        for _section, items in ui_split.DECK_OPTIONS_SETTINGS
+        for row in items
+        if row[0] == "burySiblings"
+    ]
+    assert len(rows) == 1
+    # bound methods of the same object are equal but not identical
+    assert rows[0][1] == tr.deck_config_hide_related_cards
+
+
+def test_advanced_mode_keeps_the_word_sibling() -> None:
+    for key in (
+        "deck-config-bury-new-siblings",
+        "deck-config-bury-review-siblings",
+        "deck-config-bury-interday-learning-siblings",
+    ):
+        assert "sibling" in english_message(key).lower()
+
+
+def test_the_simple_bury_help_is_short_and_says_related_cards() -> None:
+    help_text = english_message("deck-config-hide-related-cards-tooltip")
+    assert "related cards" in help_text.lower()
+    assert "sibling" not in help_text.lower()
+    # two short paragraphs, not the five-part Advanced text
+    assert len(help_text) < 400
+    assert help_text.count("\n\n") == 1

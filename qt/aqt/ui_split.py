@@ -455,7 +455,9 @@ DECK_OPTIONS_SETTINGS: list[
             ("newLimit", tr.scheduling_new_cardsday, True),
             ("desiredRetention", tr.deck_config_desired_retention, True),
             ("optimizeAllPresets", tr.deck_config_save_and_optimize, True),
-            ("burySiblings", tr.deck_config_bury_siblings, True),
+            # Simple mode's own name for the switch (spec
+            # deck-options.simple-view); Advanced mode keeps "Bury siblings"
+            ("burySiblings", tr.deck_config_hide_related_cards, True),
             ("playAudio", tr.deck_config_play_audio_automatically, True),
             ("showTimer", tr.deck_config_on_screen_timer, True),
             ("easyDays", tr.deck_config_easy_days_title, True),

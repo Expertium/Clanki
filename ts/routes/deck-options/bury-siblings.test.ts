@@ -48,3 +48,8 @@ test("the value round-trips through the switch", () => {
         expect(burySiblingsFromConfig(applyBurySiblings(settings(true, false, true), on))).toBe(on);
     }
 });
+
+// The wording itself is pinned in Python (qt/tests/test_ui_split.py), not
+// here: vitest loads no Fluent bundle, so every tr.*() call in this process
+// returns "missing key: <key>" and a string assertion would pass on the key
+// name instead of the English text.
