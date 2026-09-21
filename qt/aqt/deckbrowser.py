@@ -70,6 +70,11 @@ class DeckBrowserContent:
 class RenderDeckNodeContext:
     current_deck_id: DeckId
     review_limit_labels: dict[int, tuple[str, str]]
+    # Whether the Learn column is shown, read once for the whole tree. Every
+    # read of it asks the backend, and the backend waits for whatever else
+    # holds the collection, so one read per deck row turned a busy collection
+    # into a visible delay on the deck list.
+    show_learn_count: bool
 
 
 # the deck list's bottom-row buttons and their items of the split
@@ -509,8 +514,9 @@ class DeckBrowser:
     def _renderDeckTree(self, top: DeckTreeNode) -> str:
         # Simple mode has no Learn column: Learn is folded into Due (spec
         # ui.simple-mode-deck-counts).
+        show_learn_count = aqt.ui_split.shown(self.mw, "main.learn_count")
         count_header_args: list[str] = [tr.actions_new()]
-        if aqt.ui_split.shown(self.mw, "main.learn_count"):
+        if show_learn_count:
             count_header_args.append(tr.decks_learn_header())
         count_header_args.append(tr.decks_review_header())
         count_headers = "<th class=count>{}</th>" * len(count_header_args)
@@ -524,6 +530,7 @@ class DeckBrowser:
         ctx = RenderDeckNodeContext(
             current_deck_id=self._render_data.current_deck_id,
             review_limit_labels=self._review_limit_labels(top),
+            show_learn_count=show_learn_count,
         )
 
         for child in top.children:
@@ -582,7 +589,7 @@ class DeckBrowser:
                 klass = "zero-count"
             return f'<span id="{count_id}" class="{klass}">{cnt}</span>'
 
-        advanced = aqt.ui_split.shown(self.mw, "main.learn_count")
+        advanced = ctx.show_learn_count
         # Simple mode shows one Due count that already includes Learn
         # (spec ui.simple-mode-deck-counts); the stored counts themselves are
         # untouched, only what is displayed is summed.
