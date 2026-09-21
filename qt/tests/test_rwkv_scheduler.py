@@ -20963,6 +20963,52 @@ def test_the_recording_pass_waits_until_the_user_leaves_clanki_alone(
     assert passes == [mw]
 
 
+# Pins spec/scheduling.md#sched.rwkv-recordings-progress
+def test_the_pass_leaves_a_record_of_what_it_did(tmp_path: Path) -> None:
+    mw = SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)))
+
+    # nothing has run yet
+    assert rwkv_scheduler.rwkv_recordings_progress(mw) is None
+
+    rwkv_scheduler._write_rwkv_recordings_progress(mw, state="started", batches=0)
+    started = rwkv_scheduler.rwkv_recordings_progress(mw)
+    assert started is not None
+    assert started["state"] == "started"
+    assert isinstance(started["at"], int)
+
+    # each step replaces the last, so the file says where the pass is now
+    rwkv_scheduler._write_rwkv_recordings_progress(mw, state="running", batches=7)
+    running = rwkv_scheduler.rwkv_recordings_progress(mw)
+    assert running is not None
+    assert (running["state"], running["batches"]) == ("running", 7)
+
+    # and how it ended, whichever way it ended
+    rwkv_scheduler._write_rwkv_recordings_progress(
+        mw, state="stopped_for_review", batches=7, seconds=12.5
+    )
+    stopped = rwkv_scheduler.rwkv_recordings_progress(mw)
+    assert stopped is not None
+    assert stopped["state"] == "stopped_for_review"
+    assert stopped["seconds"] == 12.5
+
+
+# Pins spec/scheduling.md#sched.rwkv-recordings-progress: a record that cannot
+# be written or read never fails the pass.
+def test_an_unreadable_record_is_not_an_error(tmp_path: Path) -> None:
+    mw = SimpleNamespace(pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)))
+    rwkv_scheduler._write_rwkv_recordings_progress(mw, state="started")
+    path = rwkv_scheduler._rwkv_recordings_progress_path(mw)
+    assert path is not None
+    path.write_text("not json at all", encoding="utf-8")
+    assert rwkv_scheduler.rwkv_recordings_progress(mw) is None
+
+    # a window with no profile folder has nowhere to write, and says so
+    nowhere = SimpleNamespace(pm=None)
+    assert rwkv_scheduler._rwkv_recordings_progress_path(nowhere) is None
+    rwkv_scheduler._write_rwkv_recordings_progress(nowhere, state="started")
+    assert rwkv_scheduler.rwkv_recordings_progress(nowhere) is None
+
+
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a card on the
 # screen stops the pass. While the pass runs it owns the replayed state, so a
 # prediction cannot be served from it and the reviewer shows "Getting this

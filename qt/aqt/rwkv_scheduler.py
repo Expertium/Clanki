@@ -201,6 +201,7 @@ _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 # which model, source format and replay semantics the last full recording
 # pass ran with (spec sched.rwkv-recordings-automatic)
 _RWKV_RECORDINGS_MARKER_FILE = "recordings.json"
+_RWKV_RECORDINGS_PROGRESS_FILE = "recordings-progress.json"
 _RWKV_RECORDINGS_MARKER_VERSION = 1
 _RWKV_STATE_CACHE_DATA_FILE = "state-v1.json.gz"
 _RWKV_STATE_CACHE_LEGACY_DATA_FILES = (
@@ -11320,6 +11321,8 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
 
     batch_started = [time.monotonic()]
     stopped_for_review = [False]
+    batches_done = [0]
+    _write_rwkv_recordings_progress(mw, state="started", batches=0)
 
     def between_batches() -> None:
         """One batch done: rest, so the pass takes a small, known share of
@@ -11346,6 +11349,8 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         # A pass that fell back to the shared runtime hands it back for the
         # rest, in `recompute_rwkv_calibration_data`.
         time.sleep(rest)
+        batches_done[0] += 1
+        _write_rwkv_recordings_progress(mw, state="running", batches=batches_done[0])
         batch_started[0] = time.monotonic()
 
     def finish(recorded: bool) -> None:
@@ -11358,6 +11363,18 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         )
         if recorded and collection_open():
             tooltip(_tr().qt_misc_stats_data_ready(), parent=cast(QWidget | None, mw))
+        _write_rwkv_recordings_progress(
+            mw,
+            state=(
+                "finished"
+                if recorded
+                else "stopped_for_review"
+                if stopped_for_review[0]
+                else "stopped"
+            ),
+            batches=batches_done[0],
+            seconds=round(time.monotonic() - started, 1),
+        )
         if stopped_for_review[0] and collection_open():
             # it stopped so the user could review; start it again when the
             # reviewer closes (spec sched.rwkv-recordings-automatic)
@@ -12435,6 +12452,42 @@ def _rwkv_recordings_tag(mw: object) -> dict[str, object] | None:
 def _rwkv_recordings_marker_path(mw: object) -> Path | None:
     cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
     return cache_dir / _RWKV_RECORDINGS_MARKER_FILE if cache_dir else None
+
+
+def _rwkv_recordings_progress_path(mw: object) -> Path | None:
+    cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+    return cache_dir / _RWKV_RECORDINGS_PROGRESS_FILE if cache_dir else None
+
+
+def rwkv_recordings_progress(mw: object) -> dict[str, object] | None:
+    """What the last recording pass did, or None when none has run.
+
+    The pass leaves this behind so that a question like "why has RWKV-Curve
+    no rows" is answered from a file rather than guessed from a CPU graph
+    (spec sched.rwkv-recordings-progress).
+    """
+    path = _rwkv_recordings_progress_path(mw)
+    if path is None:
+        return None
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return stored if isinstance(stored, dict) else None
+
+
+def _write_rwkv_recordings_progress(mw: object, **fields: object) -> None:
+    """Records one step of the pass. Never fails the pass."""
+    path = _rwkv_recordings_progress_path(mw)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"at": int(time.time()), **fields}), encoding="utf-8"
+        )
+    except OSError:
+        logger.exception("failed to save the RWKV recordings progress")
 
 
 def _write_rwkv_recordings_marker(mw: object, tag: dict[str, object]) -> None:

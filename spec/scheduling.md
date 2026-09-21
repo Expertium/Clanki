@@ -255,6 +255,38 @@ built again after every answer.
 **Pinned by:** `emptying_empty_rwkv_scores_keeps_the_study_queue`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
+## sched.rwkv-recordings-progress
+
+The RWKV recording pass leaves a record of what it did, in
+`recordings-progress.json` beside the state cache in the profile folder. It
+holds the moment of the last step (`at`), the `state`, the number of batches
+finished, and, once the pass ends, how many seconds it took.
+
+The state is one of:
+
+| State                | Meaning                                             |
+| -------------------- | --------------------------------------------------- |
+| `started`            | the pass has begun and finished no batch yet        |
+| `running`            | it is working; `batches` says how far it has got    |
+| `finished`           | it replayed the whole history and recorded the rows |
+| `stopped_for_review` | a card appeared, so it stepped aside                |
+| `stopped`            | it ended without recording, for another reason      |
+
+Each step replaces the last, so the file says where the pass is now rather
+than where it has been. A record that cannot be written, or that is read back
+damaged, is not an error and never fails the pass: the pass is the work, the
+record is only the account of it.
+
+**Why:** Andrew, 2026-09-20, asked why RWKV-Curve had no rows in his graphs.
+Answering it took a copy of the prediction database, a row count per table, a
+process's CPU and memory watched over minutes, and two wrong guesses, because
+nothing on disk said whether the pass had run, been interrupted, or never
+started. One file answers it in one step.
+
+**Pinned by:** `test_the_pass_leaves_a_record_of_what_it_did`,
+`test_an_unreadable_record_is_not_an_error`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-startup-no-window
 
 Given a collection whose RWKV state is restored, or built, when the profile
