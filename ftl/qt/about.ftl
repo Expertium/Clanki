@@ -11,5 +11,8 @@ about-if-you-have-contributed-and-are = If you have contributed and are not on t
 about-version = Version { $val }
 about-visit-website = <a href='{ $val }'>Visit website</a>
 about-written-by-damien-elmes-with-patches = Written by Damien Elmes, with patches, translation,    testing and design from:<p>{ $cont }
+# Clanki's own credit line. It names Anki, not Clanki, as the work Damien
+# Elmes wrote, so it agrees with the fork notice at the top of the window.
+about-anki-written-by-damien-elmes-with-patches = Clanki is built on Anki, which was written by Damien Elmes, with patches, translation, testing and design from:<p>{ $cont }
 # appended to the end of the contributor list in the about screen
 about-and-others = and others

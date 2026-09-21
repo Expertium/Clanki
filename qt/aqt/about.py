@@ -213,7 +213,10 @@ def _about_text() -> str:
     )
 
     allusers = [user.replace(" ", "&nbsp;") for user in allusers]
-    abouttext += "<p>" + tr.about_written_by_damien_elmes_with_patches(
+    # The credit is Anki's, not Clanki's (spec branding.about-window-credit):
+    # "Written by Damien Elmes" above a window that calls itself Clanki
+    # contradicts the fork notice at the top of the same window.
+    abouttext += "<p>" + tr.about_anki_written_by_damien_elmes_with_patches(
         cont=", ".join(allusers) + f", {tr.about_and_others()}"
     )
     abouttext += f"<p>{tr.about_if_you_have_contributed_and_are()}"

@@ -57,3 +57,36 @@ def test_about_window_keeps_version_and_build_information(
     text = aqt.about._about_text()
 
     assert "Python" in text and "Qt 6.0.0" in text and "Chromium 120" in text
+
+
+def test_about_window_credits_anki_not_clanki_to_damien_elmes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pins spec/branding.md#branding.about-window-credit.
+    monkeypatch.setattr(aqt.about, "qVersion", lambda: "6.0.0")
+    monkeypatch.setattr(aqt.about, "qWebEngineChromiumVersion", lambda: "120.0.0")
+
+    text = aqt.about._about_text()
+
+    # the credit names the work it belongs to, so it agrees with the notice
+    assert "Clanki is built on Anki, which was written by Damien Elmes" in text
+    assert "Written by Damien Elmes" not in text
+
+    credit_at = text.find("was written by Damien Elmes")
+    disclaimer_at = text.find(aqt.about._fork_disclaimer_html())
+    assert disclaimer_at < credit_at
+
+
+def test_about_window_keeps_ankis_own_contributor_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pins spec/branding.md#branding.about-window-credit: the credit changed,
+    # the people credited did not.
+    monkeypatch.setattr(aqt.about, "qVersion", lambda: "6.0.0")
+    monkeypatch.setattr(aqt.about, "qWebEngineChromiumVersion", lambda: "120.0.0")
+
+    text = aqt.about._about_text()
+
+    for contributor in ("Dave&nbsp;Druelinger", "Aristotelis&nbsp;P."):
+        assert contributor in text
+    assert "and others" in text
