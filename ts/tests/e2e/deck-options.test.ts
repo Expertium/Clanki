@@ -269,3 +269,32 @@ test("the words \"related cards\" explain themselves on hover", async ({ page })
         page.getByText("cards that belong to the same note"),
     ).toBeVisible();
 });
+
+// Pins spec/deck-options.md#deck-options.glossary-term: only the term is
+// underlined, not the whole label.
+test("only \"related cards\" is underlined, not the whole label", async ({ page }) => {
+    await setAdvancedUi(page, false);
+    await page.goto("/deck-options/1");
+
+    const term = page.locator(".glossary-term", { hasText: "related cards" }).first();
+    await expect(term).toBeVisible();
+    const title = page.locator(".setting-title", { has: term }).first();
+
+    // the label does not take the whole-label hover underline
+    await expect(title).not.toHaveClass(/underline-on-hover/);
+
+    // and the term keeps its own, hovered or not
+    for (const hovered of [false, true]) {
+        if (hovered) {
+            await term.hover();
+        }
+        const decoration = await term.evaluate(
+            (node) => getComputedStyle(node).textDecorationLine,
+        );
+        expect(decoration).toContain("underline");
+        const labelDecoration = await title.evaluate(
+            (node) => getComputedStyle(node).textDecorationLine,
+        );
+        expect(labelDecoration).toBe("none");
+    }
+});
