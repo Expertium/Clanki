@@ -480,6 +480,14 @@ impl Collection {
         Ok(self.state.fsrs_preset_overlay_cache.as_ref().unwrap())
     }
 
+    /// Whether any add-on rule can move a card to a preset other than its
+    /// home deck's. When none can, a card's preset is its home deck's, so a
+    /// caller that only wants preset identities can resolve them per deck
+    /// instead of loading every card.
+    pub(crate) fn fsrs_preset_overlay_has_rules(&mut self) -> Result<bool> {
+        Ok(!self.fsrs_preset_overlay_cache()?.rules.is_empty())
+    }
+
     fn fsrs_preset_rule_matches_card(&mut self, card_id: CardId, rule_node: Node) -> Result<bool> {
         let node = Node::Group(vec![
             Node::Search(SearchNode::CardIds(card_id.to_string())),

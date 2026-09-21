@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -11,6 +12,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use fnv::FnvHashMap;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -71,22 +73,31 @@ impl Collection {
         let queried_review_count = rows.len() as u64;
         let timing = self.timing_today()?;
 
-        let card_ids = rows
-            .iter()
-            .map(|row| CardId(row.card_id))
-            .collect::<HashSet<_>>();
-        let cards = self.all_cards_for_ids(&card_ids.iter().copied().collect::<Vec<_>>(), false)?;
-        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
-        let stable_preset_ids_by_card = presets_by_card
-            .iter()
-            .map(|(card_id, preset)| {
-                Ok((
-                    card_id,
-                    rwkv_stable_preset_id(&preset.id, &input.stable_preset_ids)?,
-                ))
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
+        // Where each card's own stable preset id comes from. Only an add-on
+        // overlay rule can move a card to a preset other than its home deck's,
+        // so with no such rule the ids resolve per deck, below, and the cards
+        // need not be loaded at all: on a collection of 656k reviews that is
+        // three decks instead of 42,610 cards, and 130ms less work.
+        let stable_preset_ids_by_card = if self.fsrs_preset_overlay_has_rules()? {
+            let card_ids = rwkv_historical_card_ids(&rows);
+            let cards = self.all_cards_for_ids(&card_ids, false)?;
+            let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+            Some(
+                presets_by_card
+                    .iter()
+                    .map(|(card_id, preset)| {
+                        Ok((
+                            card_id,
+                            rwkv_stable_preset_id(&preset.id, &input.stable_preset_ids)?,
+                        ))
+                    })
+                    .collect::<Result<HashMap<_, _>>>()?,
+            )
+        } else {
+            None
+        };
         let preset_routes = if input.dynamic_preset_replay {
+            let card_ids = rwkv_historical_card_ids(&rows).into_iter().collect();
             self.rwkv_historical_preset_routes(&card_ids, &input.stable_preset_ids)?
         } else {
             Vec::new()
@@ -94,18 +105,41 @@ impl Collection {
         let decks_by_id = self.storage.get_decks_map()?;
         let configs_by_id = self.storage.get_deck_config_map()?;
 
-        let mut previous_review_id_by_card = HashMap::new();
-        let mut previous_interval_days_by_card = HashMap::new();
-        let mut review_count_by_card = HashMap::new();
+        // one entry per card, so that a row costs one hash lookup instead of
+        // the five the three separate maps needed
+        let mut card_states: FnvHashMap<CardId, RwkvHistoricalCardState> = FnvHashMap::default();
+        // the home decks' preset ids, resolved on first sight of each deck
+        let mut stable_preset_ids_by_deck: FnvHashMap<i64, i64> = FnvHashMap::default();
         let mut history_hash = rwkv_empty_history_hash();
         let mut last_review_id = 0;
+        // the record of one review, reused so that the loop allocates nothing
+        let mut record = Vec::with_capacity(256);
 
         for row in rows {
             let card_id = CardId(row.card_id);
+            let state = match card_states.entry(card_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let stable_preset_id = match &stable_preset_ids_by_card {
+                        Some(by_card) => by_card.get(&card_id).copied(),
+                        None => Some(match stable_preset_ids_by_deck.entry(row.deck_id) {
+                            Entry::Occupied(deck) => *deck.get(),
+                            Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
+                                DeckId(row.deck_id),
+                                &decks_by_id,
+                                &configs_by_id,
+                            )?),
+                        }),
+                    };
+                    entry.insert(RwkvHistoricalCardState {
+                        stable_preset_id,
+                        ..Default::default()
+                    })
+                }
+            };
             let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
-            let previous_review_id = previous_review_id_by_card.insert(card_id, row.review_id);
             let (elapsed_days, elapsed_seconds) =
-                if let Some(previous_review_id) = previous_review_id {
+                if let Some(previous_review_id) = state.previous_review_id {
                     (
                         (day_offset - rwkv_historical_day_offset(previous_review_id, &timing))
                             .max(0),
@@ -128,18 +162,18 @@ impl Collection {
                 } else {
                     (-1, -1)
                 };
-            let review_count_so_far = *review_count_by_card.get(&card_id).unwrap_or(&0);
-            let previous_interval_days =
-                *previous_interval_days_by_card.get(&card_id).unwrap_or(&0);
             let stable_preset_id = preset_routes
                 .iter()
-                .find(|route| route.matches(card_id, review_count_so_far, previous_interval_days))
+                .find(|route| {
+                    route.matches(card_id, state.review_count, state.previous_interval_days)
+                })
                 .map(|route| route.stable_preset_id)
-                .or_else(|| stable_preset_ids_by_card.get(&card_id).copied())
+                .or(state.stable_preset_id)
                 .or_invalid("missing stable RWKV preset id")?;
 
-            previous_interval_days_by_card.insert(card_id, row.interval_days);
-            review_count_by_card.insert(card_id, review_count_so_far + 1);
+            state.previous_review_id = Some(row.review_id);
+            state.previous_interval_days = row.interval_days;
+            state.review_count += 1;
             last_review_id = last_review_id.max(row.review_id);
             history_hash = rwkv_history_hash_after_review(
                 history_hash,
@@ -150,6 +184,7 @@ impl Collection {
                     elapsed_days,
                     elapsed_seconds,
                 },
+                &mut record,
             );
         }
 
@@ -982,6 +1017,17 @@ impl RwkvHistoricalPresetRoute {
     }
 }
 
+/// What the replay remembers about one card while it walks the history.
+#[derive(Debug, Default)]
+struct RwkvHistoricalCardState {
+    /// The stable id of the card's own FSRS preset, before any dynamic
+    /// preset route overrides it.
+    stable_preset_id: Option<i64>,
+    previous_review_id: Option<i64>,
+    previous_interval_days: i64,
+    review_count: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RwkvHistoricalFingerprintReview {
     row: RwkvHistoricalReviewRow,
@@ -989,6 +1035,30 @@ struct RwkvHistoricalFingerprintReview {
     day_offset: i64,
     elapsed_days: i64,
     elapsed_seconds: i64,
+}
+
+/// The cards the replay's rows name, each once.
+fn rwkv_historical_card_ids(rows: &[RwkvHistoricalReviewRow]) -> Vec<CardId> {
+    rows.iter()
+        .map(|row| CardId(row.card_id))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The stable preset id of a card whose preset is its home deck's, which is
+/// every card unless an add-on overlay rule moves it. The lookups match the
+/// ones `fsrs_presets_for_cards` makes, so a collection that fails one fails
+/// it the same way.
+fn rwkv_home_deck_preset_id(
+    deck_id: DeckId,
+    decks_by_id: &HashMap<DeckId, Deck>,
+    configs_by_id: &HashMap<DeckConfigId, DeckConfig>,
+) -> Result<i64> {
+    let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
+    let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+    configs_by_id.get(&config_id).or_not_found(config_id)?;
+    Ok(config_id.0)
 }
 
 fn rwkv_stable_preset_id(
@@ -1039,30 +1109,37 @@ fn rwkv_empty_history_hash() -> [u8; 32] {
     Sha256::digest(RWKV_HISTORY_HASH_DOMAIN).into()
 }
 
+/// `record` is scratch space the caller owns, so that a replay of hundreds of
+/// thousands of reviews allocates one buffer instead of one per review.
 fn rwkv_history_hash_after_review(
     previous_hash: [u8; 32],
     review: &RwkvHistoricalFingerprintReview,
+    record: &mut Vec<u8>,
 ) -> [u8; 32] {
+    record.clear();
+    rwkv_write_historical_review_record(record, review);
     let mut digest = Sha256::new();
     digest.update(RWKV_HISTORY_HASH_DOMAIN);
     digest.update(previous_hash);
-    digest.update(rwkv_historical_review_record(review));
+    digest.update(&record);
     digest.finalize().into()
 }
 
-fn rwkv_historical_review_record(review: &RwkvHistoricalFingerprintReview) -> Vec<u8> {
+fn rwkv_write_historical_review_record(
+    out: &mut Vec<u8>,
+    review: &RwkvHistoricalFingerprintReview,
+) {
     let row = review.row;
-    let mut out = Vec::with_capacity(192);
-    rwkv_write_i64(&mut out, row.review_id);
-    rwkv_write_i64(&mut out, row.card_id);
-    rwkv_write_optional_i64(&mut out, Some(row.note_id));
-    rwkv_write_optional_i64(&mut out, Some(row.deck_id));
-    rwkv_write_optional_i64(&mut out, Some(review.stable_preset_id));
+    rwkv_write_i64(out, row.review_id);
+    rwkv_write_i64(out, row.card_id);
+    rwkv_write_optional_i64(out, Some(row.note_id));
+    rwkv_write_optional_i64(out, Some(row.deck_id));
+    rwkv_write_optional_i64(out, Some(review.stable_preset_id));
     out.push(0);
-    rwkv_write_optional_i64(&mut out, Some(row.ease));
-    rwkv_write_optional_i64(&mut out, Some(row.duration_millis));
+    rwkv_write_optional_i64(out, Some(row.ease));
+    rwkv_write_optional_i64(out, Some(row.duration_millis));
     rwkv_write_optional_i64(
-        &mut out,
+        out,
         Some(if row.is_learning_start {
             0
         } else {
@@ -1074,24 +1151,23 @@ fn rwkv_historical_review_record(review: &RwkvHistoricalFingerprintReview) -> Ve
         2 => CardQueue::DayLearn as i8 as i64,
         _ => CardQueue::Review as i8 as i64,
     };
-    rwkv_write_optional_i64(&mut out, Some(queue));
-    rwkv_write_optional_i64(&mut out, None);
-    rwkv_write_optional_i64(&mut out, Some(row.interval_days));
-    rwkv_write_optional_i64(&mut out, Some(row.ease_factor));
-    rwkv_write_optional_i64(&mut out, None);
-    rwkv_write_optional_i64(&mut out, None);
-    rwkv_write_optional_i64(&mut out, Some(review.day_offset));
+    rwkv_write_optional_i64(out, Some(queue));
+    rwkv_write_optional_i64(out, None);
+    rwkv_write_optional_i64(out, Some(row.interval_days));
+    rwkv_write_optional_i64(out, Some(row.ease_factor));
+    rwkv_write_optional_i64(out, None);
+    rwkv_write_optional_i64(out, None);
+    rwkv_write_optional_i64(out, Some(review.day_offset));
     let (state_kind, normal_state_kind) = match row.review_kind {
         0 => (Some("normal"), Some("learning")),
         2 => (Some("normal"), Some("relearning")),
         3 => (Some("filtered"), None),
         _ => (Some("normal"), Some("review")),
     };
-    rwkv_write_optional_string(&mut out, state_kind);
-    rwkv_write_optional_string(&mut out, normal_state_kind);
-    rwkv_write_optional_i64(&mut out, Some(review.elapsed_days));
-    rwkv_write_optional_i64(&mut out, Some(review.elapsed_seconds));
-    out
+    rwkv_write_optional_string(out, state_kind);
+    rwkv_write_optional_string(out, normal_state_kind);
+    rwkv_write_optional_i64(out, Some(review.elapsed_days));
+    rwkv_write_optional_i64(out, Some(review.elapsed_seconds));
 }
 
 fn rwkv_write_i64(out: &mut Vec<u8>, value: i64) {
@@ -1261,6 +1337,7 @@ mod test {
                 elapsed_days: 0,
                 elapsed_seconds: 1_000,
             },
+            &mut Vec::new(),
         );
 
         assert_eq!(
@@ -1358,6 +1435,85 @@ mod test {
                 ..Default::default()
             })?;
         assert!(!stale_ignored_fingerprint.history_is_valid);
+
+        Ok(())
+    }
+
+    /// The fingerprint resolves preset ids per deck when no add-on overlay
+    /// rule can move a card, and per card when one can. The two must agree
+    /// whenever no card actually moves, or the cheap path would invent a
+    /// different history and the state cache would never validate again.
+    #[test]
+    fn historical_fingerprint_agrees_with_the_per_card_preset_lookup() -> Result<()> {
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+
+        let mut col = Collection::new();
+        let mut card_ids = Vec::new();
+        for index in 0..3 {
+            let mut card = Card::new(NoteId(10 + index), 0, DeckId(1), 0);
+            col.add_card(&mut card)?;
+            for step in 0..3 {
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(card.id.0 + 10_000 + step * 1_000),
+                        cid: card.id,
+                        usn: Usn(0),
+                        button_chosen: 3,
+                        interval: step as i32 + 1,
+                        ease_factor: 2_500,
+                        taken_millis: 1_000,
+                        review_kind: RevlogReviewKind::Learning,
+                        ..Default::default()
+                    },
+                    false,
+                )?;
+            }
+            card_ids.push(card.id);
+        }
+
+        let request = || RwkvHistoricalReviewFingerprintRequest {
+            stable_preset_ids: HashMap::from([("addon:test:moved".to_string(), 77_000)]),
+            ..Default::default()
+        };
+        let by_deck = col.rwkv_historical_review_fingerprint(request())?;
+        assert_eq!(by_deck.review_count, 9);
+
+        let overlay = |search: &str| FsrsPresetOverlay {
+            presets: vec![AddonFsrsPreset {
+                id: "addon:test:moved".into(),
+                name: "Moved".into(),
+                params: Vec::new(),
+                desired_retention: 0.9,
+                historical_retention: 0.9,
+                ..Default::default()
+            }],
+            rules: vec![FsrsPresetRule {
+                search: search.into(),
+                preset_id: "addon:test:moved".into(),
+            }],
+            simulator_rules: Vec::new(),
+        };
+
+        // a rule that moves no card: the per-card lookup must reach the same
+        // history as the per-deck one
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &overlay(&format!("cid:{}", card_ids[0].0 + 1_000_000)),
+        )?;
+        let by_card = col.rwkv_historical_review_fingerprint(request())?;
+        assert_eq!(by_card.history_hash, by_deck.history_hash);
+
+        // a rule that does move a card: the history must change, or the rule
+        // would be lost on the cheap path without anyone noticing
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &overlay(&format!("cid:{}", card_ids[0].0)),
+        )?;
+        let moved = col.rwkv_historical_review_fingerprint(request())?;
+        assert_ne!(moved.history_hash, by_deck.history_hash);
 
         Ok(())
     }
@@ -1983,6 +2139,55 @@ mod test {
         assert_eq!(new_row.current_elapsed_days, Some(0));
         // seconds since the card was created: a slow run can cross a second
         assert!(matches!(new_row.current_elapsed_seconds, Some(0..=2)));
+
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: the cost of the whole fingerprint
+    /// and of each of its parts, on a collection worth measuring. Point
+    /// `ANKI_FINGERPRINT_BENCH_COL` at a COPY of one and run
+    /// `cargo test -p anki --release bench_historical_review_fingerprint \
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_historical_review_fingerprint() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_FINGERPRINT_BENCH_COL")
+            .expect("set ANKI_FINGERPRINT_BENCH_COL to a copy of a collection");
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+
+        for run in 0..5 {
+            let at = Instant::now();
+            let response = col.rwkv_historical_review_fingerprint(
+                RwkvHistoricalReviewFingerprintRequest::default(),
+            )?;
+            let whole = at.elapsed();
+
+            let at = Instant::now();
+            let (rows, _) = col.storage.rwkv_historical_review_rows(&[])?;
+            let read = at.elapsed();
+
+            // what the per-deck preset lookup saves: the cost this call would
+            // add again if any add-on overlay rule existed
+            let at = Instant::now();
+            let cards = col.all_cards_for_ids(&rwkv_historical_card_ids(&rows), false)?;
+            col.fsrs_presets_for_cards(&cards)?;
+            let per_card_presets = at.elapsed();
+
+            println!(
+                "run {run}: reviews={} cards={} hash={} | whole={:.1}ms read={:.1}ms \
+                 replay~={:.1}ms (per_card_presets={:.1}ms)",
+                response.queried_review_count,
+                cards.len(),
+                response.history_hash,
+                ms(whole),
+                ms(read),
+                ms(whole) - ms(read),
+                ms(per_card_presets),
+            );
+        }
 
         Ok(())
     }

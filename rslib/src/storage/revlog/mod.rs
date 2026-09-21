@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 
+use fnv::FnvHashMap;
 use rusqlite::params;
 use rusqlite::types::FromSql;
 use rusqlite::types::FromSqlError;
@@ -142,6 +143,25 @@ pub(crate) struct RwkvHistoricalReviewRow {
     pub(crate) interval_days: i64,
     pub(crate) ease_factor: i64,
     pub(crate) is_learning_start: bool,
+}
+
+/// How far back one card's replay history reaches. Built while the review log
+/// is read in id order, so that the start row costs no extra pass.
+#[derive(Default)]
+struct RwkvHistoricalReviewStart {
+    /// The kind of the card's previous rated row, to find the row that starts
+    /// a run of learning rows.
+    previous_rated_kind: Option<i64>,
+    /// The latest row that starts a run of learning rows.
+    learning_start: Option<i64>,
+    /// The card's first rated row after its last Forget row.
+    first_rated_after_forget: Option<i64>,
+}
+
+impl RwkvHistoricalReviewStart {
+    fn id(&self) -> Option<i64> {
+        self.learning_start.or(self.first_rated_after_forget)
+    }
 }
 
 impl FromSql for RevlogReviewKind {
@@ -1099,111 +1119,140 @@ impl SqliteStorage {
     /// rated, so they never enter the sequence themselves; only the last Forget
     /// cuts the history. The start row always reports
     /// `is_learning_start = true`, so the replay gives it first-row treatment.
+    ///
+    /// The review log is read in ONE sequential pass over the table, in id
+    /// order, and each card's start row is folded into that pass. The SQL this
+    /// replaced expressed the same rule with a window function over the rows
+    /// sorted by card, which sent SQLite through the card index -- one
+    /// scattered row read per review -- and then read the whole history three
+    /// more times to group, join and sort it.
     pub(crate) fn rwkv_historical_review_rows(
         &self,
         ignored_review_ids: &[RevlogId],
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
-        let (ignored_clause, active_ignored_review_ids) = if ignored_review_ids.is_empty() {
-            (String::new(), Vec::new())
-        } else {
-            let mut ids = String::new();
-            ids_to_string(&mut ids, ignored_review_ids);
-            let active_sql = format!(
-                "select r.id
-                 from revlog r
-                 join cards c on c.id = r.cid
-                 where r.ease between 1 and 4
-                   and r.type in (0, 1, 2, 3, 4, 5)
-                   and not (r.type = 3 and r.factor = 0)
-                   and r.id in {ids}
-                 order by r.id"
-            );
-            let active = self
-                .db
-                .prepare(&active_sql)?
-                .query_map([], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<i64>, _>>()?;
-            (format!("and r.id not in {ids}"), active)
-        };
-        let sql = format!(
-            "
-with eligible as (
-  select
-    r.id,
-    r.cid,
-    c.nid,
-    case when c.odid != 0 then c.odid else c.did end as deck_id,
-    r.ease,
-    r.time,
-    r.type,
-    cast(r.ivl as integer) as interval_days,
-    cast(r.factor as integer) as ease_factor,
-    lag(r.type) over (partition by r.cid order by r.id) as previous_type
-  from revlog r
-  join cards c on c.id = r.cid
-  where r.ease between 1 and 4
-    and r.type in (0, 1, 2, 3, 4, 5)
-    and not (r.type = 3 and r.factor = 0)
-    {ignored_clause}
-), learning_starts as (
-  select cid, max(id) as start_id
-  from eligible
-  where type = 0 and (previous_type is null or previous_type != 0)
-  group by cid
-), last_forgets as (
-  select cid, max(id) as forget_id
-  from revlog
-  where type = 4 and factor = 0
-  group by cid
-), fallback_starts as (
-  select e.cid as cid, min(e.id) as start_id
-  from eligible e
-  left join learning_starts l on l.cid = e.cid
-  left join last_forgets f on f.cid = e.cid
-  where l.cid is null
-    and (f.forget_id is null or e.id > f.forget_id)
-  group by e.cid
-), retained_starts as (
-  select cid, start_id from learning_starts
-  union all
-  select cid, start_id from fallback_starts
-)
-select
-  e.id,
-  e.cid,
-  e.nid,
-  e.deck_id,
-  e.ease,
-  e.time,
-  e.type,
-  e.interval_days,
-  e.ease_factor,
-  e.id = s.start_id
-from eligible e
-join retained_starts s on s.cid = e.cid
-where e.id >= s.start_id
-order by e.id, e.cid"
-        );
-        let rows = self
-            .db
-            .prepare(&sql)?
-            .query_map([], |row| {
-                Ok(RwkvHistoricalReviewRow {
-                    review_id: row.get(0)?,
-                    card_id: row.get(1)?,
-                    note_id: row.get(2)?,
-                    deck_id: row.get(3)?,
-                    ease: row.get(4)?,
-                    duration_millis: row.get(5)?,
-                    review_kind: row.get(6)?,
-                    interval_days: row.get(7)?,
-                    ease_factor: row.get(8)?,
-                    is_learning_start: row.get(9)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let active_ignored_review_ids = self.rwkv_active_ignored_review_ids(ignored_review_ids)?;
+        let mut ignored: Vec<i64> = ignored_review_ids.iter().map(|id| id.0).collect();
+        ignored.sort_unstable();
+        let cards = self.rwkv_historical_review_cards()?;
+
+        let mut rows: Vec<RwkvHistoricalReviewRow> = Vec::new();
+        let mut starts: FnvHashMap<i64, RwkvHistoricalReviewStart> = FnvHashMap::default();
+        let mut statement = self.db.prepare_cached(concat!(
+            "select r.id, r.cid, r.ease, r.time, r.type, ",
+            "cast(r.ivl as integer), cast(r.factor as integer), r.factor = 0 ",
+            "from revlog r ",
+            // the rated rows the replay reads, plus the Forget rows that cut a
+            // card's history. SQLite decides both, exactly as the query this
+            // replaced wrote them, so that a column holding something other
+            // than a whole number still compares as it did before. Both
+            // conditions live in `where`, where a row that fails them costs
+            // nothing more: reading the columns first and deciding afterwards
+            // measured 270ms slower over 1.3M rows.
+            "where (r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) ",
+            "       and not (r.type = 3 and r.factor = 0)) ",
+            "   or (r.type = 4 and r.factor = 0) ",
+            "order by r.id"
+        ))?;
+        let mut query = statement.query([])?;
+        while let Some(row) = query.next()? {
+            let review_id: i64 = row.get(0)?;
+            let card_id: i64 = row.get(1)?;
+            // a review whose card is gone belongs to no history: the query
+            // this replaced joined `cards`, which dropped it
+            let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
+                continue;
+            };
+            let ease: i64 = row.get(2)?;
+            let review_kind: i64 = row.get(4)?;
+            let ease_factor_is_zero: bool = row.get(7)?;
+            let is_forget = review_kind == 4 && ease_factor_is_zero;
+            // an ignored review leaves the rated history, but a Forget row
+            // still cuts the history even when it is ignored
+            let is_rated = (1..=4).contains(&ease)
+                && (0..=5).contains(&review_kind)
+                && !(review_kind == 3 && ease_factor_is_zero)
+                && ignored.binary_search(&review_id).is_err();
+            if !is_rated && !is_forget {
+                continue;
+            }
+            let start = starts.entry(card_id).or_default();
+            if is_forget {
+                start.first_rated_after_forget = None;
+            }
+            if !is_rated {
+                continue;
+            }
+            if review_kind == 0 && start.previous_rated_kind != Some(0) {
+                start.learning_start = Some(review_id);
+            }
+            start.previous_rated_kind = Some(review_kind);
+            if !is_forget && start.first_rated_after_forget.is_none() {
+                start.first_rated_after_forget = Some(review_id);
+            }
+            rows.push(RwkvHistoricalReviewRow {
+                review_id,
+                card_id,
+                note_id,
+                deck_id,
+                ease,
+                duration_millis: row.get(3)?,
+                review_kind,
+                interval_days: row.get(5)?,
+                ease_factor: row.get(6)?,
+                is_learning_start: false,
+            });
+        }
+
+        rows.retain_mut(|row| {
+            let Some(start_id) = starts
+                .get(&row.card_id)
+                .and_then(RwkvHistoricalReviewStart::id)
+            else {
+                return false;
+            };
+            row.is_learning_start = row.review_id == start_id;
+            row.review_id >= start_id
+        });
 
         Ok((rows, active_ignored_review_ids))
+    }
+
+    /// Which of the reviews the caller asks to ignore still belong to the
+    /// rated history, in id order.
+    fn rwkv_active_ignored_review_ids(&self, ignored_review_ids: &[RevlogId]) -> Result<Vec<i64>> {
+        if ignored_review_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut ids = String::new();
+        ids_to_string(&mut ids, ignored_review_ids);
+        let sql = format!(
+            "select r.id
+             from revlog r
+             join cards c on c.id = r.cid
+             where r.ease between 1 and 4
+               and r.type in (0, 1, 2, 3, 4, 5)
+               and not (r.type = 3 and r.factor = 0)
+               and r.id in {ids}
+             order by r.id"
+        );
+        self.db
+            .prepare(&sql)?
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<i64>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Each card's note and home deck, for the replay's rows.
+    fn rwkv_historical_review_cards(&self) -> Result<FnvHashMap<i64, (i64, i64)>> {
+        let mut cards = FnvHashMap::default();
+        let mut statement = self.db.prepare_cached(
+            "select id, nid, case when odid != 0 then odid else did end from cards",
+        )?;
+        let mut query = statement.query([])?;
+        while let Some(row) = query.next()? {
+            cards.insert(row.get(0)?, (row.get(1)?, row.get(2)?));
+        }
+        Ok(cards)
     }
 
     /// The searched cards' reviews since `after`, in no particular order.
@@ -2319,6 +2368,238 @@ mod tests {
         // `rwkv_replay_learning_start_wins_over_a_later_forget` on purpose: see
         // the spec entry.
         assert_eq!(replay_start_rows(&col, 700)?, vec![]);
+        Ok(())
+    }
+
+    /// The query `rwkv_historical_review_rows` replaced, kept as the oracle of
+    /// the one-pass read. Every rule of `sched.rwkv-replay-start-row` is
+    /// written here in SQL, so a test that compares the two proves the rewrite
+    /// changed nothing.
+    const REPLACED_HISTORICAL_ROWS_SQL: &str = "
+with eligible as (
+  select
+    r.id,
+    r.cid,
+    c.nid,
+    case when c.odid != 0 then c.odid else c.did end as deck_id,
+    r.ease,
+    r.time,
+    r.type,
+    cast(r.ivl as integer) as interval_days,
+    cast(r.factor as integer) as ease_factor,
+    lag(r.type) over (partition by r.cid order by r.id) as previous_type
+  from revlog r
+  join cards c on c.id = r.cid
+  where r.ease between 1 and 4
+    and r.type in (0, 1, 2, 3, 4, 5)
+    and not (r.type = 3 and r.factor = 0)
+    IGNORED_CLAUSE
+), learning_starts as (
+  select cid, max(id) as start_id
+  from eligible
+  where type = 0 and (previous_type is null or previous_type != 0)
+  group by cid
+), last_forgets as (
+  select cid, max(id) as forget_id
+  from revlog
+  where type = 4 and factor = 0
+  group by cid
+), fallback_starts as (
+  select e.cid as cid, min(e.id) as start_id
+  from eligible e
+  left join learning_starts l on l.cid = e.cid
+  left join last_forgets f on f.cid = e.cid
+  where l.cid is null
+    and (f.forget_id is null or e.id > f.forget_id)
+  group by e.cid
+), retained_starts as (
+  select cid, start_id from learning_starts
+  union all
+  select cid, start_id from fallback_starts
+)
+select
+  e.id,
+  e.cid,
+  e.nid,
+  e.deck_id,
+  e.ease,
+  e.time,
+  e.type,
+  e.interval_days,
+  e.ease_factor,
+  e.id = s.start_id
+from eligible e
+join retained_starts s on s.cid = e.cid
+where e.id >= s.start_id
+order by e.id, e.cid";
+
+    /// One replayed row, as both reads describe it.
+    type ReplayedRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, bool);
+
+    fn replayed_rows_from_replaced_sql(
+        col: &Collection,
+        ignored_review_ids: &[RevlogId],
+    ) -> Result<Vec<ReplayedRow>> {
+        let clause = if ignored_review_ids.is_empty() {
+            String::new()
+        } else {
+            let mut ids = String::new();
+            ids_to_string(&mut ids, ignored_review_ids);
+            format!("and r.id not in {ids}")
+        };
+        let sql = REPLACED_HISTORICAL_ROWS_SQL.replace("IGNORED_CLAUSE", &clause);
+        let mut statement = col.storage.db.prepare(&sql)?;
+        let mut query = statement.query([])?;
+        let mut rows = Vec::new();
+        while let Some(row) = query.next()? {
+            rows.push((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+            ));
+        }
+        Ok(rows)
+    }
+
+    fn replayed_rows_from_one_pass_read(
+        col: &Collection,
+        ignored_review_ids: &[RevlogId],
+    ) -> Result<Vec<ReplayedRow>> {
+        let (rows, _) = col
+            .storage
+            .rwkv_historical_review_rows(ignored_review_ids)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.review_id,
+                    row.card_id,
+                    row.note_id,
+                    row.deck_id,
+                    row.ease,
+                    row.duration_millis,
+                    row.review_kind,
+                    row.interval_days,
+                    row.ease_factor,
+                    row.is_learning_start,
+                )
+            })
+            .collect())
+    }
+
+    /// A repeatable pseudo-random source, so that the histories below are the
+    /// same on every machine and on every run.
+    struct ReplayNoise(u64);
+
+    impl ReplayNoise {
+        fn below(&mut self, limit: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) % limit
+        }
+    }
+
+    fn add_replay_card_in_deck(
+        col: &Collection,
+        card_id: i64,
+        note_id: i64,
+        deck_id: i64,
+        original_deck_id: i64,
+    ) -> Result<()> {
+        col.storage.db.execute(
+            "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, \
+             factor, reps, lapses, left, odue, odid, flags, data) \
+             values (?, ?, ?, 0, 0, -1, 2, 2, 1, 10, 2500, 0, 0, 0, 0, ?, 0, '')",
+            [card_id, note_id, deck_id, original_deck_id],
+        )?;
+        Ok(())
+    }
+
+    /// The one-pass read must return exactly the rows the SQL it replaced
+    /// returned, over histories that reach every branch of the start-row rule:
+    /// learning runs, Forget cuts, Set Due Date rows, filtered reviews with and
+    /// without an ease factor, cards in a filtered deck, reviews of a card that
+    /// no longer exists, and ignored reviews.
+    #[test]
+    fn rwkv_replay_read_matches_the_query_it_replaced() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("rwkv-replay-read-equivalence")?;
+        // a rated filtered review keeps its ease factor; one without an ease
+        // factor is a reschedule and never enters the history
+        let rated_filtered: (i64, i64, i64) = (2, 3, 2500);
+        let unrated_filtered: (i64, i64, i64) = (2, 3, 0);
+        let rescheduled: (i64, i64, i64) = (0, 5, 0);
+        let palette = [
+            RATED_LEARNING,
+            RATED_REVIEW,
+            RATED_RELEARNING,
+            FORGET,
+            SET_DUE_DATE_AS_MANUAL,
+            SET_DUE_DATE_AS_RESCHEDULED,
+            rated_filtered,
+            unrated_filtered,
+            rescheduled,
+        ];
+
+        let mut noise = ReplayNoise(20_260_921);
+        let mut review_id = 1_000_000;
+        let mut interesting_review_ids = Vec::new();
+        for index in 0..40i64 {
+            let card_id = 1_000 + index;
+            // every fourth card sits in a filtered deck, so `odid` decides the
+            // deck the rows report
+            let original_deck_id = if index % 4 == 0 { 7 } else { 0 };
+            add_replay_card_in_deck(&col, card_id, 500 + index, 1 + index % 3, original_deck_id)?;
+            for _ in 0..noise.below(9) {
+                review_id += 1 + noise.below(5_000) as i64;
+                let row = palette[noise.below(palette.len() as u64) as usize];
+                add_replay_revlog(&col, review_id, card_id, row)?;
+                if noise.below(6) == 0 {
+                    interesting_review_ids.push(RevlogId(review_id));
+                }
+            }
+        }
+        // reviews of a card that was deleted: no read may return them
+        for _ in 0..5 {
+            review_id += 1 + noise.below(5_000) as i64;
+            add_replay_revlog(&col, review_id, 999_999, RATED_REVIEW)?;
+        }
+
+        let replaced = replayed_rows_from_replaced_sql(&col, &[])?;
+        assert!(
+            replaced.len() > 40,
+            "the generated history is too small to be a test: {} rows",
+            replaced.len()
+        );
+        assert_eq!(replayed_rows_from_one_pass_read(&col, &[])?, replaced);
+
+        // the same, with reviews the caller asks the replay to ignore
+        assert!(!interesting_review_ids.is_empty());
+        for ignored in [
+            &interesting_review_ids[..1],
+            &interesting_review_ids[..interesting_review_ids.len().min(7)],
+            &interesting_review_ids[..],
+        ] {
+            let mut ignored = ignored.to_vec();
+            // an id that is in no review log, as a stale cache passes
+            ignored.push(RevlogId(review_id + 10_000));
+            ignored.sort_unstable();
+            assert_eq!(
+                replayed_rows_from_one_pass_read(&col, &ignored)?,
+                replayed_rows_from_replaced_sql(&col, &ignored)?,
+                "ignoring {} reviews",
+                ignored.len()
+            );
+        }
+
         Ok(())
     }
 
