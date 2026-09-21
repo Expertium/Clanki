@@ -29,6 +29,10 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+
+from clanki_launch import app_interpreter_here  # noqa: E402
+
 MEDIASRV_PORT = int(os.environ.get("ANKI_API_PORT", "40000"))
 TEST_PROFILE = "test"
 LOCAL_PYTHON_PATHS = ["pylib", "qt", "out/pylib", "out/qt"]
@@ -221,6 +225,11 @@ def _insert_revlog_rows(
 
 
 def _run_command() -> list[str]:
+    # the app runs under its Clanki-named copy of the interpreter, and
+    # this launcher waits for it: the copy is started, never exec'd into,
+    # so `proc.wait()` in main() returns when the app stops and not before
+    # (spec ui.process-name)
+    interpreter = app_interpreter_here()
     if os.environ.get("ANKI_E2E_FAKE_RWKV_BACKEND") == "1":
         code = f"""
 import sys
@@ -255,9 +264,9 @@ class E2eRwkvBackend:
 rwkv_scheduler.set_reviewer_backend(E2eRwkvBackend())
 aqt.run()
 """
-        return [sys.executable, "-c", code, "-p", TEST_PROFILE]
+        return [interpreter, "-c", code, "-p", TEST_PROFILE]
 
-    return [sys.executable, str(REPO_ROOT / "tools" / "run.py"), "-p", TEST_PROFILE]
+    return [interpreter, str(REPO_ROOT / "tools" / "run.py"), "-p", TEST_PROFILE]
 
 
 def main() -> int:

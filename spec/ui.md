@@ -448,19 +448,25 @@ in the virtual environment's own directory, because the interpreter finds
 `pyvenv.cfg` beside itself and refuses to start anywhere else. The installed
 build is unaffected; its executable is named by the installer.
 
-Writing the copy is not enough: a source run starts the interpreter, so
-`tools/run.py` hands over to the copy with `os.execv`, passing the same
-arguments. The hand-over happens before `import aqt`, so the interpreter
-that steps aside has done nothing but start, and the environment variable
-`CLANKI_LAUNCHED` stops the copy handing over to itself. Four things stop
-the hand-over and none of them is an error, because the name is cosmetic:
-another platform, a run that already handed over, a run that is already the
-copy, and a build that has not written the copy yet.
+Writing the copy is not enough: something has to start it. **Every launcher
+starts the app with the copy**, and the app never changes the process it is
+already running in. `run.bat` picks the copy when the build has written one,
+and the Playwright harness (`qt/tests/launch_anki_for_e2e.py`) picks it
+through `tools/clanki_launch.py`, which holds the choice so a launcher can
+make it without importing the app. Three things leave the plain interpreter
+in place and none of them is an error, because the name is cosmetic:
+another platform, a run that is already the copy, and a build that has not
+written the copy yet.
 
-On Windows, `os.execv` starts a new process and ends the old one instead of
-replacing it, so the shell that ran the launcher gets its prompt back while
-the app keeps running. The app itself is unaffected: it has the same
-arguments, the same working directory and the same virtual environment.
+**No launcher replaces its own process.** `tools/run.py` handed over with
+`os.execv` between 2026-09-21 and the same day's fix. On Windows `os.execv`
+does not replace a process: it starts a new one and ends the caller, so
+anything waiting on the app stopped seeing it. Measured: a parent's
+`wait()` returned in 0.08 s with exit code 0 while the real app ran for six
+seconds more. That broke the Playwright harness, which deletes the
+temporary `ANKI_BASE` it seeded as soon as its child ends, so the app lost
+its collection while starting and mediasrv never bound. The VS Code debug
+configuration and `run.bat`'s own `|| exit /b 1` were fooled the same way.
 
 **Why:** Andrew, 2026-09-20: "Clanki doesn't show up as a process named
 'Clanki'. It should." Task Manager shows a process's description resource
@@ -470,11 +476,13 @@ list.
 
 **Pinned by:** `test_the_copy_describes_itself_as_the_app`,
 `test_the_copy_is_the_same_size_and_still_runs`
-(`qt/tests/test_win_app_exe.py`); `test_a_source_run_starts_again_as_the_app`,
-`test_the_app_does_not_hand_over_to_itself`,
+(`qt/tests/test_win_app_exe.py`);
+`test_a_launcher_starts_the_app_under_its_own_name`,
+`test_the_app_is_not_asked_to_find_itself`,
 `test_a_build_without_the_copy_runs_unchanged`,
 `test_other_platforms_are_left_alone`,
-`test_run_py_hands_over_before_it_imports_the_app`
+`test_no_launcher_replaces_its_own_process`,
+`test_the_e2e_launcher_starts_the_app_under_its_own_name`
 (`qt/tests/test_clanki_launch.py`).
 
 ## ui.simple-recall-wording

@@ -12,5 +12,9 @@ set ANKI_API_HOST=127.0.0.1
 @if not defined PYENV set PYENV=out\pyenv
   
 call tools\ninja pylib qt || exit /b 1
-%PYENV%\Scripts\python tools\run.py %* || exit /b 1
+rem start the app under its own name, so Task Manager says Clanki and
+rem this window waits for the app itself (spec ui.process-name)
+set CLANKI_LAUNCHER=%PYENV%\Scripts\python.exe
+if exist "%PYENV%\Scripts\Clanki.exe" set CLANKI_LAUNCHER=%PYENV%\Scripts\Clanki.exe
+"%CLANKI_LAUNCHER%" tools\run.py %* || exit /b 1
 popd

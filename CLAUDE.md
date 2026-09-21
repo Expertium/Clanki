@@ -371,8 +371,14 @@ intervals and queue) plus property tests are a genuinely strong behavior lock.
   `out/pyenv/Scripts/python.exe`. Launch the built app like this instead:
 
   ```bash
-  out/pyenv/Scripts/python tools/run.py -b C:/Users/Andrew/clanki-devbase
+  out/pyenv/Scripts/Clanki.exe tools/run.py -b C:/Users/Andrew/clanki-devbase
   ```
+
+  `Clanki.exe` is the build's own copy of the interpreter, named so that Task
+  Manager says Clanki (spec `ui.process-name`). `python.exe` still works and
+  still runs the app; it only shows the wrong name. Start the copy, never
+  `os.execv` into it: on Windows that ends the process and starts a new one,
+  so whatever launched the app stops seeing it.
 
 - **Always pass `-b`.** Every Anki build on this machine shares the default base
   folder `%APPDATA%\Anki2`, which holds Andrew's real 210 MB collection and his
