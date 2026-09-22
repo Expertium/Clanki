@@ -672,6 +672,14 @@ The wait covers every reason RWKV-Curve has no intervals yet:
 After an error no prediction is kept, so an answer stores no RWKV-Curve S90
 with states that are not RWKV-Curve's.
 
+**A collection change the replay does not depend on does not make the state
+cold, and so does not start a wait.** The resident state is kept whenever the
+replay semantics key is the one it was built under -- the same key the stored
+state cache carries, and the same one that decides whether a stored cache is
+restored rather than rebuilt. A change that moves that key, such as a deck
+sent to another preset, still discards the state. A key that cannot be read
+discards it too: a rebuild costs time, a stale state gives a wrong interval.
+
 The wait always ends. When RWKV-Curve gave a prediction for this showing of
 the card and that prediction has no interval for a button, asking again gives
 the same answer: the button area says at once that RWKV-Curve has no interval
@@ -696,7 +704,13 @@ entry, whenever RWKV-Curve had no intervals the buttons showed FSRS-7's and
 the answer stored them; and a prediction from an earlier showing of the card
 could supply the S90 of a later answer. Andrew, 2026-09-16: the wait never
 ended once RWKV-Curve's state went cold in the middle of a session, because
-only an answer restored the state and the wait blocked the answer.
+only an answer restored the state and the wait blocked the answer. Andrew,
+2026-09-22: "doing reviews in 2-button mode is fine, but switching to 4-button
+mode gives me this", and it took ten seconds to clear. Every config, deck,
+deck-config and notetype change reaches one handler, so saving any Preferences
+setting read as "the preset routing may have changed" and threw away a state
+that took ten seconds to build again. The two-button mode is a collection
+config bool; the replay cannot see it.
 
 **Pinned by:** `test_answer_buttons_wait_for_rwkv_curve_intervals`,
 `test_the_waiting_answer_buttons_restore_the_rwkv_curve_state`,
@@ -704,6 +718,9 @@ only an answer restored the state and the wait blocked the answer.
 `test_answer_buttons_say_rwkv_curve_has_no_interval_for_the_card`,
 `test_answers_are_ignored_while_rwkv_curve_intervals_are_pending`
 (`qt/tests/test_reviewer.py`);
+`test_a_config_change_the_replay_cannot_see_keeps_the_resident_state`,
+`test_a_change_that_alters_the_replay_still_discards_the_resident_state`,
+`test_a_replay_key_that_cannot_be_read_discards_the_resident_state`,
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
 `test_answer_intervals_unavailable_only_when_rwkv_curve_answered`,
 `test_the_answer_button_wait_can_restore_the_resident_state`,
