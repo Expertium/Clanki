@@ -735,6 +735,42 @@ link, disabling the add-on, the one-time notice,
 `review_heatmap_is_on_by_default_and_a_reviewing_preference`
 (`rslib/src/preferences.rs`).
 
+## ui.review-heatmap-fills-in
+
+Given a screen that draws the review heatmap (the deck list, or a deck's
+overview), Clanki draws the screen as soon as its own counts are ready and
+leaves the heatmap out where its report is not computed yet. It computes
+that report in a background step, and draws the screen again in place when
+the report arrives, without counting the deck tree or the deck's cards a
+second time. A report that cannot be computed leaves the screen as it is,
+rather than being drawn again with nothing new. Once a report is cached,
+the screen draws it at once and starts no background step. Nothing warms
+a heatmap up ahead of the screen that shows it. Everything else about the
+heatmap is unchanged (spec ui.review-heatmap): the same report, the same
+cache, the same figures. The congratulations screen has no heatmap and
+computes none.
+
+**Why:** Andrew, 2026-09-21: "the first click on a deck has a MASSIVE
+delay, like 1-3 seconds. After that everything is fine." The first click
+took 1026 ms, of which 779 ms was the deck overview's first heatmap report
+(23 ms on every later click). A warm-up existed for exactly this, 2 s after
+the deck list is drawn, but it is 2 s that a user often clicks inside: the
+warm-up then took the one collection worker, and the click's counts waited
+behind it. The screen waited for the heatmap before it drew anything, so
+the user waited for a calendar to see the deck's counts. Both screens now
+draw first: the first click is 224 ms, and its heatmap arrives about 970 ms
+after it.
+
+**Pinned by:** `test_the_deck_list_and_overview_draw_without_waiting_for_the_heatmap`,
+`test_a_screen_without_its_heatmap_draws_it_in_the_background_and_again`,
+`test_a_heatmap_that_cannot_be_computed_is_not_drawn_again`,
+`test_a_ready_heatmap_is_drawn_at_once_with_no_background_step`,
+`test_a_deck_opened_while_the_report_ran_gets_its_own_heatmap`,
+`test_a_cold_cache_is_reported_without_reading_the_collection`,
+`test_the_background_step_fills_the_cache_and_reports_an_error`,
+`test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s`
+(`qt/tests/test_review_heatmap.py`).
+
 ## ui.periodic-backup-waits
 
 Given the periodic backup check (every 5 minutes while a profile is open),

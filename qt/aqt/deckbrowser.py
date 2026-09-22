@@ -13,7 +13,6 @@ import aqt
 import aqt.addons
 import aqt.advance_postpone
 import aqt.operations
-import aqt.review_heatmap
 import aqt.rwkv_scheduler
 import aqt.ui_split
 from anki.collection import Collection, OpChanges
@@ -30,7 +29,6 @@ from aqt.operations.deck import (
     set_deck_collapsed,
 )
 from aqt.qt import *
-from aqt.review_heatmap import HeatmapView
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
@@ -263,10 +261,6 @@ class DeckBrowser:
                         )
                     ),
                 )
-                # the heatmap under the tree, computed here rather than on
-                # the main thread when the page is drawn
-                if heatmap := aqt.review_heatmap.instance():
-                    heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
                 return data
 
             def start_rwkv_counts(output: RenderData) -> None:
