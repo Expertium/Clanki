@@ -752,13 +752,13 @@ computes none.
 
 **Why:** Andrew, 2026-09-21: "the first click on a deck has a MASSIVE
 delay, like 1-3 seconds. After that everything is fine." The first click
-took 1026 ms, of which 779 ms was the deck overview's first heatmap report
-(23 ms on every later click). A warm-up existed for exactly this, 2 s after
+took 719 ms, of which 635 ms was the deck overview's first heatmap report
+(18 ms on every later click). A warm-up existed for exactly this, 2 s after
 the deck list is drawn, but it is 2 s that a user often clicks inside: the
 warm-up then took the one collection worker, and the click's counts waited
 behind it. The screen waited for the heatmap before it drew anything, so
 the user waited for a calendar to see the deck's counts. Both screens now
-draw first: the first click is 224 ms, and its heatmap arrives about 970 ms
+draw first: the first click is 72 ms, and its heatmap arrives about 650 ms
 after it.
 
 **Pinned by:** `test_the_deck_list_and_overview_draw_without_waiting_for_the_heatmap`,
