@@ -7249,6 +7249,152 @@ def test_rwkv_state_cache_rejects_mismatched_rust_history_fingerprint(
     )
 
 
+def test_rwkv_state_cache_that_only_newer_reviews_follow_replays_just_those(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A day of reviews since the state was saved used to send every start-up
+    through the rebuild of the whole history: 19.1 s on 656,421 reviews, for
+    19 new ones, against 0.3 s when nothing was new. When the saved state is
+    the start of the history, the cache is taken as it is and the restore
+    reads only the reviews after it (`pending_history` None), the same
+    incremental read a sync uses."""
+    saved = rwkv_scheduler._RwkvHistoryPrefixIdentity(
+        last_review_id=2_000,
+        review_count=2,
+        history_hash="a" * 64,
+    )
+    fingerprint_says: dict[str, bool] = {}
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_historical_review_fingerprint",
+        lambda *_args, **_kwargs: rwkv_scheduler._RwkvHistoricalReviewFingerprint(
+            identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+                last_review_id=4_000,
+                review_count=4,
+                history_hash="b" * 64,
+            ),
+            active_ignored_review_ids=(),
+            queried_review_count=4,
+            **fingerprint_says,  # type: ignore[arg-type]
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "replay-key",
+    )
+    saved_history = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=[],
+        review_ids=[],
+        previous_review_id_by_card={10: 2_000},
+        previous_interval_days_by_card={10: 3},
+        review_count_by_card={10: 2},
+        last_review_id=2_000,
+        review_count=2,
+        history_hash="a" * 64,
+        replay_key="replay-key",
+    )
+    unchanged = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={},
+        snapshot=None,
+        history=saved_history,
+        pending_history=rwkv_scheduler._rwkv_empty_history_suffix(saved_history),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_unchanged_rwkv_state_cache_binary",
+        lambda *_args, **_kwargs: unchanged,
+    )
+
+    def read() -> rwkv_scheduler.RwkvStoredStateCache | None:
+        return rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint(
+            SimpleNamespace(),
+            backend=cast(Any, object()),
+            cache_dir=tmp_path,
+            metadata={
+                "lastReviewId": saved.last_review_id,
+                "reviewCount": saved.review_count,
+                "historyHash": saved.history_hash,
+                "replayKey": "replay-key",
+            },
+            ignored_review_ids=(),
+        )
+
+    # the saved state is the start of the history: taken, and the reviews
+    # after it are left for the restore to read
+    fingerprint_says.update(history_is_valid=False, history_prefix_is_valid=True)
+    prefix = read()
+    assert prefix is not None
+    assert prefix.pending_history is None
+    assert prefix.history is saved_history
+    # the per-card state the incremental read continues from is the saved one
+    assert prefix.history.previous_review_id_by_card == {10: 2_000}
+    assert prefix.history.review_count_by_card == {10: 2}
+
+    # nothing new: the empty suffix stands, and nothing is read
+    fingerprint_says.update(history_is_valid=True, history_prefix_is_valid=True)
+    assert read() is unchanged
+
+    # neither: the history no longer starts with the saved state
+    fingerprint_says.update(history_is_valid=False, history_prefix_is_valid=False)
+    assert read() is None
+
+
+def test_the_restore_reads_only_the_reviews_after_a_saved_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `pending_history` None the restore reads the reviews after the
+    saved state's last one, handing over the saved per-card state; it never
+    asks for the whole history."""
+    saved_history = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=[],
+        review_ids=[],
+        previous_review_id_by_card={10: 2_000},
+        previous_interval_days_by_card={10: 3},
+        review_count_by_card={10: 2},
+        last_review_id=2_000,
+        review_count=2,
+        history_hash="a" * 64,
+        replay_key="replay-key",
+    )
+    stored = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={},
+        snapshot=cast(Any, object()),
+        history=saved_history,
+        pending_history=None,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache", lambda *_args, **_kwargs: stored
+    )
+    reads: list[dict[str, object]] = []
+
+    def inputs(_reviewer: object, **kwargs: object) -> object:
+        reads.append(kwargs)
+        # stop the restore here: what it asked for is the point
+        raise rwkv_scheduler._ReviewerBackendWarmupInvalidated
+
+    monkeypatch.setattr(rwkv_scheduler, "_historical_rwkv_review_inputs", inputs)
+    backend = SimpleNamespace(
+        restore_cache_snapshot=lambda _snapshot: None,
+        warm_up=lambda _reviews: None,
+    )
+
+    with pytest.raises(rwkv_scheduler._ReviewerBackendWarmupInvalidated):
+        rwkv_scheduler._restore_reviewer_backend_cache(
+            SimpleNamespace(),
+            backend=cast(Any, backend),
+            is_current=lambda: True,
+        )
+
+    assert len(reads) == 1
+    assert reads[0]["after_review_id"] == 2_000
+    assert reads[0]["previous_review_id_by_card"] == {10: 2_000}
+    assert reads[0]["previous_interval_days_by_card"] == {10: 3}
+    assert reads[0]["review_count_by_card"] == {10: 2}
+    assert reads[0]["previous_history_hash"] == "a" * 64
+
+
 def test_reviewer_rwkv_cache_adds_collection_marker_after_full_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

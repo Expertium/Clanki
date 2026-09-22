@@ -867,6 +867,11 @@ message RwkvHistoricalReviewFingerprintResponse {
   uint64 queried_review_count = 5;
   // False when expected_identity is absent.
   bool history_is_valid = 6;
+  // The first expected_identity.review_count rows of the history, and no
+  // others, hash to expected_identity: the saved state is still correct and
+  // only the reviews after it are new. True whenever history_is_valid is.
+  // False when expected_identity is absent.
+  bool history_prefix_is_valid = 7;
 }
 
 message FuzzDeltaRequest {

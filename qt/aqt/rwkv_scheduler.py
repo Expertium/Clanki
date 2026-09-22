@@ -119,6 +119,9 @@ class _RwkvHistoricalReviewFingerprint(NamedTuple):
     active_ignored_review_ids: tuple[int, ...]
     queried_review_count: int
     history_is_valid: bool
+    # the saved state is the start of the history, with only newer reviews
+    # after it; true whenever history_is_valid is
+    history_prefix_is_valid: bool = False
 
 
 _REVIEWER_PREDICTION_ATTR = "_rwkv_review_prediction"
@@ -16346,7 +16349,9 @@ def _read_rwkv_state_cache_from_rust_fingerprint(
         ignored_review_ids=ignored_review_ids,
         expected_identity=expected_identity,
     )
-    if fingerprint is None or not fingerprint.history_is_valid:
+    if fingerprint is None or not (
+        fingerprint.history_is_valid or fingerprint.history_prefix_is_valid
+    ):
         return None
     stored = _read_unchanged_rwkv_state_cache_binary(
         reviewer,
@@ -16354,12 +16359,28 @@ def _read_rwkv_state_cache_from_rust_fingerprint(
         cache_dir=cache_dir,
         metadata=metadata,
     )
-    if stored is not None:
+    if stored is None:
+        return None
+    if fingerprint.history_is_valid:
         logger.debug(
             "validated RWKV state cache from Rust history fingerprint: reviews=%s",
             fingerprint.queried_review_count,
         )
-    return stored
+        return stored
+    # The saved state is the start of the history and only newer reviews
+    # follow it -- a day of reviews since it was saved, or a sync that
+    # brought only recent ones. The state is still correct, so the restore
+    # replays just those reviews, reading them after the saved state's last
+    # review with its per-card counts, the same incremental read a sync uses.
+    # Without this, one new review sent every start-up through the rebuild
+    # of the whole history: 19 s on 656,421 reviews, for 19 new ones.
+    logger.debug(
+        "validated RWKV state cache as the start of the history: "
+        "saved_reviews=%s reviews=%s",
+        expected_identity.review_count,
+        fingerprint.queried_review_count,
+    )
+    return replace(stored, pending_history=None)
 
 
 def _read_rwkv_state_cache_store(
@@ -18475,6 +18496,8 @@ def _rwkv_historical_review_fingerprint(
         active_ignored_review_ids=active_ignored_review_ids,
         queried_review_count=queried_review_count,
         history_is_valid=history_is_valid,
+        history_prefix_is_valid=getattr(response, "history_prefix_is_valid", False)
+        is True,
     )
 
 
