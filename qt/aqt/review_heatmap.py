@@ -14,6 +14,7 @@ ui.review-heatmap). The calendar itself is drawn by the add-on's JS bundle
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 # (Andrew, 2026-09-15; spec ui.review-heatmap)
 MAX_FORECAST_DAYS = 5 * 365 + 1
 DEFAULT_ROLLOVER = 4
+
+logger = logging.getLogger(__name__)
 
 WEB_BASE = "/_anki"
 PLATFORM = "mac" if is_mac else ("win" if is_win else "lin")
@@ -1028,9 +1031,8 @@ class ReviewHeatmap:
         self._cache: dict[tuple[Any, ...], _RenderCache] = {}
         self._older_reviews: dict[Any, Any] = {}
         self._contents = _Contents()
-        # the collection whose per-deck counts were warmed up (see
-        # on_deck_browser_did_render)
-        self._warmed_collection: object | None = None
+        # the places whose heatmap a background step is computing right now
+        self._filling: set[tuple[HeatmapView, bool]] = set()
 
     def enabled(self) -> bool:
         col = self.mw.col
@@ -1069,47 +1071,76 @@ class ReviewHeatmap:
         self._cache[place] = _RenderCache(html, key)
         return html
 
-    def prepare(self, view: HeatmapView, current_deck_only: bool) -> None:
-        """Draw a place's heatmap into the cache. The deck list and the deck
-        overview call this in their background step, so that their draw on
-        the main thread finds it there and only checks that nothing was
-        written in between. Errors are left to that draw, which then does
-        the work itself."""
-        try:
-            self.render(view, current_deck_only)
-        except Exception:
-            return
-
-    def on_deck_browser_did_render(self, deck_browser: DeckBrowser) -> None:
-        """The first time a collection's deck list is drawn, prepare the
-        current deck's overview heatmap in the background, 2 s later.
-
-        The first overview heatmap of a session counts the older reviews of
-        every deck at once (`_older_reviews_by_deck`), which is about 0.6 s on
-        a collection of a million reviews, and the overview is drawn only
-        after it. Done here, before the user opens a deck, the first deck
-        opens as fast as the later ones. The work and its result are the ones
-        the overview would have made; only the moment moves."""
+    def cached_html(self, view: HeatmapView, current_deck_only: bool) -> str | None:
+        """The place's HTML without computing a report: the empty string
+        where nothing is drawn, the cached HTML where it is still current,
+        and None where the report has to be computed first."""
         col = self.mw.col
-        if col is None or col is self._warmed_collection:
-            return
-        self._warmed_collection = col
-        self._schedule_warm_up()
+        if col is None or not self.enabled():
+            return ""
+        settings = self.settings()
+        if not settings.shows(view) and not settings.streak_stats_always:
+            return ""
+        place = (view, current_deck_only, None, None)
+        cached = self._cache.get(place)
+        if cached is None:
+            # no fingerprint is read here: it costs a scan of the cards, and
+            # there is nothing for it to validate
+            return None
+        reporter = ActivityReporter(col, settings, self._older_reviews, self._contents)
+        key = (settings, reporter.input_fingerprint(current_deck_only))
+        return cached.html if cached.key == key else None
 
-    def _schedule_warm_up(self) -> None:
+    def render_when_ready(self, view: HeatmapView, current_deck_only: bool) -> str:
+        """The place's HTML if it is ready, and otherwise nothing now and a
+        background step that computes it and draws the screen again (spec
+        ui.review-heatmap-fills-in). That second draw asks again: a deck
+        opened while the first report was being computed gets its own."""
+        html = self.cached_html(view, current_deck_only)
+        if html is not None:
+            return html
+        self._schedule_fill_in(view, current_deck_only)
+        return ""
+
+    def _schedule_fill_in(self, view: HeatmapView, current_deck_only: bool) -> None:
         from aqt.operations import QueryOp
 
-        def warm_up() -> None:
-            QueryOp(
-                parent=self.mw,
-                op=lambda _col: self.prepare(
-                    HeatmapView.overview, current_deck_only=True
-                ),
-                success=lambda _: None,
-            ).run_in_background()
+        place = (view, current_deck_only)
+        if place in self._filling:
+            return
+        self._filling.add(place)
+        state = getattr(self.mw, "state", None)
 
-        # after start-up's own work on the collection, not in front of it
-        self.mw.progress.single_shot(2000, warm_up)
+        def compute(_col: Collection) -> bool:
+            try:
+                self.render(view, current_deck_only)
+            except Exception:
+                logger.debug("the heatmap report failed", exc_info=True)
+                return False
+            return True
+
+        def drawn(computed: bool) -> None:
+            self._filling.discard(place)
+            # a report that failed leaves the screen as it is: drawing it
+            # again would ask for the same report for ever
+            if not computed:
+                return
+            if getattr(self.mw, "state", None) == state:
+                self.redraw_in_place()
+
+        try:
+            QueryOp(parent=self.mw, op=compute, success=drawn).run_in_background()
+        except Exception:
+            self._filling.discard(place)
+            raise
+
+    def redraw_in_place(self) -> None:
+        """Draw the current screen again, without recomputing its counts."""
+        state = getattr(self.mw, "state", None)
+        if state == "deckBrowser":
+            self.mw.deckBrowser._renderPage(reuse=True)
+        elif state == "overview":
+            self.mw.overview._renderPage()
 
     def render_for_stats(self, period: int, whole_collection: bool) -> str:
         """The legacy stats screen: 1 month, 1 year or the whole history."""
@@ -1127,12 +1158,16 @@ class ReviewHeatmap:
     def on_deck_browser_will_render_content(
         self, deck_browser: DeckBrowser, content: DeckBrowserContent
     ) -> None:
-        content.stats += self.render(HeatmapView.deckbrowser, current_deck_only=False)
+        content.stats += self.render_when_ready(
+            HeatmapView.deckbrowser, current_deck_only=False
+        )
 
     def on_overview_will_render_content(
         self, overview: Overview, content: OverviewContent
     ) -> None:
-        content.table += self.render(HeatmapView.overview, current_deck_only=True)
+        content.table += self.render_when_ready(
+            HeatmapView.overview, current_deck_only=True
+        )
 
     def on_webview_did_receive_js_message(
         self, handled: tuple[bool, Any], message: str, context: Any
@@ -1276,7 +1311,6 @@ def initialize(mw: AnkiQt) -> ReviewHeatmap:
     gui_hooks.overview_will_render_content.append(
         heatmap.on_overview_will_render_content
     )
-    gui_hooks.deck_browser_did_render.append(heatmap.on_deck_browser_did_render)
     gui_hooks.webview_did_receive_js_message.append(
         heatmap.on_webview_did_receive_js_message
     )

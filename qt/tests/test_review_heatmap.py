@@ -10,8 +10,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from anki.collection import Config
 from anki.decks import DeckId
 from anki.utils import ids2str
@@ -475,21 +473,37 @@ def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> No
         col.close(downgrade=False)
 
 
-def test_prepare_draws_into_the_cache_and_leaves_errors_to_the_draw() -> None:
-    heatmap = _heatmap(enabled=True)
-    with patch.object(review_heatmap, "ActivityReporter") as reporter:
+def test_the_background_step_fills_the_cache_and_reports_an_error() -> None:
+    heatmap, _drawn = _fill_in_heatmap()
+    ops: list[tuple[Any, Any]] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append((op, success))
+
+        def run_in_background(self) -> None:
+            pass
+
+    with (
+        patch("aqt.operations.QueryOp", FakeQueryOp),
+        patch.object(review_heatmap, "ActivityReporter") as reporter,
+    ):
         reporter.return_value.get_report.return_value = None
         reporter.return_value.input_fingerprint.return_value = ("inputs", 1)
-        heatmap.prepare(HeatmapView.overview, current_deck_only=True)
+        heatmap._schedule_fill_in(HeatmapView.overview, current_deck_only=True)
+        assert ops[0][0](heatmap.mw.col) is True
         assert reporter.return_value.get_report.call_count == 1
+        # the draw on the main thread finds the report in the cache
         html = heatmap.render(HeatmapView.overview, current_deck_only=True)
         assert "rh-view-overview" in html
         assert reporter.return_value.get_report.call_count == 1
+        # a report that raises is caught, and reported as not computed
         reporter.return_value.input_fingerprint.side_effect = RuntimeError("db")
-        heatmap.prepare(HeatmapView.deckbrowser, current_deck_only=False)
+        heatmap._schedule_fill_in(HeatmapView.deckbrowser, current_deck_only=False)
+        assert ops[1][0](heatmap.mw.col) is False
 
 
-def test_the_deck_list_and_overview_prepare_their_heatmap_in_the_background(
+def test_the_deck_list_and_overview_draw_without_waiting_for_the_heatmap(
     monkeypatch: Any,
 ) -> None:
     from aqt.utils import tr
@@ -522,18 +536,139 @@ def test_the_deck_list_and_overview_prepare_their_heatmap_in_the_background(
     ):
         DeckBrowser(mw).refresh()
         ops[-1](mw.col)
-        heatmap.prepare.assert_called_with(
-            HeatmapView.deckbrowser, current_deck_only=False
-        )
         Overview(mw).refresh()
         ops[-1](mw.col)
-        heatmap.prepare.assert_called_with(HeatmapView.overview, current_deck_only=True)
-        # the congratulations screen has no heatmap
-        heatmap.prepare.reset_mock()
-        mw.col.sched._is_finished.return_value = True
-        Overview(mw).refresh()
-        ops[-1](mw.col)
-        heatmap.prepare.assert_not_called()
+    # neither screen's background step computes a heatmap any more: they draw
+    # their counts, and the heatmap fills in behind them
+    heatmap.prepare.assert_not_called()
+
+
+def _fill_in_heatmap() -> tuple[ReviewHeatmap, list[Any]]:
+    """A heatmap whose mw records the screen it draws, with a cold cache."""
+    heatmap = _heatmap(enabled=True)
+    drawn: list[Any] = []
+    deck_browser = MagicMock()
+    deck_browser._renderPage.side_effect = lambda **kw: drawn.append(
+        ("deckBrowser", kw)
+    )
+    overview = MagicMock()
+    overview._renderPage.side_effect = lambda: drawn.append(("overview", {}))
+    heatmap.mw = cast(
+        Any,
+        SimpleNamespace(
+            col=heatmap.mw.col,
+            pm=None,
+            state="overview",
+            deckBrowser=deck_browser,
+            overview=overview,
+        ),
+    )
+    return heatmap, drawn
+
+
+def test_a_screen_without_its_heatmap_draws_it_in_the_background_and_again() -> None:
+    heatmap, drawn = _fill_in_heatmap()
+    ops: list[tuple[Any, Any]] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append((op, success))
+
+        def run_in_background(self) -> None:
+            pass
+
+    with patch("aqt.operations.QueryOp", FakeQueryOp):
+        content = SimpleNamespace(stats="", table="<table></table>")
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        # the screen draws now, with no heatmap and no wait
+        assert content.table == "<table></table>"
+        assert len(ops) == 1
+        # a second draw before the first finishes asks for nothing more
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        assert len(ops) == 1
+
+        op, success = ops[0]
+        with patch.object(heatmap, "render", return_value="<div>heatmap</div>"):
+            assert op(heatmap.mw.col) is True
+        assert drawn == []
+        success(True)
+        assert drawn == [("overview", {})]
+
+
+def test_a_heatmap_that_cannot_be_computed_is_not_drawn_again() -> None:
+    heatmap, drawn = _fill_in_heatmap()
+    ops: list[tuple[Any, Any]] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append((op, success))
+
+        def run_in_background(self) -> None:
+            pass
+
+    with patch("aqt.operations.QueryOp", FakeQueryOp):
+        content = SimpleNamespace(stats="", table="")
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        op, success = ops[0]
+        with patch.object(heatmap, "render", side_effect=RuntimeError("no")):
+            assert op(heatmap.mw.col) is False
+        success(False)
+    # the report failed, so the screen is left as it is rather than drawn
+    # again, which would ask for the same report for ever
+    assert drawn == []
+
+
+def test_a_deck_opened_while_the_report_ran_gets_its_own_heatmap() -> None:
+    heatmap, drawn = _fill_in_heatmap()
+    ops: list[tuple[Any, Any]] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append((op, success))
+
+        def run_in_background(self) -> None:
+            pass
+
+    with patch("aqt.operations.QueryOp", FakeQueryOp):
+        content = SimpleNamespace(stats="", table="")
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        # the user opens a second deck while the first report is computed
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        assert len(ops) == 1
+        ops[0][1](True)
+        # the second draw asks for the report of the deck now open
+        assert drawn == [("overview", {})]
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        assert len(ops) == 2
+
+
+def test_a_ready_heatmap_is_drawn_at_once_with_no_background_step() -> None:
+    heatmap, _drawn = _fill_in_heatmap()
+    ops: list[Any] = []
+
+    class FakeQueryOp:
+        def __init__(self, **kwargs: Any) -> None:
+            ops.append(kwargs)
+
+        def run_in_background(self) -> None:
+            pass
+
+    with (
+        patch("aqt.operations.QueryOp", FakeQueryOp),
+        patch.object(heatmap, "cached_html", return_value="<div>heatmap</div>"),
+    ):
+        content = SimpleNamespace(stats="", table="<table></table>")
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+    assert content.table == "<table></table><div>heatmap</div>"
+    assert ops == []
+
+
+def test_a_cold_cache_is_reported_without_reading_the_collection() -> None:
+    heatmap = _heatmap(enabled=True)
+    with patch.object(
+        ActivityReporter, "input_fingerprint", side_effect=AssertionError("read")
+    ):
+        assert heatmap.cached_html(HeatmapView.overview, current_deck_only=True) is None
 
 
 def test_clicking_a_day_opens_the_browser_with_the_search() -> None:
@@ -816,13 +951,15 @@ def test_forecast_never_reaches_past_five_years() -> None:
     assert forecast_stop(0, 365) == 365
 
 
-def test_the_first_deck_list_of_a_collection_warms_the_overview_heatmap() -> None:
-    """The first overview heatmap of a session counts every deck's older
-    reviews; the deck list starts that work in the background, once per
-    collection, 2 s after it is first drawn, so the first deck opened does not
-    wait for it."""
+def test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s() -> None:
+    """The warm-up used to start the overview's heatmap 2 s after the deck
+    list was drawn, so that the first deck opened found it ready. It landed
+    on the one collection worker at the moment a user clicks a deck, and the
+    click then waited about 780 ms for it. The screens no longer wait for the
+    heatmap at all (spec ui.review-heatmap-fills-in), so the warm-up is gone."""
     heatmap = _heatmap(enabled=True)
-    shots: list[tuple[int, Any]] = []
+    assert not hasattr(heatmap, "on_deck_browser_did_render")
+    shots: list[Any] = []
     heatmap.mw = cast(
         Any,
         SimpleNamespace(
@@ -833,48 +970,7 @@ def test_the_first_deck_list_of_a_collection_warms_the_overview_heatmap() -> Non
             ),
         ),
     )
-    heatmap.on_deck_browser_did_render(cast(Any, None))
-    heatmap.on_deck_browser_did_render(cast(Any, None))
-    assert [ms for ms, _ in shots] == [2000]
-
-    # another collection (a profile switch) is warmed again
-    heatmap.mw.col = MagicMock()
-    heatmap.on_deck_browser_did_render(cast(Any, None))
-    assert len(shots) == 2
-
-
-def test_the_warm_up_prepares_the_current_decks_overview_heatmap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import aqt.operations
-
-    heatmap = _heatmap(enabled=True)
-    shots: list[Any] = []
-    heatmap.mw = cast(
-        Any,
-        SimpleNamespace(
-            col=heatmap.mw.col,
-            pm=None,
-            progress=SimpleNamespace(
-                single_shot=lambda ms, func, *args: shots.append(func)
-            ),
-        ),
-    )
-    prepared: list[tuple[Any, bool]] = []
-    monkeypatch.setattr(
-        heatmap,
-        "prepare",
-        lambda view, current_deck_only: prepared.append((view, current_deck_only)),
-    )
-
-    class RunsAtOnce:
-        def __init__(self, parent: Any, op: Any, success: Any) -> None:
-            self.op, self.success = op, success
-
-        def run_in_background(self) -> None:
-            self.success(self.op(heatmap.mw.col))
-
-    monkeypatch.setattr(aqt.operations, "QueryOp", RunsAtOnce)
-    heatmap.on_deck_browser_did_render(cast(Any, None))
-    shots[0]()
-    assert prepared == [(HeatmapView.overview, True)]
+    content = SimpleNamespace(stats="<b>today</b>", table="")
+    with patch("aqt.operations.QueryOp", MagicMock()):
+        heatmap.on_deck_browser_will_render_content(cast(Any, None), cast(Any, content))
+    assert shots == []

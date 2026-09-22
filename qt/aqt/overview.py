@@ -9,7 +9,6 @@ from typing import Any
 
 import aqt
 import aqt.operations
-import aqt.review_heatmap
 import aqt.rwkv_scheduler
 import aqt.ui_split
 from anki.collection import Collection, OpChanges
@@ -23,7 +22,6 @@ from aqt.operations.scheduling import (
     rebuild_filtered_deck,
     unbury_deck,
 )
-from aqt.review_heatmap import HeatmapView
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import askUserDialog, openLink, shortcut, tooltip, tr
@@ -98,11 +96,6 @@ class Overview:
                 or aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
                 or aqt.rwkv_scheduler.rwkv_review_scores_pending(col)
             )
-            # the deck's heatmap, computed here rather than on the main
-            # thread; not for the congratulations screen, which has none
-            heatmap = aqt.review_heatmap.instance()
-            if heatmap and (pending or not col.sched._is_finished()):
-                heatmap.prepare(HeatmapView.overview, current_deck_only=True)
             return pending
 
         QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
