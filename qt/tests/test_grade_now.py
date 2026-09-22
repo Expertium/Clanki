@@ -26,6 +26,15 @@ from aqt.rwkv_scheduler import (
 
 GOOD = 3
 
+# RWKV-Curve's Good is 200 days, and it goes through the same review fuzz as
+# any other interval (spec sched.rwkv-curve-fuzz). The default fuzz delta at
+# 200 days is 1 + 0.15 * (7 - 2.5) + 0.10 * (20 - 7) + 0.05 * (200 - 20) =
+# 11.975 days, so the interval lands anywhere in 188..212, and the load
+# balancer moves it only inside that range. These bounds are what the code
+# produces: a narrower 190..210 stood here and failed about one run in three,
+# because a card whose fuzz picked 188, 189, 211 or 212 is correct.
+RWKV_CURVE_GOOD_BOUNDS = (188, 212)
+
 
 @pytest.fixture(autouse=True)
 def no_rwkv_backend() -> Iterator[None]:
@@ -114,7 +123,8 @@ def test_grade_now_gives_rwkv_curve_cards_rwkv_curve_intervals(
         card = col.get_card(card_id)
         # RWKV-Curve's 200 days after review fuzz and the load balancer,
         # not FSRS-7's Good interval
-        assert 190 <= card.ivl <= 210, (card.ivl, fsrs7_good)
+        low, high = RWKV_CURVE_GOOD_BOUNDS
+        assert low <= card.ivl <= high, (card.ivl, fsrs7_good)
         assert abs(card.ivl - fsrs7_good) > 20, (card.ivl, fsrs7_good)
         assert card.due == col.sched.today + card.ivl
         # RWKV-Curve's S90 for Good is the stored stability
