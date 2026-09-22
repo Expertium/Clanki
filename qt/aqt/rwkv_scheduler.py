@@ -15037,17 +15037,33 @@ def _restore_reviewer_backend_cache(
                     )
                     <= len(history.reviews)
                 ]
+            # A segment of the replayed state is written only for a save that
+            # will use it. The everyday case -- a few reviews since the state
+            # was saved -- only appends them to the deltas log and keeps the
+            # snapshot segment as it was, so a segment written here was never
+            # read again: about 58 MB of store per start-up, left until a full
+            # save pruned it, and 0.3 s to 15.5 s of disk writing in front of
+            # the first card. It also cleared the store's dirty sets, so the
+            # states this replay changed would have been missing from any
+            # later incremental checkpoint built on the snapshot segment.
+            save_uses_snapshot = (
+                recovered_from_checkpoint
+                or not _rwkv_state_cache_uses_current_model_key(stored_metadata)
+            )
+            snapshot_review_counts = [
+                *checkpoint_review_counts,
+                *(
+                    [len(history.reviews)]
+                    if state_store_path is not None
+                    and history.reviews
+                    and save_uses_snapshot
+                    else []
+                ),
+            ]
             checkpoint_writer = _RwkvStateCacheCheckpointWriter(
                 reviewer,
                 history,
-                [
-                    *checkpoint_review_counts,
-                    *(
-                        [len(history.reviews)]
-                        if state_store_path is not None and history.reviews
-                        else []
-                    ),
-                ],
+                snapshot_review_counts,
                 full_review_counts=checkpoint_review_counts,
                 base_history=stored_history,
                 state_store_path=state_store_path,
@@ -15064,14 +15080,7 @@ def _restore_reviewer_backend_cache(
                 progress=progress,
                 label=_tr().qt_misc_review_history_updating(),
                 record_retrievability_cache=record_retrievability_cache,
-                snapshot_after_reviews=[
-                    *checkpoint_review_counts,
-                    *(
-                        [len(history.reviews)]
-                        if state_store_path is not None and history.reviews
-                        else []
-                    ),
-                ],
+                snapshot_after_reviews=snapshot_review_counts,
                 snapshot_recorder=checkpoint_writer,
                 is_current=is_current,
             )

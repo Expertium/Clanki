@@ -6434,6 +6434,95 @@ def test_rwkv_state_cache_save_computes_shared_metadata_once(
     )
 
 
+@pytest.mark.parametrize(
+    ("recovered", "current_model", "segment_requested"),
+    [
+        # the everyday start-up: the new reviews go to the deltas log and the
+        # snapshot segment stays, so a segment of the replay would be read by
+        # nothing
+        (False, True, False),
+        # these saves write the replayed state and use what is written
+        (True, True, True),
+        (False, False, True),
+    ],
+)
+def test_the_startup_replay_writes_a_segment_only_for_a_save_that_uses_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovered: bool,
+    current_model: bool,
+    segment_requested: bool,
+) -> None:
+    """Each start-up after a day of reviews used to write a new ~58 MB segment
+    of the store that the metadata never pointed to; only a full save pruned
+    it. Measured on a copy of a 656,441-review collection: segments 3 and 4
+    written with parent 2, snapshot segment still 2."""
+    history = _rwkv_checkpoint_test_history(2)
+    saved = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=[],
+        review_ids=[],
+        previous_review_id_by_card={},
+        previous_interval_days_by_card={},
+        review_count_by_card={},
+        last_review_id=0,
+        review_count=0,
+        history_hash=history.history_hash,
+        replay_key=history.replay_key,
+    )
+    stored = rwkv_scheduler.RwkvStoredStateCache(
+        metadata={},
+        snapshot=None,
+        history=saved,
+        pending_history=history,
+        recovered_from_checkpoint=recovered,
+        state_store_path=tmp_path / "state.sqlite3",
+        state_store_generation="generation",
+        state_store_segment_id=2,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache", lambda *_a, **_k: stored
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_uses_current_model_key",
+        lambda _metadata: current_model,
+    )
+    requested: list[list[int]] = []
+
+    def warm_up_reviews(*_args: object, **kwargs: object) -> None:
+        requested.append(list(cast(Sequence[int], kwargs["snapshot_after_reviews"])))
+
+    monkeypatch.setattr(rwkv_scheduler, "_warm_up_rwkv_reviews", warm_up_reviews)
+    saves: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_append_rwkv_state_cache_deltas",
+        lambda *_a, **_k: saves.append("append"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_save_reviewer_backend_cache",
+        lambda *_a, **_k: saves.append("save"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_refresh_rwkv_state_cache_collection_mod", lambda *_a: None
+    )
+    backend = SimpleNamespace(
+        restore_cache_snapshot=lambda _snapshot: None,
+        restore_state_cache_checkpoint=lambda *_args: None,
+        warm_up=lambda _reviews: None,
+    )
+
+    rwkv_scheduler._restore_reviewer_backend_cache(
+        SimpleNamespace(),
+        backend=cast(Any, backend),
+        is_current=lambda: True,
+    )
+
+    assert requested == [[len(history.reviews)] if segment_requested else []]
+    assert saves == ["append" if not recovered and current_model else "save"]
+
+
 def test_rwkv_delta_store_full_checkpoint_starts_new_parent_chain(
     tmp_path: Path,
 ) -> None:
