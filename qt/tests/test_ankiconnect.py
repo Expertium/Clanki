@@ -49,6 +49,15 @@ from aqt.ankiconnect_server import ServerState
 # strings, and the field checksums of duplicate checks, need the language
 anki.lang.set_lang("en")
 
+# RWKV-Curve's Good is 200 days, and it goes through the same review fuzz as
+# any other interval (spec sched.rwkv-curve-fuzz). The default fuzz delta at
+# 200 days is 1 + 0.15 * (7 - 2.5) + 0.10 * (20 - 7) + 0.05 * (200 - 20) =
+# 11.975 days, so the interval lands anywhere in 188..212, and the load
+# balancer moves it only inside that range. These bounds are what the code
+# produces: a narrower 190..210 stood here and failed about one run in three,
+# because a card whose fuzz picked 188, 189, 211 or 212 is correct.
+RWKV_CURVE_GOOD_BOUNDS = (188, 212)
+
 # the add-on's actions (AnkiWeb 2055492159) and its fork's additions
 ADDON_ACTIONS = """
 version requestPermission getProfiles getActiveProfile loadProfile sync multi
@@ -1828,7 +1837,8 @@ def _assert_answered_as_the_reviewer(
     if algorithm == "rwkvCurve":
         # RWKV-Curve's 200 days with review fuzz, and its S90 of 210, never
         # FSRS-7's interval
-        assert 190 <= card.ivl <= 210, (card.ivl, fsrs7_good)
+        low, high = RWKV_CURVE_GOOD_BOUNDS
+        assert low <= card.ivl <= high, (card.ivl, fsrs7_good)
         assert abs(card.ivl - fsrs7_good) > 20, (card.ivl, fsrs7_good)
         assert card.memory_state is not None
         assert card.memory_state.stability == pytest.approx(210)
@@ -1902,7 +1912,8 @@ def test_answer_cards_keeps_the_per_card_ease_under_rwkv_curve(
 
     # RWKV-Curve gives Again 0.2 days and Good 200 days
     assert server.col.get_card(again).ivl < 10
-    assert 190 <= server.col.get_card(good).ivl <= 210
+    low, high = RWKV_CURVE_GOOD_BOUNDS
+    assert low <= server.col.get_card(good).ivl <= high
 
 
 def test_grade_now_fails_naming_the_cards_without_rwkv_curve_intervals(
