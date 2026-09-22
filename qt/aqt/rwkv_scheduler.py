@@ -20337,6 +20337,33 @@ where cid in {ids2str(card_ids)}
     }
 
 
+def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
+    """Whether the resident RWKV state was built under the replay semantics
+    the collection has now.
+
+    This is the rule the stored state cache already uses: its metadata carries
+    the same `replayKey`, and a cache whose key still matches is restored
+    rather than rebuilt. Anything the key does not cover cannot make the
+    resident state wrong without making every stored cache wrong too, so the
+    two follow one rule rather than two.
+    """
+    identity = _rwkv_ready_state_cache_history_identity(reviewer)
+    if identity is None:
+        return False
+    try:
+        current = _rwkv_replay_semantics_key(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+    except Exception:
+        logger.debug(
+            "failed to read the replay semantics key; discarding the state",
+            exc_info=True,
+        )
+        return False
+    return current == identity.replay_key
+
+
 def fsrs_preset_resolution_did_change(mw: object) -> None:
     """Discard resident state and preset assignments after collection changes."""
 
@@ -20345,6 +20372,20 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
         _preserve_reconciled_non_queue_collection_change(
             reviewer,
             reason="collection routing mutation",
+        )
+        return
+
+    if _replay_semantics_still_match_resident_state(reviewer):
+        # A collection change the replay does not depend on. `main.py` routes
+        # every config, deck, deck-config and notetype change here, so saving
+        # Preferences arrived as a reason to throw the state away and build it
+        # again. That took Andrew ten seconds in the middle of a review, with
+        # the answer buttons showing "Getting this card ready..." after he
+        # switched the two-button mode (report B-014), a setting the replay
+        # cannot see.
+        _preserve_reconciled_non_queue_collection_change(
+            reviewer,
+            reason="a collection change the replay does not depend on",
         )
         return
 

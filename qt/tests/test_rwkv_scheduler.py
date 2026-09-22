@@ -22017,3 +22017,110 @@ def test_a_startup_load_that_cannot_start_leaves_no_collection_user_behind() -> 
         rwkv_scheduler._run_in_background(mw, lambda: None, lambda _f: None)
     # otherwise a periodic backup would wait for work that never started
     assert users[0] == 0
+
+
+# Andrew, 2026-09-22 (report B-014): switching the two-button mode during a
+# review showed "Getting this card ready..." over the answer buttons for about
+# ten seconds. `main.py` routes every config, deck, deck-config and notetype
+# change to fsrs_preset_resolution_did_change, so saving Preferences arrived as
+# a reason to throw the resident RWKV state away and build it again.
+def test_a_config_change_the_replay_cannot_see_keeps_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity(replay_key="canonical-replay")
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler._rwkv_memorised_history_identity_cache[warmup_key] = (
+        0,
+        resident_identity,
+    )
+    generation_before = rwkv_scheduler._reviewer_backend_warmup_generations.get(
+        warmup_key, 0
+    )
+
+    # the collection still replays exactly as the resident state was built
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "canonical-replay",
+    )
+
+    try:
+        rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+
+        # kept, so the next card is predicted at once instead of after a
+        # rebuild
+        assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] is (
+            resident_identity
+        )
+        assert (
+            rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0)
+            == generation_before
+        )
+    finally:
+        # this is the one test here that leaves resident state behind on
+        # purpose, and the dicts are module-level: a later test would find a
+        # warmed-up state that its own collection never built
+        rwkv_scheduler._reviewer_backend_warmup_states.pop(warmup_key, None)
+        rwkv_scheduler._rwkv_memorised_history_identity_cache.pop(warmup_key, None)
+
+
+def test_a_change_that_alters_the_replay_still_discards_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: moving a deck to another preset changes the replay, and
+    the state built under the old one must go."""
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity(replay_key="canonical-replay")
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler._rwkv_memorised_history_identity_cache[warmup_key] = (
+        0,
+        resident_identity,
+    )
+
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "the-presets-moved",
+    )
+
+    rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert warmup_key not in rwkv_scheduler._rwkv_memorised_history_identity_cache
+    assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+
+
+def test_a_replay_key_that_cannot_be_read_discards_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unreadable semantics are treated as changed semantics: a slow rebuild
+    is a cost, a stale state is a wrong interval."""
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(replay_key="canonical-replay")
+    )
+
+    def explode(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("no deck configs")
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_replay_semantics_key", explode)
+
+    rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
