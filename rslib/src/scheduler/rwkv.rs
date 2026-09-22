@@ -114,6 +114,19 @@ impl Collection {
         let mut last_review_id = 0;
         // the record of one review, reused so that the loop allocates nothing
         let mut record = Vec::with_capacity(256);
+        // Where the saved state ends: the identity of the history after as
+        // many rows as the saved state holds. Rows come in review-id order,
+        // so these are the oldest rows, and a match means the saved state is
+        // the start of this history with only newer reviews after it.
+        let prefix_review_count = input
+            .expected_identity
+            .as_ref()
+            .map(|expected| expected.review_count);
+        let mut prefix_identity: Option<(i64, String)> = None;
+        let mut rows_read: u64 = 0;
+        if prefix_review_count == Some(0) {
+            prefix_identity = Some((0, rwkv_history_hash_hex(history_hash)));
+        }
 
         for row in rows {
             let card_id = CardId(row.card_id);
@@ -186,6 +199,10 @@ impl Collection {
                 },
                 &mut record,
             );
+            rows_read += 1;
+            if Some(rows_read) == prefix_review_count {
+                prefix_identity = Some((last_review_id, rwkv_history_hash_hex(history_hash)));
+            }
         }
 
         tracing::debug!(
@@ -199,10 +216,19 @@ impl Collection {
             .map(|review_id| review_id.0)
             .eq(active_ignored_review_ids.iter().copied());
         let history_is_valid = all_ignored_review_ids_are_active
-            && input.expected_identity.is_some_and(|expected| {
+            && input.expected_identity.as_ref().is_some_and(|expected| {
                 expected.last_review_id == last_review_id
                     && expected.review_count == queried_review_count
                     && expected.history_hash == history_hash
+            });
+        let history_prefix_is_valid = all_ignored_review_ids_are_active
+            && input.expected_identity.as_ref().is_some_and(|expected| {
+                prefix_identity
+                    .as_ref()
+                    .is_some_and(|(prefix_last, prefix_hash)| {
+                        expected.last_review_id == *prefix_last
+                            && expected.history_hash == *prefix_hash
+                    })
             });
         Ok(RwkvHistoricalReviewFingerprintResponse {
             last_review_id,
@@ -211,6 +237,7 @@ impl Collection {
             active_ignored_review_ids,
             queried_review_count,
             history_is_valid,
+            history_prefix_is_valid,
         })
     }
 
@@ -1435,6 +1462,141 @@ mod test {
                 ..Default::default()
             })?;
         assert!(!stale_ignored_fingerprint.history_is_valid);
+
+        Ok(())
+    }
+
+    fn add_review(col: &mut Collection, card: &Card, review_id: i64, interval: i32) -> Result<()> {
+        col.storage.add_revlog_entry(
+            &RevlogEntry {
+                id: RevlogId(review_id),
+                cid: card.id,
+                usn: Usn(0),
+                button_chosen: 3,
+                interval,
+                ease_factor: 2_500,
+                taken_millis: 1_000,
+                review_kind: RevlogReviewKind::Review,
+                ..Default::default()
+            },
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn identity_of(
+        fingerprint: &RwkvHistoricalReviewFingerprintResponse,
+    ) -> scheduler::RwkvHistoricalReviewIdentity {
+        scheduler::RwkvHistoricalReviewIdentity {
+            last_review_id: fingerprint.last_review_id,
+            review_count: fingerprint.review_count,
+            history_hash: fingerprint.history_hash.clone(),
+        }
+    }
+
+    fn fingerprint_against(
+        col: &mut Collection,
+        saved: &scheduler::RwkvHistoricalReviewIdentity,
+    ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+        col.rwkv_historical_review_fingerprint(RwkvHistoricalReviewFingerprintRequest {
+            expected_identity: Some(saved.clone()),
+            ..Default::default()
+        })
+    }
+
+    /// A saved state is the start of the current history when the history's
+    /// oldest rows are exactly the saved ones and only newer reviews follow.
+    /// That is the everyday case -- a day of reviews since the state was
+    /// saved -- and the state is then still correct: only the new reviews
+    /// need replaying, not the whole history.
+    #[test]
+    fn historical_fingerprint_accepts_a_saved_state_that_only_newer_reviews_follow() -> Result<()> {
+        let mut col = Collection::new();
+        let mut first = Card::new(NoteId(10), 0, DeckId(1), 0);
+        let mut second = Card::new(NoteId(11), 0, DeckId(1), 0);
+        col.add_card(&mut first)?;
+        col.add_card(&mut second)?;
+        let start = first.id.0.max(second.id.0) + 10_000;
+        add_review(&mut col, &first, start, 1)?;
+        add_review(&mut col, &second, start + 1_000, 1)?;
+        add_review(&mut col, &first, start + 2_000, 3)?;
+
+        let saved = identity_of(&col.rwkv_historical_review_fingerprint(
+            RwkvHistoricalReviewFingerprintRequest::default(),
+        )?);
+
+        // nothing new: both checks pass
+        let unchanged = fingerprint_against(&mut col, &saved)?;
+        assert!(unchanged.history_is_valid);
+        assert!(unchanged.history_prefix_is_valid);
+
+        // two newer reviews, one of them on a card the saved state knows
+        add_review(&mut col, &second, start + 3_000, 4)?;
+        add_review(&mut col, &first, start + 4_000, 9)?;
+        let newer = fingerprint_against(&mut col, &saved)?;
+        assert!(!newer.history_is_valid);
+        assert!(newer.history_prefix_is_valid);
+        assert_eq!(newer.queried_review_count, 5);
+
+        // a saved state with no reviews at all is the start of any history
+        let empty = scheduler::RwkvHistoricalReviewIdentity {
+            last_review_id: 0,
+            review_count: 0,
+            history_hash: rwkv_history_hash_hex(rwkv_empty_history_hash()),
+        };
+        assert!(fingerprint_against(&mut col, &empty)?.history_prefix_is_valid);
+
+        Ok(())
+    }
+
+    /// Correctness first: any doubt that the saved rows are still the oldest
+    /// rows of the history refuses the prefix, and the state is rebuilt.
+    #[test]
+    fn historical_fingerprint_refuses_a_prefix_the_history_no_longer_starts_with() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        let start = card.id.0 + 10_000;
+        add_review(&mut col, &card, start, 1)?;
+        add_review(&mut col, &card, start + 2_000, 3)?;
+        let saved = identity_of(&col.rwkv_historical_review_fingerprint(
+            RwkvHistoricalReviewFingerprintRequest::default(),
+        )?);
+
+        // a review older than the saved state's newest one arrives, as a sync
+        // from another device can bring: it lands inside the saved rows
+        add_review(&mut col, &card, start + 1_000, 2)?;
+        let inserted = fingerprint_against(&mut col, &saved)?;
+        assert!(!inserted.history_is_valid);
+        assert!(!inserted.history_prefix_is_valid);
+        col.storage
+            .db
+            .execute("delete from revlog where id = ?", [start + 1_000])?;
+        assert!(fingerprint_against(&mut col, &saved)?.history_prefix_is_valid);
+
+        // a saved review is deleted: the saved count now reaches one row
+        // further, into a review the state never saw
+        add_review(&mut col, &card, start + 5_000, 8)?;
+        col.storage
+            .db
+            .execute("delete from revlog where id = ?", [start])?;
+        let deleted = fingerprint_against(&mut col, &saved)?;
+        assert!(!deleted.history_prefix_is_valid);
+
+        // a saved state longer than the history cannot be its start
+        let longer = scheduler::RwkvHistoricalReviewIdentity {
+            review_count: saved.review_count + 10,
+            ..saved.clone()
+        };
+        assert!(!fingerprint_against(&mut col, &longer)?.history_prefix_is_valid);
+
+        // without a saved identity there is nothing to be the start of
+        assert!(
+            !col.rwkv_historical_review_fingerprint(
+                RwkvHistoricalReviewFingerprintRequest::default()
+            )?
+            .history_prefix_is_valid
+        );
 
         Ok(())
     }
