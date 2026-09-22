@@ -12810,8 +12810,11 @@ def _write_rwkv_recordings_progress(mw: object, **fields: object) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"at": int(time.time()), **fields}), encoding="utf-8"
+        # replaced, never truncated in place: a screen reads this file while
+        # the pass writes it, and `Path.write_text` empties the file first
+        _atomic_write(
+            path,
+            json.dumps({"at": int(time.time()), **fields}).encode("utf-8"),
         )
     except OSError:
         logger.exception("failed to save the RWKV recordings progress")
@@ -12839,7 +12842,10 @@ def _write_rwkv_recordings_marker(
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        # replaced, never truncated in place, for the same reason the
+        # progress record is
+        _atomic_write(
+            path,
             json.dumps(
                 {
                     **tag,
@@ -12847,8 +12853,7 @@ def _write_rwkv_recordings_marker(
                     "lastReviewId": last_review_id,
                     "rows": list(rows),
                 }
-            ),
-            encoding="utf-8",
+            ).encode("utf-8"),
         )
     except OSError:
         logger.exception("failed to save the RWKV recordings marker")
