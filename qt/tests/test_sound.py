@@ -164,8 +164,36 @@ def test_mpv_can_play_generated_wav(generated_wav: Path):
         ]
     )
 
-    result = subprocess.run(cmd, env=env, capture_output=True, timeout=30)
-    assert result.returncode == 0, result.stderr.decode()
+    # The bundled mpv deadlocks during start-up now and then, and the busier
+    # the machine, the more often. Measured on 2026-09-22 on this Windows PC:
+    # the same command 150 times on an idle machine always finished, median
+    # 251 ms; inside the full qt suite it hung in 4 to 6 runs of 40; and these
+    # tests alone, which never hung idle in 30 runs, hung in 12 of 40 with 14
+    # cores kept busy. A hung mpv uses 78 ms of CPU, waits on its own
+    # synchronisation objects with every thread (no LpcReply or LpcReceive, so
+    # nothing outside the process), and never exits.
+    #
+    # A play that works takes a quarter of a second, so each try gets 5
+    # seconds and there are three of them. That is a shorter wait than the one
+    # 30-second try it replaces, and it tells a deadlock (one try hangs, the
+    # next plays) apart from an mpv that cannot play the file at all (all
+    # three fail the same way).
+    failures = []
+    for attempt in range(3):
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        try:
+            _out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            failures.append(f"try {attempt + 1}: mpv did not exit within 5 s")
+            continue
+        if proc.returncode == 0:
+            return
+        failures.append(f"try {attempt + 1}: exit {proc.returncode}: {err.decode()}")
+    raise AssertionError("mpv never played the file: " + "; ".join(failures))
 
 
 @pytest.mark.skipif(is_lin, reason="mpv is not bundled for Linux")
