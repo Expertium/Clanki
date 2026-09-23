@@ -551,6 +551,28 @@ stored choice); "collection-wide settings are not on the deck-options page"
 (`ts/tests/e2e/deck-options.test.ts`); "dataForSaving" in
 `ts/routes/deck-options/lib.test.ts` (the save does not carry them).
 
+## deck-options.steps-warning-names-the-algorithm
+
+Given a preset whose last learning step or last relearning step is 1 day or
+more, a warning under that steps field says "When <algorithm> is enabled,
+steps of 1 day or more are not recommended.", where <algorithm> is the name
+the Algorithm list gives the preset's algorithm: FSRS-7, RWKV-Curve or
+RWKV-Instant. A last step under 1 day shows no warning. FSRS stays on under
+every algorithm (`deck-options.scheduler-choice`), so the warning shows under
+FSRS-7 and RWKV-Curve alike; RWKV-Instant hides the steps fields
+(`sched.rwkv-instant-no-steps`), so it never shows there.
+
+**Why:** Andrew, 2026-09-23, with RWKV-Curve on: "I have RWKV-Curve enabled,
+yet this colored box still says FSRS". A step of a day or more keeps a card
+from the algorithm that schedules it, whichever that is, so the advice holds
+under RWKV-Curve too; only the name was wrong.
+
+**Pinned by:** `the long-steps warning names the algorithm that schedules the
+preset`, `the long-steps warning shows from a last step of one day`
+(`ts/routes/deck-options/scheduler-choice.test.ts`),
+`test_the_long_steps_warning_names_the_algorithm_not_fsrs`
+(`qt/tests/test_ui_split.py`).
+
 ## deck-options.new-preset-defaults
 
 Given a new preset — added on the deck-options screen, created by

@@ -26,7 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         maxSameDayReviewsShown,
     } from "./same-day-reviews";
     import type { DeckOptionsState } from "./lib";
-    import { intervalSettingsApply } from "./scheduler-choice";
+    import { intervalSettingsApply, stepsTooLargeWarning } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -41,7 +41,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fsrs = state.fsrs;
 
     let stepsExceedGraduatingInterval: string;
-    let stepsTooLargeForFsrs: string;
+    let stepsTooLarge: string;
     $: {
         const lastLearnStepInDays = $config.learnSteps.length
             ? $config.learnSteps[$config.learnSteps.length - 1] / 60 / 24
@@ -50,10 +50,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             lastLearnStepInDays > $config.graduatingIntervalGood
                 ? tr.deckConfigLearningStepAboveGraduatingInterval()
                 : "";
-        stepsTooLargeForFsrs =
-            $fsrs && lastLearnStepInDays >= 1
-                ? tr.deckConfigStepsTooLargeForFsrs()
-                : "";
+        stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastLearnStepInDays);
     }
 
     $: goodExceedsEasy =
@@ -151,7 +148,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item>
-                <Warning warning={stepsTooLargeForFsrs} />
+                <Warning warning={stepsTooLarge} />
             </Item>
         {/if}
 
