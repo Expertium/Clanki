@@ -1557,7 +1557,8 @@ filtered deck by its original deck; a deck or preset that is missing counts
 as the Default preset). With no review or relearning cards, all cards
 count. Ties go to RWKV-Curve, then FSRS-7, then RWKV-Instant. Every preset
 then takes that algorithm (`sched.one-global-algorithm`); due dates and
-memory states do not change. Given a collection without cards, nothing is
+memory states do not change (a collection whose FSRS switch is off follows
+`sched.no-sm2` instead). Given a collection without cards, nothing is
 written, so a new, empty collection does not need a full sync.
 
 **Why:** Andrew, 2026-09-15: a collection whose presets used different
@@ -1570,6 +1571,30 @@ algorithms keeps the one that schedules the most review cards.
 (`rslib/src/deckconfig/algorithm.rs`);
 `new_empty_collection_should_not_require_full_sync`
 (`rslib/src/sync/collection/tests.rs`).
+
+## sched.no-sm2
+
+Given a collection that has cards and whose `fsrs` switch is off, when it
+opens (or after a normal sync or an .apkg import), SM-2 would schedule it,
+and Clanki has no SM-2: the switch goes on, and the collection's algorithm
+(the `schedulingAlgorithm` key, or without one the algorithm
+`sched.global-algorithm-migration` picks) becomes RWKV-Curve where it is
+FSRS-7; an RWKV-Curve or RWKV-Instant algorithm stays. Every preset takes
+it, and every card's memory state is computed from its review log, as a
+deck-options change of algorithm computes it
+(`sched.one-global-algorithm`); no due date changes and no review-log row
+is written. A collection whose switch is on keeps its algorithm, FSRS-7
+included, and a collection without cards is left untouched.
+
+**Why:** Andrew, 2026-09-23: turn FSRS on when a collection opens, so that
+SM-2 never schedules ("Sure, but the default algo is RWKV-Curve though");
+asked which collections, he chose only the ones that run SM-2, so a
+collection that already runs FSRS in Anki keeps FSRS-7.
+
+**Pinned by:** `an_sm2_collection_opens_on_rwkv_curve_with_fsrs_on`,
+`an_sm2_collection_keeps_its_rwkv_algorithm`,
+`only_sm2_collections_with_cards_change`
+(`rslib/src/deckconfig/algorithm.rs`).
 
 ## sched.algorithm-change-prompt
 

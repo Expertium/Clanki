@@ -159,7 +159,28 @@ impl Collection {
     /// the most cards, and the presets are brought in line with it (another
     /// client may have changed one). A collection without cards and without
     /// an algorithm is left untouched. True if anything changed.
+    ///
+    /// A collection whose FSRS switch is off would be scheduled by SM-2,
+    /// which Clanki does not use (spec sched.no-sm2): FSRS goes on, as a
+    /// deck-options choice would turn it on, and the collection runs
+    /// RWKV-Curve, the default, where it would have run FSRS-7; an RWKV
+    /// algorithm it already has stays.
     pub(crate) fn enforce_scheduling_algorithm_inner(&mut self) -> Result<bool> {
+        if !self.get_config_bool(BoolKey::Fsrs) {
+            let algorithm = match self.scheduling_algorithm() {
+                Some(algorithm) => algorithm,
+                None => match self.most_used_scheduling_algorithm()? {
+                    Some(algorithm) => algorithm,
+                    None => return Ok(false),
+                },
+            };
+            let algorithm = match algorithm {
+                SchedulingAlgorithm::Fsrs7 => SchedulingAlgorithm::RwkvCurve,
+                rwkv => rwkv,
+            };
+            self.change_scheduling_algorithm(algorithm)?;
+            return Ok(true);
+        }
         if let Some(algorithm) = self.scheduling_algorithm() {
             return self.mirror_scheduling_algorithm(algorithm);
         }
@@ -191,6 +212,8 @@ impl Collection {
     /// anything changed.
     pub(crate) fn enforce_scheduling_algorithm(&mut self) -> Result<bool> {
         let work_to_do = match self.scheduling_algorithm() {
+            // SM-2 would schedule it (spec sched.no-sm2)
+            Some(_) if !self.get_config_bool(BoolKey::Fsrs) => true,
             Some(algorithm) => self
                 .storage
                 .all_deck_config()?
@@ -303,6 +326,65 @@ mod test {
             .iter()
             .map(|config| SchedulingAlgorithm::of_preset(&config.inner))
             .collect()
+    }
+
+    // Pins spec/scheduling.md#sched.no-sm2
+    #[test]
+    fn an_sm2_collection_opens_on_rwkv_curve_with_fsrs_on() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, false, false)?;
+        NoteAdder::basic(&mut col).add(&mut col);
+        // SM-2 schedules this answer: FSRS-7 presets, FSRS off
+        col.answer_good();
+        assert_eq!(col.effective_scheduling_algorithm()?, Fsrs7);
+        let before = col.get_first_card();
+        assert!(before.memory_state.is_none());
+
+        assert!(col.enforce_scheduling_algorithm()?);
+
+        assert!(col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(col.scheduling_algorithm(), Some(RwkvCurve));
+        assert!(preset_algorithms(&col).iter().all(|a| *a == RwkvCurve));
+        // a memory state from the review log, and the due date unmoved
+        let after = col.get_first_card();
+        assert!(after.memory_state.is_some());
+        assert_eq!(after.due, before.due);
+        // the next open has nothing to do
+        assert!(!col.enforce_scheduling_algorithm()?);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.no-sm2
+    #[test]
+    fn an_sm2_collection_keeps_its_rwkv_algorithm() -> Result<()> {
+        let mut col = Collection::new();
+        add_cards(&mut col, DeckId(1), 2, true);
+        col.set_config(ConfigKey::SchedulingAlgorithm, &RwkvInstant)?;
+        col.set_config_bool(BoolKey::Fsrs, false, false)?;
+
+        assert!(col.enforce_scheduling_algorithm()?);
+
+        assert!(col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(col.scheduling_algorithm(), Some(RwkvInstant));
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.no-sm2: a collection that runs FSRS
+    // keeps FSRS-7, and one without cards is left alone
+    #[test]
+    fn only_sm2_collections_with_cards_change() -> Result<()> {
+        let mut col = Collection::new();
+        add_cards(&mut col, DeckId(1), 2, true);
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.enforce_scheduling_algorithm()?;
+        assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
+
+        let mut empty = Collection::new();
+        empty.set_config_bool(BoolKey::Fsrs, false, false)?;
+        assert!(!empty.enforce_scheduling_algorithm()?);
+        assert!(!empty.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(empty.scheduling_algorithm(), None);
+        Ok(())
     }
 
     // Pins spec/scheduling.md#sched.global-algorithm-migration
