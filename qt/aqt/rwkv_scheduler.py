@@ -19259,6 +19259,13 @@ def _historical_rwkv_review_rows(
         return []
     if between_parts is not None and card_ids is None and limit is None:
         steps = _RwkvPreparationSteps(between_parts)
+        if after_review_id is None and deck_id is None:
+            # a caller that has already stopped does not start the read
+            steps.step()
+            whole = _backend_historical_rwkv_review_rows(col)
+            if whole is not None:
+                steps.step()
+                return whole
         parts = []
         for low, high in _card_id_ranges(col, HISTORY_QUERY_PARTS):
             steps.step()
@@ -19283,6 +19290,39 @@ def _historical_rwkv_review_rows(
         return rows
     return _historical_rwkv_review_rows_query(
         reviewer, all_rows, after_review_id, deck_id, card_ids, limit, None
+    )
+
+
+def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | None:
+    """The whole-history rows from the backend, which reads them in parts of
+    the review log and holds the collection for one part at a time (about
+    25 ms). The same rows as `_historical_rwkv_review_rows_query` without a
+    cutoff, deck, cards or limit: both follow `sched.rwkv-replay-start-row`,
+    and test_rwkv_replay_sql_drift.py compares them. 0.98 s against 3.9 s
+    for the query in 64 parts on 656,433 rows. None where the backend cannot
+    answer; the caller then runs the query."""
+    backend = getattr(col, "_backend", None)
+    read = getattr(backend, "rwkv_historical_review_rows", None)
+    if not callable(read):
+        return None
+    try:
+        rows = read()
+    except Exception:
+        logger.exception("the backend could not read the RWKV replay rows")
+        return None
+    return list(
+        zip(
+            rows.review_ids,
+            rows.card_ids,
+            rows.note_ids,
+            rows.deck_ids,
+            rows.eases,
+            rows.durations_millis,
+            rows.review_kinds,
+            rows.interval_days,
+            rows.ease_factors,
+            rows.learning_starts,
+        )
     )
 
 

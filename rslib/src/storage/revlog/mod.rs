@@ -137,7 +137,7 @@ pub(crate) struct StudiedToday {
     pub seconds: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RwkvHistoricalReviewRow {
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
