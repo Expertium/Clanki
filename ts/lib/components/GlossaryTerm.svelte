@@ -42,6 +42,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 </script>
 
+<!-- focusable on purpose: the tooltip also opens on keyboard focus, and a
+     keyboard user has no other way to read the explanation -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <span class="glossary-term" tabindex="0" role="note" use:tooltip>
     <slot />
 </span>

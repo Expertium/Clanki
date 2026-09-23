@@ -192,11 +192,3 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
     </DynamicallySlottable>
 </TitledContainer>
-
-<style lang="scss">
-    .partly-on {
-        color: var(--fg-subtle);
-        font-size: 0.85em;
-        margin-top: -0.25em;
-    }
-</style>
