@@ -5,6 +5,7 @@ use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as Sch
 
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
@@ -61,6 +62,17 @@ impl Collection {
 
         let fsrs_preset = self.fsrs_preset_for_card(&card)?;
 
+        let algorithm = self.effective_scheduling_algorithm()?;
+        let advanced_ui = self.get_config_bool(BoolKey::AdvancedUi);
+        // FSRS-7's curve of an RWKV-Curve card, for the toggle in Advanced
+        // mode: FSRS-7's own states from the history, not the stored one,
+        // which holds RWKV-Curve's S90
+        let fsrs7_revlog = if advanced_ui && algorithm == SchedulingAlgorithm::RwkvCurve {
+            self.stats_revlog_entries_with_historical_memory_states(&card, revlog.clone())?
+        } else {
+            Vec::new()
+        };
+
         let fsrs_retrievability =
             card.memory_state
                 .zip(Some(seconds_elapsed))
@@ -109,11 +121,10 @@ impl Collection {
             desired_retention: card.desired_retention,
             extra_rows: vec![],
             rwkv_curve: None,
-            scheduling_algorithm: SchedulingAlgorithmProto::from(
-                self.effective_scheduling_algorithm()?,
-            ) as i32,
-            advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
+            scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
+            advanced_ui,
             recall_wording: self.recall_wording() as i32,
+            fsrs7_revlog,
         })
     }
 
@@ -159,6 +170,20 @@ impl Collection {
         self: &mut Collection,
         card: &Card,
         last_review_time: TimestampSecs,
+        revlog: Vec<RevlogEntry>,
+    ) -> Result<Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry>> {
+        Ok(with_current_memory_state_on_latest_review(
+            card.memory_state,
+            last_review_time,
+            self.stats_revlog_entries_with_historical_memory_states(card, revlog)?,
+        ))
+    }
+
+    /// The reviews, newest first, each with the memory state the card's
+    /// preset's FSRS parameters give it from the history before and at it.
+    fn stats_revlog_entries_with_historical_memory_states(
+        self: &mut Collection,
+        card: &Card,
         revlog: Vec<RevlogEntry>,
     ) -> Result<Vec<anki_proto::stats::card_stats_response::StatsRevlogEntry>> {
         let fsrs_preset = self.fsrs_preset_for_card(card)?;
@@ -207,17 +232,9 @@ impl Collection {
                 stats_entry.memory_state = memory_state.map(|s| s.into());
                 result.push(stats_entry);
             }
-            Ok(with_current_memory_state_on_latest_review(
-                card.memory_state,
-                last_review_time,
-                result.into_iter().rev().collect(),
-            ))
+            Ok(result.into_iter().rev().collect())
         } else {
-            Ok(with_current_memory_state_on_latest_review(
-                card.memory_state,
-                last_review_time,
-                revlog.iter().rev().map(stats_revlog_entry).collect(),
-            ))
+            Ok(revlog.iter().rev().map(stats_revlog_entry).collect())
         }
     }
 }
@@ -356,6 +373,44 @@ mod test {
             SchedulingAlgorithmProto::RwkvInstant
         );
         assert!(stats.advanced_ui);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.card-info-rwkv-curve (the FSRS-7 / RWKV-Curve toggle)
+    #[test]
+    fn an_rwkv_curve_card_carries_fsrs7s_own_states_only_in_advanced_mode() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![cid.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        // FSRS-7 draws its own curve from the plain reviews
+        assert!(col.card_stats(cid)?.fsrs7_revlog.is_empty());
+
+        // RWKV-Curve in Simple mode has no toggle
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        assert!(col.card_stats(cid)?.fsrs7_revlog.is_empty());
+
+        // under RWKV-Curve the card stores RWKV-Curve's S90, not FSRS-7's
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.memory_state.as_mut().unwrap().stability = 1234.0;
+        col.storage.update_card(&card)?;
+        let stats = col.card_stats(cid)?;
+        assert_eq!(
+            stats.scheduling_algorithm(),
+            SchedulingAlgorithmProto::RwkvCurve
+        );
+        assert_eq!(stats.fsrs7_revlog.len(), stats.revlog.len());
+        assert_eq!(stats.fsrs7_revlog[0].time, stats.revlog[0].time);
+        // the toggle's reviews carry FSRS-7's own state from the history...
+        let own = stats.fsrs7_revlog[0].memory_state.unwrap();
+        assert_ne!(own.stability, 1234.0);
+        assert!(own.stability > 0.0);
+        // ...while the plain reviews keep the stored one, as before
+        assert_eq!(stats.revlog[0].memory_state.unwrap().stability, 1234.0);
         Ok(())
     }
 

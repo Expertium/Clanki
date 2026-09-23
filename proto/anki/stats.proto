@@ -118,6 +118,11 @@ message CardStatsResponse {
   bool advanced_ui = 28;
   // How the card's chance of recall is named (spec ui.simple-recall-wording).
   config.RecallWording recall_wording = 29;
+  // The reviews again, newest first, each with FSRS-7's own memory state
+  // from the card's history, for card info's FSRS-7 / RWKV-Curve toggle.
+  // Only in Advanced mode, when the collection's algorithm is RWKV-Curve;
+  // empty otherwise (spec ui.card-info-rwkv-curve).
+  repeated StatsRevlogEntry fsrs7_revlog = 30;
 }
 
 message GraphsRequest {

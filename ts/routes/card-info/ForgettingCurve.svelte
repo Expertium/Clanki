@@ -15,7 +15,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         TimeRange,
         calculateMaxDays,
         chartRevlog,
+        CurveAlgorithm,
+        curveInputs,
         forgettingCurveMessage,
+        offersCurveToggle,
         type RwkvCurvePoints,
     } from "./forgetting-curve";
     import { defaultGraphBounds } from "../graphs/graph-helpers";
@@ -25,6 +28,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let desiredRetention: number;
     export let fsrsParams: number[] = [];
     export let rwkvCurve: RwkvCurvePoints | undefined = undefined;
+    /** FSRS-7's own reviews of an RWKV-Curve card, sent only in Advanced
+     * mode, for the FSRS-7 / RWKV-Curve toggle (spec ui.card-info-rwkv-curve). */
+    export let fsrs7Revlog: RevlogEntry[] = [];
     // Simple mode's tooltip says "Probability of recall" (spec
     // ui.simple-recall-wording)
     /** Whether the tooltip says "probability of recall" instead of
@@ -34,10 +40,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const bounds = defaultGraphBounds();
     const title = tr.cardStatsFsrsForgettingCurveTitle();
 
-    $: filteredRevlog = chartRevlog(revlog, rwkvCurve);
+    // the collection's algorithm first; the other one only on request
+    let chosen = CurveAlgorithm.RwkvCurve;
+    $: showsToggle = offersCurveToggle(rwkvCurve, fsrs7Revlog);
+    $: drawn = curveInputs(revlog, rwkvCurve, fsrs7Revlog, chosen);
+
+    $: filteredRevlog = chartRevlog(drawn.revlog, drawn.rwkvCurve);
     // why there is no curve, in plain words, instead of "NO DATA"
     // (spec ui.card-info-curve-messages)
-    $: emptyMessage = forgettingCurveMessage(revlog, rwkvCurve);
+    $: emptyMessage = forgettingCurveMessage(drawn.revlog, drawn.rwkvCurve);
     $: maxDays = calculateMaxDays(filteredRevlog, TimeRange.AllTime);
 
     let defaultTimeRange = TimeRange.Week;
@@ -60,12 +71,34 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         bounds,
         desiredRetention,
         fsrsParams,
-        rwkvCurve,
+        drawn.rwkvCurve,
         plainRecall,
     );
 </script>
 
 <div class="forgetting-curve">
+    {#if showsToggle}
+        <InputBox>
+            <div class="time-range-selector">
+                <label>
+                    <input
+                        type="radio"
+                        bind:group={chosen}
+                        value={CurveAlgorithm.RwkvCurve}
+                    />
+                    {tr.deckConfigSchedulerChoiceRwkvCurve()}
+                </label>
+                <label>
+                    <input
+                        type="radio"
+                        bind:group={chosen}
+                        value={CurveAlgorithm.Fsrs7}
+                    />
+                    {tr.deckConfigSchedulerChoiceFsrs()}
+                </label>
+            </div>
+        </InputBox>
+    {/if}
     {#if maxDays > 7}
         <InputBox>
             <div class="time-range-selector">
