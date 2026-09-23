@@ -29,7 +29,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         stillComputing,
         unavailableNotes,
     } from "./roc";
-    import { plainRecallWording, type RecallWording } from "@tslib/recall-wording";
 
     const pollDelayMs = 500;
     const bounds = rocBounds();
@@ -38,15 +37,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         readable("deck:current");
     const days =
         getContext<Readable<number> | undefined>("graphsDays") ?? readable(365);
-    // this graph loads its own data, so the wording comes from the page
-    // (spec ui.simple-recall-wording)
-    const advancedUi =
-        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
-    const recallWording =
-        getContext<Readable<RecallWording | undefined> | undefined>(
-            "graphsRecallWording",
-        ) ?? readable(undefined);
-    $: plainRecall = plainRecallWording($recallWording, $advancedUi);
 
     let svg: SVGElement | null = null;
     let progress: ReviewMetricsProgress | null = null;
@@ -143,7 +133,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Graph {title} {subtitle}>
-    <InfoTooltip slot="tooltip" text={rocExplanation(plainRecall)} />
+    <InfoTooltip slot="tooltip" text={rocExplanation()} />
     <div class="legend">
         {#each curves as curve (curve.algorithm)}
             <span>

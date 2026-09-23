@@ -5,11 +5,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import type { GraphsResponse } from "@generated/anki/stats_pb";
     import * as tr from "@generated/ftl";
-    import { plainRecallWording } from "@tslib/recall-wording";
     import { MONTH, timeSpan } from "@tslib/time";
-    import { createEventDispatcher, getContext } from "svelte";
-    import type { Readable } from "svelte/store";
-    import { readable } from "svelte/store";
+    import { createEventDispatcher } from "svelte";
 
     import Graph from "./Graph.svelte";
     import type { GraphPrefs } from "./graph-helpers";
@@ -50,12 +47,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     const title = tr.statisticsCardStabilityTitle();
-    // one setting chooses the wording (spec ui.simple-recall-wording)
-    const advancedUi =
-        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
-    $: subtitle = plainRecallWording(sourceData?.recallWording, $advancedUi)
-        ? tr.statisticsCardStabilitySubtitlePlain()
-        : tr.statisticsCardStabilitySubtitle();
+    const subtitle = tr.statisticsCardStabilitySubtitle();
     const month = timeSpan(1 * MONTH);
     const all = tr.statisticsRangeAllTime();
 </script>

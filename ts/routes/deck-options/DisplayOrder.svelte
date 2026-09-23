@@ -27,6 +27,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         reviewOrderChoices,
     } from "./choices";
     import type { DeckOptionsState } from "./lib";
+    import { helpForMode } from "./ui-split";
 
     export let state: DeckOptionsState;
     export let api: Record<string, never>;
@@ -36,9 +37,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const shown = state.settingShown;
     const defaults = state.defaults;
     const fsrs = state.fsrs;
-    // the plain wording never says "retrievability" (spec
-    // ui.simple-recall-wording)
-    const plainRecall = state.plainRecall;
+    // newGatherPriority and reviewSortOrder offer retrievability orders:
+    // Advanced mode only, with their help (spec ui.retrievability-advanced-only)
+    const advancedUi = state.advancedUi;
     $: rwkv = $config.rwkvReviewEnabled || $config.rwkvReviewInstantOrderEnabled;
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
@@ -84,10 +85,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: settings = {
         newGatherPriority: {
             title: tr.deckConfigNewGatherPriority(),
-            help:
-                ($plainRecall
-                    ? tr.deckConfigNewGatherPriorityTooltip2Plain()
-                    : tr.deckConfigNewGatherPriorityTooltip2()) + currentDeck,
+            help: tr.deckConfigNewGatherPriorityTooltip2() + currentDeck,
         },
         newCardSortOrder: {
             title: tr.deckConfigNewCardSortOrder(),
@@ -106,7 +104,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigReviewSortOrderTooltip() + currentDeck,
         },
     };
-    $: helpSections = Object.values(settings) as HelpItem[];
+    $: help = helpForMode<HelpItem>(settings, $advancedUi);
+    $: helpSections = Object.values(help);
 
     let modal: Modal;
     let carousel: Carousel;
@@ -136,13 +135,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     defaultValue={defaults.newCardGatherPriority}
                     choices={newGatherPriorityChoices(
                         $config.rwkvReviewInstantOrderEnabled,
-                        $plainRecall,
                     )}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("newGatherPriority"),
+                                Object.keys(help).indexOf("newGatherPriority"),
                             )}
                     >
                         {settings.newGatherPriority.title}
@@ -162,7 +160,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("newCardSortOrder"),
+                                Object.keys(help).indexOf("newCardSortOrder"),
                             )}
                     >
                         {settings.newCardSortOrder.title}
@@ -181,7 +179,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("newReviewPriority"),
+                                Object.keys(help).indexOf("newReviewPriority"),
                             )}
                     >
                         {settings.newReviewPriority.title}
@@ -200,7 +198,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("interdayStepPriority"),
+                                Object.keys(help).indexOf("interdayStepPriority"),
                             )}
                     >
                         {settings.interdayStepPriority.title}
@@ -214,13 +212,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <EnumSelectorRow
                     bind:value={$config.reviewOrder}
                     defaultValue={defaults.reviewOrder}
-                    choices={reviewOrderChoices($fsrs, rwkv, $plainRecall)}
+                    choices={reviewOrderChoices($fsrs, rwkv)}
                 >
                     <SettingTitle
                         on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("reviewSortOrder"),
-                            )}
+                            openHelpModal(Object.keys(help).indexOf("reviewSortOrder"))}
                     >
                         {settings.reviewSortOrder.title}
                     </SettingTitle>

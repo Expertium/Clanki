@@ -15,6 +15,8 @@ from aqt import AnkiQt, colors, gui_hooks
 from aqt.operations import QueryOp
 from aqt.operations.scheduling import add_or_update_filtered_deck
 from aqt.qt import *
+from aqt.retrievability import explanation as retrievability_explanation
+from aqt.retrievability import mentions_retrievability
 from aqt.theme import theme_manager
 from aqt.utils import (
     HelpPage,
@@ -94,6 +96,23 @@ class FilteredDeckConfigDialog(QDialog):
 
         self.form.order.addItems(visible_labels)
         self.form.order_2.addItems(visible_labels)
+        # The retrievability orders explain the word on hover; Simple mode
+        # shows no order at all, since its choices name retrievability (spec
+        # ui.retrievability-advanced-only). The stored order stays.
+        for combo in (self.form.order, self.form.order_2):
+            for row, label in enumerate(visible_labels):
+                if mentions_retrievability(label):
+                    combo.setItemData(
+                        row, retrievability_explanation(), Qt.ItemDataRole.ToolTipRole
+                    )
+        if not self.mw.advanced_ui():
+            for widget in (
+                self.form.label,
+                self.form.order,
+                self.form.label_4,
+                self.form.order_2,
+            ):
+                widget.hide()
 
         qconnect(self.form.allow_empty.stateChanged, self._on_allow_empty_toggled)
 

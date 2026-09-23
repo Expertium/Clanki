@@ -5,6 +5,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import { direction } from "@tslib/i18n";
 
+    import RetrievabilityText from "$lib/components/RetrievabilityText.svelte";
+
     import type { TableDatum } from "./graph-helpers";
 
     export let tableData: TableDatum[];
@@ -15,7 +17,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <tbody>
             {#each tableData as { label, value }}
                 <tr>
-                    <td class="align-end">{label}:</td>
+                    <!-- a label that names retrievability explains it on hover
+                    (spec ui.retrievability-advanced-only) -->
+                    <td class="align-end"><RetrievabilityText text={label} />:</td>
                     <td class="align-start">{value}</td>
                 </tr>
             {/each}

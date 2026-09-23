@@ -22,6 +22,10 @@ export function graphsForMode<T>(graphs: T[], simpleGraphs: T[] | null, advanced
 export interface GraphItem {
     id: string;
     data: Graph[];
+    /** The graph names retrievability, so only Advanced mode draws it,
+     * whatever the split says; it is no item of the split (spec
+     * ui.retrievability-advanced-only). */
+    advancedOnly?: boolean;
 }
 
 /** The split's item id of a graph. */
@@ -32,7 +36,13 @@ export function statsItemId(item: GraphItem): string {
 /** The graphs Simple mode shows (spec ui.split-configurable, whose defaults
  * are Reviews, Card Counts, Retention and Total Knowledge), in page order. */
 export function simpleGraphsOf<T>(graphs: T[], items: GraphItem[], simpleItems: SimpleItems | null): T[] {
-    return graphs.filter((_, index) => itemShown(statsItemId(items[index]), false, simpleItems));
+    return graphs.filter((_, index) => simpleShows(items[index], simpleItems));
+}
+
+/** Whether Simple mode draws a graph: never an Advanced-only one, even when
+ * the split cannot be read. */
+function simpleShows(item: GraphItem, simpleItems: SimpleItems | null): boolean {
+    return !item.advancedOnly && itemShown(statsItemId(item), false, simpleItems);
 }
 
 /**
@@ -48,7 +58,7 @@ export function simpleDataOf(items: GraphItem[], simpleItems: SimpleItems | null
     }
     const wanted = new Set<Graph>();
     for (const item of items) {
-        if (itemShown(statsItemId(item), false, simpleItems)) {
+        if (simpleShows(item, simpleItems)) {
             item.data.forEach((graph) => wanted.add(graph));
         }
     }

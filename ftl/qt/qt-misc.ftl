@@ -83,9 +83,9 @@ qt-misc-second =
 qt-misc-layout-auto-enabled = Responsive layout enabled
 qt-misc-layout-vertical-enabled = Vertical layout enabled
 qt-misc-layout-horizontal-enabled = Horizontal layout enabled
-qt-misc-rwkv-filtered-deck-preparation-failed = { $algorithm } retrievability scores could not be prepared, so the filtered deck was not rebuilt.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-qt-misc-rwkv-filtered-deck-preparation-failed-plain = { $algorithm } probability of recall scores could not be prepared, so the filtered deck was not rebuilt.
+# It can show in Simple mode (an order chosen in Advanced mode), so it does not
+# name retrievability (spec ui.retrievability-advanced-only).
+qt-misc-rwkv-filtered-deck-preparation-failed = { $algorithm } scores could not be prepared, so the filtered deck was not rebuilt.
 # Shown instead of the answer buttons until RWKV-Curve has calculated the
 # card's intervals. Plain words, no algorithm name (spec ui.plain-progress-text).
 qt-misc-rwkv-curve-intervals-pending = Getting this card ready…

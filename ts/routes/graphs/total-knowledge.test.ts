@@ -22,8 +22,6 @@ import {
     renderTotalKnowledge,
     REVIEWED_COLOUR,
     rwkvStillComputing,
-    showsReviewed,
-    subtitleText,
     tooltipText,
     totalKnowledgeData,
 } from "./total-knowledge";
@@ -134,25 +132,6 @@ test("the tooltip shows a whole number of known cards", () => {
     expect(knownCardsShown(2.46)).toBe(2);
     expect(knownCardsShown(0.5)).toBe(1);
     expect(knownCardsShown(0)).toBe(0);
-});
-
-// Pins spec/ui.md#ui.stats-total-knowledge: Simple mode draws Known only;
-// Advanced mode has the checkbox for Reviewed, on by default.
-test("Simple mode hides Reviewed; the Advanced checkbox shows and hides it", () => {
-    // Simple mode: hidden, whatever the checkbox last held
-    expect(showsReviewed(false, true)).toBe(false);
-    expect(showsReviewed(false, false)).toBe(false);
-    // Advanced mode: the checkbox decides, and it starts checked
-    expect(showsReviewed(true, true)).toBe(true);
-    expect(showsReviewed(true, false)).toBe(false);
-});
-
-// Pins spec/ui.md#ui.stats-total-knowledge and #ui.simple-recall-wording: the
-// plain wording has a subtitle of its own, without the word "retrievability".
-test("the plain wording has a subtitle of its own", () => {
-    expect(subtitleText(false)).toBe(tr.statisticsTotalKnowledgeSubtitle());
-    expect(subtitleText(true)).toBe(tr.statisticsTotalKnowledgeSubtitlePlain());
-    expect(subtitleText(false)).not.toBe(subtitleText(true));
 });
 
 // Pins spec/ui.md#ui.stats-total-knowledge

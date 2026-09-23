@@ -150,17 +150,11 @@ statistics-card-ease-title = Card Ease
 statistics-card-difficulty-title = Card Difficulty
 statistics-card-stability-title = Card Stability
 statistics-card-stability-subtitle = The delay at which retrievability falls to 90%.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-card-stability-subtitle-plain = The delay at which the probability of recall falls to 90%.
 statistics-median-stability = Median stability
 statistics-card-retrievability-title = Card Retrievability
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-card-retrievability-title-plain = Card Probability of Recall
 statistics-card-ease-subtitle = The lower the ease, the more frequently a card will appear.
 statistics-card-difficulty-subtitle2 = The higher the difficulty, the slower stability will increase.
 statistics-retrievability-subtitle = The retrievability of a card today.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-retrievability-subtitle-plain = The probability of recalling a card today.
 # eg "3 cards with 150-170% ease"
 statistics-card-ease-tooltip =
     { $cards ->
@@ -177,20 +171,12 @@ statistics-retrievability-tooltip =
         [one] { $cards } card with { $percent } retrievability
        *[other] { $cards } cards with { $percent } retrievability
     }
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-retrievability-tooltip-plain =
-    { $cards ->
-        [one] { $cards } card with { $percent } probability of recall
-       *[other] { $cards } cards with { $percent } probability of recall
-    }
 statistics-total-knowledge-title = Total Knowledge
 statistics-total-knowledge-subtitle = The number of cards you would recall on each day (the sum of their retrievability), over your whole review history.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-total-knowledge-subtitle-plain = The number of cards you would recall on each day (each card counts as its probability of recall), over your whole review history.
 # Legend: the sum of the cards' retrievability.
 statistics-total-knowledge-known = Known
-# Label of the Advanced-mode checkbox that draws the line: the cards reviewed at
-# least once by a day, the most that can be known.
+# Label of the checkbox that draws the line: the cards reviewed at least once by
+# a day, the most that can be known.
 statistics-total-knowledge-reviewed = Reviewed
 # Shown on hover; $cards is a decimal number.
 statistics-total-knowledge-known-cards = Known: { $cards } cards
@@ -200,11 +186,9 @@ statistics-total-knowledge-reviewed-cards =
        *[other] Reviewed: { $cards } cards
     }
 statistics-total-knowledge-rwkv-model-not-found = RWKV model not found
-# Shown under the graph in Simple mode.
-statistics-total-knowledge-description = This is Clanki's best estimate of how many cards you knew at each point in your review history.
-# Shown under the graph in Advanced mode; $algorithm is the collection's scheduling algorithm, such as FSRS-7.
+# Shown under the graph; $algorithm is the collection's scheduling algorithm, such as FSRS-7.
 statistics-total-knowledge-algorithm = Algorithm: { $algorithm }
-# Shown under the graph in Advanced mode, about the Reviewed line.
+# Shown under the graph, about the Reviewed line.
 statistics-total-knowledge-reviewed-upper-bound = Reviewed is an upper bound on your knowledge: it counts every card you have ever rated, as if you never forgot one.
 statistics-roc-title = AUC-ROC
 statistics-roc-subtitle = How well each algorithm separates the reviews you remembered from the ones you forgot.
@@ -220,8 +204,6 @@ statistics-roc-true-positive-rate = True positive rate
 statistics-roc-verdict = AUC: higher is better, and 0.5 is random chance.
 statistics-roc-description-curve = Each curve plots the true positive rate against the false positive rate, at every prediction threshold; the dashed line is random chance.
 statistics-roc-description-auc = A higher AUC is better. At 1.0, the algorithm always gives a higher retrievability to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-roc-description-auc-plain = A higher AUC is better. At 1.0, the algorithm always gives a higher probability of recall to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
 # Shown under every model-quality graph; it says which reviews the graph counts.
 statistics-model-metrics-description-reviews = Hard, Good and Easy count as remembered, Again counts as forgotten.
 # Shown under the graph; $reviews is how many ratings at least one algorithm scored.
@@ -236,13 +218,9 @@ statistics-model-metrics-none = { $reviews } reviews have no prediction from any
 statistics-model-metrics-role = { $algorithm } uses its "{ $role }" predictions, made before the algorithm had seen these reviews.
 statistics-calibration-title = Calibration
 statistics-calibration-subtitle = How close an algorithm's predicted retrievability is to what really happened.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-calibration-subtitle-plain = How close an algorithm's predicted probability of recall is to what really happened.
 # Label of the menu that picks the one algorithm the graph draws.
 statistics-calibration-algorithm = Algorithm
 statistics-calibration-predicted = Predicted retrievability
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-calibration-predicted-plain = Predicted probability of recall
 statistics-calibration-actual = Actual recall
 # The tiles above the graph.
 statistics-calibration-average-predicted = Average predicted
@@ -260,8 +238,6 @@ statistics-um-plus-pair = { $first } against { $second }
 # Label of the switch that also shows groups of fewer than 200 reviews.
 statistics-um-plus-small-groups = Show small groups (under 200 reviews)
 statistics-um-plus-difference = Difference in predicted retrievability
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-um-plus-difference-plain = Difference in predicted probability of recall
 statistics-um-plus-error = Predicted minus actual
 # Legend entry of one algorithm, with its UM+ and the slope of its line.
 statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }
@@ -411,8 +387,6 @@ statistics-cards-per-day =
 statistics-median-ease = Median ease
 statistics-median-difficulty = Median difficulty
 statistics-average-retrievability = Average retrievability
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-statistics-average-retrievability-plain = Average probability of recall
 statistics-estimated-total-knowledge = Estimated total knowledge
 statistics-save-pdf = Save PDF
 statistics-saved = Saved.

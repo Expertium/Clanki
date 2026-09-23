@@ -116,8 +116,8 @@ message CardStatsResponse {
       27;
   // Simple mode shows no difficulty, stability or retrievability.
   bool advanced_ui = 28;
-  // How the card's chance of recall is named (spec ui.simple-recall-wording).
-  config.RecallWording recall_wording = 29;
+  // was recall_wording, the removed recall-wording setting
+  reserved 29;
   // The reviews again, newest first, each with FSRS-7's own memory state
   // from the card's history, for card info's FSRS-7 / RWKV-Curve toggle.
   // Only in Advanced mode, when the collection's algorithm is RWKV-Curve;
@@ -518,9 +518,8 @@ message GraphsResponse {
   // (spec ui.mode-switch); the page's switch changes it through the main
   // window, not through this message.
   bool advanced_ui = 17;
-  // How the graphs name the chance of recall (spec
-  // ui.simple-recall-wording).
-  config.RecallWording recall_wording = 18;
+  // was recall_wording, the removed recall-wording setting
+  reserved 18;
 }
 
 message GraphPreferences {

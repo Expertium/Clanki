@@ -31,10 +31,13 @@ card-stats-fsrs-stability = Stability
 card-stats-fsrs-difficulty = Difficulty
 card-stats-fsrs-computed-r = FSRS computed R
 card-stats-fsrs-retrievability = Retrievability
-# The plain wording for retrievability: how likely you are to recall the card
-# right now. One setting chooses between the two (spec
-# ui.simple-recall-wording).
-card-stats-fsrs-retrievability-plain = Probability of recall
+# What "retrievability" means, shown when the word is hovered; the word
+# itself shows only in Advanced mode (spec ui.retrievability-advanced-only).
+card-stats-retrievability-explanation = Probability of recall
+# The word as it is written inside other texts of this language, in lower
+# case. Wherever a text contains it, it is underlined and explains itself on
+# hover; a text that words it differently is shown without the hover.
+card-stats-retrievability-term = retrievability
 card-stats-fsrs-forgetting-curve-title = Forgetting Curve
 card-stats-fsrs-forgetting-curve-first-week = First Week
 card-stats-fsrs-forgetting-curve-first-month = First Month

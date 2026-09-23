@@ -196,3 +196,14 @@ test("an RWKV-Instant card shows only RWKV's R, once, and no forgetting curve", 
         value: tr2.cardStatsCalculating(),
     });
 });
+
+// Pins spec/ui.md#ui.retrievability-advanced-only: the forgetting curve's
+// tooltip names retrievability, so Simple mode draws no curve.
+test("Simple mode draws no forgetting curve", () => {
+    for (const schedulingAlgorithm of [SchedulingAlgorithm.FSRS7, SchedulingAlgorithm.RWKV_CURVE]) {
+        expect(showsForgettingCurve(baseStats({ schedulingAlgorithm, memoryState: fsrs7State }))).toBe(true);
+        expect(
+            showsForgettingCurve(baseStats({ advancedUi: false, schedulingAlgorithm, memoryState: fsrs7State })),
+        ).toBe(false);
+    }
+});

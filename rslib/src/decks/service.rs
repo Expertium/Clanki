@@ -217,8 +217,7 @@ impl crate::services::DecksService for Collection {
     }
 
     fn filtered_deck_order_labels(&mut self) -> error::Result<generic::StringList> {
-        let plain_recall = self.plain_recall_wording();
-        Ok(search_order_labels(&self.tr, plain_recall).into())
+        Ok(search_order_labels(&self.tr).into())
     }
 
     fn set_deck_collapsed(
@@ -1016,60 +1015,22 @@ mod tests {
         );
     }
 
-    /// spec/ui.md, `ui.simple-recall-wording`.
+    /// spec/ui.md, `ui.retrievability-advanced-only`: the orders say
+    /// "retrievability" in both modes; Simple mode never shows the order
+    /// choice (qt/aqt/filtered_deck.py).
     #[test]
-    fn simple_mode_names_the_filtered_deck_orders_in_plain_words() {
+    fn the_filtered_deck_orders_say_retrievability() {
         let mut col = Collection::new();
-
-        let simple = DecksService::filtered_deck_order_labels(&mut col).unwrap();
-        assert!(
-            !simple
-                .vals
-                .iter()
-                .any(|label| label.to_lowercase().contains("retrievability")),
-            "Simple mode should not say retrievability, got {:?}",
-            simple.vals
-        );
-        assert!(simple
-            .vals
-            .contains(&"Ascending probability of recall".to_string()));
-        assert!(simple
-            .vals
-            .contains(&"Descending probability of recall".to_string()));
-
-        col.set_config_bool(BoolKey::AdvancedUi, true, false)
-            .unwrap();
-        let advanced = DecksService::filtered_deck_order_labels(&mut col).unwrap();
-        assert!(advanced
-            .vals
-            .contains(&"Ascending retrievability".to_string()));
-        assert!(advanced
-            .vals
-            .contains(&"Descending retrievability".to_string()));
-    }
-
-    /// spec/ui.md, `ui.simple-recall-wording`.
-    #[test]
-    fn the_wording_setting_names_the_filtered_deck_orders_in_both_modes() {
-        use crate::config::StringKey;
-
-        for (setting, expected) in [
-            ("technical", "Ascending retrievability"),
-            ("plain", "Ascending probability of recall"),
-        ] {
-            let mut col = Collection::new();
-            col.set_config_string(StringKey::RecallWording, setting, false)
+        for advanced in [false, true] {
+            col.set_config_bool(BoolKey::AdvancedUi, advanced, false)
                 .unwrap();
-            for advanced in [false, true] {
-                col.set_config_bool(BoolKey::AdvancedUi, advanced, false)
-                    .unwrap();
-                let labels = DecksService::filtered_deck_order_labels(&mut col).unwrap();
-                assert!(
-                    labels.vals.contains(&expected.to_string()),
-                    "{setting}, advanced={advanced}: got {:?}",
-                    labels.vals
-                );
-            }
+            let labels = DecksService::filtered_deck_order_labels(&mut col).unwrap();
+            assert!(labels
+                .vals
+                .contains(&"Ascending retrievability".to_string()));
+            assert!(labels
+                .vals
+                .contains(&"Descending retrievability".to_string()));
         }
     }
 

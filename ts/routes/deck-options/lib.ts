@@ -18,7 +18,6 @@ import { updateDeckConfigs } from "@generated/backend";
 import { postProto } from "@generated/post";
 import { localeCompare } from "@tslib/i18n";
 import { promiseWithResolver } from "@tslib/promise";
-import { plainRecallWording } from "@tslib/recall-wording";
 import type { SimpleItems } from "@tslib/ui-split";
 import { cloneDeep, isEqual, isEqualWith } from "lodash-es";
 import { tick } from "svelte";
@@ -94,10 +93,6 @@ export class DeckOptionsState {
     /** The collection-wide Advanced UI mode (spec ui.mode-switch); the page's switch
      * (UiModeSwitch) writes it at once, without Save. */
     readonly advancedUi: Writable<boolean>;
-    /** Whether the page says "probability of recall" instead of
-     * "retrievability" (spec ui.simple-recall-wording): the setting and the
-     * mode together. */
-    readonly plainRecall: Readable<boolean>;
     /** The Simple | Advanced split (spec ui.split-configurable): which items
      * Simple mode shows; null = not read, every setting shows. */
     readonly simpleItems: Writable<SimpleItems | null> = writable(null);
@@ -163,7 +158,6 @@ export class DeckOptionsState {
         );
         this.fsrsReschedule = writable(data.fsrsReschedule);
         this.advancedUi = writable(data.advancedUi);
-        this.plainRecall = derived(this.advancedUi, (advanced) => plainRecallWording(data.recallWording, advanced));
         this.settingShown = derived(
             [this.advancedUi, this.simpleItems],
             ([advanced, simpleItems]) => (key: SettingKey, placement: Placement) =>

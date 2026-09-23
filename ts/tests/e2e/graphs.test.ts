@@ -44,9 +44,10 @@ async function expectGraphConsoleMessage(
 }
 
 // Today and Card Retrievability are Advanced-only graphs: in Simple mode the
-// Stats page draws Reviews, Card Counts, Retention and Total Knowledge alone
-// (spec/ui.md, `ui.mode-switch`), so both tests below ask for Advanced mode
-// and put the collection back in Simple mode, its default, afterwards.
+// Stats page draws Reviews, Card Counts and Retention alone (spec/ui.md,
+// `ui.mode-switch`, `ui.retrievability-advanced-only`), so both tests below
+// ask for Advanced mode and put the collection back in Simple mode, its
+// default, afterwards.
 test("graphs page clears loading state after graph data arrives", async ({ page }) => {
     const graphConsoleMessages = collectGraphConsoleMessages(page);
     const responsePromise = graphResponsePromise(page);
@@ -101,15 +102,12 @@ test("RWKV retrievability graph is visible when FSRS is disabled", async ({ page
     }
 });
 
-// Pins spec/ui.md#ui.stats-total-knowledge: Simple mode draws the estimate
-// alone and explains it in plain words; Advanced mode has the Reviewed
-// checkbox, the algorithm's name and the upper-bound note. Neither the
-// checkbox nor a mode switch asks the backend for the graph again: the page
-// keeps the graph's block (the list is keyed by component), so its loaded
-// data and the checkbox itself survive the switch.
-test("Total Knowledge: the modes differ, and switching does not load it again", async ({ page }) => {
-    const description =
-        "This is Clanki's best estimate of how many cards you knew at each point in your review history.";
+// Pins spec/ui.md#ui.stats-total-knowledge and
+// #ui.retrievability-advanced-only: Total Knowledge names retrievability, so
+// only Advanced mode draws it, with the Reviewed checkbox (on when the graph
+// loads), the algorithm's name and the upper-bound note. The checkbox does
+// not ask the backend for the graph again.
+test("Total Knowledge: Advanced mode only, and the checkbox does not load it again", async ({ page }) => {
     const upperBound =
         "Reviewed is an upper bound on your knowledge: it counts every card you have ever rated, as if you never forgot one.";
     let loads = 0;
@@ -120,34 +118,26 @@ test("Total Knowledge: the modes differ, and switching does not load it again", 
     });
 
     await page.goto(graphDebugPath);
-    await expect(page.getByRole("heading", { name: "Total Knowledge" })).toBeVisible();
-    await expect.poll(() => loads).toBe(1);
+    await expect(page.getByRole("heading", { name: "Card Counts" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Total Knowledge" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Advanced", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Total Knowledge" })).toBeVisible();
+    await expect.poll(() => loads).toBe(1);
     const reviewed = page.getByRole("checkbox", { name: "Reviewed" });
     await expect(reviewed).toBeChecked();
     // Fluent wraps the algorithm's name in isolation marks, so match the start
     await expect(page.getByText(/^Algorithm: /)).toBeVisible();
     await expect(page.getByText(upperBound)).toBeVisible();
-    await expect(page.getByText(description)).toHaveCount(0);
 
     // the checkbox only hides the line
     await reviewed.uncheck();
     await expect(reviewed).not.toBeChecked();
-
-    await page.getByRole("button", { name: "Simple", exact: true }).click();
-    await expect(page.getByText(description)).toBeVisible();
-    await expect(page.getByRole("checkbox", { name: "Reviewed" })).toHaveCount(0);
-    await expect(page.getByText(upperBound)).toHaveCount(0);
-
-    // back to Advanced: the same graph, so the checkbox kept its state
-    await page.getByRole("button", { name: "Advanced", exact: true }).click();
-    await expect(page.getByRole("checkbox", { name: "Reviewed" })).not.toBeChecked();
     expect(loads).toBe(1);
 
     // leave the collection in its default mode for the tests that follow
     await page.getByRole("button", { name: "Simple", exact: true }).click();
-    await expect(page.getByText(description)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Total Knowledge" })).toHaveCount(0);
 });
 
 test("seeded RWKV graphs page clears loading after bulk stats scoring", async ({ page }) => {

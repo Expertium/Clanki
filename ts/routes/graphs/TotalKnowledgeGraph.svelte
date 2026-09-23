@@ -9,13 +9,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         TotalKnowledgeRwkvProgress,
         TotalKnowledgeRwkvProgress_State as RwkvState,
         TotalKnowledgeRwkvRequest,
-        type GraphsResponse,
         type TotalKnowledgeResponse,
     } from "@generated/anki/stats_pb";
     import { totalKnowledge } from "@generated/backend";
     import * as tr from "@generated/ftl";
     import { postProto } from "@generated/post";
-    import { plainRecallWording } from "@tslib/recall-wording";
     import { getContext, onDestroy } from "svelte";
     import { type Readable, readable } from "svelte/store";
 
@@ -32,14 +30,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderTotalKnowledge,
         REVIEWED_COLOUR,
         rwkvStillComputing,
-        showsReviewed,
-        subtitleText,
         totalKnowledgeData,
     } from "./total-knowledge";
-
-    /** Only for the recall wording (spec ui.simple-recall-wording); this
-     * graph loads its own data. */
-    export let sourceData: GraphsResponse | null = null;
 
     const pollDelayMs = 500;
     const bounds = defaultGraphBounds();
@@ -47,10 +39,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const search =
         getContext<Readable<string> | undefined>("graphsSearch") ??
         readable("deck:current");
-    // Simple mode drops the "Reviewed" bound and its checkbox
-    const advancedUi =
-        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
-    /** The Advanced-mode checkbox; on, so the bound shows by default. */
+    /** The checkbox of the "Reviewed" bound; on, so the bound shows by
+     * default (spec ui.stats-total-knowledge). */
     let reviewedChecked = true;
 
     let svg: SVGElement | null = null;
@@ -63,16 +53,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: load($search);
     $: data = response ? totalKnowledgeData(response, rwkv) : null;
-    $: reviewed = showsReviewed($advancedUi, reviewedChecked);
-    $: subtitle = subtitleText(
-        plainRecallWording(sourceData?.recallWording, $advancedUi),
-    );
     $: if (svg) {
         renderTotalKnowledge(
             svg,
             bounds,
             hasDrawing(response, rwkv) ? data : null,
-            reviewed,
+            reviewedChecked,
         );
     }
     $: overlay =
@@ -204,6 +190,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 
     const title = tr.statisticsTotalKnowledgeTitle();
+    // it names retrievability: the graph is Advanced-only (spec
+    // ui.retrievability-advanced-only)
+    const subtitle = tr.statisticsTotalKnowledgeSubtitle();
 </script>
 
 <Graph {title} {subtitle}>
@@ -212,16 +201,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             <span class="swatch" style={`background-color: ${KNOWN_COLOUR}`}></span>
             {tr.statisticsTotalKnowledgeKnown()}
         </span>
-        {#if $advancedUi}
-            <label class="reviewed-toggle">
-                <input type="checkbox" bind:checked={reviewedChecked} />
-                <span
-                    class="swatch"
-                    style={`background-color: ${REVIEWED_COLOUR}`}
-                ></span>
-                {tr.statisticsTotalKnowledgeReviewed()}
-            </label>
-        {/if}
+        <label class="reviewed-toggle">
+            <input type="checkbox" bind:checked={reviewedChecked} />
+            <span class="swatch" style={`background-color: ${REVIEWED_COLOUR}`}></span>
+            {tr.statisticsTotalKnowledgeReviewed()}
+        </label>
         {#if rwkvStillComputing(rwkv)}
             <span class="computing">{tr.cardStatsCalculating()}</span>
         {/if}
@@ -235,18 +219,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
     </svg>
     <div class="description">
-        {#if $advancedUi}
-            {#if response}
-                <div>
-                    {tr.statisticsTotalKnowledgeAlgorithm({
-                        algorithm: algorithmName(response.algorithm),
-                    })}
-                </div>
-            {/if}
-            <div>{tr.statisticsTotalKnowledgeReviewedUpperBound()}</div>
-        {:else}
-            <div>{tr.statisticsTotalKnowledgeDescription()}</div>
+        {#if response}
+            <div>
+                {tr.statisticsTotalKnowledgeAlgorithm({
+                    algorithm: algorithmName(response.algorithm),
+                })}
+            </div>
         {/if}
+        <div>{tr.statisticsTotalKnowledgeReviewedUpperBound()}</div>
     </div>
 </Graph>
 

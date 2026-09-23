@@ -123,7 +123,6 @@ impl Collection {
             rwkv_curve: None,
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
             advanced_ui,
-            recall_wording: self.recall_wording() as i32,
             fsrs7_revlog,
         })
     }

@@ -5,10 +5,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import type { GraphsResponse } from "@generated/anki/stats_pb";
     import * as tr from "@generated/ftl";
-    import { plainRecallWording } from "@tslib/recall-wording";
-    import { createEventDispatcher, getContext } from "svelte";
-    import type { Readable } from "svelte/store";
-    import { readable } from "svelte/store";
+    import { createEventDispatcher } from "svelte";
 
     import AxisTicks from "./AxisTicks.svelte";
     import Graph from "./Graph.svelte";
@@ -22,8 +19,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         prepareData,
         type RetrievabilityHistogramData,
         retrievabilityHistogramGraph,
-        retrievabilitySubtitle,
-        retrievabilityTitle,
         rwkvScoresPending,
         shouldShowRetrievabilityGraph,
     } from "./retrievability";
@@ -35,10 +30,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let prefs: GraphPrefs;
 
     const dispatch = createEventDispatcher<SearchEventMap>();
-    // one setting chooses the wording (spec ui.simple-recall-wording)
-    const advancedUi =
-        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
-    $: plainRecall = plainRecallWording(sourceData?.recallWording, $advancedUi);
 
     const bounds = defaultGraphBounds();
     let svg: HTMLElement | SVGElement | null = null;
@@ -52,14 +43,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             dispatch,
             $prefs.browserLinksSupported,
             PercentageRangeToQuantile(range),
-            plainRecall,
         );
     }
 
     $: retrievabilityHistogramGraph(svg as SVGElement, bounds, histogramData);
 
-    $: title = retrievabilityTitle(plainRecall);
-    $: subtitle = retrievabilitySubtitle(plainRecall);
+    const title = tr.statisticsCardRetrievabilityTitle();
+    const subtitle = tr.statisticsRetrievabilitySubtitle();
 </script>
 
 {#if shouldShowRetrievabilityGraph(sourceData)}

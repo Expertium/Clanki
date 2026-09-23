@@ -31,11 +31,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     /** FSRS-7's own reviews of an RWKV-Curve card, sent only in Advanced
      * mode, for the FSRS-7 / RWKV-Curve toggle (spec ui.card-info-rwkv-curve). */
     export let fsrs7Revlog: RevlogEntry[] = [];
-    // Simple mode's tooltip says "Probability of recall" (spec
-    // ui.simple-recall-wording)
-    /** Whether the tooltip says "probability of recall" instead of
-     * "retrievability" (spec ui.simple-recall-wording). */
-    export let plainRecall: boolean = false;
     let svg: HTMLElement | SVGElement | null = null;
     const bounds = defaultGraphBounds();
     const title = tr.cardStatsFsrsForgettingCurveTitle();
@@ -72,7 +67,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         desiredRetention,
         fsrsParams,
         drawn.rwkvCurve,
-        plainRecall,
     );
 </script>
 

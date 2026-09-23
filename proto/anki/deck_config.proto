@@ -313,9 +313,8 @@ message DeckConfigsForUpdate {
   // The collection's algorithm; a collection without one reads as its
   // Default preset's.
   SchedulingAlgorithm scheduling_algorithm = 23;
-  // How the page names the chance of recall (spec
-  // ui.simple-recall-wording).
-  config.RecallWording recall_wording = 24;
+  // was recall_wording, the removed recall-wording setting
+  reserved 24;
 }
 
 enum UpdateDeckConfigsMode {

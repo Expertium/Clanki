@@ -8,15 +8,12 @@ import {
     GraphsResponse_Retrievability_Series,
 } from "@generated/anki/stats_pb";
 import * as tr from "@generated/ftl";
-import { plainRecallWording, RecallWording } from "@tslib/recall-wording";
 import { expect, test } from "vitest";
 
 import type { GraphData } from "./retrievability";
 import {
     fsrsColour,
     prepareData,
-    retrievabilitySubtitle,
-    retrievabilityTitle,
     rwkvColour,
     rwkvScoresPending,
     shouldShowRetrievabilityGraph,
@@ -126,32 +123,7 @@ function noSearch(): void {
     return;
 }
 
-// Pins spec/ui.md#ui.simple-recall-wording
-test("with the plain wording the graph says probability of recall", () => {
-    const plain = prepareData(graphData(SchedulingAlgorithm.FSRS7), noSearch, true, undefined, true);
-    const technical = prepareData(graphData(SchedulingAlgorithm.FSRS7), noSearch, true, undefined, false);
-
-    expect(plain[1][0].label).toBe(tr.statisticsAverageRetrievabilityPlain());
-    expect(technical[1][0].label).toBe(tr.statisticsAverageRetrievability());
-    expect(retrievabilityTitle(true)).toBe(tr.statisticsCardRetrievabilityTitlePlain());
-    expect(retrievabilityTitle(false)).toBe(tr.statisticsCardRetrievabilityTitle());
-    expect(retrievabilitySubtitle(true)).toBe(
-        tr.statisticsRetrievabilitySubtitlePlain(),
-    );
-    expect(retrievabilitySubtitle(false)).toBe(tr.statisticsRetrievabilitySubtitle());
-});
-
-// Pins spec/ui.md#ui.simple-recall-wording
-test("the wording setting and the mode together choose the graph's title", () => {
-    const cases: [RecallWording, boolean, string][] = [
-        [RecallWording.BY_MODE, false, tr.statisticsCardRetrievabilityTitlePlain()],
-        [RecallWording.BY_MODE, true, tr.statisticsCardRetrievabilityTitle()],
-        [RecallWording.TECHNICAL, false, tr.statisticsCardRetrievabilityTitle()],
-        [RecallWording.TECHNICAL, true, tr.statisticsCardRetrievabilityTitle()],
-        [RecallWording.PLAIN, false, tr.statisticsCardRetrievabilityTitlePlain()],
-        [RecallWording.PLAIN, true, tr.statisticsCardRetrievabilityTitlePlain()],
-    ];
-    for (const [setting, advanced, expected] of cases) {
-        expect(retrievabilityTitle(plainRecallWording(setting, advanced))).toBe(expected);
-    }
+test("the table names the average retrievability", () => {
+    const [, table] = prepareData(graphData(SchedulingAlgorithm.FSRS7), noSearch, true);
+    expect(table[0].label).toBe(tr.statisticsAverageRetrievability());
 });

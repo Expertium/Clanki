@@ -15,7 +15,8 @@
  * every setting, as before.
  *
  * The item ids are "deckOptions." + the keys below; qt/aqt/ui_split.py lists
- * the same ones, in the same order, with their names and defaults.
+ * the same ones, in the same order, with their names and defaults. The
+ * settings of ADVANCED_ONLY are not items of the split.
  */
 
 import { itemShown, type SimpleItems } from "@tslib/ui-split";
@@ -54,13 +55,7 @@ export const SECTIONS = {
     dailyLimits: ["newLimit", "reviewLimit", "dailyLimitTabs"],
     newCards: ["learningSteps", "maxSameDayReviews", "insertionOrder"],
     lapses: ["relearningSteps", "leechThreshold", "leechAction", "leechOnlyIfYoung"],
-    displayOrder: [
-        "newGatherPriority",
-        "newCardSortOrder",
-        "newReviewPriority",
-        "interdayStepPriority",
-        "reviewSortOrder",
-    ],
+    displayOrder: ["newCardSortOrder", "newReviewPriority", "interdayStepPriority"],
     algorithm: [
         "algorithm",
         "desiredRetention",
@@ -78,7 +73,6 @@ export const SECTIONS = {
         "rwkvAllowSameDayReview",
         "rwkvMinInterveningReviews",
         "rwkvMinElapsedSecs",
-        "rwkvMinimumReviewsPerDay",
         "rwkvCandidateRefresh",
         "rwkvRefreshInterval",
         "rwkvRefreshOnExit",
@@ -96,13 +90,31 @@ export const SECTIONS = {
     ],
 } as const;
 
+/**
+ * The settings that name retrievability, in their choices or their help
+ * (spec ui.retrievability-advanced-only): the two orders that offer
+ * retrievability orders, and RWKV's minimum reviews per day. Only Advanced
+ * mode draws them, each in its own section. They are not items of the split,
+ * so Simple mode never draws them, whatever the split says and when it
+ * cannot be read.
+ */
+export const ADVANCED_ONLY = [
+    "newGatherPriority",
+    "reviewSortOrder",
+    "rwkvMinimumReviewsPerDay",
+] as const;
+
 export type Section = keyof typeof SECTIONS;
-export type SettingKey = (typeof SECTIONS)[Section][number] | (typeof CURATED)[number];
+export type SettingKey =
+    | (typeof SECTIONS)[Section][number]
+    | (typeof CURATED)[number]
+    | (typeof ADVANCED_ONLY)[number];
 
 /** Where a setting is drawn: the Simple section, or an Advanced-mode section. */
 export type Placement = "simple" | "section";
 
-/** Every setting once, in page order: the Simple section's, then the others. */
+/** Every setting of the split once, in page order: the Simple section's,
+ * then the others. ADVANCED_ONLY is not in it. */
 export function allSettings(): SettingKey[] {
     const keys: SettingKey[] = [...CURATED];
     for (const settings of Object.values(SECTIONS)) {
@@ -120,12 +132,13 @@ export function deckOptionsItemId(key: SettingKey): string {
 }
 
 const inSimpleSection = new Set<string>(IN_SIMPLE_SECTION);
+const advancedOnly = new Set<string>(ADVANCED_ONLY);
 
 /**
  * Whether a setting is drawn at a place. Advanced mode draws the sections
  * with every setting (and never the Simple section). Simple mode draws each
  * setting the split shows once: in the Simple section (IN_SIMPLE_SECTION) or
- * in its own section.
+ * in its own section; it never draws ADVANCED_ONLY.
  */
 export function settingShown(
     key: SettingKey,
@@ -136,8 +149,23 @@ export function settingShown(
     if (advanced) {
         return placement === "section";
     }
+    if (advancedOnly.has(key)) {
+        return false;
+    }
     const shown = itemShown(deckOptionsItemId(key), false, simpleItems);
     return shown && (placement === "simple") === inSimpleSection.has(key);
+}
+
+/**
+ * The help of a section's settings, as its help modal lists them: Simple
+ * mode leaves out the help of ADVANCED_ONLY, which names retrievability
+ * (spec ui.retrievability-advanced-only).
+ */
+export function helpForMode<T>(help: Record<string, T>, advanced: boolean): Record<string, T> {
+    if (advanced) {
+        return help;
+    }
+    return Object.fromEntries(Object.entries(help).filter(([key]) => !advancedOnly.has(key)));
 }
 
 /** Whether Simple mode draws a section: when it has a setting to show. */
