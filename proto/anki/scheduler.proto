@@ -178,11 +178,6 @@ service SchedulerService {
       returns (RwkvReviewInputRowsForCardsResponse);
   rpc GetFsrsPresetIdsForCards(cards.CardIds)
       returns (FsrsPresetIdsForCardsResponse);
-  // Computes the canonical RWKV history identity inside the collection
-  // backend, avoiding a full revlog transfer through Python when validating a
-  // persisted state cache.
-  rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
-      returns (RwkvHistoricalReviewFingerprintResponse);
   // Saves RWKV-Curve's per-review curve sources in the cache beside the
   // collection (never synced), replacing sources saved under another tag
   // (spec ui.card-info-rwkv-curve). Returns how many it saved.
@@ -217,6 +212,13 @@ service BackendSchedulerService {
   rpc FsrsBenchmark(FsrsBenchmarkRequest) returns (FsrsBenchmarkResponse);
   // Used for exporting revlogs for algorithm research.
   rpc ExportDataset(ExportDatasetRequest) returns (generic.Empty);
+  // Computes the canonical RWKV history identity inside the collection
+  // backend, avoiding a full revlog transfer through Python when validating a
+  // persisted state cache. Holds the collection only to read, in parts of
+  // the review log, never while it hashes; a write between two parts makes
+  // it read again.
+  rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
+      returns (RwkvHistoricalReviewFingerprintResponse);
 }
 
 message SchedulingState {

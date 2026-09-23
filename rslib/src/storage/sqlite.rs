@@ -583,6 +583,18 @@ fn trace(event: TraceEvent) {
 }
 
 impl SqliteStorage {
+    /// Differs after anything wrote to the collection, or to a database
+    /// attached to it: the connection's identity and the rows it changed
+    /// since it opened. The collection is opened in exclusive mode, so every
+    /// write goes through this connection. A read done in parts, with the
+    /// collection free in between, is one read when the stamp is the same
+    /// before the first part and after the last.
+    pub(crate) fn change_stamp(&self) -> (usize, u64) {
+        // SAFETY: the handle's address is read, never the handle
+        let connection = unsafe { self.db.handle() } as usize;
+        (connection, self.db.total_changes())
+    }
+
     pub(crate) fn open_or_create(
         path: &Path,
         tr: &I18n,
