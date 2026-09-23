@@ -22149,9 +22149,7 @@ def _state_cache_read_harness(
         paths.append("whole history")
         raise _StopTheWholeHistoryRead()
 
-    monkeypatch.setattr(
-        rwkv_scheduler, "_historical_rwkv_review_inputs", whole_history
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_historical_rwkv_review_inputs", whole_history)
     return fingerprint_calls, paths, restored
 
 
