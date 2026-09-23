@@ -1218,7 +1218,7 @@ impl SqliteStorage {
         } = reader;
         if let Some(after) = after_card_id {
             let read = self.rwkv_historical_review_cards_part(cards, after, limit)?;
-            if max_rows.map_or(false, |max_rows| read == max_rows) {
+            if max_rows == Some(read) {
                 return Ok(false);
             }
             *after_card_id = None;

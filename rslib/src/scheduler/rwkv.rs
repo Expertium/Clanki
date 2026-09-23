@@ -1769,7 +1769,7 @@ mod test {
         col.add_card(&mut first)?;
         col.add_card(&mut second)?;
         let start = first.id.0.max(second.id.0) + 10_000;
-        let mut add = |card_id: CardId, at: i64, kind: RevlogReviewKind, button: u8, factor| {
+        let add = |card_id: CardId, at: i64, kind: RevlogReviewKind, button: u8, factor| {
             col.storage.add_revlog_entry(
                 &RevlogEntry {
                     id: RevlogId(start + at * 1_000),
@@ -2623,12 +2623,12 @@ mod test {
             .map_or(100, |pairs| pairs.parse().unwrap());
         let mut col = crate::collection::CollectionBuilder::new(path).build()?;
         let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
-        let mut one_piece = |col: &mut Collection| -> Result<_> {
+        let one_piece = |col: &mut Collection| -> Result<_> {
             let at = Instant::now();
             let fingerprint = col.rwkv_historical_review_fingerprint(Default::default())?;
             Ok((fingerprint, ms(at.elapsed())))
         };
-        let mut in_parts = |col: &mut Collection| -> Result<_> {
+        let in_parts = |col: &mut Collection| -> Result<_> {
             let mut longest = 0f64;
             let at = Instant::now();
             let fingerprint = rwkv_historical_review_fingerprint_in_parts(
