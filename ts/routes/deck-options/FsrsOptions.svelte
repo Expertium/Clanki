@@ -363,15 +363,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $config.relearnSteps,
         $config.maximumReviewInterval,
         $config.fsrsMinimumIntervalSecs,
-        $config.graduatingIntervalGood,
-        $config.graduatingIntervalEasy,
-        $config.initialEase,
-        $config.hardMultiplier,
-        $config.easyMultiplier,
-        $config.intervalMultiplier,
         $config.leechThreshold,
-        $config.lapseMultiplier,
-        $config.minimumLapseInterval,
     );
 
     const DESIRED_RETENTION_LOW_THRESHOLD = 0.8;
@@ -410,15 +402,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         _relearnSteps: number[],
         _maximumReviewInterval: number,
         _fsrsMinimumIntervalSecs: number,
-        _graduatingIntervalGood: number,
-        _graduatingIntervalEasy: number,
-        _initialEase: number,
-        _hardMultiplier: number,
-        _easyMultiplier: number,
-        _intervalMultiplier: number,
         _leechThreshold: number,
-        _lapseMultiplier: number,
-        _minimumLapseInterval: number,
     ): Promise<void> {
         const currentConfig = withFsrs7Params($config, params);
         // This runs again whenever the config store is set, also when

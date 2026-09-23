@@ -16,7 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
-    import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
+    import type { HelpItem } from "$lib/components/types";
 
     import { leechChoices } from "./choices";
     import type { DeckOptionsState } from "./lib";
@@ -38,16 +38,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // (spec sched.rwkv-instant-no-steps)
     $: intervalSettings = intervalSettingsApply($config);
 
-    let stepsExceedMinimumInterval: string;
     let stepsTooLarge: string;
     $: {
         const lastRelearnStepInDays = $config.relearnSteps.length
             ? $config.relearnSteps[$config.relearnSteps.length - 1] / 60 / 24
             : 0;
-        stepsExceedMinimumInterval =
-            !$fsrs && lastRelearnStepInDays > $config.minimumLapseInterval
-                ? tr.deckConfigRelearningStepsAboveMinimumInterval()
-                : "";
         stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastRelearnStepInDays);
     }
 
@@ -56,12 +51,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRelearningSteps(),
             help: tr.deckConfigRelearningStepsTooltip(),
             url: HelpPage.DeckOptions.relearningSteps,
-        },
-        minimumInterval: {
-            title: tr.schedulingMinimumInterval(),
-            help: tr.deckConfigMinimumIntervalTooltip(),
-            url: HelpPage.DeckOptions.minimumInterval,
-            sched: HelpItemScheduler.SM2,
         },
         leechThreshold: {
             title: tr.schedulingLeechThreshold(),
@@ -129,31 +118,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
              (spec sched.same-day-steps-always-on); there is no switch.
              "Skip learning/relearning queues" is a Preferences setting
              (spec deck-options.collection-wide-in-preferences). -->
-
-        {#if !$fsrs}
-            {#if $shown("lapseMinimumInterval", "section")}
-                <Item>
-                    <SpinBoxRow
-                        bind:value={$config.minimumLapseInterval}
-                        defaultValue={defaults.minimumLapseInterval}
-                        min={1}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("minimumInterval"),
-                                )}
-                        >
-                            {settings.minimumInterval.title}
-                        </SettingTitle>
-                    </SpinBoxRow>
-                </Item>
-            {/if}
-        {/if}
-
-        <Item>
-            <Warning warning={stepsExceedMinimumInterval} />
-        </Item>
 
         {#if $shown("leechThreshold", "section")}
             <Item>

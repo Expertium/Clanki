@@ -52,8 +52,8 @@ export const IN_SIMPLE_SECTION: readonly string[] = [
  * CURATED that the section also shows (in Advanced mode) is listed too. */
 export const SECTIONS = {
     dailyLimits: ["newLimit", "reviewLimit", "dailyLimitTabs"],
-    newCards: ["learningSteps", "maxSameDayReviews", "graduatingInterval", "easyInterval", "insertionOrder"],
-    lapses: ["relearningSteps", "lapseMinimumInterval", "leechThreshold", "leechAction", "leechOnlyIfYoung"],
+    newCards: ["learningSteps", "maxSameDayReviews", "insertionOrder"],
+    lapses: ["relearningSteps", "leechThreshold", "leechAction", "leechOnlyIfYoung"],
     displayOrder: [
         "newGatherPriority",
         "newCardSortOrder",
@@ -93,11 +93,6 @@ export const SECTIONS = {
         "maximumInterval",
         "fsrsMinimumInterval",
         "ignoreReviewsBefore",
-        "startingEase",
-        "easyBonus",
-        "intervalModifier",
-        "hardInterval",
-        "newInterval",
     ],
 } as const;
 

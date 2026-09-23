@@ -7,7 +7,6 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 import aqt
-import aqt.deckconf
 import aqt.fsrs_predictions
 import aqt.main
 from anki.cards import Card
@@ -19,7 +18,6 @@ from aqt.qt import *
 from aqt.qt import sip
 from aqt.theme import theme_manager
 from aqt.utils import (
-    KeyboardModifiersPressed,
     disable_help_button,
     restoreGeom,
     saveGeom,
@@ -311,12 +309,9 @@ def display_options_for_deck_id(deck_id: DeckId) -> None:
 
 def display_options_for_deck(deck: DeckDict) -> None:
     if not deck["dyn"]:
-        if KeyboardModifiersPressed().shift or not aqt.mw.col.v3_scheduler():
-            deck_legacy = aqt.mw.col.decks.get(DeckId(deck["id"]))
-            assert deck_legacy is not None
-            aqt.deckconf.DeckConf(aqt.mw, deck_legacy)
-        else:
-            DeckOptionsDialog(aqt.mw, deck)
+        # never the old Qt dialog (Shift+click opened it): it shows the SM-2
+        # settings, which Clanki has none of (spec deck-options.no-sm2-settings)
+        DeckOptionsDialog(aqt.mw, deck)
     else:
         aqt.dialogs.open("FilteredDeckConfigDialog", aqt.mw, deck_id=deck["id"])
 

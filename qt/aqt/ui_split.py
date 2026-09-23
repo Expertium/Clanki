@@ -475,8 +475,6 @@ DECK_OPTIONS_SETTINGS: list[
         [
             ("learningSteps", tr.deck_config_learning_steps, False),
             ("maxSameDayReviews", tr.deck_config_max_same_day_reviews, False),
-            ("graduatingInterval", tr.scheduling_graduating_interval, False),
-            ("easyInterval", tr.scheduling_easy_interval, False),
             ("insertionOrder", tr.deck_config_new_insertion_order, False),
         ],
     ),
@@ -484,7 +482,6 @@ DECK_OPTIONS_SETTINGS: list[
         tr.scheduling_lapses,
         [
             ("relearningSteps", tr.deck_config_relearning_steps, False),
-            ("lapseMinimumInterval", tr.scheduling_minimum_interval, False),
             ("leechThreshold", tr.scheduling_leech_threshold, False),
             ("leechAction", tr.scheduling_leech_action, False),
             ("leechOnlyIfYoung", tr.deck_config_leech_only_if_young, False),
@@ -593,11 +590,6 @@ DECK_OPTIONS_SETTINGS: list[
             ("maximumInterval", tr.scheduling_maximum_interval, False),
             ("fsrsMinimumInterval", tr.scheduling_minimum_interval, False),
             ("ignoreReviewsBefore", tr.deck_config_ignore_before, False),
-            ("startingEase", tr.scheduling_starting_ease, False),
-            ("easyBonus", tr.scheduling_easy_bonus, False),
-            ("intervalModifier", tr.scheduling_interval_modifier, False),
-            ("hardInterval", tr.scheduling_hard_interval, False),
-            ("newInterval", tr.scheduling_new_interval, False),
         ],
     ),
 ]
