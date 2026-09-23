@@ -29,8 +29,10 @@ pub(crate) enum RoleChoice {
     /// The first role of `honest_roles` that has any row, because that list
     /// is in order of honesty.
     FirstHonest,
-    /// The role with the most rows, because every role is equally honest
-    /// and the comparison should rest on as many ratings as it can.
+    /// Every honest role at once, and of each review the row written last,
+    /// whatever its role: every role is equally honest, and the newest row
+    /// is the current model's (Andrew, 2026-09-23: the role with the most
+    /// rows had kept an older recording on the graph).
     ///
     /// This is only correct when the STORED VALUE IS THE RAW MODEL OUTPUT
     /// and the weights are frozen. Both RWKV series qualify: RWKV-Instant
@@ -40,7 +42,7 @@ pub(crate) enum RoleChoice {
     /// collection - a calibration map, a per-collection offset - that
     /// series must use `FirstHonest` instead, because its roles then
     /// differ in honesty and the biggest one is not the safest one.
-    MostRows,
+    NewestRow,
 }
 
 /// Whether the algorithm can give its prediction of a review that has
@@ -119,12 +121,12 @@ pub(crate) const FSRS7: PredictsRecall = PredictsRecall {
 
 /// RWKV's weights are frozen and were trained on other people's reviews, so
 /// a replayed prediction cannot have seen the review whatever role its row
-/// carries. With no honesty order to keep, it takes the role that covers
-/// the most reviews.
+/// carries. With no honesty order to keep, it takes the newest row of each
+/// review across its roles.
 pub(crate) const RWKV_CURVE: PredictsRecall = PredictsRecall {
     algorithm: SchedulingAlgorithmProto::RwkvCurve,
     honest_roles: &["test_fold", "post_optimization", "final_fit"],
-    role_choice: RoleChoice::MostRows,
+    role_choice: RoleChoice::NewestRow,
     past_review: PastReview::Recorded,
     store: PredictionStore::Generic,
 };
@@ -132,7 +134,7 @@ pub(crate) const RWKV_CURVE: PredictsRecall = PredictsRecall {
 pub(crate) const RWKV_INSTANT: PredictsRecall = PredictsRecall {
     algorithm: SchedulingAlgorithmProto::RwkvInstant,
     honest_roles: &["test_fold", "post_optimization", "final_fit"],
-    role_choice: RoleChoice::MostRows,
+    role_choice: RoleChoice::NewestRow,
     past_review: PastReview::Recorded,
     store: PredictionStore::Legacy(RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE),
 };

@@ -220,6 +220,16 @@ pub(crate) struct SearchedRating {
     pub button_chosen: u8,
 }
 
+/// `roles` as an SQL list of string literals. The roles are the algorithms'
+/// own constant names, never user input; a quote in one is doubled anyway.
+fn role_list(roles: &[&str]) -> String {
+    roles
+        .iter()
+        .map(|role| format!("'{}'", role.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// One prediction per review, from rows that arrive in review order.
 ///
 /// This is the row `row_number() over (partition by revlog_id order by
@@ -703,20 +713,6 @@ impl SqliteStorage {
         })
     }
 
-    /// How many reviews each sample role holds, for ONE algorithm.
-    pub(crate) fn review_prediction_roles(&self, algorithm: i32) -> Result<Vec<(String, u32)>> {
-        self.ensure_review_predictions_schema()?;
-        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
-        self.db
-            .prepare_cached(&format!(
-                "select sample_role, count(distinct revlog_id) from {table}
-                 where algorithm = ?1
-                 group by sample_role"
-            ))?
-            .query_and_then((algorithm,), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
-    }
-
     /// Whether ONE algorithm and ONE role have a row at all.
     ///
     /// An algorithm that takes the first role it has rows for asks only
@@ -750,6 +746,27 @@ impl SqliteStorage {
              order by revlog_id"
         ))?;
         let rows = statement.query((algorithm, sample_role, after.0))?;
+        newest_prediction_of_each_review(rows)
+    }
+
+    /// One algorithm's newest prediction of each review across `roles`, by
+    /// ascending review id: the row written last wins, whatever its role.
+    pub(crate) fn review_predictions_newest_of(
+        &self,
+        algorithm: i32,
+        roles: &[&str],
+        after: TimestampMillis,
+    ) -> Result<Vec<(RevlogId, f32)>> {
+        self.ensure_review_predictions_schema()?;
+        let table = Self::qualified_retrievability_cache_table(REVIEW_PREDICTIONS_TABLE);
+        let mut statement = self.db.prepare(&format!(
+            "select revlog_id, prediction, updated_at, fold_index, source
+             from {table}
+             where algorithm = ?1 and revlog_id > ?2 and sample_role in ({})
+             order by revlog_id",
+            role_list(roles)
+        ))?;
+        let rows = statement.query((algorithm, after.0))?;
         newest_prediction_of_each_review(rows)
     }
 
@@ -918,6 +935,26 @@ impl SqliteStorage {
         newest_prediction_of_each_review(rows)
     }
 
+    /// `cached_review_predictions` across `roles`: the row written last of
+    /// each review wins, whatever its role.
+    pub(crate) fn cached_review_predictions_newest_of(
+        &self,
+        table: &str,
+        roles: &[&str],
+        after: TimestampMillis,
+    ) -> Result<Vec<(RevlogId, f32)>> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        let mut statement = self.db.prepare(&format!(
+            "select revlog_id, prediction, updated_at, fold_index, source
+             from {table}
+             where revlog_id > ?1 and sample_role in ({})
+             order by revlog_id",
+            role_list(roles)
+        ))?;
+        let rows = statement.query((after.0,))?;
+        newest_prediction_of_each_review(rows)
+    }
+
     /// The decks whose cards hold rated reviews that no `validation_fold`
     /// row of this model covers, with how many such reviews each holds
     /// (spec ui.stats-fsrs-predictions-ready). The caller maps the decks to
@@ -1012,20 +1049,6 @@ impl SqliteStorage {
             )?;
         }
         Ok(deleted)
-    }
-
-    /// How many predictions each sample role holds, newest first by count:
-    /// the caller picks one role and never mixes two (spec
-    /// ui.stats-model-metrics).
-    pub(crate) fn cached_review_prediction_roles(&self, table: &str) -> Result<Vec<(String, u32)>> {
-        let table = Self::qualified_retrievability_cache_table(table);
-        self.db
-            .prepare_cached(&format!(
-                "select sample_role, count(distinct revlog_id) from {table}
-                 group by sample_role"
-            ))?
-            .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
     }
 
     pub(crate) fn fix_revlog_properties(&self) -> Result<usize> {
@@ -1419,6 +1442,21 @@ impl SqliteStorage {
             }
         }
         Ok(ratings)
+    }
+
+    /// The first rating of each searched card over its whole history, the
+    /// period aside: a rating as `searched_ratings_that_affect_scheduling`
+    /// counts one (spec ui.stats-model-metrics).
+    pub(crate) fn first_ratings_of_searched_cards(&self) -> Result<Vec<RevlogId>> {
+        self.db
+            .prepare_cached(
+                "select min(id) from revlog
+                 where cid in (select cid from search_cids)
+                   and ease > 0 and not (type = 3 and factor = 0)
+                 group by cid",
+            )?
+            .query_and_then([], |row| -> Result<RevlogId> { Ok(row.get(0)?) })?
+            .collect()
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards(&self) -> Result<Vec<RevlogEntry>> {

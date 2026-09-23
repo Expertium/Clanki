@@ -966,6 +966,14 @@ def test_the_metric_graphs_say_which_way_is_better_in_one_line() -> None:
         english_message("statistics-roc-verdict", STATISTICS_FTL)
         == "AUC: higher is better, and 0.5 is random chance."
     )
+    # every drawn algorithm on the same reviews, and no first reviews
+    assert (
+        english_message("statistics-model-metrics-scored-shared", STATISTICS_FTL)
+        == "Scored on { $reviews } reviews that every algorithm predicted."
+    )
+    assert english_message(
+        "statistics-model-metrics-description-first-reviews", STATISTICS_FTL
+    ).startswith("The first review of each card is not counted")
 
 
 def test_simple_mode_names_the_bury_switch_without_bury_or_sibling() -> None:

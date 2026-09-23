@@ -229,6 +229,11 @@ impl Collection {
         // algorithm's rows without saying whose they are
         let (mut ratings, fsrs, rwkv, rwkv_curve) =
             read_ratings_and_predictions(storage, cutoff, many_cards)?;
+        // No algorithm knows anything about a card before its first answer,
+        // so that rating says nothing about any of them; srs-benchmark
+        // leaves it out too (Andrew, 2026-09-23)
+        let mut first_ratings = storage.first_ratings_of_searched_cards()?;
+        first_ratings.sort_unstable();
 
         let mut rows = ScoredRatings {
             fsrs_role: fsrs.role.clone(),
@@ -236,11 +241,10 @@ impl Collection {
             rwkv_curve_role: rwkv_curve.role.clone(),
             ..Default::default()
         };
-        // Each model is scored on every rating it has an honest row for, so
-        // a model's curve never disappears because the other model has no
-        // rows. The ratings both models scored are counted separately, and
-        // they are the ones the graph compares the two models on (spec
-        // ui.stats-model-metrics).
+        // Every rating an algorithm has an honest row for is read; when two
+        // or more algorithms have rows, only the ratings all of them scored
+        // are kept, below, so that their numbers compare the same reviews
+        // (spec ui.stats-model-metrics).
         ratings.sort_unstable_by_key(|entry| entry.id);
         let mut fsrs_cursor = PredictionCursor::new(&fsrs);
         let mut rwkv_cursor = PredictionCursor::new(&rwkv);
@@ -250,6 +254,9 @@ impl Collection {
         let mut last_scored: Option<usize> = None;
         let mut first_curve: Option<usize> = None;
         for (index, entry) in ratings.iter().enumerate() {
+            if first_ratings.binary_search(&entry.id).is_ok() {
+                continue;
+            }
             let fsrs_value = fsrs_cursor.of(entry.id);
             let rwkv_value = rwkv_cursor.of(entry.id);
             let curve_value = curve_cursor.of(entry.id);
@@ -277,6 +284,8 @@ impl Collection {
             }
         }
 
+        keep_the_ratings_every_algorithm_scored(&mut rows);
+
         // how fresh the predictions are: the newest rating either model has
         // scored, and the ratings of the search after it
         let counted = |count: usize| count.try_into().unwrap_or(u32::MAX);
@@ -299,6 +308,50 @@ impl Collection {
         }
         Ok(rows)
     }
+}
+
+/// With two or more algorithms that scored any rating, only the ratings all
+/// of them scored stay: each algorithm on its own ratings would compare
+/// different reviews. On Andrew's collection the ratings only RWKV-Instant
+/// had (mostly first reviews) put it below RWKV-Curve, while on the reviews
+/// both scored it was above (spec ui.stats-model-metrics). One algorithm
+/// alone keeps all of its ratings. The counts (`shared`, `fsrs_only`,
+/// `rwkv_only`, `unscored`) are the coverage before this, as they were.
+fn keep_the_ratings_every_algorithm_scored(rows: &mut ScoredRatings) {
+    let has_any = |predictions: &[f32]| predictions.iter().any(|value| value.is_finite());
+    let present = [
+        has_any(&rows.fsrs_predictions),
+        has_any(&rows.rwkv_predictions),
+        has_any(&rows.rwkv_curve_predictions),
+    ];
+    if present.iter().filter(|&&present| present).count() < 2 {
+        return;
+    }
+    let keep: Vec<bool> = (0..rows.revlog_ids.len())
+        .map(|index| {
+            [
+                rows.fsrs_predictions[index],
+                rows.rwkv_predictions[index],
+                rows.rwkv_curve_predictions[index],
+            ]
+            .iter()
+            .zip(present)
+            .all(|(value, present)| !present || value.is_finite())
+        })
+        .collect();
+    fn retain<T: Copy>(values: &mut Vec<T>, keep: &[bool]) {
+        let mut index = 0;
+        values.retain(|_| {
+            index += 1;
+            keep[index - 1]
+        });
+    }
+    retain(&mut rows.revlog_ids, &keep);
+    retain(&mut rows.card_ids, &keep);
+    retain(&mut rows.remembered, &keep);
+    retain(&mut rows.fsrs_predictions, &keep);
+    retain(&mut rows.rwkv_predictions, &keep);
+    retain(&mut rows.rwkv_curve_predictions, &keep);
 }
 
 #[cfg(test)]
@@ -326,12 +379,26 @@ mod tests {
             .unwrap()
     }
 
+    /// A review card whose first rating, long ago, no algorithm scored: the
+    /// graphs leave a card's first rating out, so the ratings a test adds
+    /// are the ones it means.
     fn add_card(col: &mut Collection) -> CardId {
         let note = NoteAdder::basic(col).add(col);
         let mut card = col.storage.all_cards_of_note(note.id).unwrap().remove(0);
         card.ctype = CardType::Review;
         card.queue = CardQueue::Review;
         col.storage.update_card(&card).unwrap();
+        // one id per card: in 2001, before every rating a test makes
+        let first = RevlogEntry {
+            id: RevlogId(1_000_000_000_000 + card.id.0 % 10_000_000_000),
+            cid: card.id,
+            button_chosen: 3,
+            interval: 3,
+            ease_factor: 2500,
+            review_kind: RevlogReviewKind::Review,
+            ..Default::default()
+        };
+        col.storage.add_revlog_entry(&first, false).unwrap();
         card.id
     }
 
@@ -484,7 +551,8 @@ mod tests {
             .storage
             .searched_ratings_that_affect_scheduling(TimestampMillis(0), true)?;
         let ids: Vec<RevlogId> = all.iter().map(|rating| rating.id).collect();
-        assert_eq!(ids.len(), rated.len() + 1);
+        // (and each card's first rating, which add_card makes)
+        assert_eq!(ids.len(), rated.len() + 1 + cards.len());
         assert!(rated.iter().all(|review| ids.contains(review)));
         assert!(ids.contains(&kept));
         for absent in [due_date, reset, cram] {
@@ -517,18 +585,18 @@ mod tests {
         store_rwkv(&col, honest, 0.3);
 
         let rows = col.scored_ratings("", 0)?;
-        // RWKV can score both ratings, so both are listed
-        assert_eq!(rows.revlog_ids, vec![fitted.0, honest.0]);
-        // FSRS-7's final-fit row is never used, so that rating has no FSRS
-        // number at all; it is not filled in from RWKV's
-        assert!(rows.fsrs_predictions[0].is_nan());
-        assert_eq!(rows.fsrs_predictions[1], 0.4);
-        assert_eq!(rows.rwkv_predictions, vec![0.8, 0.3]);
-        assert_eq!(rows.remembered, vec![true, false]);
+        // FSRS-7's final-fit row is never used, so FSRS-7 has no number for
+        // that rating, and with two algorithms only the rating both scored
+        // is kept; the other is never filled in from RWKV's
+        assert_eq!(rows.revlog_ids, vec![honest.0]);
+        assert_eq!(rows.fsrs_predictions, vec![0.4]);
+        assert_eq!(rows.rwkv_predictions, vec![0.3]);
+        assert_eq!(rows.remembered, vec![false]);
         assert_eq!(rows.fsrs_role, "validation_fold");
-        // RWKV's weights saw no review of this collection, so any role counts
-        assert_eq!(rows.rwkv_role, "final_fit");
-        // the rating only RWKV could score is counted as its own
+        // RWKV's weights saw no review of this collection, so any role
+        // counts, and it names none
+        assert_eq!(rows.rwkv_role, "");
+        // the coverage counts are taken before the shared ratings are kept
         assert_eq!(rows.rwkv_only, 1);
         assert_eq!(rows.fsrs_only, 0);
         assert_eq!(rows.shared, 1);
@@ -537,7 +605,7 @@ mod tests {
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn the_shared_ratings_are_counted_not_enforced() -> Result<()> {
+    fn two_algorithms_are_scored_on_the_ratings_both_scored() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
         let shared = rate(&mut col, card, -30, 3);
@@ -557,24 +625,25 @@ mod tests {
         }
 
         let rows = col.scored_ratings("", 0)?;
-        // every rating either model scored is kept, not only the shared one
-        assert_eq!(rows.revlog_ids, vec![shared.0, fsrs_alone.0, rwkv_alone.0]);
+        // only the rating both models scored: each model on its own
+        // ratings would compare different reviews
+        assert_eq!(rows.revlog_ids, vec![shared.0]);
+        assert_eq!(rows.fsrs_predictions, vec![0.5]);
+        assert_eq!(rows.rwkv_predictions, vec![0.6]);
+        // the coverage is still counted
         assert_eq!(rows.shared, 1);
         assert_eq!(rows.fsrs_only, 1);
         assert_eq!(rows.rwkv_only, 1);
         assert_eq!(rows.unscored, 1);
-        assert!(col.review_predictions("", 0)?.shared_ratings);
+        assert_eq!(col.review_predictions("", 0)?.scored, 1);
         assert_eq!(rows.fsrs_role, "post_optimization");
-        // the rating a model has no row for is NaN, never the other's value
-        assert!(rows.fsrs_predictions[2].is_nan());
-        assert!(rows.rwkv_predictions[1].is_nan());
-        let _ = neither;
+        let _ = (fsrs_alone, rwkv_alone, neither);
         Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn each_algorithm_keeps_every_rating_it_can_score() -> Result<()> {
+    fn a_single_rating_of_one_algorithm_narrows_the_comparison_to_it() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
         // one model with many rows beside a model with a single row: the
@@ -593,11 +662,9 @@ mod tests {
         );
 
         let rows = col.scored_ratings("", 0)?;
-        assert_eq!(rows.revlog_ids.len(), 10);
-        let finite =
-            |predictions: &[f32]| predictions.iter().filter(|value| value.is_finite()).count();
-        assert_eq!(finite(&rows.rwkv_predictions), 10);
-        assert_eq!(finite(&rows.fsrs_predictions), 1);
+        // the comparison rests on the one rating both scored; the page
+        // says so with the count
+        assert_eq!(rows.revlog_ids, vec![reviews[0].0]);
         assert_eq!(rows.shared, 1);
         assert_eq!(rows.rwkv_only, 9);
         assert!(col.review_predictions("", 0)?.shared_ratings);
@@ -629,21 +696,16 @@ mod tests {
 
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
-    fn rwkv_takes_the_role_with_the_most_rows() -> Result<()> {
+    fn rwkv_takes_the_newest_row_of_each_rating_across_its_roles() -> Result<()> {
         let mut col = Collection::new();
         let card = add_card(&mut col);
         let reviews: Vec<RevlogId> = (0..5)
             .map(|index| rate(&mut col, card, -30 + index, 3))
             .collect();
-        // one post-optimization row, four final-fit rows: RWKV's roles
-        // carry no honesty order, so the bigger role wins
-        store_rwkv_role(
-            &col,
-            reviews[0],
-            0.5,
-            RwkvReviewRetrievabilitySampleRole::PostOptimization,
-        );
-        for review in &reviews[1..] {
+        // an older recording under one role, then a newer one of two of the
+        // same ratings under another: RWKV's roles carry no honesty order,
+        // and the newest row is the current model's
+        for review in &reviews {
             store_rwkv_role(
                 &col,
                 *review,
@@ -651,13 +713,48 @@ mod tests {
                 RwkvReviewRetrievabilitySampleRole::FinalFit,
             );
         }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        for review in &reviews[..2] {
+            store_rwkv_role(
+                &col,
+                *review,
+                0.5,
+                RwkvReviewRetrievabilitySampleRole::PostOptimization,
+            );
+        }
 
         let rows = col.scored_ratings("", 0)?;
-        assert_eq!(rows.rwkv_role, "final_fit");
-        assert_eq!(rows.revlog_ids.len(), 4);
-        // the post-optimization row is not mixed in, and its rating is
-        // therefore scored by nothing
-        assert_eq!(rows.unscored, 1);
+        // every rating either role scored, each once, the newer row winning
+        assert_eq!(rows.revlog_ids.len(), 5);
+        assert_eq!(rows.rwkv_predictions, vec![0.5, 0.5, 0.8, 0.8, 0.8]);
+        // more rows of a role do not make it win: the bigger role is older
+        assert_eq!(rows.rwkv_role, "");
+        assert_eq!(rows.unscored, 0);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics
+    #[test]
+    fn a_cards_first_rating_is_never_scored() -> Result<()> {
+        let mut col = Collection::new();
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let card = col.storage.all_cards_of_note(note.id)?.remove(0).id;
+        let first = rate(&mut col, card, -30, 1);
+        let second = rate(&mut col, card, -20, 3);
+        for review in [first, second] {
+            store_rwkv(&col, review, 0.7);
+        }
+        // one algorithm, so nothing narrows the ratings but this rule
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(rows.revlog_ids, vec![second.0]);
+        // a period that starts after the first rating still knows it was
+        // the first: the rule looks at the card's whole history
+        let third = rate(&mut col, card, -2, 3);
+        store_rwkv(&col, third, 0.7);
+        assert_eq!(
+            col.scored_ratings("", 25)?.revlog_ids,
+            vec![second.0, third.0]
+        );
         Ok(())
     }
 
@@ -972,7 +1069,9 @@ fn series(
             own_remembered.push(*answer);
         }
     }
-    if role.is_empty() || own_predictions.is_empty() {
+    // an algorithm with rows from no single role (RWKV's newest row of
+    // each rating) has no role to name, but it has predictions
+    if own_predictions.is_empty() {
         return absent();
     }
     let (points, auc) = roc_curve(&own_predictions, &own_remembered, CURVE_POINTS);
@@ -1330,22 +1429,24 @@ fn read_predictions(
             }
             first
         }
-        RoleChoice::MostRows => {
-            let stored = match algorithm.store {
-                PredictionStore::Generic => storage.review_prediction_roles(algorithm.id())?,
-                PredictionStore::Legacy(table) => storage.cached_review_prediction_roles(table)?,
+        RoleChoice::NewestRow => {
+            // no single role: the page names none
+            let rows = match algorithm.store {
+                PredictionStore::Generic => storage.review_predictions_newest_of(
+                    algorithm.id(),
+                    algorithm.honest_roles,
+                    after,
+                )?,
+                PredictionStore::Legacy(table) => storage.cached_review_predictions_newest_of(
+                    table,
+                    algorithm.honest_roles,
+                    after,
+                )?,
             };
-            let count_of = |role: &str| {
-                stored
-                    .iter()
-                    .find(|(stored, _)| stored == role)
-                    .map_or(0, |(_, count)| *count)
-            };
-            algorithm
-                .honest_roles
-                .iter()
-                .filter(|role| count_of(role) > 0)
-                .max_by_key(|role| count_of(role))
+            return Ok(CachedPredictions {
+                role: String::new(),
+                by_review: rows,
+            });
         }
     };
     let Some(role) = chosen else {
