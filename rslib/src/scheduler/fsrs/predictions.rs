@@ -32,8 +32,11 @@ pub(crate) const FSRS_PREDICTION_PASS_SOURCE: &str = "fsrs_calibration_recompute
 /// click in that time waited; a batch of this size is a fraction of a
 /// second (spec ui.stats-fsrs-predictions-ready). This is the shape the
 /// RWKV recording pass already uses (spec sched.rwkv-recordings-automatic):
-/// short batches, and the user's own work in between two of them.
-pub(crate) const PREDICTION_WRITE_BATCH_ROWS: usize = 10_000;
+/// short batches, and the user's own work in between two of them. With
+/// 10,000 rows a batch held it for 44 ms, and "show answer" in the reviewer
+/// waited for one (bench/action_lag_probe2.py); with 2,500 it is 15 ms
+/// (bench_prediction_write_batch_holds).
+pub(crate) const PREDICTION_WRITE_BATCH_ROWS: usize = 2_500;
 
 /// How long the pass rests between two batches. The collection is free the
 /// whole time, and the rest is what lets a click that is already waiting
@@ -944,6 +947,67 @@ mod test {
             };
             assert!(old.0 == new.0, "pair {pair}");
             println!("{pair},{:.2},{:.2},{:.2}", old.1, new.1, new.2);
+        }
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: the longest batch hold and the
+    /// whole write of the largest preset's rows, with batches of
+    /// `PREDICTION_WRITE_BATCH_ROWS` against `ANKI_BATCH_BENCH_ROWS` rows, in
+    /// alternating pairs. One CSV line per pair: `pair,current_longest_ms,
+    /// candidate_longest_ms,current_total_ms,candidate_total_ms`.
+    #[test]
+    #[ignore]
+    fn bench_prediction_write_batch_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_PRESETS_BENCH_COL")
+            .expect("set ANKI_STALE_PRESETS_BENCH_COL to a copy of a collection");
+        let candidate: usize =
+            std::env::var("ANKI_BATCH_BENCH_ROWS").map_or(2_500, |rows| rows.parse().unwrap());
+        let pairs: usize = std::env::var("ANKI_STALE_PRESETS_BENCH_PAIRS")
+            .map_or(100, |pairs| pairs.parse().unwrap());
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let mut biggest = (0, DeckConfigId(1));
+        for config in col.storage.all_deck_config()? {
+            let reviews = col
+                .revlog_for_srs(preset_search(&config.name).as_str())?
+                .len();
+            biggest = biggest.max((reviews, config.id));
+        }
+        let job = col
+            .fsrs_review_prediction_read(biggest.1)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
+        let rows = job.rows()?;
+        println!("preset {} with {} rows", biggest.1 .0, rows.len());
+        let write = |col: &mut Collection, batch: usize| -> Result<(f64, f64)> {
+            let mut longest = 0f64;
+            let at = Instant::now();
+            store_fsrs_review_predictions_in_batches(&job, &rows, batch, |job, part, done| {
+                let held = Instant::now();
+                let outcome = col.store_fsrs_review_prediction_batch(job, part, done);
+                longest = longest.max(ms(held.elapsed()));
+                outcome
+            })?;
+            Ok((longest, ms(at.elapsed())))
+        };
+        println!(
+            "pair,current_longest_ms,candidate_longest_ms,current_total_ms,candidate_total_ms"
+        );
+        for pair in 0..pairs {
+            let (current, candidate) = if pair % 2 == 0 {
+                let current = write(&mut col, PREDICTION_WRITE_BATCH_ROWS)?;
+                (current, write(&mut col, candidate)?)
+            } else {
+                let candidate = write(&mut col, candidate)?;
+                (write(&mut col, PREDICTION_WRITE_BATCH_ROWS)?, candidate)
+            };
+            println!(
+                "{pair},{:.2},{:.2},{:.2},{:.2}",
+                current.0, candidate.0, current.1, candidate.1
+            );
         }
         Ok(())
     }
