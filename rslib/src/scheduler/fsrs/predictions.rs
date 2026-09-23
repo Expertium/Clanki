@@ -385,7 +385,9 @@ mod test {
             .unwrap()
             .pop()
             .unwrap();
-        let review = RevlogId(TimestampMillis::now().0 - days_ago * 86_400_000);
+        // unique per card, as in `card_with_reviews`
+        let review =
+            RevlogId(TimestampMillis::now().0 + card.id.0 % 100_000 - days_ago * 86_400_000);
         col.storage
             .add_revlog_entry(
                 &RevlogEntry {
@@ -470,11 +472,16 @@ mod test {
             .unwrap()
             .pop()
             .unwrap();
+        // The review ids come from the clock. Two cards made in the same
+        // millisecond got the same ids, and the insert ignores a duplicate, so
+        // the second card lost its reviews (seen on the macOS CI runner). The
+        // card id, unique, sets them apart.
+        let now = TimestampMillis::now().0 + card.id.0 % 100_000;
         for (days_ago, interval) in [(40, 0), (39, 3), (30, 10)] {
             col.storage
                 .add_revlog_entry(
                     &RevlogEntry {
-                        id: RevlogId(TimestampMillis::now().0 - days_ago * 86_400_000),
+                        id: RevlogId(now - days_ago * 86_400_000),
                         cid: card.id,
                         button_chosen: 3,
                         review_kind: if interval == 0 {
