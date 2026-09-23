@@ -219,7 +219,7 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
 
 
 def test_the_backend_reads_the_same_whole_history_rows_as_the_query(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The whole-history read takes its rows from the backend
     (`RwkvHistoricalReviewRows`): they must be the rows of the Python query,
@@ -234,10 +234,10 @@ def test_the_backend_reads_the_same_whole_history_rows_as_the_query(
         backend = rwkv_scheduler._backend_historical_rwkv_review_rows(col)
         assert backend is not None, "the backend did not answer"
         assert len(query) > 50
-        # the start column is 0/1 from SQL and a bool from the backend
-        assert [tuple(int(value) for value in row) for row in backend] == [
-            tuple(int(value) for value in row) for row in query
-        ]
+        assert [tuple(row) for row in backend] == [tuple(row) for row in query]
+        # rows that cross the chunks the columns are read in are the same rows
+        monkeypatch.setattr(rwkv_scheduler, "BACKEND_ROWS_CHUNK", 7)
+        assert rwkv_scheduler._backend_historical_rwkv_review_rows(col) == backend
         # and the whole-history read with steps uses them
         calls: list[int] = []
         read = rwkv_scheduler._historical_rwkv_review_rows(

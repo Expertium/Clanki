@@ -19293,6 +19293,27 @@ def _historical_rwkv_review_rows(
     )
 
 
+# rows per chunk when the backend's columns become rows. One chunk is one C
+# call that holds the GIL (about 3 ms); the Python loop between chunks lets the
+# UI thread run. One call for all 656,433 rows held it for 300 ms, and the UI
+# froze for that time as Stats opened.
+BACKEND_ROWS_CHUNK = 8_192
+
+# the backend's int64 columns, little-endian, in row order; the start flag
+# follows as one byte per row (RwkvHistoricalReviewRowsResponse)
+_BACKEND_INT64_COLUMNS = (
+    "review_ids",
+    "card_ids",
+    "note_ids",
+    "deck_ids",
+    "eases",
+    "durations_millis",
+    "review_kinds",
+    "interval_days",
+    "ease_factors",
+)
+
+
 def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | None:
     """The whole-history rows from the backend, which reads them in parts of
     the review log and holds the collection for one part at a time (about
@@ -19303,27 +19324,26 @@ def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | N
     answer; the caller then runs the query."""
     backend = getattr(col, "_backend", None)
     read = getattr(backend, "rwkv_historical_review_rows", None)
-    if not callable(read):
+    if not callable(read) or sys.byteorder != "little":
         return None
     try:
         rows = read()
+        columns = [
+            memoryview(getattr(rows, name)).cast("q") for name in _BACKEND_INT64_COLUMNS
+        ]
+        columns.append(memoryview(rows.learning_starts).cast("B"))
     except Exception:
         logger.exception("the backend could not read the RWKV replay rows")
         return None
-    return list(
-        zip(
-            rows.review_ids,
-            rows.card_ids,
-            rows.note_ids,
-            rows.deck_ids,
-            rows.eases,
-            rows.durations_millis,
-            rows.review_kinds,
-            rows.interval_days,
-            rows.ease_factors,
-            rows.learning_starts,
-        )
-    )
+    count = len(columns[0])
+    if any(len(column) != count for column in columns):
+        logger.error("the backend's RWKV replay columns differ in length")
+        return None
+    whole: list[Sequence[object]] = []
+    for start in range(0, count, BACKEND_ROWS_CHUNK):
+        end = start + BACKEND_ROWS_CHUNK
+        whole.extend(zip(*(column[start:end].tolist() for column in columns)))
+    return whole
 
 
 # how many card-id ranges a stoppable whole-history query runs in. Each range
