@@ -1243,18 +1243,31 @@ impl crate::services::BackendSchedulerService for Backend {
         let rows = rwkv_historical_review_rows_in_parts(RWKV_FINGERPRINT_PART_ROWS, &mut |step| {
             self.with_col(|col| step(col))
         })?;
-        let mut out = scheduler::RwkvHistoricalReviewRowsResponse::default();
+        let wide = rows.len() * 8;
+        let mut out = scheduler::RwkvHistoricalReviewRowsResponse {
+            review_ids: Vec::with_capacity(wide),
+            card_ids: Vec::with_capacity(wide),
+            note_ids: Vec::with_capacity(wide),
+            deck_ids: Vec::with_capacity(wide),
+            eases: Vec::with_capacity(wide),
+            durations_millis: Vec::with_capacity(wide),
+            review_kinds: Vec::with_capacity(wide),
+            interval_days: Vec::with_capacity(wide),
+            ease_factors: Vec::with_capacity(wide),
+            learning_starts: Vec::with_capacity(rows.len()),
+        };
         for row in rows {
-            out.review_ids.push(row.review_id);
-            out.card_ids.push(row.card_id);
-            out.note_ids.push(row.note_id);
-            out.deck_ids.push(row.deck_id);
-            out.eases.push(row.ease);
-            out.durations_millis.push(row.duration_millis);
-            out.review_kinds.push(row.review_kind);
-            out.interval_days.push(row.interval_days);
-            out.ease_factors.push(row.ease_factor);
-            out.learning_starts.push(row.is_learning_start);
+            out.review_ids.extend(row.review_id.to_le_bytes());
+            out.card_ids.extend(row.card_id.to_le_bytes());
+            out.note_ids.extend(row.note_id.to_le_bytes());
+            out.deck_ids.extend(row.deck_id.to_le_bytes());
+            out.eases.extend(row.ease.to_le_bytes());
+            out.durations_millis
+                .extend(row.duration_millis.to_le_bytes());
+            out.review_kinds.extend(row.review_kind.to_le_bytes());
+            out.interval_days.extend(row.interval_days.to_le_bytes());
+            out.ease_factors.extend(row.ease_factor.to_le_bytes());
+            out.learning_starts.push(u8::from(row.is_learning_start));
         }
         Ok(out)
     }

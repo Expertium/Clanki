@@ -230,18 +230,24 @@ service BackendSchedulerService {
       returns (RwkvHistoricalReviewRowsResponse);
 }
 
-// One column per field, row i across all of them, in review-id order.
+// One column per field, row i across all of them, in review-id order. Each
+// column holds one little-endian int64 per row, except learning_starts, which
+// holds one byte (0 or 1) per row. Python reads the columns in short chunks
+// through memoryview.cast: packed varints took 80 ms to parse and 300 ms to
+// turn into rows, each in one call that held the GIL, and the UI froze for
+// that time as Stats opened.
 message RwkvHistoricalReviewRowsResponse {
-  repeated int64 review_ids = 1;
-  repeated int64 card_ids = 2;
-  repeated int64 note_ids = 3;
-  repeated int64 deck_ids = 4;
-  repeated int64 eases = 5;
-  repeated int64 durations_millis = 6;
-  repeated int64 review_kinds = 7;
-  repeated int64 interval_days = 8;
-  repeated int64 ease_factors = 9;
-  repeated bool learning_starts = 10;
+  reserved 1 to 10;
+  bytes review_ids = 11;
+  bytes card_ids = 12;
+  bytes note_ids = 13;
+  bytes deck_ids = 14;
+  bytes eases = 15;
+  bytes durations_millis = 16;
+  bytes review_kinds = 17;
+  bytes interval_days = 18;
+  bytes ease_factors = 19;
+  bytes learning_starts = 20;
 }
 
 message SchedulingState {
