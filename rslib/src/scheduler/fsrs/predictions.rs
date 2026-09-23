@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use crate::deckconfig::DeckConfig;
 use crate::prelude::*;
+use crate::revlog::RevlogEntry;
 use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
-use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::search::writer::preset_search;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
@@ -171,6 +171,37 @@ struct FsrsReviewPredictionJobKey {
     decks: Vec<DeckId>,
 }
 
+/// What one preset's recompute reads with the collection held: the preset
+/// and its reviews, in card order. The rest of the job is built from it
+/// without the collection.
+pub(crate) struct FsrsReviewPredictionRead {
+    key: FsrsReviewPredictionJobKey,
+    params: Vec<f32>,
+    revlogs: Vec<RevlogEntry>,
+    ignore_revlogs_before: TimestampMillis,
+    num_relearning_steps: usize,
+}
+
+impl FsrsReviewPredictionRead {
+    /// The job, built without the collection: turning the reviews into
+    /// items costs as much as reading them. None when no review gives an
+    /// item.
+    pub(crate) fn job(self) -> Option<FsrsReviewPredictionJob> {
+        let context = FsrsReviewPredictionContext::from_revlogs(
+            self.revlogs,
+            self.ignore_revlogs_before,
+            self.num_relearning_steps,
+            // always on (spec deck-options.fsrs-only-controls)
+            true,
+        )?;
+        Some(FsrsReviewPredictionJob {
+            key: self.key,
+            params: self.params,
+            context,
+        })
+    }
+}
+
 impl FsrsReviewPredictionJob {
     /// The preset's rows, in review-id order. The folds produce them
     /// grouped by fold, which scatters each batch's writes over the whole
@@ -249,42 +280,34 @@ impl Collection {
         self.storage.clear_fsrs_review_predictions_for_decks(&decks)
     }
 
-    /// Reads what ONE preset's recompute needs; None when the preset is
-    /// gone or has no reviews to predict. One preset per call, so the
-    /// collection is free between them and the main thread is never shut
-    /// out for the length of a whole backfill; the backend also releases it
-    /// while [`FsrsReviewPredictionJob::rows`] runs (spec
-    /// ui.stats-fsrs-predictions-ready). The rows are validation folds, so
-    /// nothing that produced a row had seen the review it predicts (spec
-    /// ui.stats-model-metrics).
-    pub(crate) fn fsrs_review_prediction_job(
+    /// Reads what ONE preset's recompute needs, with the collection held:
+    /// the preset and its reviews. None when the preset is gone; the job
+    /// ([`FsrsReviewPredictionRead::job`]) is None when it has no reviews to
+    /// predict. One preset per call, so the collection is free between them
+    /// and the main thread is never shut out for the length of a whole
+    /// backfill; the backend also releases it while
+    /// [`FsrsReviewPredictionRead::job`] and [`FsrsReviewPredictionJob::rows`]
+    /// run (spec ui.stats-fsrs-predictions-ready). The rows are validation
+    /// folds, so nothing that produced a row had seen the review it predicts
+    /// (spec ui.stats-model-metrics).
+    pub(crate) fn fsrs_review_prediction_read(
         &mut self,
         preset: DeckConfigId,
-    ) -> Result<Option<FsrsReviewPredictionJob>> {
+    ) -> Result<Option<FsrsReviewPredictionRead>> {
         let Some(config) = self.storage.get_deck_config(preset)? else {
             return Ok(None);
         };
-        let search = preset_search(&config.name);
-        let params = config.fsrs_params().to_vec();
-        let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
-            search: &search,
+        let revlogs = self.revlog_for_srs(preset_search(&config.name).as_str())?;
+        Ok(Some(FsrsReviewPredictionRead {
+            key: self.fsrs_review_prediction_job_key(&config)?,
+            params: config.fsrs_params().to_vec(),
+            revlogs,
             ignore_revlogs_before: config
                 .inner
                 .ignore_revlogs_before_date
                 .parse()
                 .unwrap_or(0.into()),
-            current_params: &params,
-            num_of_relearning_steps: config.inner.relearn_steps.len(),
-            // always on (spec deck-options.fsrs-only-controls)
-            enable_scheduling_penalties: true,
-        })?;
-        if prepared.items.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(FsrsReviewPredictionJob {
-            key: self.fsrs_review_prediction_job_key(&config)?,
-            params,
-            context: FsrsReviewPredictionContext::from_prepared(&prepared),
+            num_relearning_steps: config.inner.relearn_steps.len(),
         }))
     }
 
@@ -343,8 +366,8 @@ impl Collection {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
     use crate::storage::FsrsReviewRetrievabilityCacheRow;
     use crate::storage::FsrsReviewRetrievabilitySampleRole;
     use crate::tests::DeckAdder;
@@ -516,7 +539,10 @@ mod test {
         }
         let preset = DeckConfigId(1);
 
-        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
         let rows = job.rows()?;
         assert!(!rows.is_empty());
         bump_params(&mut col, preset)?;
@@ -528,7 +554,10 @@ mod test {
         assert_eq!(fold_rows(&col), 0);
 
         // with nothing saved in between, the same steps write the rows
-        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
         let rows = job.rows()?;
         let mut sizes = vec![];
         assert_eq!(
@@ -548,7 +577,10 @@ mod test {
             card_with_reviews(&mut col);
         }
         let preset = DeckConfigId(1);
-        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
         let rows = job.rows()?;
         assert!(rows.len() > 2, "the preset needs several rows to batch");
 
@@ -595,7 +627,10 @@ mod test {
         )?;
         assert_eq!(fold_rows(&col), 1);
 
-        let job = col.fsrs_review_prediction_job(preset)?.expect("a job");
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
         let rows = job.rows()?;
         assert!(rows.len() > 2, "the preset needs several rows to batch");
 
@@ -730,6 +765,42 @@ mod test {
         Ok(())
     }
 
+    /// The job built from the reviews read under the collection is the job
+    /// the old path built with everything held: the same items, card ids,
+    /// review ids, prediction sources and settings.
+    #[test]
+    fn the_job_built_outside_the_collection_is_the_job_built_inside_it() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..6 {
+            card_with_reviews(&mut col);
+        }
+        let preset = DeckConfigId(1);
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        for relearn_steps in [vec![], vec![10.0, 60.0]] {
+            config.inner.relearn_steps = relearn_steps;
+            col.storage.update_deck_conf(&config)?;
+            let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                search: &preset_search(&config.name),
+                ignore_revlogs_before: 0.into(),
+                current_params: config.fsrs_params(),
+                num_of_relearning_steps: config.inner.relearn_steps.len(),
+                enable_scheduling_penalties: true,
+            })?;
+            let job = col
+                .fsrs_review_prediction_read(preset)?
+                .expect("a read")
+                .job()
+                .expect("a job");
+            assert!(!prepared.items.is_empty());
+            assert_eq!(
+                job.context,
+                FsrsReviewPredictionContext::from_prepared(&prepared)
+            );
+            assert_eq!(job.params, config.fsrs_params());
+        }
+        Ok(())
+    }
+
     /// A measurement harness, not a test: how long the stale-preset read
     /// holds the collection with the query it replaced, in one piece, and
     /// read in parts, at most in one hold, in alternating pairs. One CSV line
@@ -794,6 +865,78 @@ mod test {
             };
             assert_eq!(old.0, parts.0, "pair {pair}");
             println!("{pair},{:.2},{:.2},{:.2}", old.1, parts.1, parts.2);
+        }
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: how long one preset's recompute
+    /// holds the collection to read, with the old path (reviews, items and
+    /// a clone of them, all held) and with the new read (reviews only), in
+    /// alternating pairs, on the preset with the most reviews. One CSV line
+    /// per pair: `pair,old_hold_ms,new_hold_ms,new_build_ms`. Point
+    /// `ANKI_STALE_PRESETS_BENCH_COL` at a COPY of a collection and run
+    /// `cargo test -p anki --release bench_prediction_job_read_holds --
+    /// --ignored --nocapture`; `ANKI_STALE_PRESETS_BENCH_PAIRS` sets the
+    /// pairs (100).
+    #[test]
+    #[ignore]
+    fn bench_prediction_job_read_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_PRESETS_BENCH_COL")
+            .expect("set ANKI_STALE_PRESETS_BENCH_COL to a copy of a collection");
+        let pairs: usize = std::env::var("ANKI_STALE_PRESETS_BENCH_PAIRS")
+            .map_or(100, |pairs| pairs.parse().unwrap());
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let mut biggest = (0, DeckConfigId(1));
+        for config in col.storage.all_deck_config()? {
+            let reviews = col
+                .revlog_for_srs(preset_search(&config.name).as_str())?
+                .len();
+            biggest = biggest.max((reviews, config.id));
+        }
+        let preset = biggest.1;
+        println!("preset {} with {} reviews", preset.0, biggest.0);
+        // the path before this change, all of it with the collection held
+        let old = |col: &mut Collection| -> Result<_> {
+            let at = Instant::now();
+            let config = col.storage.get_deck_config(preset)?.unwrap();
+            let params = config.fsrs_params().to_vec();
+            let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                search: &preset_search(&config.name),
+                ignore_revlogs_before: config
+                    .inner
+                    .ignore_revlogs_before_date
+                    .parse()
+                    .unwrap_or(0.into()),
+                current_params: &params,
+                num_of_relearning_steps: config.inner.relearn_steps.len(),
+                enable_scheduling_penalties: true,
+            })?;
+            let context = FsrsReviewPredictionContext::from_prepared(&prepared);
+            let _key = col.fsrs_review_prediction_job_key(&config)?;
+            Ok((context, ms(at.elapsed())))
+        };
+        let new = |col: &mut Collection| -> Result<_> {
+            let at = Instant::now();
+            let read = col.fsrs_review_prediction_read(preset)?.unwrap();
+            let held = ms(at.elapsed());
+            let at = Instant::now();
+            let job = read.job().unwrap();
+            Ok((job.context, held, ms(at.elapsed())))
+        };
+        println!("pair,old_hold_ms,new_hold_ms,new_build_ms");
+        for pair in 0..pairs {
+            let (old, new) = if pair % 2 == 0 {
+                let old = old(&mut col)?;
+                (old, new(&mut col)?)
+            } else {
+                let new = new(&mut col)?;
+                (old(&mut col)?, new)
+            };
+            assert!(old.0 == new.0, "pair {pair}");
+            println!("{pair},{:.2},{:.2},{:.2}", old.1, new.1, new.2);
         }
         Ok(())
     }

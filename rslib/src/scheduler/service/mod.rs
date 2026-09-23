@@ -72,6 +72,7 @@ use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::predictions::presets_with_stale_fsrs_review_predictions_in_parts;
 use crate::scheduler::fsrs::predictions::store_fsrs_review_predictions_in_batches;
+use crate::scheduler::fsrs::predictions::FsrsReviewPredictionRead;
 use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
 use crate::scheduler::fsrs::predictions::STALE_PRESETS_PART_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
@@ -1255,15 +1256,19 @@ impl crate::services::BackendSchedulerService for Backend {
     }
 
     /// The collection is held to read the preset's reviews and to write one
-    /// batch of rows, never while the folds are fitted and never for a whole
-    /// preset's write, so a user action waits only for a short read or one
-    /// batch (spec ui.stats-fsrs-predictions-ready).
+    /// batch of rows, never while the reviews become items, never while the
+    /// folds are fitted and never for a whole preset's write, so a user action
+    /// waits only for a short read or one batch (spec
+    /// ui.stats-fsrs-predictions-ready).
     fn refresh_fsrs_review_predictions(
         &self,
         input: scheduler::RefreshFsrsReviewPredictionsRequest,
     ) -> Result<generic::UInt32> {
         let preset = DeckConfigId(input.deck_config_id);
-        let Some(job) = self.with_col(|col| col.fsrs_review_prediction_job(preset))? else {
+        let Some(job) = self
+            .with_col(|col| col.fsrs_review_prediction_read(preset))?
+            .and_then(FsrsReviewPredictionRead::job)
+        else {
             return Ok(0u32.into());
         };
         let rows = job.rows()?;
