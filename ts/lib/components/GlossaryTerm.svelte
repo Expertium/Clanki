@@ -43,9 +43,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <!-- focusable on purpose: the tooltip also opens on keyboard focus, and a
-     keyboard user has no other way to read the explanation -->
+     keyboard user has no other way to read the explanation. No role: a
+     role such as "note" drops the word from the accessible name of the
+     heading or label it sits in ("Card Retrievability" read as "Card"). -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<span class="glossary-term" tabindex="0" role="note" use:tooltip>
+<span class="glossary-term" tabindex="0" use:tooltip>
     <slot />
 </span>
 
