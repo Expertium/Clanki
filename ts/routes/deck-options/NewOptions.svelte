@@ -16,7 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
-    import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
+    import type { HelpItem } from "$lib/components/types";
 
     import { newInsertOrderChoices } from "./choices";
     import {
@@ -40,23 +40,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
-    let stepsExceedGraduatingInterval: string;
     let stepsTooLarge: string;
     $: {
         const lastLearnStepInDays = $config.learnSteps.length
             ? $config.learnSteps[$config.learnSteps.length - 1] / 60 / 24
             : 0;
-        stepsExceedGraduatingInterval =
-            lastLearnStepInDays > $config.graduatingIntervalGood
-                ? tr.deckConfigLearningStepAboveGraduatingInterval()
-                : "";
         stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastLearnStepInDays);
     }
-
-    $: goodExceedsEasy =
-        $config.graduatingIntervalGood > $config.graduatingIntervalEasy
-            ? tr.deckConfigGoodAboveEasy()
-            : "";
 
     $: insertionOrderRandom =
         $config.newCardInsertOrder == DeckConfig_Config_NewCardInsertOrder.RANDOM
@@ -87,18 +77,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigMaxSameDayReviews(),
             help: tr.deckConfigMaxSameDayReviewsTooltip(),
             url: HelpPage.DeckOptions.learningSteps,
-        },
-        graduatingInterval: {
-            title: tr.schedulingGraduatingInterval(),
-            help: tr.deckConfigGraduatingIntervalTooltip(),
-            url: HelpPage.DeckOptions.graduatingInterval,
-            sched: HelpItemScheduler.SM2,
-        },
-        easyInterval: {
-            title: tr.schedulingEasyInterval(),
-            help: tr.deckConfigEasyIntervalTooltip(),
-            url: HelpPage.DeckOptions.easyInterval,
-            sched: HelpItemScheduler.SM2,
         },
         insertionOrder: {
             title: tr.deckConfigNewInsertionOrder(),
@@ -168,52 +146,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             {settings.maxSameDayReviews.title}
                         </SettingTitle>
                     </SpinBoxRow>
-                </Item>
-            {/if}
-        {/if}
-
-        {#if !$fsrs}
-            {#if $shown("graduatingInterval", "section")}
-                <Item>
-                    <SpinBoxRow
-                        bind:value={$config.graduatingIntervalGood}
-                        defaultValue={defaults.graduatingIntervalGood}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("graduatingInterval"),
-                                )}
-                        >
-                            {settings.graduatingInterval.title}
-                        </SettingTitle>
-                    </SpinBoxRow>
-                </Item>
-
-                <Item>
-                    <Warning warning={stepsExceedGraduatingInterval} />
-                </Item>
-            {/if}
-
-            {#if $shown("easyInterval", "section")}
-                <Item>
-                    <SpinBoxRow
-                        bind:value={$config.graduatingIntervalEasy}
-                        defaultValue={defaults.graduatingIntervalEasy}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("easyInterval"),
-                                )}
-                        >
-                            {settings.easyInterval.title}
-                        </SettingTitle>
-                    </SpinBoxRow>
-                </Item>
-
-                <Item>
-                    <Warning warning={goodExceedsEasy} />
                 </Item>
             {/if}
         {/if}

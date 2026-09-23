@@ -660,3 +660,26 @@ memory states inferred from SM-2 data under the older FSRS versions, and
 `fsrs_preset_is_derived_from_deck_config`,
 `fsrs_preset_overlay_uses_first_matching_rule`
 (`rslib/src/scheduler/fsrs/preset.rs`).
+
+## deck-options.no-sm2-settings
+
+Given the deck-options screen, in either mode and under any algorithm, no
+SM-2 setting is shown: Graduating interval and Easy interval (New cards),
+Minimum interval (Lapses; the FSRS "Minimum interval" of the Advanced
+section stays), and Starting ease, Easy bonus, Interval modifier, Hard
+interval and New interval (Advanced), with their help entries and the two
+warnings that compared a learning step with the graduating or the minimum
+interval. Preferences, in the Simple/Advanced split list, does not list
+them either. The Options action of a regular deck always opens this
+screen: Shift+click no longer opens the old Qt deck-options dialog, which
+showed those settings. The proto fields and the stored values stay, so
+official Anki and AnkiDroid read the same presets, and a stored
+Simple-mode choice for one of them is ignored.
+
+**Why:** Andrew, 2026-09-23: "Remove Easy Bonus, Starting Ease and any
+other SM-2 settings entirely. We won't be using SM-2".
+
+**Pinned by:** `test_the_deck_options_page_has_no_sm2_settings`,
+`test_options_never_open_the_old_qt_dialog`
+(`qt/tests/test_deckoptions.py`); the id list in
+`qt/tests/test_ui_split.py`.

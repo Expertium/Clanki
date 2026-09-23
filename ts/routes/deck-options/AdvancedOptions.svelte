@@ -17,7 +17,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { DeckOptionsState } from "./lib";
     import { intervalSettingsApply } from "./scheduler-choice";
-    import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
     import MinimumIntervalInputRow from "./MinimumIntervalInputRow.svelte";
     import MaximumIntervalInputRow from "./MaximumIntervalInputRow.svelte";
     import DateInput from "./DateInput.svelte";
@@ -53,36 +52,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigIgnoreBefore(),
             help: tr.deckConfigIgnoreBeforeTooltip2(),
             sched: HelpItemScheduler.FSRS,
-        },
-        startingEase: {
-            title: tr.schedulingStartingEase(),
-            help: tr.deckConfigStartingEaseTooltip(),
-            url: HelpPage.DeckOptions.startingEase,
-            sched: HelpItemScheduler.SM2,
-        },
-        easyBonus: {
-            title: tr.schedulingEasyBonus(),
-            help: tr.deckConfigEasyBonusTooltip(),
-            url: HelpPage.DeckOptions.easyBonus,
-            sched: HelpItemScheduler.SM2,
-        },
-        intervalModifier: {
-            title: tr.schedulingIntervalModifier(),
-            help: tr.deckConfigIntervalModifierTooltip(),
-            url: HelpPage.DeckOptions.intervalModifier,
-            sched: HelpItemScheduler.SM2,
-        },
-        hardInterval: {
-            title: tr.schedulingHardInterval(),
-            help: tr.deckConfigHardIntervalTooltip(),
-            url: HelpPage.DeckOptions.hardInterval,
-            sched: HelpItemScheduler.SM2,
-        },
-        newInterval: {
-            title: tr.schedulingNewInterval(),
-            help: tr.deckConfigNewIntervalTooltip(),
-            url: HelpPage.DeckOptions.newInterval,
-            sched: HelpItemScheduler.SM2,
         },
     };
     const helpSections: HelpItem[] = Object.values(settings);
@@ -227,106 +196,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
         {/if}
 
-        {#if !$fsrs}
-            {#if $shown("startingEase", "section")}
-                <Item>
-                    <SpinBoxFloatRow
-                        bind:value={$config.initialEase}
-                        defaultValue={defaults.initialEase}
-                        min={1.31}
-                        max={5}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("startingEase"),
-                                )}
-                        >
-                            {settings.startingEase.title}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </Item>
-            {/if}
-
-            {#if $shown("easyBonus", "section")}
-                <Item>
-                    <SpinBoxFloatRow
-                        bind:value={$config.easyMultiplier}
-                        defaultValue={defaults.easyMultiplier}
-                        min={1}
-                        max={5}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("easyBonus"),
-                                )}
-                        >
-                            {settings.easyBonus.title}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </Item>
-            {/if}
-
-            {#if $shown("intervalModifier", "section")}
-                <Item>
-                    <SpinBoxFloatRow
-                        bind:value={$config.intervalMultiplier}
-                        defaultValue={defaults.intervalMultiplier}
-                        min={0.5}
-                        max={2}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("intervalModifier"),
-                                )}
-                        >
-                            {settings.intervalModifier.title}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </Item>
-            {/if}
-
-            {#if $shown("hardInterval", "section")}
-                <Item>
-                    <SpinBoxFloatRow
-                        bind:value={$config.hardMultiplier}
-                        defaultValue={defaults.hardMultiplier}
-                        min={0.5}
-                        max={1.3}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("hardInterval"),
-                                )}
-                        >
-                            {settings.hardInterval.title}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </Item>
-            {/if}
-
-            {#if $shown("newInterval", "section")}
-                <Item>
-                    <SpinBoxFloatRow
-                        bind:value={$config.lapseMultiplier}
-                        defaultValue={defaults.lapseMultiplier}
-                        max={1}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openHelpModal(
-                                    Object.keys(settings).indexOf("newInterval"),
-                                )}
-                        >
-                            {settings.newInterval.title}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </Item>
-            {/if}
-        {:else}
+        {#if $fsrs}
             <!-- Historical retention has no control: it is fixed at 0.9
                  (spec deck-options.historical-retention-fixed). -->
             {#if $shown("ignoreReviewsBefore", "section")}

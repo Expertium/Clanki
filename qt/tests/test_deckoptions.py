@@ -365,3 +365,57 @@ def test_the_fsrs_advanced_settings_are_not_in_an_expander() -> None:
     assert "<details" not in page and "<summary" not in page
     # they still sit together under their divider
     assert 'class="fsrs-advanced m-1"' in page
+
+
+# the fields only SM-2 reads
+SM2_FIELDS = (
+    "graduatingIntervalGood",
+    "graduatingIntervalEasy",
+    "minimumLapseInterval",
+    "initialEase",
+    "easyMultiplier",
+    "intervalMultiplier",
+    "hardMultiplier",
+    "lapseMultiplier",
+)
+
+
+# Pins spec/deck-options.md#deck-options.no-sm2-settings
+def test_the_deck_options_page_has_no_sm2_settings() -> None:
+    from pathlib import Path
+
+    from aqt import ui_split
+
+    pages = Path(__file__).parents[2] / "ts" / "routes" / "deck-options"
+    for page in pages.glob("*.svelte"):
+        text = page.read_text(encoding="utf-8")
+        for field in SM2_FIELDS:
+            assert field not in text, (page.name, field)
+    ids = {item.id for item in ui_split.ITEMS}
+    for key in (
+        "graduatingInterval",
+        "easyInterval",
+        "lapseMinimumInterval",
+        "startingEase",
+        "easyBonus",
+        "intervalModifier",
+        "hardInterval",
+        "newInterval",
+    ):
+        assert f"deckOptions.{key}" not in ids
+
+
+# Pins spec/deck-options.md#deck-options.no-sm2-settings
+def test_options_never_open_the_old_qt_dialog() -> None:
+    import aqt.deckconf
+    import aqt.deckoptions
+
+    deck = {"id": 1, "dyn": 0, "name": "Default"}
+    with (
+        patch("aqt.deckoptions.DeckOptionsDialog") as dialog,
+        patch.object(aqt.deckconf, "DeckConf") as old,
+        patch("aqt.mw", create=True),
+    ):
+        aqt.deckoptions.display_options_for_deck(deck)
+    dialog.assert_called_once()
+    old.assert_not_called()

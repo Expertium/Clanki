@@ -210,11 +210,8 @@ TODAY: dict[str, bool] = {
             "dailyLimitTabs",
             "learningSteps",
             "maxSameDayReviews",
-            "graduatingInterval",
-            "easyInterval",
             "insertionOrder",
             "relearningSteps",
-            "lapseMinimumInterval",
             "leechThreshold",
             "leechAction",
             "leechOnlyIfYoung",
@@ -250,11 +247,6 @@ TODAY: dict[str, bool] = {
             "maximumInterval",
             "fsrsMinimumInterval",
             "ignoreReviewsBefore",
-            "startingEase",
-            "easyBonus",
-            "intervalModifier",
-            "hardInterval",
-            "newInterval",
         ]
     },
 }
