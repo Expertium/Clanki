@@ -79,6 +79,7 @@ use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::rwkv::rwkv_historical_review_fingerprint_in_parts;
+use crate::scheduler::rwkv::rwkv_historical_review_rows_in_parts;
 use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::rwkv::RWKV_FINGERPRINT_PART_ROWS;
 use crate::scheduler::states::CardState;
@@ -1236,6 +1237,26 @@ impl crate::services::BackendSchedulerService for Backend {
             RWKV_FINGERPRINT_PART_ROWS,
             &mut |step| self.with_col(|col| step(col)),
         )
+    }
+
+    fn rwkv_historical_review_rows(&self) -> Result<scheduler::RwkvHistoricalReviewRowsResponse> {
+        let rows = rwkv_historical_review_rows_in_parts(RWKV_FINGERPRINT_PART_ROWS, &mut |step| {
+            self.with_col(|col| step(col))
+        })?;
+        let mut out = scheduler::RwkvHistoricalReviewRowsResponse::default();
+        for row in rows {
+            out.review_ids.push(row.review_id);
+            out.card_ids.push(row.card_id);
+            out.note_ids.push(row.note_id);
+            out.deck_ids.push(row.deck_id);
+            out.eases.push(row.ease);
+            out.durations_millis.push(row.duration_millis);
+            out.review_kinds.push(row.review_kind);
+            out.interval_days.push(row.interval_days);
+            out.ease_factors.push(row.ease_factor);
+            out.learning_starts.push(row.is_learning_start);
+        }
+        Ok(out)
     }
 
     /// Holds the collection for one part of the review log at a time, so a

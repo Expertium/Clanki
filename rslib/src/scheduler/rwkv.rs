@@ -1088,26 +1088,26 @@ const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
 pub(crate) type RwkvCollectionHold<'a> =
     dyn FnMut(&mut dyn FnMut(&mut Collection) -> Result<()>) -> Result<()> + 'a;
 
-/// `Collection::rwkv_historical_review_fingerprint`, with the collection held
-/// for one part of the review log at a time and not while the rows are
-/// hashed. The parts are one read only when nothing wrote to the collection
-/// between the first and the last (`SqliteStorage::change_stamp`). After a
-/// write the read starts over; a collection that keeps changing is read in
-/// one piece, as before. Either way the result is that of one read.
-pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
-    input: RwkvHistoricalReviewFingerprintRequest,
+/// Reads the replay rows of `rwkv_historical_review_rows` with the collection
+/// held for one part of the review log at a time, then runs `last` with the
+/// collection held and the rows. The parts are one read only when nothing
+/// wrote to the collection between the first and the last
+/// (`SqliteStorage::change_stamp`); after a write the read starts over. None
+/// after RWKV_FINGERPRINT_READ_ATTEMPTS reads that a write interrupted: the
+/// caller then reads in one piece. Also returns how many parts were read.
+fn rwkv_historical_rows_in_parts<T>(
+    ignored_review_ids: &[RevlogId],
     part_rows: usize,
     hold: &mut RwkvCollectionHold,
-) -> Result<RwkvHistoricalReviewFingerprintResponse> {
-    let started = std::time::Instant::now();
-    let ignored_review_ids = rwkv_sorted_review_ids(&input.ignored_review_ids);
+    mut last: impl FnMut(&mut Collection, Vec<RwkvHistoricalReviewRow>, Vec<i64>) -> Result<T>,
+) -> Result<Option<(T, usize)>> {
     for _ in 0..RWKV_FINGERPRINT_READ_ATTEMPTS {
         let mut reader = None;
         let mut stamp = None;
         hold(&mut |col| {
             reader = Some(
                 col.storage
-                    .rwkv_historical_review_reader(&ignored_review_ids)?,
+                    .rwkv_historical_review_reader(ignored_review_ids)?,
             );
             stamp = Some(col.storage.change_stamp());
             Ok(())
@@ -1134,30 +1134,56 @@ pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
             continue;
         }
         let mut reader = Some(reader);
-        let mut job = None;
+        let mut result = None;
         hold(&mut |col| {
             if col.storage.change_stamp() == stamp {
                 let (rows, active_ignored_review_ids) =
-                    reader.take().or_invalid("fingerprint read twice")?.finish();
-                job = Some(col.rwkv_historical_fingerprint_job(
-                    input.clone(),
-                    ignored_review_ids.clone(),
-                    rows,
-                    active_ignored_review_ids,
-                )?);
+                    reader.take().or_invalid("replay rows read twice")?.finish();
+                result = Some(last(col, rows, active_ignored_review_ids)?);
             }
             Ok(())
         })?;
-        if let Some(job) = job {
-            let fingerprint = job.compute()?;
-            tracing::debug!(
-                reviews = fingerprint.queried_review_count,
-                parts,
-                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-                "computed RWKV historical review fingerprint in parts"
-            );
-            return Ok(fingerprint);
+        if let Some(result) = result {
+            return Ok(Some((result, parts)));
         }
+    }
+    Ok(None)
+}
+
+/// `Collection::rwkv_historical_review_fingerprint`, with the collection held
+/// for one part of the review log at a time and not while the rows are
+/// hashed (`rwkv_historical_rows_in_parts`). A collection that keeps changing
+/// is read in one piece, as before. Either way the result is that of one
+/// read.
+pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
+    input: RwkvHistoricalReviewFingerprintRequest,
+    part_rows: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+    let started = std::time::Instant::now();
+    let ignored_review_ids = rwkv_sorted_review_ids(&input.ignored_review_ids);
+    let job = rwkv_historical_rows_in_parts(
+        &ignored_review_ids,
+        part_rows,
+        hold,
+        |col, rows, active_ignored_review_ids| {
+            col.rwkv_historical_fingerprint_job(
+                input.clone(),
+                ignored_review_ids.clone(),
+                rows,
+                active_ignored_review_ids,
+            )
+        },
+    )?;
+    if let Some((job, parts)) = job {
+        let fingerprint = job.compute()?;
+        tracing::debug!(
+            reviews = fingerprint.queried_review_count,
+            parts,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "computed RWKV historical review fingerprint in parts"
+        );
+        return Ok(fingerprint);
     }
     let mut fingerprint = None;
     hold(&mut |col| {
@@ -1165,6 +1191,27 @@ pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
         Ok(())
     })?;
     fingerprint.or_invalid("fingerprint not read")
+}
+
+/// The replay rows of the whole history (`rwkv_historical_review_rows`, no
+/// review ignored), read with the collection held for one part of the
+/// review log at a time. The same rows as one read; a collection that keeps
+/// changing is read in one piece.
+pub(crate) fn rwkv_historical_review_rows_in_parts(
+    part_rows: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<Vec<RwkvHistoricalReviewRow>> {
+    if let Some((rows, _)) =
+        rwkv_historical_rows_in_parts(&[], part_rows, hold, |_, rows, _| Ok(rows))?
+    {
+        return Ok(rows);
+    }
+    let mut rows = None;
+    hold(&mut |col| {
+        rows = Some(col.storage.rwkv_historical_review_rows(&[])?.0);
+        Ok(())
+    })?;
+    rows.or_invalid("replay rows not read")
 }
 
 /// The review ids to ignore, sorted and each once.
@@ -1846,6 +1893,44 @@ mod test {
                 assert_eq!(holds, 2 + parts, "part_rows={part_rows}");
             }
         }
+        Ok(())
+    }
+
+    /// The replay rows read in parts are the rows of one read, whatever the
+    /// part size, and a write between two parts makes the read start over.
+    #[test]
+    fn historical_rows_in_parts_are_the_rows_of_one_read() -> Result<()> {
+        let (mut col, _) = collection_with_late_history_starts()?;
+        let whole = col.storage.rwkv_historical_review_rows(&[])?.0;
+        assert!(!whole.is_empty());
+        for part_rows in [1, 2, 3, 5, 1_000] {
+            let mut holds = 0;
+            let rows = rwkv_historical_review_rows_in_parts(part_rows, &mut |step| {
+                holds += 1;
+                step(&mut col)
+            })?;
+            assert_eq!(rows, whole, "part_rows={part_rows}");
+            assert!(
+                holds > 2,
+                "part_rows={part_rows}: one hold for the whole read"
+            );
+        }
+
+        let card = col.storage.all_cards()?.remove(0);
+        let last_review_id = col
+            .storage
+            .db
+            .query_row("select max(id) from revlog", [], |row| row.get::<_, i64>(0))?;
+        let mut holds = 0;
+        let rows = rwkv_historical_review_rows_in_parts(4, &mut |step| {
+            holds += 1;
+            if holds == 3 {
+                add_review(&mut col, &card, last_review_id + 1_000, 5)?;
+            }
+            step(&mut col)
+        })?;
+        assert_eq!(rows, col.storage.rwkv_historical_review_rows(&[])?.0);
+        assert_eq!(rows.last().unwrap().review_id, last_review_id + 1_000);
         Ok(())
     }
 

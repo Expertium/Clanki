@@ -20,6 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from anki.collection import Collection
 from anki.decks import DeckId
 from aqt import rwkv_scheduler
@@ -165,8 +167,12 @@ def _add_card_with_history(
 
 
 def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the query itself, not the backend's rows
+    monkeypatch.setattr(
+        rwkv_scheduler, "_backend_historical_rwkv_review_rows", lambda col: None
+    )
     col = Collection(str(tmp_path / "rwkv-replay-parts.anki2"))
     try:
         learning = (3, 0, 2500)
@@ -208,6 +214,44 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
         else:
             stopped = False
         assert stopped and len(calls) == 1
+    finally:
+        col.close()
+
+
+def test_the_backend_reads_the_same_whole_history_rows_as_the_query(
+    tmp_path: Path,
+) -> None:
+    """The whole-history read takes its rows from the backend
+    (`RwkvHistoricalReviewRows`): they must be the rows of the Python query,
+    value for value and in the same order, Forget cuts and start rows
+    included (spec sched.rwkv-replay-start-row)."""
+    col = Collection(str(tmp_path / "rwkv-replay-backend.anki2"))
+    try:
+        _build_replay_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        query = rwkv_scheduler._historical_rwkv_review_rows(reviewer)
+        backend = rwkv_scheduler._backend_historical_rwkv_review_rows(col)
+        assert backend is not None, "the backend did not answer"
+        assert len(query) > 50
+        # the start column is 0/1 from SQL and a bool from the backend
+        assert [tuple(int(value) for value in row) for row in backend] == [
+            tuple(int(value) for value in row) for row in query
+        ]
+        # and the whole-history read with steps uses them
+        calls: list[int] = []
+        read = rwkv_scheduler._historical_rwkv_review_rows(
+            reviewer, between_parts=lambda: calls.append(1)
+        )
+        assert read == backend
+        assert len(calls) == 2
+
+        # a caller that has stopped does not start the read
+        def stop() -> None:
+            raise InterruptedError()
+
+        with pytest.raises(InterruptedError):
+            rwkv_scheduler._historical_rwkv_review_rows(reviewer, between_parts=stop)
     finally:
         col.close()
 

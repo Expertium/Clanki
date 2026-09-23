@@ -221,6 +221,27 @@ service BackendSchedulerService {
   // it read again.
   rpc RwkvHistoricalReviewFingerprint(RwkvHistoricalReviewFingerprintRequest)
       returns (RwkvHistoricalReviewFingerprintResponse);
+  // The replay rows of the whole history, the rows of Python's
+  // `_historical_rwkv_review_rows` without a cutoff, a deck, cards or a
+  // limit (spec sched.rwkv-replay-start-row). Holds the collection only to
+  // read, in parts of the review log; a write between two parts makes it
+  // read again.
+  rpc RwkvHistoricalReviewRows(generic.Empty)
+      returns (RwkvHistoricalReviewRowsResponse);
+}
+
+// One column per field, row i across all of them, in review-id order.
+message RwkvHistoricalReviewRowsResponse {
+  repeated int64 review_ids = 1;
+  repeated int64 card_ids = 2;
+  repeated int64 note_ids = 3;
+  repeated int64 deck_ids = 4;
+  repeated int64 eases = 5;
+  repeated int64 durations_millis = 6;
+  repeated int64 review_kinds = 7;
+  repeated int64 interval_days = 8;
+  repeated int64 ease_factors = 9;
+  repeated bool learning_starts = 10;
 }
 
 message SchedulingState {
