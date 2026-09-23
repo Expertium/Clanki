@@ -49,9 +49,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <!-- the term draws its own underline; a second one under the whole
          label would read as one underline saying nothing -->
     <SettingTitle on:click={onHelp} underlineOnHover={!parts.term}>
-        {parts.before}{#if parts.term}<GlossaryTerm explanation={hover}
-            >{parts.term}</GlossaryTerm
-            >{/if}{parts.after}
+        {parts.before}{#if parts.term}<GlossaryTerm explanation={hover}>
+                {parts.term}
+            </GlossaryTerm>{/if}{parts.after}
     </SettingTitle>
 </SwitchRow>
 {#if burySiblingsPartlyOn($config)}

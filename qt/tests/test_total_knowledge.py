@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +22,22 @@ from anki.stats_pb2 import (
 from aqt import total_knowledge
 
 Progress = TotalKnowledgeRwkvProgress
+_REAL_HISTORY = aqt.rwkv_scheduler._historical_rwkv_review_inputs
+
+
+def takes_the_real_arguments(fake: Callable[..., Any]) -> Callable[..., Any]:
+    """`fake`, standing in for the history read, but called only with
+    arguments the real one takes. A fake that names a keyword the real
+    function renamed would pass while the graph fails for the user: the
+    rename of between_parts to between_steps did exactly that."""
+
+    def checked(*args: Any, **kwargs: Any) -> Any:
+        inspect.signature(_REAL_HISTORY).bind(*args, **kwargs)
+        return fake(*args, **kwargs)
+
+    return checked
+
+
 TODAY = 10
 NEXT_DAY_AT = 1_000_000
 
@@ -76,9 +93,11 @@ def rwkv_history(monkeypatch: pytest.MonkeyPatch) -> FakeRuntime:
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "_historical_rwkv_review_inputs",
-        lambda reviewer, **_kwargs: SimpleNamespace(
-            review_ids=[review_id for review_id, _ in reviews],
-            reviews=[review for _, review in reviews],
+        takes_the_real_arguments(
+            lambda reviewer, **_kwargs: SimpleNamespace(
+                review_ids=[review_id for review_id, _ in reviews],
+                reviews=[review for _, review in reviews],
+            )
         ),
     )
 
@@ -331,14 +350,18 @@ def test_a_closed_page_stops_the_job_while_the_history_is_built(
     job = total_knowledge._Job(job_id=1, key=(), curve=False)
     reached_rows = []
 
-    def history(reviewer: Any, *, progress: Any, between_parts: Any) -> Any:
+    def history(reviewer: Any, *, progress: Any, between_steps: Any) -> Any:
         progress("Preparing RWKV review inputs", 0, 2000)
         job.cancel_event.set()  # the page closes here
         progress("Preparing RWKV review inputs", 1000, 2000)
         reached_rows.append(2000)  # never reached
         raise AssertionError("the build went on after the page closed")
 
-    monkeypatch.setattr(aqt.rwkv_scheduler, "_historical_rwkv_review_inputs", history)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        takes_the_real_arguments(history),
+    )
     with pytest.raises(InterruptedError):
         total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
     assert reached_rows == []
@@ -371,15 +394,19 @@ def test_a_closed_page_stops_the_history_query_between_its_parts(
     job = total_knowledge._Job(job_id=1, key=(), curve=False)
     parts_run = []
 
-    def history(reviewer: Any, *, progress: Any, between_parts: Any) -> Any:
-        between_parts()
+    def history(reviewer: Any, *, progress: Any, between_steps: Any) -> Any:
+        between_steps()
         parts_run.append(1)
         job.cancel_event.set()  # the page closes during the first range
-        between_parts()
+        between_steps()
         parts_run.append(2)  # never reached
         raise AssertionError("the query went on after the page closed")
 
-    monkeypatch.setattr(aqt.rwkv_scheduler, "_historical_rwkv_review_inputs", history)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_historical_rwkv_review_inputs",
+        takes_the_real_arguments(history),
+    )
     with pytest.raises(InterruptedError):
         total_knowledge._compute(fake_mw(), job, frozenset({1, 2}))
     assert parts_run == [1]
