@@ -10,6 +10,7 @@ import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -249,3 +250,108 @@ def test_mpv_replies_reach_the_thread_that_asked(
         assert str(manager.get_property("mpv-version")).startswith("mpv")
     finally:
         manager.close()
+
+
+# Pins spec/ui.md#ui.audio-starts-off-main-thread
+class _FakePlayer(aqt.sound.SoundOrVideoPlayer):
+    def __init__(self) -> None:
+        self.played: list[tuple[object, Callable[[], None]]] = []
+        self.shut_down = False
+
+    def play(self, tag, on_done) -> None:
+        self.played.append((tag, on_done))
+
+    def shutdown(self) -> None:
+        self.shut_down = True
+
+
+def _starting(monkeypatch, start: Callable[[], Any]) -> aqt.sound.StartingMpvPlayer:
+    monkeypatch.setattr(aqt.sound.av_player, "players", [])
+    monkeypatch.setattr(aqt.sound.av_player, "current_player", None)
+    monkeypatch.setattr(aqt.sound, "mpvManager", None)
+    taskman: Any = FakeTaskman()
+    player = aqt.sound.StartingMpvPlayer(taskman, "base", "media", start=start)
+    aqt.sound.av_player.players.append(player)
+    return player
+
+
+def test_setup_audio_does_not_wait_for_mpv(monkeypatch) -> None:
+    release = threading.Event()
+    started: list[object] = []
+
+    class BlockingMpv(_FakePlayer):
+        def __init__(self, base_folder: str, media_folder: str) -> None:
+            super().__init__()
+            release.wait(10)
+            started.append(self)
+
+    monkeypatch.setattr(aqt.sound, "MpvManager", BlockingMpv)
+    monkeypatch.setattr(aqt.sound, "is_win", False)
+    monkeypatch.setattr(aqt.sound, "is_mac", False)
+    monkeypatch.setattr(aqt.sound.av_player, "players", [])
+    before = time.perf_counter()
+    taskman: Any = FakeTaskman()
+    aqt.sound.setup_audio(taskman, "base", "media")
+    assert time.perf_counter() - before < 1
+    [standing_in] = aqt.sound.av_player.players
+    assert isinstance(standing_in, aqt.sound.StartingMpvPlayer)
+    release.set()
+    standing_in.thread.join(10)
+    assert aqt.sound.av_player.players == started
+
+
+def test_a_sound_asked_for_while_mpv_starts_plays_when_it_is_ready(
+    monkeypatch,
+) -> None:
+    release = threading.Event()
+    mpv = _FakePlayer()
+    starting = _starting(monkeypatch, lambda: release.wait(10) and mpv)
+    tag = SoundOrVideoTag(filename="a.mp3")
+    starting.begin()
+    aqt.sound.av_player.play_tags([tag])
+    assert aqt.sound.av_player.current_player is starting
+    release.set()
+    starting.thread.join(10)
+    assert [played for played, _ in mpv.played] == [tag]
+    assert aqt.sound.av_player.current_player is mpv
+    assert aqt.sound.av_player.players == [mpv]
+
+
+def test_mpv_that_cannot_start_falls_back_to_mplayer(monkeypatch) -> None:
+    def fail() -> object:
+        raise aqt.mpv.MPVProcessError("unable to start process")
+
+    starting = _starting(monkeypatch, fail)
+    video = _FakePlayer()
+    starting.video_player = video
+    aqt.sound.av_player.players.append(video)
+    starting.begin()
+    starting.thread.join(10)
+    [fallback] = aqt.sound.av_player.players
+    assert isinstance(fallback, aqt.sound.SimpleMplayerSlaveModePlayer)
+
+
+def test_a_stopped_sound_does_not_play_when_mpv_is_ready(monkeypatch) -> None:
+    release = threading.Event()
+    mpv = _FakePlayer()
+    starting = _starting(monkeypatch, lambda: release.wait(10) and mpv)
+    done: list[int] = []
+    starting.play(SoundOrVideoTag(filename="a.mp3"), lambda: done.append(1))
+    starting.stop()
+    assert done == [1]
+    starting.begin()
+    release.set()
+    starting.thread.join(10)
+    assert mpv.played == []
+
+
+def test_mpv_that_is_ready_after_shutdown_is_closed(monkeypatch) -> None:
+    release = threading.Event()
+    mpv = _FakePlayer()
+    starting = _starting(monkeypatch, lambda: release.wait(10) and mpv)
+    starting.begin()
+    aqt.sound.av_player.shutdown()
+    release.set()
+    starting.thread.join(10)
+    assert mpv.shut_down
+    assert aqt.sound.av_player.players == []

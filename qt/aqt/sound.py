@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import wave
@@ -895,6 +896,101 @@ def playFromText(text: Any) -> None:
     print("playFromText() deprecated")
 
 
+class StartingMpvPlayer(SoundOrVideoPlayer):
+    """Stands in for MpvManager while mpv starts on a thread of its own.
+
+    Starting mpv waits for its pipe: at least one 100 ms poll, and up to 10 s
+    when the bundled mpv hangs at start on a busy machine (B-017). That wait
+    ran on the main thread before the main window showed. Now the main thread
+    only registers this player. A sound asked for before mpv is ready waits
+    here and plays as soon as it is; when mpv cannot start, the mplayer
+    fallback of before takes over (spec ui.audio-starts-off-main-thread)."""
+
+    def __init__(
+        self,
+        taskman: TaskManager,
+        base_folder: str,
+        media_folder: str,
+        start: Callable[[], Player] | None = None,
+    ) -> None:
+        self._taskman = taskman
+        self._media_folder = media_folder
+        self._start = start or (lambda: MpvManager(base_folder, media_folder))
+        self._pending: tuple[AVTag, OnDoneCallback] | None = None
+        self._closed = False
+        self._lock = threading.Lock()
+        # the mpv video player registered beside this one (Windows); it goes
+        # with it when mpv cannot start, as it did before
+        self.video_player: Player | None = None
+        self.thread = threading.Thread(target=self._run, name="mpv-start", daemon=True)
+
+    def begin(self) -> None:
+        self.thread.start()
+
+    def _run(self) -> None:
+        player: Player | None = None
+        try:
+            player = self._start()
+        except FileNotFoundError:
+            print("mpv not found, reverting to mplayer")
+        except aqt.mpv.MPVProcessError:
+            print(traceback.format_exc())
+            print("mpv too old or failed to open, reverting to mplayer")
+        except Exception:
+            print(traceback.format_exc())
+            print("mpv failed to start, reverting to mplayer")
+        with self._lock:
+            closed = self._closed
+        if closed:
+            if player is not None:
+                player.shutdown()
+            return
+        self._taskman.run_on_main(lambda: self._started(player))
+
+    def _started(self, player: Player | None) -> None:
+        global mpvManager
+
+        with self._lock:
+            if self._closed:
+                if player is not None:
+                    player.shutdown()
+                return
+            self._closed = True
+        players = av_player.players
+        index = players.index(self) if self in players else len(players)
+        if self in players:
+            players.remove(self)
+        if player is None:
+            if self.video_player in players:
+                players.remove(self.video_player)
+            index = min(index, len(players))
+            player = SimpleMplayerSlaveModePlayer(self._taskman, self._media_folder)
+        elif isinstance(player, MpvManager):
+            mpvManager = player
+        players.insert(index, player)
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            tag, on_done = pending
+            if av_player.current_player is self:
+                av_player.current_player = player
+            player.play(tag, on_done)
+
+    def play(self, tag: AVTag, on_done: OnDoneCallback) -> None:
+        self._pending = (tag, on_done)
+
+    def stop(self) -> None:
+        # a player tells av_player it has stopped by calling on_done, as
+        # SimpleProcessPlayer and MpvManager do
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            self._taskman.run_on_main(pending[1])
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._closed = True
+        self._pending = None
+
+
 # legacy globals
 _player = play
 _queueEraser = clearAudioQueue
@@ -943,26 +1039,14 @@ def play_clicked_audio(pycmd: str, card: Card) -> None:
 
 
 def setup_audio(taskman: TaskManager, base_folder: str, media_folder: str) -> None:
-    # legacy global var
-    global mpvManager
-
-    try:
-        mpvManager = MpvManager(base_folder, media_folder)
-    except FileNotFoundError:
-        print("mpv not found, reverting to mplayer")
-    except aqt.mpv.MPVProcessError:
-        print(traceback.format_exc())
-        print("mpv too old or failed to open, reverting to mplayer")
-
-    if mpvManager is not None:
-        av_player.players.append(mpvManager)
-
-        if is_win:
-            mpvPlayer = SimpleMpvPlayer(taskman, base_folder, media_folder)
-            av_player.players.append(mpvPlayer)
-    else:
-        mplayer = SimpleMplayerSlaveModePlayer(taskman, media_folder)
-        av_player.players.append(mplayer)
+    # mpv starts on its own thread; until it has, a stand-in takes its place
+    # (spec ui.audio-starts-off-main-thread)
+    starting = StartingMpvPlayer(taskman, base_folder, media_folder)
+    av_player.players.append(starting)
+    if is_win:
+        starting.video_player = SimpleMpvPlayer(taskman, base_folder, media_folder)
+        av_player.players.append(starting.video_player)
+    starting.begin()
 
     # tts support
     if is_mac:
