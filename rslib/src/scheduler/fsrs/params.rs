@@ -163,12 +163,14 @@ impl TrainingItemsForFsrs {
 }
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub(crate) struct FsrsReviewPredictionSource {
     reviews: Vec<FSRSReview>,
     targets: Vec<(RevlogId, usize)>,
 }
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(PartialEq, Debug))]
 pub(crate) struct FsrsReviewPredictionContext {
     items: Vec<FSRSItem>,
     card_ids: Vec<i64>,
@@ -188,6 +190,32 @@ impl FsrsReviewPredictionContext {
             num_relearning_steps: prepared.num_of_relearning_steps,
             enable_scheduling_penalties: prepared.enable_scheduling_penalties,
         }
+    }
+
+    /// The context `from_prepared` gives for the same reviews, made from
+    /// reviews `Collection::revlog_for_srs` has already read: the part of a
+    /// recompute that needs no collection, and nothing cloned. None when no
+    /// review gives an item.
+    pub(crate) fn from_revlogs(
+        revlogs: Vec<RevlogEntry>,
+        ignore_revlogs_before: TimestampMillis,
+        num_relearning_steps: usize,
+        enable_scheduling_penalties: bool,
+    ) -> Option<Self> {
+        let TrainingItemsForFsrs {
+            items,
+            card_ids,
+            revlog_ids,
+            prediction_sources,
+        } = fsrs_items_for_training(revlogs, ignore_revlogs_before);
+        (!items.is_empty()).then(|| Self {
+            items,
+            card_ids: card_ids.unwrap_or_default(),
+            revlog_ids: revlog_ids.unwrap_or_default(),
+            sources: prediction_sources,
+            num_relearning_steps,
+            enable_scheduling_penalties,
+        })
     }
 }
 
