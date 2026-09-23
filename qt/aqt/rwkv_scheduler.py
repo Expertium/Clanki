@@ -19299,19 +19299,18 @@ def _historical_rwkv_review_rows(
 # froze for that time as Stats opened.
 BACKEND_ROWS_CHUNK = 8_192
 
-# the backend's column formats: nine little-endian int64 columns, then one
-# byte per row for the start flag (RwkvHistoricalReviewRowsResponse)
-_BACKEND_ROW_COLUMNS = (
-    ("review_ids", "q"),
-    ("card_ids", "q"),
-    ("note_ids", "q"),
-    ("deck_ids", "q"),
-    ("eases", "q"),
-    ("durations_millis", "q"),
-    ("review_kinds", "q"),
-    ("interval_days", "q"),
-    ("ease_factors", "q"),
-    ("learning_starts", "B"),
+# the backend's int64 columns, little-endian, in row order; the start flag
+# follows as one byte per row (RwkvHistoricalReviewRowsResponse)
+_BACKEND_INT64_COLUMNS = (
+    "review_ids",
+    "card_ids",
+    "note_ids",
+    "deck_ids",
+    "eases",
+    "durations_millis",
+    "review_kinds",
+    "interval_days",
+    "ease_factors",
 )
 
 
@@ -19330,9 +19329,9 @@ def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | N
     try:
         rows = read()
         columns = [
-            memoryview(getattr(rows, name)).cast(code)
-            for name, code in _BACKEND_ROW_COLUMNS
+            memoryview(getattr(rows, name)).cast("q") for name in _BACKEND_INT64_COLUMNS
         ]
+        columns.append(memoryview(rows.learning_starts).cast("B"))
     except Exception:
         logger.exception("the backend could not read the RWKV replay rows")
         return None
