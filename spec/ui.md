@@ -1572,6 +1572,17 @@ difference, weighted the same way. The binning and the weighting are
 `UM_plus_plot.py`'s, so the numbers can be compared with the ones from the
 benchmark.
 
+Under the UM+ and AUC-ROC graphs, one line says which way is better: "UM+
+and slope: closer to 0 is better." and "AUC: higher is better, and 0.5 is
+random chance." How to read the graph and how its numbers are made (the axes,
+the bubbles, the oracle, the true and false positive rates, and which answers
+count as remembered) is in a tooltip on the info badge next to the graph's
+title, shown on hover or keyboard focus. The lines about the data itself stay
+under the graph: hidden groups, the ratings each algorithm scored, missing or
+newer predictions. Andrew, 2026-09-23: "Reading is for nerds, lol. Let's not
+have too much text unless the user asks for it", and "Just keep some simple
+'lower=better' or 'closer to 0=better' stuff outside of the tooltip".
+
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
 rate at every prediction threshold. The drawing area is square, so the
@@ -1617,7 +1628,11 @@ does, and it is why a panel of hundreds of thousands of reviews opens at
 once; a replay of the whole history costs minutes and now belongs to the
 user's own rebuild, never to opening a page.
 
-**Pinned by:** `only_rows_the_algorithm_had_not_seen_are_used`,
+**Pinned by:** "UM+ keeps its verdict under the graph and its explanation in
+the tooltip", "AUC-ROC keeps its verdict under the graph and its explanation in
+the tooltip" (`ts/routes/graphs/metric-explanations.test.ts`),
+`test_the_metric_graphs_say_which_way_is_better_in_one_line`
+(`qt/tests/test_ui_split.py`); `only_rows_the_algorithm_had_not_seen_are_used`,
 `each_algorithm_keeps_every_rating_it_can_score`,
 `the_shared_ratings_are_counted_not_enforced`,
 `one_algorithm_alone_keeps_all_of_its_ratings`,

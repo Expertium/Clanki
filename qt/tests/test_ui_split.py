@@ -921,6 +921,7 @@ def test_the_tab_offers_three_choices_and_stores_one_at_once(
 # loads no Fluent bundle: there every tr.*() returns "missing key: <key>".
 
 DECK_CONFIG_FTL = Path(__file__).parents[2] / "ftl" / "core" / "deck-config.ftl"
+STATISTICS_FTL = DECK_CONFIG_FTL.with_name("statistics.ftl")
 
 
 def english_message(key: str, path: Path = DECK_CONFIG_FTL) -> str:
@@ -953,6 +954,18 @@ def test_the_long_steps_warning_names_the_algorithm_not_fsrs() -> None:
     )
     # the algorithm's own name goes in; FSRS is only one of them
     assert "FSRS" not in warning
+
+
+# Pins spec/ui.md#ui.stats-model-metrics (the one line under each graph)
+def test_the_metric_graphs_say_which_way_is_better_in_one_line() -> None:
+    assert (
+        english_message("statistics-um-plus-verdict", STATISTICS_FTL)
+        == "UM+ and slope: closer to 0 is better."
+    )
+    assert (
+        english_message("statistics-roc-verdict", STATISTICS_FTL)
+        == "AUC: higher is better, and 0.5 is random chance."
+    )
 
 
 def test_simple_mode_names_the_bury_switch_without_bury_or_sibling() -> None:

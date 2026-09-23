@@ -14,14 +14,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { getContext, onDestroy } from "svelte";
     import { type Readable, readable } from "svelte/store";
 
+    import InfoTooltip from "$lib/components/InfoTooltip.svelte";
+
     import Graph from "./Graph.svelte";
+    import { rocExplanation, rocVerdict } from "./metric-explanations";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import {
         chanceLabel,
         dataNotes,
         overlayText,
         renderRoc,
-        rocAucDescription,
         rocBounds,
         rocCurves,
         stillComputing,
@@ -141,6 +143,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Graph {title} {subtitle}>
+    <InfoTooltip slot="tooltip" text={rocExplanation(plainRecall)} />
     <div class="legend">
         {#each curves as curve (curve.algorithm)}
             <span>
@@ -166,9 +169,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </svg>
     </div>
     <div class="description">
-        <div>{tr.statisticsRocDescriptionCurve()}</div>
-        <div>{rocAucDescription(plainRecall)}</div>
-        <div>{tr.statisticsModelMetricsDescriptionReviews()}</div>
+        <div>{rocVerdict()}</div>
         {#each notes as note}
             <div class="note">{note}</div>
         {/each}

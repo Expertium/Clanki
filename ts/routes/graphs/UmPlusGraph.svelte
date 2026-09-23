@@ -14,7 +14,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { getContext, onDestroy } from "svelte";
     import { type Readable, readable } from "svelte/store";
 
+    import InfoTooltip from "$lib/components/InfoTooltip.svelte";
+
     import Graph from "./Graph.svelte";
+    import { umPlusExplanation, umPlusVerdict } from "./metric-explanations";
     import { chosenUmPlusPair, showSmallUmPlusGroups } from "./metrics-choice";
     import { plainRecallWording, type RecallWording } from "@tslib/recall-wording";
     import NoDataOverlay from "./NoDataOverlay.svelte";
@@ -151,6 +154,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Graph {title} {subtitle}>
+    <InfoTooltip slot="tooltip" text={umPlusExplanation()} />
     <div class="controls">
         <label>
             {tr.statisticsUmPlusAlgorithms()}
@@ -188,10 +192,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/if}
     </svg>
     <div class="description">
-        <div>{tr.statisticsUmPlusDescriptionAxes()}</div>
-        <div>{tr.statisticsUmPlusDescriptionScore()}</div>
-        <div><strong>{tr.statisticsUmPlusDescriptionOracle()}</strong></div>
-        <div>{tr.statisticsModelMetricsDescriptionReviews()}</div>
+        <div>{umPlusVerdict()}</div>
         {#if view && view.hidden > 0}
             <div>{tr.statisticsUmPlusHidden({ groups: String(view.hidden) })}</div>
         {/if}
