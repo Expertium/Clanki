@@ -348,6 +348,9 @@ _REVIEWED_CARDS = "revlog JOIN cards ON cards.id = revlog.cid"
 class ActivityReporter:
     """Reads review history and the due forecast from the collection."""
 
+    # days counted per review-log query (see _review_days_by_day_ranges)
+    _CHUNK_DAYS = 64
+
     def __init__(
         self,
         col: Collection,
@@ -601,6 +604,9 @@ GROUP BY day, deck"""
         day = (
             "CAST(STRFTIME('%s', {}, 'unixepoch', 'localtime', 'start of day') AS int)"
         )
+        first_day, last_day = db.first(
+            f"SELECT {day.format('?')}, {day.format('?')}", first, last
+        )
         utc_offset = "(STRFTIME('%s', {0}, 'unixepoch', 'localtime') - ({0}))"
         ids = (
             f"revlog.id >= (lo + {offset_secs}) * 1000"
@@ -613,11 +619,10 @@ GROUP BY day, deck"""
     WHERE {ids} AND {where} GROUP BY cards.did))"""
         else:
             count_sql = f"(SELECT COUNT() FROM revlog WHERE {ids} AND {where})"
-        rows = db.all(
-            f"""
+        query = f"""
 WITH RECURSIVE
   days(d, last) AS (
-    SELECT {day.format("?")}, {day.format("?")}
+    SELECT ?, ?
     UNION ALL SELECT d + 86400, last FROM days WHERE d <= last),
   starts(d, lo) AS (
     SELECT d, CAST(STRFTIME('%s', d, 'unixepoch', 'utc') AS int) FROM days),
@@ -629,10 +634,15 @@ WITH RECURSIVE
         AND {utc_offset.format("lo")} = {utc_offset.format("hi - 1")}
     FROM ranges WHERE hi IS NOT NULL)
 SELECT d, lo, hi, ok, CASE WHEN ok THEN {count_sql} END
-FROM checked""",
-            first,
-            last,
-        )
+FROM checked"""
+        # A few weeks of days per query: a query holds the collection, and
+        # the UI thread waits for it. In one piece, 656k reviews held it
+        # for 441 ms at start-up. A day's row depends on that day only, so
+        # the slices give the rows of the single query.
+        rows: list[Any] = []
+        step = self._CHUNK_DAYS * 86400
+        for start in range(first_day, last_day + 1, step):
+            rows += db.all(query, start, min(start + step - 86400, last_day))
         rows.sort(key=lambda row: row[0])
         if not (
             rows

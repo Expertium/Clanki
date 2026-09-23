@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from anki.collection import Config
 from anki.decks import DeckId
 from anki.utils import ids2str
@@ -365,11 +367,14 @@ def test_older_reviews_are_counted_once_and_newer_ones_every_time(
         col.close(downgrade=False)
 
 
+# a day per query, the default slice, and the whole history in one query
+@pytest.mark.parametrize("chunk_days", [1, ActivityReporter._CHUNK_DAYS, 10**7])
 def test_reviews_are_grouped_by_day_ranges_exactly_as_one_by_one(
-    tmp_path: Any,
+    tmp_path: Any, monkeypatch: Any, chunk_days: int
 ) -> None:
     from anki.collection import Collection
 
+    monkeypatch.setattr(ActivityReporter, "_CHUNK_DAYS", chunk_days)
     col = Collection(str(tmp_path / "heatmap.anki2"))
     try:
         other = col.decks.id("Other")
