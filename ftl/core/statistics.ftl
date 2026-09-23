@@ -216,6 +216,8 @@ statistics-roc-chance = Random chance, AUC={ $auc }
 statistics-roc-false-positive-rate = False positive rate
 statistics-roc-true-positive-rate = True positive rate
 # Shown under the graph.
+# The one line under the AUC-ROC graph; the rest is in the tooltip of the info badge.
+statistics-roc-verdict = AUC: higher is better, and 0.5 is random chance.
 statistics-roc-description-curve = Each curve plots the true positive rate against the false positive rate, at every prediction threshold; the dashed line is random chance.
 statistics-roc-description-auc = A higher AUC is better. At 1.0, the algorithm always gives a higher retrievability to the reviews you remembered than to the ones you forgot. At 0.5, it's no better than random chance.
 # The same string in the plain recall wording (spec ui.simple-recall-wording).
@@ -266,7 +268,9 @@ statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }
 # Shown under the graph.
 statistics-um-plus-description-axes = The X axis shows how much the two algorithms disagree, the Y axis shows how far each algorithm was from reality, and the size of a bubble is how many reviews are in the group.
 statistics-um-plus-description-score = A curve that stays near zero on the Y axis is better: UM+ closer to zero is better, and a slope closer to zero is better. The weaker one algorithm is compared with the other, the closer its slope is to 1.
-# Shown in bold under the UM+ graph.
+# The one line under the UM+ graph; the rest is in the tooltip of the info badge.
+statistics-um-plus-verdict = UM+ and slope: closer to 0 is better.
+# In the tooltip of the UM+ graph.
 statistics-um-plus-description-oracle = Disagreeing with the perfect oracle is the same as disagreeing with reality.
 # Shown when small groups are hidden.
 statistics-um-plus-hidden = { $groups } small groups are hidden.
