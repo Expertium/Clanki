@@ -215,9 +215,10 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
         if job.cancel_event.is_set():
             raise InterruptedError()
 
-    def stop_between_query_parts() -> None:
-        # the history query runs in card-id ranges, so a page that closed
-        # stops it after one range instead of after the whole 3-4 s query
+    def stop_between_steps() -> None:
+        # the history query runs in card-id ranges and the preparation after
+        # it in bounded steps, so a page that closed stops the read after one
+        # of them instead of after the whole 3-4 s query
         if job.cancel_event.is_set():
             raise InterruptedError()
 
@@ -228,7 +229,7 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
     history = rwkv._historical_rwkv_review_inputs(
         reviewer,
         progress=stop_if_cancelled,
-        between_parts=stop_between_query_parts,
+        between_steps=stop_between_steps,
     )
     reviews: list[tuple[int, Any, int]] = [
         (review_id, review, review.day_offset)

@@ -20,10 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { algorithmHelpSettings } from "./algorithm-help";
     import { applyPlayAudio, playAudioFromConfig } from "./autoplay-switch";
     import AlgorithmRows from "./AlgorithmRows.svelte";
-    import {
-        hideRelatedCardsHelp,
-        hideRelatedCardsTitle,
-    } from "./bury-siblings";
+    import { hideRelatedCardsHelp, hideRelatedCardsTitle } from "./bury-siblings";
     import HideRelatedCardsRow from "./HideRelatedCardsRow.svelte";
     import DailyLimitRows from "./DailyLimitRows.svelte";
     import EasyDaysRows from "./EasyDaysRows.svelte";
