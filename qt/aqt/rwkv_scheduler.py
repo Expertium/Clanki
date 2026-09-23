@@ -19286,8 +19286,11 @@ def _historical_rwkv_review_rows(
     )
 
 
-# how many card-id ranges a stoppable whole-history query runs in
-HISTORY_QUERY_PARTS = 16
+# how many card-id ranges a stoppable whole-history query runs in. Each range
+# holds the collection for one query: with 16 ranges that was about 250 ms on
+# 656,433 reviews, and a click on the main thread (the deck-options warm-up as
+# Stats opened) waited for it; with 64 it is about 60 ms, in the same total.
+HISTORY_QUERY_PARTS = 64
 
 
 def _split_whole_history_query() -> None:

@@ -21409,6 +21409,9 @@ def test_every_step_of_the_history_read_is_bounded(
     monkeypatch.setattr(
         rwkv_scheduler, "RECORDINGS_PASS_PREPARE_STEP_ROWS", 16, raising=True
     )
+    # 199 cards in 64 ranges would leave few rows per range; the step count
+    # below is sized for 16
+    monkeypatch.setattr(rwkv_scheduler, "HISTORY_QUERY_PARTS", 16, raising=True)
     reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
     steps: list[int] = []
 
