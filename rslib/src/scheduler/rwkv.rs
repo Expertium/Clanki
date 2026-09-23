@@ -60,17 +60,36 @@ impl Collection {
         input: RwkvHistoricalReviewFingerprintRequest,
     ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
         let started = std::time::Instant::now();
-        let mut ignored_review_ids = input
-            .ignored_review_ids
-            .into_iter()
-            .map(RevlogId)
-            .collect::<Vec<_>>();
-        ignored_review_ids.sort_unstable();
-        ignored_review_ids.dedup();
+        let ignored_review_ids = rwkv_sorted_review_ids(&input.ignored_review_ids);
         let (rows, active_ignored_review_ids) = self
             .storage
             .rwkv_historical_review_rows(&ignored_review_ids)?;
-        let queried_review_count = rows.len() as u64;
+        let fingerprint = self
+            .rwkv_historical_fingerprint_job(
+                input,
+                ignored_review_ids,
+                rows,
+                active_ignored_review_ids,
+            )?
+            .compute()?;
+        tracing::debug!(
+            reviews = fingerprint.queried_review_count,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "computed RWKV historical review fingerprint in Rust"
+        );
+        Ok(fingerprint)
+    }
+
+    /// Everything the fingerprint reads from the collection besides the
+    /// review log. The hashing then needs the collection no more
+    /// (`RwkvHistoricalFingerprintJob::compute`).
+    pub(crate) fn rwkv_historical_fingerprint_job(
+        &mut self,
+        input: RwkvHistoricalReviewFingerprintRequest,
+        ignored_review_ids: Vec<RevlogId>,
+        rows: Vec<RwkvHistoricalReviewRow>,
+        active_ignored_review_ids: Vec<i64>,
+    ) -> Result<RwkvHistoricalFingerprintJob> {
         let timing = self.timing_today()?;
 
         // Where each card's own stable preset id comes from. Only an add-on
@@ -105,139 +124,16 @@ impl Collection {
         let decks_by_id = self.storage.get_decks_map()?;
         let configs_by_id = self.storage.get_deck_config_map()?;
 
-        // one entry per card, so that a row costs one hash lookup instead of
-        // the five the three separate maps needed
-        let mut card_states: FnvHashMap<CardId, RwkvHistoricalCardState> = FnvHashMap::default();
-        // the home decks' preset ids, resolved on first sight of each deck
-        let mut stable_preset_ids_by_deck: FnvHashMap<i64, i64> = FnvHashMap::default();
-        let mut history_hash = rwkv_empty_history_hash();
-        let mut last_review_id = 0;
-        // the record of one review, reused so that the loop allocates nothing
-        let mut record = Vec::with_capacity(256);
-        // Where the saved state ends: the identity of the history after as
-        // many rows as the saved state holds. Rows come in review-id order,
-        // so these are the oldest rows, and a match means the saved state is
-        // the start of this history with only newer reviews after it.
-        let prefix_review_count = input
-            .expected_identity
-            .as_ref()
-            .map(|expected| expected.review_count);
-        let mut prefix_identity: Option<(i64, String)> = None;
-        let mut rows_read: u64 = 0;
-        if prefix_review_count == Some(0) {
-            prefix_identity = Some((0, rwkv_history_hash_hex(history_hash)));
-        }
-
-        for row in rows {
-            let card_id = CardId(row.card_id);
-            let state = match card_states.entry(card_id) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let stable_preset_id = match &stable_preset_ids_by_card {
-                        Some(by_card) => by_card.get(&card_id).copied(),
-                        None => Some(match stable_preset_ids_by_deck.entry(row.deck_id) {
-                            Entry::Occupied(deck) => *deck.get(),
-                            Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
-                                DeckId(row.deck_id),
-                                &decks_by_id,
-                                &configs_by_id,
-                            )?),
-                        }),
-                    };
-                    entry.insert(RwkvHistoricalCardState {
-                        stable_preset_id,
-                        ..Default::default()
-                    })
-                }
-            };
-            let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
-            let (elapsed_days, elapsed_seconds) =
-                if let Some(previous_review_id) = state.previous_review_id {
-                    (
-                        (day_offset - rwkv_historical_day_offset(previous_review_id, &timing))
-                            .max(0),
-                        ((row.review_id - previous_review_id) / 1000).max(0),
-                    )
-                } else if row.is_learning_start
-                // Only a real Learning start may measure elapsed from the card's
-                // creation. A fallback start row (`sched.rwkv-replay-start-row`)
-                // is only the first row we hold, not the card's known first
-                // review, so its creation age would invent an interval.
-                && row.review_kind == 0
-                && rwkv_first_review_uses_card_creation(
-                    row.deck_id,
-                    &decks_by_id,
-                    &configs_by_id,
-                    &input.first_review_uses_creation_by_config_id,
-                ) {
-                    let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
-                    (elapsed_seconds / 86_400, elapsed_seconds)
-                } else {
-                    (-1, -1)
-                };
-            let stable_preset_id = preset_routes
-                .iter()
-                .find(|route| {
-                    route.matches(card_id, state.review_count, state.previous_interval_days)
-                })
-                .map(|route| route.stable_preset_id)
-                .or(state.stable_preset_id)
-                .or_invalid("missing stable RWKV preset id")?;
-
-            state.previous_review_id = Some(row.review_id);
-            state.previous_interval_days = row.interval_days;
-            state.review_count += 1;
-            last_review_id = last_review_id.max(row.review_id);
-            history_hash = rwkv_history_hash_after_review(
-                history_hash,
-                &RwkvHistoricalFingerprintReview {
-                    row,
-                    stable_preset_id,
-                    day_offset,
-                    elapsed_days,
-                    elapsed_seconds,
-                },
-                &mut record,
-            );
-            rows_read += 1;
-            if Some(rows_read) == prefix_review_count {
-                prefix_identity = Some((last_review_id, rwkv_history_hash_hex(history_hash)));
-            }
-        }
-
-        tracing::debug!(
-            reviews = queried_review_count,
-            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-            "computed RWKV historical review fingerprint in Rust"
-        );
-        let history_hash = rwkv_history_hash_hex(history_hash);
-        let all_ignored_review_ids_are_active = ignored_review_ids
-            .iter()
-            .map(|review_id| review_id.0)
-            .eq(active_ignored_review_ids.iter().copied());
-        let history_is_valid = all_ignored_review_ids_are_active
-            && input.expected_identity.as_ref().is_some_and(|expected| {
-                expected.last_review_id == last_review_id
-                    && expected.review_count == queried_review_count
-                    && expected.history_hash == history_hash
-            });
-        let history_prefix_is_valid = all_ignored_review_ids_are_active
-            && input.expected_identity.as_ref().is_some_and(|expected| {
-                prefix_identity
-                    .as_ref()
-                    .is_some_and(|(prefix_last, prefix_hash)| {
-                        expected.last_review_id == *prefix_last
-                            && expected.history_hash == *prefix_hash
-                    })
-            });
-        Ok(RwkvHistoricalReviewFingerprintResponse {
-            last_review_id,
-            review_count: queried_review_count,
-            history_hash,
+        Ok(RwkvHistoricalFingerprintJob {
+            input,
+            ignored_review_ids,
+            rows,
             active_ignored_review_ids,
-            queried_review_count,
-            history_is_valid,
-            history_prefix_is_valid,
+            timing,
+            stable_preset_ids_by_card,
+            preset_routes,
+            decks_by_id,
+            configs_by_id,
         })
     }
 
@@ -1018,6 +914,267 @@ impl RwkvReviewCandidatePartial {
     }
 }
 
+/// A fingerprint read from the collection and not yet computed; see
+/// `Collection::rwkv_historical_fingerprint_job`.
+pub(crate) struct RwkvHistoricalFingerprintJob {
+    input: RwkvHistoricalReviewFingerprintRequest,
+    ignored_review_ids: Vec<RevlogId>,
+    rows: Vec<RwkvHistoricalReviewRow>,
+    active_ignored_review_ids: Vec<i64>,
+    timing: SchedTimingToday,
+    stable_preset_ids_by_card: Option<HashMap<CardId, i64>>,
+    preset_routes: Vec<RwkvHistoricalPresetRoute>,
+    decks_by_id: HashMap<DeckId, Deck>,
+    configs_by_id: HashMap<DeckConfigId, DeckConfig>,
+}
+
+impl RwkvHistoricalFingerprintJob {
+    /// The fingerprint of the rows. Reads nothing from the collection.
+    pub(crate) fn compute(self) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+        let Self {
+            input,
+            ignored_review_ids,
+            rows,
+            active_ignored_review_ids,
+            timing,
+            stable_preset_ids_by_card,
+            preset_routes,
+            decks_by_id,
+            configs_by_id,
+        } = self;
+        let queried_review_count = rows.len() as u64;
+
+        // one entry per card, so that a row costs one hash lookup instead of
+        // the five the three separate maps needed
+        let mut card_states: FnvHashMap<CardId, RwkvHistoricalCardState> = FnvHashMap::default();
+        // the home decks' preset ids, resolved on first sight of each deck
+        let mut stable_preset_ids_by_deck: FnvHashMap<i64, i64> = FnvHashMap::default();
+        let mut history_hash = rwkv_empty_history_hash();
+        let mut last_review_id = 0;
+        // the record of one review, reused so that the loop allocates nothing
+        let mut record = Vec::with_capacity(256);
+        // Where the saved state ends: the identity of the history after as
+        // many rows as the saved state holds. Rows come in review-id order,
+        // so these are the oldest rows, and a match means the saved state is
+        // the start of this history with only newer reviews after it.
+        let prefix_review_count = input
+            .expected_identity
+            .as_ref()
+            .map(|expected| expected.review_count);
+        let mut prefix_identity: Option<(i64, String)> = None;
+        let mut rows_read: u64 = 0;
+        if prefix_review_count == Some(0) {
+            prefix_identity = Some((0, rwkv_history_hash_hex(history_hash)));
+        }
+
+        for row in rows {
+            let card_id = CardId(row.card_id);
+            let state = match card_states.entry(card_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let stable_preset_id = match &stable_preset_ids_by_card {
+                        Some(by_card) => by_card.get(&card_id).copied(),
+                        None => Some(match stable_preset_ids_by_deck.entry(row.deck_id) {
+                            Entry::Occupied(deck) => *deck.get(),
+                            Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
+                                DeckId(row.deck_id),
+                                &decks_by_id,
+                                &configs_by_id,
+                            )?),
+                        }),
+                    };
+                    entry.insert(RwkvHistoricalCardState {
+                        stable_preset_id,
+                        ..Default::default()
+                    })
+                }
+            };
+            let day_offset = rwkv_historical_day_offset(row.review_id, &timing);
+            let (elapsed_days, elapsed_seconds) =
+                if let Some(previous_review_id) = state.previous_review_id {
+                    (
+                        (day_offset - rwkv_historical_day_offset(previous_review_id, &timing))
+                            .max(0),
+                        ((row.review_id - previous_review_id) / 1000).max(0),
+                    )
+                } else if row.is_learning_start
+                // Only a real Learning start may measure elapsed from the card's
+                // creation. A fallback start row (`sched.rwkv-replay-start-row`)
+                // is only the first row we hold, not the card's known first
+                // review, so its creation age would invent an interval.
+                && row.review_kind == 0
+                && rwkv_first_review_uses_card_creation(
+                    row.deck_id,
+                    &decks_by_id,
+                    &configs_by_id,
+                    &input.first_review_uses_creation_by_config_id,
+                ) {
+                    let elapsed_seconds = ((row.review_id - row.card_id) / 1000).max(0);
+                    (elapsed_seconds / 86_400, elapsed_seconds)
+                } else {
+                    (-1, -1)
+                };
+            let stable_preset_id = preset_routes
+                .iter()
+                .find(|route| {
+                    route.matches(card_id, state.review_count, state.previous_interval_days)
+                })
+                .map(|route| route.stable_preset_id)
+                .or(state.stable_preset_id)
+                .or_invalid("missing stable RWKV preset id")?;
+
+            state.previous_review_id = Some(row.review_id);
+            state.previous_interval_days = row.interval_days;
+            state.review_count += 1;
+            last_review_id = last_review_id.max(row.review_id);
+            history_hash = rwkv_history_hash_after_review(
+                history_hash,
+                &RwkvHistoricalFingerprintReview {
+                    row,
+                    stable_preset_id,
+                    day_offset,
+                    elapsed_days,
+                    elapsed_seconds,
+                },
+                &mut record,
+            );
+            rows_read += 1;
+            if Some(rows_read) == prefix_review_count {
+                prefix_identity = Some((last_review_id, rwkv_history_hash_hex(history_hash)));
+            }
+        }
+
+        let history_hash = rwkv_history_hash_hex(history_hash);
+        let all_ignored_review_ids_are_active = ignored_review_ids
+            .iter()
+            .map(|review_id| review_id.0)
+            .eq(active_ignored_review_ids.iter().copied());
+        let history_is_valid = all_ignored_review_ids_are_active
+            && input.expected_identity.as_ref().is_some_and(|expected| {
+                expected.last_review_id == last_review_id
+                    && expected.review_count == queried_review_count
+                    && expected.history_hash == history_hash
+            });
+        let history_prefix_is_valid = all_ignored_review_ids_are_active
+            && input.expected_identity.as_ref().is_some_and(|expected| {
+                prefix_identity
+                    .as_ref()
+                    .is_some_and(|(prefix_last, prefix_hash)| {
+                        expected.last_review_id == *prefix_last
+                            && expected.history_hash == *prefix_hash
+                    })
+            });
+        Ok(RwkvHistoricalReviewFingerprintResponse {
+            last_review_id,
+            review_count: queried_review_count,
+            history_hash,
+            active_ignored_review_ids,
+            queried_review_count,
+            history_is_valid,
+            history_prefix_is_valid,
+        })
+    }
+}
+
+/// Review-log rows per part of the fingerprint's read: about 25 ms of the
+/// collection on a fast machine.
+pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 32_768;
+/// Reads in parts that a write may interrupt before the fingerprint reads
+/// the collection in one piece instead.
+const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
+
+/// Runs one step of a read with the collection held: the backend passes a
+/// step to its collection lock, which is free between two steps.
+pub(crate) type RwkvCollectionHold<'a> =
+    dyn FnMut(&mut dyn FnMut(&mut Collection) -> Result<()>) -> Result<()> + 'a;
+
+/// `Collection::rwkv_historical_review_fingerprint`, with the collection held
+/// for one part of the review log at a time and not while the rows are
+/// hashed. The parts are one read only when nothing wrote to the collection
+/// between the first and the last (`SqliteStorage::change_stamp`). After a
+/// write the read starts over; a collection that keeps changing is read in
+/// one piece, as before. Either way the result is that of one read.
+pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
+    input: RwkvHistoricalReviewFingerprintRequest,
+    part_rows: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+    let started = std::time::Instant::now();
+    let ignored_review_ids = rwkv_sorted_review_ids(&input.ignored_review_ids);
+    for _ in 0..RWKV_FINGERPRINT_READ_ATTEMPTS {
+        let mut reader = None;
+        let mut stamp = None;
+        hold(&mut |col| {
+            reader = Some(
+                col.storage
+                    .rwkv_historical_review_reader(&ignored_review_ids)?,
+            );
+            stamp = Some(col.storage.change_stamp());
+            Ok(())
+        })?;
+        let (Some(mut reader), Some(stamp)) = (reader, stamp) else {
+            continue;
+        };
+        let mut parts = 0;
+        let mut unchanged = true;
+        let mut done = false;
+        while unchanged && !done {
+            hold(&mut |col| {
+                unchanged = col.storage.change_stamp() == stamp;
+                if unchanged {
+                    done = col
+                        .storage
+                        .rwkv_historical_review_rows_part(&mut reader, Some(part_rows))?;
+                }
+                Ok(())
+            })?;
+            parts += 1;
+        }
+        if !unchanged {
+            continue;
+        }
+        let mut reader = Some(reader);
+        let mut job = None;
+        hold(&mut |col| {
+            if col.storage.change_stamp() == stamp {
+                let (rows, active_ignored_review_ids) =
+                    reader.take().or_invalid("fingerprint read twice")?.finish();
+                job = Some(col.rwkv_historical_fingerprint_job(
+                    input.clone(),
+                    ignored_review_ids.clone(),
+                    rows,
+                    active_ignored_review_ids,
+                )?);
+            }
+            Ok(())
+        })?;
+        if let Some(job) = job {
+            let fingerprint = job.compute()?;
+            tracing::debug!(
+                reviews = fingerprint.queried_review_count,
+                parts,
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "computed RWKV historical review fingerprint in parts"
+            );
+            return Ok(fingerprint);
+        }
+    }
+    let mut fingerprint = None;
+    hold(&mut |col| {
+        fingerprint = Some(col.rwkv_historical_review_fingerprint(input.clone())?);
+        Ok(())
+    })?;
+    fingerprint.or_invalid("fingerprint not read")
+}
+
+/// The review ids to ignore, sorted and each once.
+pub(crate) fn rwkv_sorted_review_ids(review_ids: &[i64]) -> Vec<RevlogId> {
+    let mut review_ids = review_ids.iter().copied().map(RevlogId).collect::<Vec<_>>();
+    review_ids.sort_unstable();
+    review_ids.dedup();
+    review_ids
+}
+
 #[derive(Debug)]
 struct RwkvHistoricalPresetRoute {
     stable_preset_id: i64,
@@ -1598,6 +1755,149 @@ mod test {
             .history_prefix_is_valid
         );
 
+        Ok(())
+    }
+
+    /// Two cards whose histories start late -- after a Forget, and at the
+    /// latest run of learning rows -- a review of a deleted card, and the id
+    /// of a review to ignore: every rule of the read that looks at later
+    /// rows or at other tables.
+    fn collection_with_late_history_starts() -> Result<(Collection, i64)> {
+        let mut col = Collection::new();
+        let mut first = Card::new(NoteId(10), 0, DeckId(1), 0);
+        let mut second = Card::new(NoteId(11), 0, DeckId(1), 0);
+        col.add_card(&mut first)?;
+        col.add_card(&mut second)?;
+        let start = first.id.0.max(second.id.0) + 10_000;
+        let mut add = |card_id: CardId, at: i64, kind: RevlogReviewKind, button: u8, factor| {
+            col.storage.add_revlog_entry(
+                &RevlogEntry {
+                    id: RevlogId(start + at * 1_000),
+                    cid: card_id,
+                    usn: Usn(0),
+                    button_chosen: button,
+                    interval: at as i32,
+                    ease_factor: factor,
+                    taken_millis: 1_000,
+                    review_kind: kind,
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        add(first.id, 0, RevlogReviewKind::Review, 3, 2_500)?;
+        add(second.id, 1, RevlogReviewKind::Learning, 3, 2_500)?;
+        add(first.id, 2, RevlogReviewKind::Review, 3, 2_500)?;
+        add(first.id, 3, RevlogReviewKind::Manual, 0, 0)?; // Forget
+        add(CardId(999), 4, RevlogReviewKind::Review, 3, 2_500)?; // no such card
+        add(second.id, 5, RevlogReviewKind::Review, 3, 2_500)?;
+        add(first.id, 6, RevlogReviewKind::Review, 2, 2_500)?;
+        add(second.id, 7, RevlogReviewKind::Learning, 1, 2_500)?;
+        add(second.id, 8, RevlogReviewKind::Learning, 3, 2_500)?;
+        add(first.id, 9, RevlogReviewKind::Review, 4, 2_500)?;
+        add(second.id, 10, RevlogReviewKind::Review, 3, 2_500)?;
+        Ok((col, start + 9_000))
+    }
+
+    fn fingerprint_requests(
+        col: &mut Collection,
+        ignored: i64,
+    ) -> Result<Vec<RwkvHistoricalReviewFingerprintRequest>> {
+        let whole = col.rwkv_historical_review_fingerprint(Default::default())?;
+        Ok(vec![
+            Default::default(),
+            RwkvHistoricalReviewFingerprintRequest {
+                ignored_review_ids: vec![ignored],
+                ..Default::default()
+            },
+            // the check of a saved state that newer reviews follow
+            RwkvHistoricalReviewFingerprintRequest {
+                expected_identity: Some(scheduler::RwkvHistoricalReviewIdentity {
+                    review_count: whole.review_count - 1,
+                    ..identity_of(&whole)
+                }),
+                ..Default::default()
+            },
+        ])
+    }
+
+    /// The collection is free between the parts of the read, and the parts
+    /// give exactly the fingerprint of one read, whatever their size.
+    #[test]
+    fn historical_fingerprint_in_parts_is_the_fingerprint_of_one_read() -> Result<()> {
+        let (mut col, ignored) = collection_with_late_history_starts()?;
+        for request in fingerprint_requests(&mut col, ignored)? {
+            let whole = col.rwkv_historical_review_fingerprint(request.clone())?;
+            for part_rows in [1, 2, 3, 5, 1_000] {
+                let mut holds = 0;
+                let in_parts = rwkv_historical_review_fingerprint_in_parts(
+                    request.clone(),
+                    part_rows,
+                    &mut |step| {
+                        holds += 1;
+                        step(&mut col)
+                    },
+                )?;
+                assert_eq!(in_parts, whole, "part_rows={part_rows}");
+                // the reader, the parts of the 2 cards and of the 11 review-log
+                // rows (one more when a last part is full), and the job:
+                // never one hold for the whole read
+                let parts = (2 / part_rows + 1) + (11 / part_rows + 1);
+                assert_eq!(holds, 2 + parts, "part_rows={part_rows}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A write between two parts would mix two collections in one read, so
+    /// the read starts over; a collection that keeps changing is read in one
+    /// piece. Either way the fingerprint is that of one read of the
+    /// collection as the fingerprint finds it at the end.
+    #[test]
+    fn a_write_between_the_parts_makes_the_fingerprint_read_again() -> Result<()> {
+        let (mut col, _) = collection_with_late_history_starts()?;
+        let card = col.storage.all_cards()?.remove(0);
+        let last_review_id = std::cell::Cell::new(col.storage.db.query_row(
+            "select max(id) from revlog",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?);
+        let review_now = |col: &mut Collection| {
+            last_review_id.set(last_review_id.get() + 1_000);
+            add_review(col, &card, last_review_id.get(), 5)
+        };
+
+        // one review arrives during the first read
+        let mut holds = 0;
+        let fingerprint =
+            rwkv_historical_review_fingerprint_in_parts(Default::default(), 4, &mut |step| {
+                holds += 1;
+                if holds == 3 {
+                    review_now(&mut col)?;
+                }
+                step(&mut col)
+            })?;
+        let whole = col.rwkv_historical_review_fingerprint(Default::default())?;
+        assert_eq!(fingerprint, whole);
+        assert_eq!(fingerprint.last_review_id, last_review_id.get());
+        // the first read stopped at its second part; the second read is
+        // whole: the reader, the cards, the 12 review-log rows, the job
+        assert_eq!(holds, 3 + (1 + 1 + (12 / 4 + 1) + 1));
+
+        // a review before every hold: after three reads, one piece
+        let mut holds = 0;
+        let fingerprint =
+            rwkv_historical_review_fingerprint_in_parts(Default::default(), 4, &mut |step| {
+                holds += 1;
+                review_now(&mut col)?;
+                step(&mut col)
+            })?;
+        assert_eq!(
+            fingerprint,
+            col.rwkv_historical_review_fingerprint(Default::default())?
+        );
+        assert_eq!(fingerprint.last_review_id, last_review_id.get());
+        assert_eq!(holds, 3 * 2 + 1);
         Ok(())
     }
 
@@ -2302,6 +2602,59 @@ mod test {
         // seconds since the card was created: a slow run can cross a second
         assert!(matches!(new_row.current_elapsed_seconds, Some(0..=2)));
 
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: how long the fingerprint holds the
+    /// collection in one piece and, read in parts, at most in one hold, in
+    /// alternating pairs. One CSV line per pair: `pair,one_piece_ms,
+    /// longest_hold_ms,in_parts_total_ms`. Point `ANKI_FINGERPRINT_BENCH_COL`
+    /// at a COPY of a collection and run `cargo test -p anki --release
+    /// bench_historical_review_fingerprint_holds -- --ignored --nocapture`;
+    /// `ANKI_FINGERPRINT_BENCH_PAIRS` sets the pairs (100).
+    #[test]
+    #[ignore]
+    fn bench_historical_review_fingerprint_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_FINGERPRINT_BENCH_COL")
+            .expect("set ANKI_FINGERPRINT_BENCH_COL to a copy of a collection");
+        let pairs: usize = std::env::var("ANKI_FINGERPRINT_BENCH_PAIRS")
+            .map_or(100, |pairs| pairs.parse().unwrap());
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let mut one_piece = |col: &mut Collection| -> Result<_> {
+            let at = Instant::now();
+            let fingerprint = col.rwkv_historical_review_fingerprint(Default::default())?;
+            Ok((fingerprint, ms(at.elapsed())))
+        };
+        let mut in_parts = |col: &mut Collection| -> Result<_> {
+            let mut longest = 0f64;
+            let at = Instant::now();
+            let fingerprint = rwkv_historical_review_fingerprint_in_parts(
+                Default::default(),
+                RWKV_FINGERPRINT_PART_ROWS,
+                &mut |step| {
+                    let held = Instant::now();
+                    let result = step(col);
+                    longest = longest.max(ms(held.elapsed()));
+                    result
+                },
+            )?;
+            Ok((fingerprint, longest, ms(at.elapsed())))
+        };
+        println!("pair,one_piece_ms,longest_hold_ms,in_parts_total_ms");
+        for pair in 0..pairs {
+            let (whole, parts) = if pair % 2 == 0 {
+                let whole = one_piece(&mut col)?;
+                (whole, in_parts(&mut col)?)
+            } else {
+                let parts = in_parts(&mut col)?;
+                (one_piece(&mut col)?, parts)
+            };
+            assert_eq!(whole.0, parts.0, "pair {pair}");
+            println!("{pair},{:.2},{:.2},{:.2}", whole.1, parts.1, parts.2);
+        }
         Ok(())
     }
 

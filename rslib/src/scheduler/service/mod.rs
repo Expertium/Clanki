@@ -75,7 +75,9 @@ use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
+use crate::scheduler::rwkv::rwkv_historical_review_fingerprint_in_parts;
 use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
+use crate::scheduler::rwkv::RWKV_FINGERPRINT_PART_ROWS;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
@@ -1159,13 +1161,6 @@ impl crate::services::SchedulerService for Collection {
         Ok(FsrsPresetIdsForCardsResponse { items })
     }
 
-    fn rwkv_historical_review_fingerprint(
-        &mut self,
-        input: RwkvHistoricalReviewFingerprintRequest,
-    ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
-        Collection::rwkv_historical_review_fingerprint(self, input)
-    }
-
     fn set_rwkv_curve_sources(
         &mut self,
         input: scheduler::RwkvCurveSources,
@@ -1237,6 +1232,21 @@ fn fsrs_preset_id_to_string(id: FsrsPresetId) -> String {
 }
 
 impl crate::services::BackendSchedulerService for Backend {
+    /// The collection is held to read the review log, one part at a time,
+    /// and never while the rows are hashed: a user action waits for one part
+    /// at most. In one piece, 656k reviews held it for about 700 ms at
+    /// start-up, while the deck list waited.
+    fn rwkv_historical_review_fingerprint(
+        &self,
+        input: RwkvHistoricalReviewFingerprintRequest,
+    ) -> Result<RwkvHistoricalReviewFingerprintResponse> {
+        rwkv_historical_review_fingerprint_in_parts(
+            input,
+            RWKV_FINGERPRINT_PART_ROWS,
+            &mut |step| self.with_col(|col| step(col)),
+        )
+    }
+
     /// The collection is held to read the preset's reviews and to write one
     /// batch of rows, never while the folds are fitted and never for a whole
     /// preset's write, so a user action waits only for a short read or one

@@ -164,6 +164,45 @@ impl RwkvHistoricalReviewStart {
     }
 }
 
+/// A read of the RWKV replay's rows in progress; see
+/// `SqliteStorage::rwkv_historical_review_reader`.
+pub(crate) struct RwkvHistoricalReviewReader {
+    ignored: Vec<i64>,
+    active_ignored_review_ids: Vec<i64>,
+    cards: FnvHashMap<i64, (i64, i64)>,
+    rows: Vec<RwkvHistoricalReviewRow>,
+    starts: FnvHashMap<i64, RwkvHistoricalReviewStart>,
+    /// The last card id read, while the cards are read; None after them.
+    after_card_id: Option<i64>,
+    /// The last review-log id read; the next part starts after it.
+    after_review_id: i64,
+}
+
+impl RwkvHistoricalReviewReader {
+    /// The rows and the active ignored reviews, once every part is read. A
+    /// card's rows before its start row are dropped only now: a later Forget
+    /// or learning run moves the start.
+    pub(crate) fn finish(self) -> (Vec<RwkvHistoricalReviewRow>, Vec<i64>) {
+        let Self {
+            mut rows,
+            starts,
+            active_ignored_review_ids,
+            ..
+        } = self;
+        rows.retain_mut(|row| {
+            let Some(start_id) = starts
+                .get(&row.card_id)
+                .and_then(RwkvHistoricalReviewStart::id)
+            else {
+                return false;
+            };
+            row.is_learning_start = row.review_id == start_id;
+            row.review_id >= start_id
+        });
+        (rows, active_ignored_review_ids)
+    }
+}
+
 impl FromSql for RevlogReviewKind {
     fn column_result(value: ValueRef<'_>) -> std::result::Result<Self, FromSqlError> {
         if let ValueRef::Integer(i) = value {
@@ -1130,13 +1169,63 @@ impl SqliteStorage {
         &self,
         ignored_review_ids: &[RevlogId],
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
+        let mut reader = self.rwkv_historical_review_reader(ignored_review_ids)?;
+        self.rwkv_historical_review_rows_part(&mut reader, None)?;
+        Ok(reader.finish())
+    }
+
+    /// A read of `rwkv_historical_review_rows` that can be done in parts:
+    /// the ignored reviews are read here, the cards and then the review log
+    /// by `rwkv_historical_review_rows_part`. The parts give the rows of one
+    /// read only while the collection does not change between them; see
+    /// `change_stamp`.
+    pub(crate) fn rwkv_historical_review_reader(
+        &self,
+        ignored_review_ids: &[RevlogId],
+    ) -> Result<RwkvHistoricalReviewReader> {
         let active_ignored_review_ids = self.rwkv_active_ignored_review_ids(ignored_review_ids)?;
         let mut ignored: Vec<i64> = ignored_review_ids.iter().map(|id| id.0).collect();
         ignored.sort_unstable();
-        let cards = self.rwkv_historical_review_cards()?;
+        Ok(RwkvHistoricalReviewReader {
+            ignored,
+            active_ignored_review_ids,
+            cards: FnvHashMap::default(),
+            rows: Vec::new(),
+            starts: FnvHashMap::default(),
+            after_card_id: Some(i64::MIN),
+            after_review_id: i64::MIN,
+        })
+    }
 
-        let mut rows: Vec<RwkvHistoricalReviewRow> = Vec::new();
-        let mut starts: FnvHashMap<i64, RwkvHistoricalReviewStart> = FnvHashMap::default();
+    /// Reads up to `max_rows` more rows (all of them for None), in id order
+    /// after the last part: first the cards, then the review log. True when
+    /// the review log is done.
+    pub(crate) fn rwkv_historical_review_rows_part(
+        &self,
+        reader: &mut RwkvHistoricalReviewReader,
+        max_rows: Option<usize>,
+    ) -> Result<bool> {
+        // a negative limit is none
+        let limit = max_rows.map_or(-1, |rows| rows as i64);
+        let RwkvHistoricalReviewReader {
+            ignored,
+            cards,
+            rows,
+            starts,
+            after_card_id,
+            after_review_id,
+            ..
+        } = reader;
+        if let Some(after) = after_card_id {
+            let read = self.rwkv_historical_review_cards_part(cards, after, limit)?;
+            if max_rows.map_or(false, |max_rows| read == max_rows) {
+                return Ok(false);
+            }
+            *after_card_id = None;
+            if max_rows.is_some() {
+                return Ok(false);
+            }
+        }
         let mut statement = self.db.prepare_cached(concat!(
             "select r.id, r.cid, r.ease, r.time, r.type, ",
             "cast(r.ivl as integer), cast(r.factor as integer), r.factor = 0 ",
@@ -1148,14 +1237,18 @@ impl SqliteStorage {
             // conditions live in `where`, where a row that fails them costs
             // nothing more: reading the columns first and deciding afterwards
             // measured 270ms slower over 1.3M rows.
-            "where (r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) ",
-            "       and not (r.type = 3 and r.factor = 0)) ",
-            "   or (r.type = 4 and r.factor = 0) ",
-            "order by r.id"
+            "where ((r.ease between 1 and 4 and r.type in (0, 1, 2, 3, 4, 5) ",
+            "        and not (r.type = 3 and r.factor = 0)) ",
+            "    or (r.type = 4 and r.factor = 0)) ",
+            "  and r.id > ?1 ",
+            "order by r.id limit ?2"
         ))?;
-        let mut query = statement.query([])?;
+        let mut query = statement.query(params![*after_review_id, limit])?;
+        let mut read = 0;
         while let Some(row) = query.next()? {
             let review_id: i64 = row.get(0)?;
+            *after_review_id = review_id;
+            read += 1;
             let card_id: i64 = row.get(1)?;
             // a review whose card is gone belongs to no history: the query
             // this replaced joined `cards`, which dropped it
@@ -1202,19 +1295,7 @@ impl SqliteStorage {
                 is_learning_start: false,
             });
         }
-
-        rows.retain_mut(|row| {
-            let Some(start_id) = starts
-                .get(&row.card_id)
-                .and_then(RwkvHistoricalReviewStart::id)
-            else {
-                return false;
-            };
-            row.is_learning_start = row.review_id == start_id;
-            row.review_id >= start_id
-        });
-
-        Ok((rows, active_ignored_review_ids))
+        Ok(max_rows.map_or(true, |max_rows| read < max_rows))
     }
 
     /// Which of the reviews the caller asks to ignore still belong to the
@@ -1242,17 +1323,27 @@ impl SqliteStorage {
             .map_err(Into::into)
     }
 
-    /// Each card's note and home deck, for the replay's rows.
-    fn rwkv_historical_review_cards(&self) -> Result<FnvHashMap<i64, (i64, i64)>> {
-        let mut cards = FnvHashMap::default();
-        let mut statement = self.db.prepare_cached(
-            "select id, nid, case when odid != 0 then odid else did end from cards",
-        )?;
-        let mut query = statement.query([])?;
+    /// Each card's note and home deck, for the replay's rows: up to `limit`
+    /// cards (all for a negative limit) in id order after `after`, which
+    /// moves to the last card read. Returns how many were read.
+    fn rwkv_historical_review_cards_part(
+        &self,
+        cards: &mut FnvHashMap<i64, (i64, i64)>,
+        after: &mut i64,
+        limit: i64,
+    ) -> Result<usize> {
+        let mut statement = self.db.prepare_cached(concat!(
+            "select id, nid, case when odid != 0 then odid else did end from cards ",
+            "where id > ?1 order by id limit ?2"
+        ))?;
+        let mut query = statement.query(params![*after, limit])?;
+        let mut read = 0;
         while let Some(row) = query.next()? {
-            cards.insert(row.get(0)?, (row.get(1)?, row.get(2)?));
+            *after = row.get(0)?;
+            cards.insert(*after, (row.get(1)?, row.get(2)?));
+            read += 1;
         }
-        Ok(cards)
+        Ok(read)
     }
 
     /// The searched cards' reviews since `after`, in no particular order.
