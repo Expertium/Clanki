@@ -117,6 +117,45 @@ export interface RwkvCurvePoints {
     past?: RwkvPastSegment[];
 }
 
+/**
+ * Which algorithm's curves an RWKV-Curve card's chart draws. In Advanced mode
+ * the chart offers both, one at a time, never mixed (spec
+ * ui.card-info-rwkv-curve).
+ */
+export enum CurveAlgorithm {
+    RwkvCurve = "rwkv-curve",
+    Fsrs7 = "fsrs7",
+}
+
+/**
+ * Whether the chart offers the FSRS-7 / RWKV-Curve toggle: a card with
+ * RWKV-Curve's curves, for which the backend also sent FSRS-7's own reviews,
+ * which it does only in Advanced mode.
+ */
+export function offersCurveToggle(
+    rwkvCurve: RwkvCurvePoints | undefined,
+    fsrs7Revlog: RevlogEntry[],
+): boolean {
+    return rwkvCurve !== undefined && fsrs7Revlog.length > 0;
+}
+
+/**
+ * The reviews and the RWKV curve the chart draws for the chosen algorithm:
+ * RWKV-Curve's own curves, or FSRS-7's from its own memory states, and never
+ * both.
+ */
+export function curveInputs(
+    revlog: RevlogEntry[],
+    rwkvCurve: RwkvCurvePoints | undefined,
+    fsrs7Revlog: RevlogEntry[],
+    chosen: CurveAlgorithm,
+): { revlog: RevlogEntry[]; rwkvCurve?: RwkvCurvePoints } {
+    if (chosen === CurveAlgorithm.Fsrs7 && offersCurveToggle(rwkvCurve, fsrs7Revlog)) {
+        return { revlog: fsrs7Revlog, rwkvCurve: undefined };
+    }
+    return { revlog, rwkvCurve };
+}
+
 /** The recall of `curve` at `days`, linear between its points. */
 export function rwkvRecallAt(curve: RwkvCurvePoints, days: number): number {
     const xs = curve.elapsedDays;

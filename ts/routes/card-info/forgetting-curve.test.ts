@@ -8,8 +8,11 @@ import { expect, test, vi } from "vitest";
 import type { DataPoint } from "./forgetting-curve";
 import {
     chartRevlog,
+    CurveAlgorithm,
+    curveInputs,
     forgettingCurveMessage,
     forgettingCurveTooltip,
+    offersCurveToggle,
     prepareData,
     recallLabel,
     rwkvRecallAt,
@@ -378,4 +381,35 @@ test("the wording setting and the mode together choose the curve's label", () =>
     for (const [setting, advanced, expected] of cases) {
         expect(recallLabel(plainRecallWording(setting, advanced))).toBe(expected);
     }
+});
+
+// Pins spec/ui.md#ui.card-info-rwkv-curve (the FSRS-7 / RWKV-Curve toggle):
+// one algorithm at a time, RWKV-Curve's unless FSRS-7 is chosen, and the
+// toggle only where the backend sent FSRS-7's own reviews (Advanced mode).
+test("the curve toggle draws one algorithm at a time", () => {
+    const rwkv = { elapsedDays: [0, 1, 10], recall: [1, 0.9, 0.5], s90: 1 };
+    const plain = twoReviews();
+    const fsrs7 = twoReviews().map((entry: any) => ({
+        ...entry,
+        memoryState: { ...entry.memoryState, stability: entry.memoryState.stability + 1 },
+    }));
+
+    expect(offersCurveToggle(rwkv, fsrs7)).toBe(true);
+    // Simple mode, or an FSRS-7 card: the backend sends no FSRS-7 reviews
+    expect(offersCurveToggle(rwkv, [])).toBe(false);
+    expect(offersCurveToggle(undefined, fsrs7)).toBe(false);
+
+    const byDefault = curveInputs(plain, rwkv, fsrs7, CurveAlgorithm.RwkvCurve);
+    expect(byDefault.revlog).toBe(plain);
+    expect(byDefault.rwkvCurve).toBe(rwkv);
+
+    const fsrs = curveInputs(plain, rwkv, fsrs7, CurveAlgorithm.Fsrs7);
+    expect(fsrs.revlog).toBe(fsrs7);
+    // no RWKV curve rides along with FSRS-7's reviews
+    expect(fsrs.rwkvCurve).toBeUndefined();
+
+    // no toggle: FSRS-7 cannot be chosen, the card keeps its own curves
+    const without = curveInputs(plain, rwkv, [], CurveAlgorithm.Fsrs7);
+    expect(without.revlog).toBe(plain);
+    expect(without.rwkvCurve).toBe(rwkv);
 });

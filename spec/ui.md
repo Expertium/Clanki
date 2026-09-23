@@ -798,8 +798,21 @@ same time waits, and the "Processing..." window appeared during reviews.
 
 Given a card whose preset runs RWKV-Curve, card info's forgetting-curve chart
 shows only RWKV-Curve's own curves. **The rule:** no FSRS-7 segment and no
-FSRS-7 value is ever drawn on such a card, whatever RWKV has. FSRS-7's
-parameters change nothing on the chart.
+FSRS-7 value is ever drawn on such a card, whatever RWKV has, unless the user
+picks FSRS-7 in the toggle below. FSRS-7's parameters change nothing on the
+RWKV-Curve chart.
+
+**The toggle (Advanced mode).** In Advanced mode (`ui.mode-switch`) the chart
+of such a card has a choice above it, "RWKV-Curve" and "FSRS-7", with
+RWKV-Curve picked when card info opens. Picking FSRS-7 draws FSRS-7's curves
+instead, exactly as for a card of an FSRS-7 preset: one segment per review,
+from FSRS-7's own memory state after that review as the card's preset's FSRS-7
+parameters give it from the card's history. It is not the memory state stored
+on the card, which holds RWKV-Curve's S90. The chart never draws both
+algorithms at once, and the choice changes nothing but the chart: the
+"Stability" and "Retrievability" rows stay RWKV-Curve's. Simple mode has no
+toggle. The page gets FSRS-7's reviews in their own list of the card-stats
+response, filled only in Advanced mode under RWKV-Curve.
 
 **The full history.** The chart draws one segment per answered review:
 after each review, the curve RWKV held for the card right after that review,
@@ -864,9 +877,16 @@ no FSRS-7 S90. He also asked, on the same day, that the forgetting curve
 and on 2026-09-16, shown the one-segment chart: "that is absolutely not
 intended whatsoever". His no-mixing rule forbids borrowing FSRS-7's curve;
 it says nothing about RWKV's own. On 2026-09-19 he accepted about 170 MB of
-saved sources for his 656k reviews, so that the chart can draw them.
+saved sources for his 656k reviews, so that the chart can draw them. On
+2026-09-23 he asked for the toggle: "in Advanced UI mode, show a FSRS-7 /
+RWKV-Curve toggle for the forgetting curve graph, so that I can look at curves
+of both algorithms in Card Info"; one algorithm at a time keeps two
+algorithms out of one display.
 
-**Pinned by:** `card_curve_points_are_the_curve_and_its_s90`,
+**Pinned by:** `an_rwkv_curve_card_carries_fsrs7s_own_states_only_in_advanced_mode`
+(`rslib/src/stats/card.rs`); "the curve toggle draws one algorithm at a time"
+(`ts/routes/card-info/forgetting-curve.test.ts`);
+`card_curve_points_are_the_curve_and_its_s90`,
 `curve_sources_rebuild_the_curve_stored_at_each_review`,
 `curve_sources_of_another_format_are_not_read`
 (`rslib/src/rwkv/mod.rs`);
@@ -954,11 +974,14 @@ only the values of the collection's algorithm (`sched.one-global-algorithm`)
 and one retrievability, labelled "Retrievability" or "Probability of recall"
 as `ui.simple-recall-wording` says:
 
-| Algorithm    | Stability       | Difficulty | Retrievability         | Forgetting curve |
-| ------------ | --------------- | ---------- | ---------------------- | ---------------- |
-| FSRS-7       | FSRS-7's S90    | FSRS-7's   | FSRS-7's               | FSRS-7's         |
-| RWKV-Curve   | the curve's S90 | none       | the curve's recall now | RWKV-Curve's     |
-| RWKV-Instant | none            | none       | RWKV's prediction      | none             |
+| Algorithm    | Stability       | Difficulty | Retrievability         | Forgetting curve  |
+| ------------ | --------------- | ---------- | ---------------------- | ----------------- |
+| FSRS-7       | FSRS-7's S90    | FSRS-7's   | FSRS-7's               | FSRS-7's          |
+| RWKV-Curve   | the curve's S90 | none       | the curve's recall now | RWKV-Curve's (\*) |
+| RWKV-Instant | none            | none       | RWKV's prediction      | none              |
+
+(\*) In Advanced mode a toggle above the chart can show FSRS-7's curves
+instead, one algorithm at a time (`ui.card-info-rwkv-curve`).
 
 RWKV-Curve's recall now is its stored curve (`ui.card-info-rwkv-curve`) at
 the time since the card's latest answered review. While RWKV has no value
