@@ -286,6 +286,10 @@ fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
     })
 }
 
+/// One part of the uncovered-review count: each deck with its uncovered
+/// reviews, and the review id the next part starts after (None at the end).
+pub(crate) type UncoveredReviewsPart = (Vec<(DeckId, u32)>, Option<i64>);
+
 impl SqliteStorage {
     fn qualified_retrievability_cache_table(table: &str) -> String {
         format!("{RETRIEVABILITY_CACHE_DB_SCHEMA}.{table}")
@@ -961,24 +965,49 @@ impl SqliteStorage {
     /// their presets; the query is collection-wide and never scoped to a
     /// search, because a pass that filled only the deck on screen would
     /// leave the same fault everywhere else.
-    pub(crate) fn decks_with_uncovered_fsrs_review_predictions(
+    ///
+    /// One part of that count: the reviews with an id above `after`, over
+    /// `part_rows` rows of the review log, or over the rest of it when None.
+    /// Also returns the id the next part starts after, None when this part
+    /// reached the end. The parts' counts, added up, are the whole count.
+    ///
+    /// The review log leads the join (`cross join`), so the cache is
+    /// searched in review-id order: 0.7 s against 5.0 s for the same count
+    /// led by the cards, on a collection of 910,750 rated reviews.
+    pub(crate) fn decks_with_uncovered_fsrs_review_predictions_part(
         &self,
-    ) -> Result<Vec<(DeckId, u32)>> {
+        after: i64,
+        part_rows: Option<usize>,
+    ) -> Result<UncoveredReviewsPart> {
+        let last = match part_rows {
+            Some(rows) => self
+                .db
+                .prepare_cached(
+                    "select id from revlog where id > ?1 order by id limit 1 offset ?2",
+                )?
+                .query_row((after, rows.max(1) as i64 - 1), |row| row.get(0))
+                .optional()?,
+            None => None,
+        };
         let table =
             Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
-        self.db
+        let counts = self
+            .db
             .prepare_cached(&format!(
                 "select c.did, count(*) from revlog r
-                 join cards c on c.id = r.cid
-                 where r.ease > 0
+                 cross join cards c on c.id = r.cid
+                 where r.id > ?1 and r.id <= ?2 and r.ease > 0
                    and not exists (
                        select 1 from {table} t
                        where t.revlog_id = r.id and t.sample_role = 'validation_fold'
                    )
                  group by c.did"
             ))?
-            .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
+            .query_and_then((after, last.unwrap_or(i64::MAX)), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<_>>()?;
+        Ok((counts, last))
     }
 
     /// Deletes every stored FSRS prediction of the cards of these decks.

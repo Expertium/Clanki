@@ -19,6 +19,7 @@ use crate::prelude::*;
 use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
+use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::search::writer::preset_search;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
 
@@ -85,6 +86,69 @@ where
     Ok(written)
 }
 
+/// Review-log rows per part of the stale-preset read: about 15 ms of the
+/// collection on a fast machine.
+pub(crate) const STALE_PRESETS_PART_ROWS: usize = 32_768;
+/// Reads in parts that a write may interrupt before the stale presets are
+/// read in one piece instead.
+const STALE_PRESETS_READ_ATTEMPTS: usize = 3;
+
+/// `Collection::presets_with_stale_fsrs_review_predictions`, with the
+/// collection held for one part of the review log at a time (spec
+/// ui.stats-fsrs-predictions-ready). In one piece it held the collection
+/// for 1.9 s on a large collection, and a click in the reviewer waited for
+/// it. The parts are one read only when nothing wrote to the collection
+/// between the first and the last (`SqliteStorage::change_stamp`). After a
+/// write the read starts over; a collection that keeps changing is read in
+/// one piece. Either way the result is that of one read.
+pub(crate) fn presets_with_stale_fsrs_review_predictions_in_parts(
+    part_rows: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<Vec<DeckConfigId>> {
+    for _ in 0..STALE_PRESETS_READ_ATTEMPTS {
+        let mut uncovered: HashMap<DeckId, u32> = HashMap::new();
+        let mut stamp = None;
+        let mut after = Some(i64::MIN);
+        let mut unchanged = true;
+        while let (Some(from), true) = (after, unchanged) {
+            hold(&mut |col| {
+                let now = col.storage.change_stamp();
+                unchanged = *stamp.get_or_insert(now) == now;
+                if unchanged {
+                    let (part, next) = col
+                        .storage
+                        .decks_with_uncovered_fsrs_review_predictions_part(from, Some(part_rows))?;
+                    for (deck, reviews) in part {
+                        *uncovered.entry(deck).or_default() += reviews;
+                    }
+                    after = next;
+                }
+                Ok(())
+            })?;
+        }
+        if !unchanged {
+            continue;
+        }
+        let mut stale = None;
+        hold(&mut |col| {
+            if Some(col.storage.change_stamp()) == stamp {
+                let uncovered = std::mem::take(&mut uncovered).into_iter().collect();
+                stale = Some(col.presets_of_uncovered_decks(uncovered)?);
+            }
+            Ok(())
+        })?;
+        if let Some(stale) = stale {
+            return Ok(stale);
+        }
+    }
+    let mut stale = None;
+    hold(&mut |col| {
+        stale = Some(col.presets_with_stale_fsrs_review_predictions()?);
+        Ok(())
+    })?;
+    stale.or_invalid("stale presets never read")
+}
+
 /// One preset's recompute, split so that only reading its reviews and
 /// writing its rows need the collection; the fold fits in [`Self::rows`] run
 /// without it.
@@ -128,9 +192,18 @@ impl Collection {
     pub(crate) fn presets_with_stale_fsrs_review_predictions(
         &mut self,
     ) -> Result<Vec<DeckConfigId>> {
-        let uncovered = self
+        let (uncovered, _) = self
             .storage
-            .decks_with_uncovered_fsrs_review_predictions()?;
+            .decks_with_uncovered_fsrs_review_predictions_part(i64::MIN, None)?;
+        self.presets_of_uncovered_decks(uncovered)
+    }
+
+    /// The presets of the decks that hold uncovered reviews, given with how
+    /// many each holds.
+    fn presets_of_uncovered_decks(
+        &mut self,
+        uncovered: Vec<(DeckId, u32)>,
+    ) -> Result<Vec<DeckConfigId>> {
         if uncovered.is_empty() {
             return Ok(vec![]);
         }
@@ -553,6 +626,175 @@ mod test {
             )?,
             other_review.0
         );
+        Ok(())
+    }
+
+    fn cover(col: &mut Collection, review: RevlogId) -> Result<()> {
+        col.storage.set_fsrs_review_retrievability_predictions(
+            &[FsrsReviewRetrievabilityCacheRow {
+                revlog_id: review,
+                prediction: 0.9,
+                sample_role: FsrsReviewRetrievabilitySampleRole::ValidationFold,
+                fold_index: 0,
+            }],
+            "test",
+        )?;
+        Ok(())
+    }
+
+    /// Three presets over 15 reviews, interleaved in the review log: the
+    /// default one and "Other" have uncovered reviews, "Covered" has none.
+    /// Returns the collection and the decks of "Other" and "Covered".
+    fn collection_with_three_presets() -> Result<(Collection, Deck, Deck)> {
+        let mut col = Collection::new();
+        let other = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        let covered = DeckAdder::new("covered")
+            .with_config(|config| config.name = "Covered".to_string())
+            .add(&mut col);
+        for days_ago in [50, 40, 30, 20, 10] {
+            rated_card(&mut col, days_ago);
+            let review = rated_card_in(&mut col, covered.id, days_ago + 1);
+            cover(&mut col, review)?;
+            rated_card_in(&mut col, other.id, days_ago + 2);
+        }
+        Ok((col, other, covered))
+    }
+
+    /// The collection is free between the parts of the read, and the parts
+    /// give exactly the presets of one read, whatever their size.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn stale_presets_in_parts_are_those_of_one_read() -> Result<()> {
+        let (mut col, other, _) = collection_with_three_presets()?;
+        let whole = col.presets_with_stale_fsrs_review_predictions()?;
+        let mut expected = vec![DeckConfigId(1), other.config_id().unwrap()];
+        expected.sort_unstable();
+        assert_eq!(whole, expected);
+        for part_rows in [1, 2, 3, 7, 15, 1_000] {
+            let mut holds = 0;
+            let in_parts =
+                presets_with_stale_fsrs_review_predictions_in_parts(part_rows, &mut |step| {
+                    holds += 1;
+                    step(&mut col)
+                })?;
+            assert_eq!(in_parts, whole, "part_rows={part_rows}");
+            // the parts of the 15 review-log rows (one more when a last part
+            // is full) and the mapping to presets: never one hold for the
+            // whole read
+            assert_eq!(holds, (15 / part_rows + 1) + 1, "part_rows={part_rows}");
+        }
+        Ok(())
+    }
+
+    /// A write between two parts would mix two collections in one read, so
+    /// the read starts over; a collection that keeps changing is read in one
+    /// piece. Either way the presets are those of one read of the collection
+    /// as the pass finds it at the end.
+    #[test]
+    fn a_write_between_the_parts_makes_the_stale_presets_read_again() -> Result<()> {
+        let (mut col, _, covered) = collection_with_three_presets()?;
+        let covered_preset = covered.config_id().unwrap();
+        let days_ago = std::cell::Cell::new(100);
+        // an uncovered review early in the review log, in a part the read
+        // has already passed: without the check, the pass would miss it
+        let review_now = |col: &mut Collection| {
+            days_ago.set(days_ago.get() + 1);
+            rated_card_in(col, covered.id, days_ago.get());
+        };
+
+        let mut holds = 0;
+        let stale = presets_with_stale_fsrs_review_predictions_in_parts(4, &mut |step| {
+            holds += 1;
+            if holds == 2 {
+                review_now(&mut col);
+            }
+            step(&mut col)
+        })?;
+        assert_eq!(stale, col.presets_with_stale_fsrs_review_predictions()?);
+        assert!(stale.contains(&covered_preset));
+        // the first read stopped at its second part; the second read is
+        // whole: the 16 review-log rows and the mapping
+        assert_eq!(holds, 2 + ((16 / 4 + 1) + 1));
+
+        // a review before every hold: after three reads, one piece
+        let mut holds = 0;
+        let stale = presets_with_stale_fsrs_review_predictions_in_parts(4, &mut |step| {
+            holds += 1;
+            review_now(&mut col);
+            step(&mut col)
+        })?;
+        assert_eq!(stale, col.presets_with_stale_fsrs_review_predictions()?);
+        assert_eq!(holds, 3 * 2 + 1);
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: how long the stale-preset read
+    /// holds the collection with the query it replaced, in one piece, and
+    /// read in parts, at most in one hold, in alternating pairs. One CSV line
+    /// per pair: `pair,old_query_ms,longest_hold_ms,in_parts_total_ms`. Point
+    /// `ANKI_STALE_PRESETS_BENCH_COL` at a COPY of a collection and run
+    /// `cargo test -p anki --release bench_stale_presets_holds -- --ignored
+    /// --nocapture`; `ANKI_STALE_PRESETS_BENCH_PAIRS` sets the pairs (100).
+    #[test]
+    #[ignore]
+    fn bench_stale_presets_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_PRESETS_BENCH_COL")
+            .expect("set ANKI_STALE_PRESETS_BENCH_COL to a copy of a collection");
+        let pairs: usize = std::env::var("ANKI_STALE_PRESETS_BENCH_PAIRS")
+            .map_or(100, |pairs| pairs.parse().unwrap());
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        // the query before this change, led by the cards
+        let old_query = |col: &mut Collection| -> Result<_> {
+            let at = Instant::now();
+            let uncovered: Vec<(DeckId, u32)> = col
+                .storage
+                .db
+                .prepare(
+                    "select c.did, count(*) from revlog r
+                     join cards c on c.id = r.cid
+                     where r.ease > 0
+                       and not exists (
+                           select 1 from retrievability_cache.search_stats_fsrs_review_retrievability t
+                           where t.revlog_id = r.id and t.sample_role = 'validation_fold'
+                       )
+                     group by c.did",
+                )?
+                .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_>>()?;
+            let stale = col.presets_of_uncovered_decks(uncovered)?;
+            Ok((stale, ms(at.elapsed())))
+        };
+        let in_parts = |col: &mut Collection| -> Result<_> {
+            let mut longest = 0f64;
+            let at = Instant::now();
+            let stale = presets_with_stale_fsrs_review_predictions_in_parts(
+                STALE_PRESETS_PART_ROWS,
+                &mut |step| {
+                    let held = Instant::now();
+                    let result = step(col);
+                    longest = longest.max(ms(held.elapsed()));
+                    result
+                },
+            )?;
+            Ok((stale, longest, ms(at.elapsed())))
+        };
+        println!("pair,old_query_ms,longest_hold_ms,in_parts_total_ms");
+        for pair in 0..pairs {
+            let (old, parts) = if pair % 2 == 0 {
+                let old = old_query(&mut col)?;
+                (old, in_parts(&mut col)?)
+            } else {
+                let parts = in_parts(&mut col)?;
+                (old_query(&mut col)?, parts)
+            };
+            assert_eq!(old.0, parts.0, "pair {pair}");
+            println!("{pair},{:.2},{:.2},{:.2}", old.1, parts.1, parts.2);
+        }
         Ok(())
     }
 }

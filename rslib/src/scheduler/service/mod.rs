@@ -70,8 +70,10 @@ use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
+use crate::scheduler::fsrs::predictions::presets_with_stale_fsrs_review_predictions_in_parts;
 use crate::scheduler::fsrs::predictions::store_fsrs_review_predictions_in_batches;
 use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
+use crate::scheduler::fsrs::predictions::STALE_PRESETS_PART_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
@@ -462,18 +464,6 @@ impl crate::services::SchedulerService for Collection {
         Ok(scheduler::StaleFsrsPredictionPresetsResponse {
             deck_config_ids: self
                 .fsrs_presets_due_for_auto_optimize()?
-                .into_iter()
-                .map(|preset| preset.0)
-                .collect(),
-        })
-    }
-
-    fn stale_fsrs_prediction_presets(
-        &mut self,
-    ) -> Result<scheduler::StaleFsrsPredictionPresetsResponse> {
-        Ok(scheduler::StaleFsrsPredictionPresetsResponse {
-            deck_config_ids: self
-                .presets_with_stale_fsrs_review_predictions()?
                 .into_iter()
                 .map(|preset| preset.0)
                 .collect(),
@@ -1245,6 +1235,23 @@ impl crate::services::BackendSchedulerService for Backend {
             RWKV_FINGERPRINT_PART_ROWS,
             &mut |step| self.with_col(|col| step(col)),
         )
+    }
+
+    /// Holds the collection for one part of the review log at a time, so a
+    /// click waits for one part rather than for the whole read (spec
+    /// ui.stats-fsrs-predictions-ready).
+    fn stale_fsrs_prediction_presets(
+        &self,
+    ) -> Result<scheduler::StaleFsrsPredictionPresetsResponse> {
+        Ok(scheduler::StaleFsrsPredictionPresetsResponse {
+            deck_config_ids: presets_with_stale_fsrs_review_predictions_in_parts(
+                STALE_PRESETS_PART_ROWS,
+                &mut |step| self.with_col(|col| step(col)),
+            )?
+            .into_iter()
+            .map(|preset| preset.0)
+            .collect(),
+        })
     }
 
     /// The collection is held to read the preset's reviews and to write one
