@@ -20933,6 +20933,46 @@ def test_a_screen_that_reads_the_rows_starts_the_recording_pass(
     assert len(counts) == (1 if case in ("current", "rows_gone") else 0)
 
 
+# The Stats page asks from two request threads at once. The second waits for
+# the first's answer instead of counting the rows again.
+def test_two_screens_asking_at_once_count_the_rows_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import threading
+
+    mw, passes = _recordings_mw(monkeypatch, tmp_path, rows_present=True)
+    _recordings_marker(mw, model=None)
+    counting = threading.Event()
+    release = threading.Event()
+    counts: list[object] = []
+    inner = rwkv_scheduler._rwkv_recorded_row_counts
+
+    def slow_count(*args: object) -> object:
+        counts.append(args)
+        counting.set()
+        assert release.wait(5)
+        return inner(*args)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_recorded_row_counts", slow_count)
+    first = threading.Thread(
+        target=rwkv_scheduler.start_rwkv_recordings_pass_if_needed, args=(mw,)
+    )
+    second = threading.Thread(
+        target=rwkv_scheduler.start_rwkv_recordings_pass_if_needed, args=(mw,)
+    )
+    first.start()
+    assert counting.wait(5)
+    # the second asks while the first is still counting
+    second.start()
+    second.join(0.2)
+    assert second.is_alive(), "the second did not wait for the first"
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert len(counts) == 1
+    assert passes == []
+
+
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic: nothing starts the
 # pass at profile open. Start-up is never the moment for minutes of work, and
 # nothing about reviewing needs these rows.

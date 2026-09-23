@@ -331,6 +331,10 @@ _rwkv_recordings_pass_running = False
 # them asks every time it opens; only Clanki itself writes or clears the
 # marker, so the answer is remembered until it does.
 _rwkv_recordings_known_current = False
+# One check at a time: the Stats page asks from two request threads at once,
+# and both counted (1066 ms and 274 ms of the collection, measured) before
+# either could remember the answer. The second now waits for the first's.
+_rwkv_recordings_check_lock = threading.Lock()
 # the pass starts only after the user has left Clanki alone this long (spec
 # sched.rwkv-recordings-automatic)
 RECORDINGS_PASS_IDLE_SECS = 10.0
@@ -12492,16 +12496,20 @@ def start_rwkv_recordings_pass_if_needed(mw: object) -> None:
         return
     if _reviewer_is_showing_a_card(mw):
         return
-    # the tag the rows must carry is the running model's, so the model has
-    # to be loaded before the question can be answered at all
-    configure_reviewer_backend_from_environment()
-    current = rwkv_recordings_current(mw)
-    if current is not False:
-        # counting the rows again on every card info and every Stats would
-        # cost 200 ms of the collection each time
-        _rwkv_recordings_known_current = bool(current)
-        return
-    _rwkv_recordings_pass_started = True
+    with _rwkv_recordings_check_lock:
+        # another caller may have answered while this one waited
+        if _rwkv_recordings_known_current or _rwkv_recordings_pass_started:
+            return
+        # the tag the rows must carry is the running model's, so the model
+        # has to be loaded before the question can be answered at all
+        configure_reviewer_backend_from_environment()
+        current = rwkv_recordings_current(mw)
+        if current is not False:
+            # counting the rows again on every card info and every Stats
+            # would cost 200 ms of the collection each time
+            _rwkv_recordings_known_current = bool(current)
+            return
+        _rwkv_recordings_pass_started = True
     recompute_rwkv_calibration_data_in_background(mw)
 
 
