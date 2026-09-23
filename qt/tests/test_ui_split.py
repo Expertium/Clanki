@@ -945,6 +945,16 @@ def english_message(key: str, path: Path = DECK_CONFIG_FTL) -> str:
     raise AssertionError(f"{key} is not in {path.name}")
 
 
+# Pins spec/deck-options.md#deck-options.steps-warning-names-the-algorithm
+def test_the_long_steps_warning_names_the_algorithm_not_fsrs() -> None:
+    warning = english_message("deck-config-steps-too-large-for-algorithm")
+    assert warning == (
+        "When { $algorithm } is enabled, steps of 1 day or more are not recommended."
+    )
+    # the algorithm's own name goes in; FSRS is only one of them
+    assert "FSRS" not in warning
+
+
 def test_simple_mode_names_the_bury_switch_without_bury_or_sibling() -> None:
     title = english_message("deck-config-hide-related-cards")
     assert title == "Hide related cards until tomorrow"

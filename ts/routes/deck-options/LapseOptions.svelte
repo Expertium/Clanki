@@ -20,7 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { leechChoices } from "./choices";
     import type { DeckOptionsState } from "./lib";
-    import { intervalSettingsApply } from "./scheduler-choice";
+    import { intervalSettingsApply, stepsTooLargeWarning } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -39,7 +39,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: intervalSettings = intervalSettingsApply($config);
 
     let stepsExceedMinimumInterval: string;
-    let stepsTooLargeForFsrs: string;
+    let stepsTooLarge: string;
     $: {
         const lastRelearnStepInDays = $config.relearnSteps.length
             ? $config.relearnSteps[$config.relearnSteps.length - 1] / 60 / 24
@@ -48,10 +48,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             !$fsrs && lastRelearnStepInDays > $config.minimumLapseInterval
                 ? tr.deckConfigRelearningStepsAboveMinimumInterval()
                 : "";
-        stepsTooLargeForFsrs =
-            $fsrs && lastRelearnStepInDays >= 1
-                ? tr.deckConfigStepsTooLargeForFsrs()
-                : "";
+        stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastRelearnStepInDays);
     }
 
     const settings = {
@@ -124,7 +121,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item>
-                <Warning warning={stepsTooLargeForFsrs} />
+                <Warning warning={stepsTooLarge} />
             </Item>
         {/if}
 
