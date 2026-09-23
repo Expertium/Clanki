@@ -226,8 +226,10 @@ statistics-roc-description-auc-plain = A higher AUC is better. At 1.0, the algor
 statistics-model-metrics-description-reviews = Hard, Good and Easy count as remembered, Again counts as forgotten.
 # Shown under the graph; $reviews is how many ratings at least one algorithm scored.
 statistics-model-metrics-scored = Scored on { $reviews } reviews.
-# Shown under the graph, once per drawn algorithm; $reviews is how many of those ratings that algorithm scored.
-statistics-model-metrics-coverage = { $algorithm } scored { $reviews } of them.
+# Shown under the graph instead when two or more algorithms are drawn: all of them are scored on the same reviews.
+statistics-model-metrics-scored-shared = Scored on { $reviews } reviews that every algorithm predicted.
+# In the tooltips of the model-quality graphs.
+statistics-model-metrics-description-first-reviews = The first review of each card is not counted: no algorithm knows anything about a card before it.
 # Shown under the graph when some ratings have no prediction at all.
 statistics-model-metrics-none = { $reviews } reviews have no prediction from any algorithm.
 # Shown under the graph; $role is a stored sample role, such as "validation_fold".
@@ -249,8 +251,6 @@ statistics-calibration-reviews = Reviews
 # Shown under the graph.
 statistics-calibration-description-line = Each point is a group of reviews with a similar predicted probability: the dashed diagonal is a perfect algorithm, a point above it means the algorithm predicted too little, a point below it too much.
 statistics-calibration-description-bars = The grey bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual recall lies with 95% confidence.
-# Shown under the graph when two or more algorithms scored a rating; only these reviews let their scores be compared.
-statistics-model-metrics-shared = Only the { $reviews } reviews every algorithm scored let their scores be compared directly.
 statistics-um-plus-title = Universal Metric+ cross-comparison
 statistics-um-plus-subtitle = Where two algorithms disagree, which of them is wrong.
 # Label of the menu that picks the pair of algorithms.

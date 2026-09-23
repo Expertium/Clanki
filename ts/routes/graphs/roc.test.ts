@@ -168,13 +168,13 @@ test("the diagonal of random chance is drawn dashed", () => {
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics
-test("the graph says what each algorithm scored, what they share and how fresh it is", () => {
+test("the graph says how many reviews every algorithm was scored on, and how fresh it is", () => {
     const progress = new ReviewMetricsProgress({
         state: JobState.DONE,
         series: [
             curve(SchedulingAlgorithm.FSRS7, 0.7, "validation_fold", 40),
             missing(SchedulingAlgorithm.RWKV_CURVE, Unavailable.UNSUPPORTED),
-            curve(SchedulingAlgorithm.RWKV_INSTANT, 0.8, "final_fit", 3990),
+            curve(SchedulingAlgorithm.RWKV_INSTANT, 0.8, "", 4000),
         ],
         scored: 4000,
         shared: 30,
@@ -188,27 +188,12 @@ test("the graph says what each algorithm scored, what they share and how fresh i
 
     const notes = dataNotes(progress);
 
-    // the scored total, one coverage line per drawn algorithm, the shared
-    // count, the reviews nothing scored, one role line per drawn algorithm,
-    // and the staleness line
-    expect(notes).toHaveLength(8);
-    expect(notes[0]).toBe(tr.statisticsModelMetricsScored({ reviews: 4000 }));
-    // each algorithm keeps its own reviews: the counts differ, and the small
-    // one does not shrink the large one
-    expect(notes[1]).toBe(
-        tr.statisticsModelMetricsCoverage({
-            algorithm: tr.deckConfigSchedulerChoiceFsrs(),
-            reviews: 40,
-        }),
-    );
+    // one count for every drawn algorithm (they are scored on the same
+    // reviews), the reviews nothing scored, the role of the algorithm that
+    // names one (RWKV names none), and the staleness line
+    expect(notes).toHaveLength(4);
+    expect(notes[0]).toBe(tr.statisticsModelMetricsScoredShared({ reviews: 4000 }));
     expect(notes[2]).toBe(
-        tr.statisticsModelMetricsCoverage({
-            algorithm: tr.deckConfigSchedulerChoiceRwkvInstant(),
-            reviews: 3990,
-        }),
-    );
-    expect(notes[3]).toBe(tr.statisticsModelMetricsShared({ reviews: 30 }));
-    expect(notes[5]).toBe(
         tr.statisticsModelMetricsRole({
             algorithm: tr.deckConfigSchedulerChoiceFsrs(),
             role: "validation_fold",
@@ -219,7 +204,7 @@ test("the graph says what each algorithm scored, what they share and how fresh i
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics
-test("one drawn algorithm is not told what it shares with anything", () => {
+test("one drawn algorithm is told only its own count", () => {
     const alone = new ReviewMetricsProgress({
         state: JobState.DONE,
         series: [
@@ -233,11 +218,9 @@ test("one drawn algorithm is not told what it shares with anything", () => {
 
     const notes = dataNotes(alone);
 
-    // the scored total, its own coverage, and its role: no shared line
-    expect(notes).toHaveLength(3);
-    expect(notes.join(" ")).not.toContain(
-        tr.statisticsModelMetricsShared({ reviews: 0 }),
-    );
+    // the scored total and its role; nothing about sharing
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toBe(tr.statisticsModelMetricsScored({ reviews: 10 }));
 });
 
 // Pins spec/ui.md#ui.stats-model-metrics

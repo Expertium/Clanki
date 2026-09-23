@@ -1505,8 +1505,8 @@ generic `review_predictions` table, which is keyed by algorithm as well as
 by review, so a read cannot reach another algorithm's number without naming
 whose it is; FSRS-7 and RWKV-Instant still have a table each, and moving
 them is a separate change that must be bit-identical. Which sample roles
-are legitimate, and whether the first honest role or the role with the most
-rows wins, are facts each algorithm declares rather than a rule the graph
+are legitimate, and whether the first honest role or the newest row of each
+rating wins, are facts each algorithm declares rather than a rule the graph
 applies to all of them.
 
 An algorithm that could predict these reviews but whose rows nothing has
@@ -1524,29 +1524,35 @@ only when nothing that produced it was fitted on that very review:
 | FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
 | RWKV      | any role, because the weights are frozen and were trained on other collections  |
 
-Each algorithm uses one role only, and the graph names the role it used.
-FSRS-7 takes the first role of its list that has any row, because that list
-is in order of honesty. RWKV's roles carry no such order, so it takes the
-role with the most rows and rests on as many ratings as it can. One rating
-gets one number from that role: when the role holds several rows for it,
-the graph takes the one written last, and of two written at the same moment
-the higher fold, and of two of the same fold the one whose source name
-sorts first. A recording that runs again therefore replaces what the
-earlier one left, instead of the two of them deciding the graph by chance.
+FSRS-7 uses one role only, the first role of its list that has any row,
+because that list is in order of honesty, and the graph names it. RWKV's
+roles carry no such order, so RWKV reads all of them and takes, of each
+rating, the row written last, whatever its role: the newest row is the
+current model's, and a bigger but older recording no longer wins. RWKV
+names no role. One rating gets one number: of several rows the graph takes
+the one written last, and of two written at the same moment the higher
+fold, and of two of the same fold the one whose source name sorts first. A
+recording that runs again therefore replaces what the earlier one left,
+instead of the two of them deciding the graph by chance.
 
-Each algorithm is scored on every rating of the search and period it has a
-usable row for, whatever the other algorithms have. A rating one algorithm
-cannot score is not taken away from the algorithms that can: an algorithm
-with rows for 9000 ratings draws all 9000 even when another algorithm has
-rows for four of them. Under the graph, the page gives the ratings at least
-one algorithm scored, then one line per drawn algorithm with the ratings
-that algorithm scored, then the ratings every drawn algorithm scored, and
-last the ratings no algorithm scored. Two scores may be compared directly
-only over the ratings the algorithms share, and the page says so with that
-number; it never enforces the comparison by discarding an algorithm's own
-ratings. A rating with no usable row for an algorithm is never filled in
-from another algorithm's value, and never from a fresh computation with
-today's parameters, because those parameters have seen the rating.
+The first rating of each card is never scored, for any algorithm and in
+every graph: no algorithm knows anything about a card before its first
+answer, and srs-benchmark leaves that rating out too. "First" is over the
+card's whole history, whatever the period.
+
+When two or more algorithms have usable rows for the search and period,
+every graph scores all of them on the same ratings: the ones every such
+algorithm has a row for. Each algorithm on its own ratings would compare
+different reviews. On Andrew's collection the ratings only RWKV-Instant had
+(42,610 of its 80,329 extra ratings were first reviews) put its AUC at 0.705,
+below RWKV-Curve's 0.714, while on the 426,703 ratings both had it was
+0.740 against 0.727. An algorithm alone keeps every rating it has a row
+for. Under the graph, the page gives the number of ratings scored ("Scored
+on N reviews that every algorithm predicted." with two or more algorithms),
+then the ratings no algorithm scored. A rating with no usable row for an
+algorithm is never filled in from another algorithm's value, and never from
+a fresh computation with today's parameters, because those parameters have
+seen the rating.
 
 Reading the rows does not start any computation. Ratings newer than the
 newest stored prediction are left out, and the graph says "Predictions up to
@@ -1644,8 +1650,12 @@ Search Stats Extended fork together with the `UM_plus_plot.py` binning of
 the srs-benchmark. The rules about which stored rows count, and about
 scoring both algorithms on the same ratings, are the RWKV session's: a prediction from a
 model fitted on the very review it predicts flatters that model, and two
-scores over two different sets of reviews cannot be compared, which the page
-now states as a number rather than by discarding reviews. Reading the
+scores over two different sets of reviews cannot be compared. Andrew,
+2026-09-23, after the graph put RWKV-Instant below RWKV-Curve ("RWKV-Instant
+not having higher AUC than Curve is sus"): score them on the shared
+ratings, leave each card's first rating out, and read RWKV's newest row of
+each rating; the RWKV session agreed, and on the benchmark Instant beats
+Curve for 99.5% of users. Reading the
 stored rows rather than replaying is what the Search Stats Extended fork
 does, and it is why a panel of hundreds of thousands of reviews opens at
 once; a replay of the whole history costs minutes and now belongs to the
@@ -1656,10 +1666,11 @@ the tooltip", "AUC-ROC keeps its verdict under the graph and its explanation in
 the tooltip" (`ts/routes/graphs/metric-explanations.test.ts`),
 `test_the_metric_graphs_say_which_way_is_better_in_one_line`
 (`qt/tests/test_ui_split.py`); `only_rows_the_algorithm_had_not_seen_are_used`,
-`each_algorithm_keeps_every_rating_it_can_score`,
-`the_shared_ratings_are_counted_not_enforced`,
+`a_single_rating_of_one_algorithm_narrows_the_comparison_to_it`,
+`two_algorithms_are_scored_on_the_ratings_both_scored`,
 `one_algorithm_alone_keeps_all_of_its_ratings`,
-`rwkv_takes_the_role_with_the_most_rows`,
+`rwkv_takes_the_newest_row_of_each_rating_across_its_roles`,
+`a_cards_first_rating_is_never_scored`,
 `the_period_selects_the_ratings`,
 `newer_ratings_than_the_stored_predictions_are_reported`,
 `calibration_bins_and_their_intervals`,

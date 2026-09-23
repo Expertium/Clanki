@@ -153,21 +153,14 @@ export function dataNotes(progress: ReviewMetricsProgress | null): string[] {
     const notes: string[] = [];
     const curves = progress.series.filter(hasCurve);
     if (progress.scored > 0) {
-        // every algorithm keeps all the ratings it can score, so the
-        // counts differ; the shared count is what makes two scores
-        // comparable, and it is named rather than enforced
-        notes.push(tr.statisticsModelMetricsScored({ reviews: progress.scored }));
-    }
-    for (const series of curves) {
+        // with two or more algorithms, every one is scored on the same
+        // reviews, the ones all of them predicted, so one count says it
+        // (spec ui.stats-model-metrics)
         notes.push(
-            tr.statisticsModelMetricsCoverage({
-                algorithm: algorithmName(series.algorithm),
-                reviews: series.reviews,
-            }),
+            curves.length > 1
+                ? tr.statisticsModelMetricsScoredShared({ reviews: progress.scored })
+                : tr.statisticsModelMetricsScored({ reviews: progress.scored }),
         );
-    }
-    if (progress.sharedRatings && curves.length > 1) {
-        notes.push(tr.statisticsModelMetricsShared({ reviews: progress.shared }));
     }
     if (progress.unscored > 0) {
         notes.push(
