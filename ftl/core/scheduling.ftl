@@ -211,8 +211,6 @@ scheduling-postpone-count = Cards to postpone:
 # Retrievability (the probability of recall) of the chosen cards on the day
 # they are reviewed: without the move, and with it.
 scheduling-advance-postpone-effect = Mean retrievability at review: { $before } → { $after }
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-scheduling-advance-postpone-effect-plain = Mean probability of recall at review: { $before } → { $after }
 scheduling-advance-postpone-without-curve =
     { $count ->
         [one] { $count } card was left out because { $algorithm } has no forgetting curve for it yet.

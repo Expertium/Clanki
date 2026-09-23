@@ -48,7 +48,7 @@ unsaved changes, and writes the same flag through the main window, which
 redraws as above; it does not wait for Save, and closing without saving
 keeps the new mode. The Stats page has the same control at the top right of
 its top bar, with the same effect: in Simple mode the page shows only the
-Reviews, Card Counts, Retention and Total Knowledge graphs (the default of
+Reviews, Card Counts and Retention graphs (the default of
 `ui.split-configurable`), in their usual order; Advanced mode shows every
 graph. The note editor has the same control
 at the right end of its toolbar row, and Simple mode there hides a part of
@@ -149,8 +149,8 @@ area (and per menu or part within it), one "Show in Simple mode" checkbox
 per item, a search field that keeps the items whose name, group or area
 contain every word typed, and "Reset to defaults" (after a confirmation).
 Above the list sits the one setting of the tab that is not a checkbox and
-not an item of the registry: the recall wording, with three choices
-(`ui.simple-recall-wording`); Reset sets it back to its default too.
+not an item of the registry: nothing; what names retrievability is no item
+at all (`ui.retrievability-advanced-only`).
 A change is stored at once and the open main window and Browser update in
 place, the same way as for a mode switch (`ui.mode-switch`); no due count
 is recomputed. The choices live in the collection config under `uiSplit`,
@@ -297,9 +297,9 @@ needed to find a card, fix it, and choose whether it is studied:
 - The sidebar has no Saved Searches, Flags or Note Types sections (so no
   note type, card type or field actions); Today, Card State, Decks and Tags
   stay.
-- Cards mode shows a fixed set of columns: Sort Field, Deck, Due, Interval
-  and Retrievability (labelled "Probability of recall",
-  `ui.simple-recall-wording`), with their own widths; a right-click on the
+- Cards mode shows a fixed set of columns: Sort Field, Deck, Due and
+  Interval (Retrievability is Advanced-only,
+  `ui.retrievability-advanced-only`), with their own widths; a right-click on the
   column header does
   nothing. Advanced mode keeps the user's own column choice and widths, and
   switching the mode never changes them.
@@ -485,114 +485,67 @@ list.
 `test_the_e2e_launcher_starts_the_app_under_its_own_name`
 (`qt/tests/test_clanki_launch.py`).
 
-## ui.simple-recall-wording
+## ui.retrievability-advanced-only
 
-One setting decides what the interface calls the chance of recalling a card
-now: the technical word "retrievability", or the plain words "probability of
-recall". It is "Replace 'retrievability' with 'probability of recall'" in
-Preferences > UI split (`ui.split-configurable`), the one item of that tab
-with three choices instead of a "Show in Simple mode" checkbox:
+Given any screen, the interface names the chance of recalling a card now
+"retrievability", and it shows that word only in Advanced mode
+(`ui.mode-switch`). Wherever the word is shown as text that can carry a
+hover, it is underlined and explains itself: hovering it (or giving it the
+keyboard focus) shows "Probability of recall". On the web pages that is every
+section title, graph subtitle and card-info row label that contains the word
+(`RetrievabilityText.svelte`, drawn with the glossary style of
+`deck-options.glossary-term`); in the Qt screens a label that shows it
+underlines the word and has the explanation as its tooltip, and a column
+header or a list choice that shows it has the explanation as its tooltip.
+Text that cannot carry markup (an axis label drawn in SVG, a dropdown
+choice, a graph's own tooltip, a help page) shows the word plain.
 
-| Choice                             | Stored value | Simple mode           | Advanced mode         |
-| ---------------------------------- | ------------ | --------------------- | --------------------- |
-| In Simple mode only (the default)  | `by_mode`    | probability of recall | retrievability        |
-| Never: always say "retrievability" | `technical`  | retrievability        | retrievability        |
-| Always, in both modes              | `plain`      | probability of recall | probability of recall |
+Everything that shows the word is Advanced-only, whatever the UI split says
+and also when the split cannot be read. It is no item of the split
+(`ui.split-configurable`), so Preferences > UI split does not list it and no
+choice can give it to Simple mode:
 
-The choice lives in the collection config under the string key
-`recallWording`, beside the split's own `uiSplit` key, so it syncs with the
-collection; an unset or unknown value means `by_mode`, so nothing changes for
-a collection that never set it. "Reset to defaults" in that tab sets it back
-to `by_mode` with the rest of the split.
+| Screen             | Advanced-only                                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stats              | the Stability, Retrievability, Total Knowledge, AUC-ROC, Calibration and Universal Metric+ graphs                                             |
+| Browser            | the Retrievability column (Simple mode's fixed columns do not include it)                                                                     |
+| Card info          | the Retrievability row and the forgetting curve                                                                                               |
+| Deck options       | Review sort order, New card gather order, Minimum reviews per day (RWKV), the RWKV-Instant queue recommendation, the simulator's review order |
+| Filtered deck      | "Cards selected by", for both filters; Simple mode keeps the stored order                                                                     |
+| Advance / Postpone | the whole dialog (`ui.advance-postpone`)                                                                                                      |
 
-Every text the user reads that names the chance of recall follows the
-setting. In Simple mode some of them show only when the UI split gives them
-to Simple mode; the wording rule is the same either way.
+A setting that is hidden keeps its stored value and keeps taking effect. Only
+the display changes: the search syntax (`prop:r`), the column key
+`retrievability`, the order of the cards, the config keys and every API name
+stay as they are.
 
-| Where                                                            | Plain wording                                                                                      |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Browser column (name and notes tooltip)                          | Probability of recall                                                                              |
-| Card info, the memory-state row and the forgetting-curve tooltip | Probability of recall                                                                              |
-| Filtered deck, the "Cards selected by" orders                    | Ascending / Descending probability of recall                                                       |
-| Filtered-deck rebuild failure (RWKV)                             | RWKV probability of recall scores could not be prepared, so the filtered deck was not rebuilt.     |
-| Deck options, Review sort order                                  | Ascending / Descending probability of recall                                                       |
-| Deck options, New card gather order (RWKV-Instant)               | Ascending / Descending probability of recall (RWKV-Instant)                                        |
-| Deck options, the New card gather order help                     | `Ascending/descending probability of recall (RWKV)`: ...                                           |
-| Deck options, the RWKV-Instant queue recommendation              | Recommended: Use Ascending Probability of Recall                                                   |
-| Deck options, the Minimum reviews per day help                   | ... the review cards with the lowest probability of recall ...                                     |
-| Advance / Postpone, the effect line                              | Mean probability of recall at review: X → Y                                                        |
-| Stats, the Retrievability graph                                  | Card Probability of Recall; "N cards with X% probability of recall"; Average probability of recall |
-| Stats, the Stability graph's subtitle                            | The delay at which the probability of recall falls to 90%.                                         |
-| Stats, the Total Knowledge subtitle                              | ... each card counts as its probability of recall ...                                              |
-| Stats, the Retrievability graph's subtitle                       | The probability of recalling a card today.                                                         |
-| Stats, the AUC-ROC description                                   | ... gives a higher probability of recall to the reviews you remembered ...                         |
-| Stats, the Calibration subtitle and X axis                       | ... predicted probability of recall ...; Predicted probability of recall                           |
-| Stats, the Universal Metric+ X axis                              | Difference in predicted probability of recall                                                      |
+There is no setting for the word. The recall-wording choice that Preferences
 
-The AUC-ROC, Calibration and Universal Metric+ graphs load their own data
-and never see the response that carries the setting, so the Stats page holds
-it and they read it from the page.
+> UI split had until 2026-09-23 is gone; a stored `recallWording` value is
+> ignored, and its proto fields are reserved.
 
-Each of the three layers resolves the setting with one helper that takes the
-setting and the mode — `plain_recall_wording` in
-`rslib/src/config/recall_wording.rs`, `plain_recall_wording` in
-`qt/aqt/ui_split.py` and `plainRecallWording` in
-`ts/lib/tslib/recall-wording.ts`. The web pages receive the setting in the
-same response that already carries the mode (`CardStatsResponse`,
-`GraphsResponse`, `DeckConfigsForUpdate`), so no new request is made.
+**Why:** Andrew, 2026-09-23: "Remove the switch, keep 'retrievability' but
+everywhere (whereever possible) underline it so that it shows 'probability
+of recall' on hover. And make sure no graphs/sort orders/anything that is
+currently Simple mode only shows 'retrievability'. Basically, the goal is to
+show settings/menus/stats containing the word 'retrievability' ONLY in
+Advanced mode AND explain what it means via a cursor hover window". Asked
+about the graphs whose text mentions the word, he chose to make the whole
+graph Advanced-only (Total Knowledge included); asked about the settings
+that offer retrievability orders, he chose to make the whole setting
+Advanced-only.
 
-A change is stored at once and the open windows redraw the way a mode switch
-does (`ui.split-configurable`). Every screen reads the setting while it
-builds its names, so a screen opened after the change shows the new wording:
-the Browser's column list, the filtered-deck dialog's "Cards selected by"
-orders, the Advance and Postpone dialogs, and the item names of this
-Preferences tab. The web pages (deck options, card info, the Stats page)
-receive the setting with the data they load, so a page that is open while the
-setting changes keeps its wording until it is opened again. Inside such a
-page a mode switch does change the wording at once, while the setting is
-`by_mode`.
-
-Only the text changes: the search syntax (`prop:r`), the column key
-`retrievability`, the order of the cards, the config keys and every API and
-protobuf name stay as they are.
-
-**Why:** Andrew, 2026-09-16: "don't use the word 'retrievability' in Simple
-mode"; he chose the replacement wording "probability of recall". 2026-09-19,
-once the UI split let the Retrievability graph into Simple mode: the graph
-uses the same wording ("Yes"). 2026-09-20 he asked for one setting with three
-choices instead, and for the rule to reach every mention of the word in the
-app: some users want the technical word in Simple mode, and some want the
-plain words everywhere. Simple mode is for users who do not read the FSRS
-papers. Later the same day he added the graph descriptions that already said
-"probability of recall" and never said the technical word: "it should affect
-the graph descriptions, too". "Probability of recall" states what the number is; "memory strength"
-would be wrong, because that is stability.
-
-**Pinned by:** `the_setting_and_the_mode_together_choose_the_wording` and
-`an_unset_or_unknown_choice_reads_as_by_mode`
-(`rslib/src/config/recall_wording.rs`);
-`simple_mode_names_the_retrievability_column_in_plain_words` and
-`the_wording_setting_names_the_retrievability_column_in_both_modes`
+**Pinned by:** `test_no_item_of_the_split_names_retrievability`,
+`test_the_tab_has_no_wording_choice`,
+`test_the_word_is_underlined_and_explained_on_hover`
+(`qt/tests/test_ui_split.py`);
+`test_the_effect_line_explains_retrievability_on_hover`
+(`qt/tests/test_advance_postpone.py`);
+`the_retrievability_column_explains_itself_on_hover`
 (`rslib/src/browser_table.rs`);
-`simple_mode_names_the_filtered_deck_orders_in_plain_words` and
-`the_wording_setting_names_the_filtered_deck_orders_in_both_modes`
-(`rslib/src/decks/service.rs`); "the plain forgetting-curve tooltip does not
-say retrievability", "the technical forgetting-curve tooltip keeps
-retrievability" and "the wording setting and the mode together choose the
-curve's label" (`ts/routes/card-info/forgetting-curve.test.ts`); "with the
-plain wording the graph says probability of recall" and "the wording setting
-and the mode together choose the graph's title"
-(`ts/routes/graphs/retrievability.test.ts`); "the plain wording has a
-subtitle of its own" (`ts/routes/graphs/total-knowledge.test.ts`);
-`test_filtered_deck_failure_avoids_retrievability_in_simple_mode`
-(`qt/tests/test_ui_mode.py`);
-`test_the_wording_setting_and_the_mode_together_choose_the_words`,
-`test_an_unset_or_unknown_wording_reads_as_by_mode`,
-`test_the_item_labels_follow_the_wording_setting`,
-`test_the_tab_offers_three_choices_and_stores_one_at_once` and
-`test_tab_reset_restores_the_defaults` (`qt/tests/test_ui_split.py`);
-`test_the_effect_follows_the_recall_wording_setting`
-(`qt/tests/test_advance_postpone.py`).
+`the_filtered_deck_orders_say_retrievability`
+(`rslib/src/decks/service.rs`); "an Advanced-only graph never shows in Simple
+mode" (`ts/routes/graphs/ui-mode.test.ts`); `ts/lib/tslib/retrievability.test.ts`.
 
 ## ui.advance-postpone
 
@@ -616,8 +569,8 @@ number of cards (from 0 to all candidates; for a deck the safe count, at
 most 10, as in the add-on; for a Browser selection every candidate of it),
 and, updated as the number changes, the mean retrievability of those cards
 at review without and with the move ("Mean retrievability at review:
-90.0% → 93.5%", in the recall wording the setting chooses,
-`ui.simple-recall-wording`). OK (disabled at 0) moves the first that many cards in the
+90.0% → 93.5%", the word explained on hover,
+`ui.retrievability-advanced-only`). OK (disabled at 0) moves the first that many cards in the
 background as one undoable operation ("Advance Cards" / "Postpone Cards" in
 Edit > Undo), and a tooltip reports how many moved and the same means,
 computed on the days they got. With no candidates, a tooltip says there are
@@ -971,8 +924,8 @@ display; every place shows only the active algorithm's values.
 Given card info (the browser's sidebar, the Card Info window, the reviewer's
 card info) for a card with an FSRS memory state, in Advanced mode it shows
 only the values of the collection's algorithm (`sched.one-global-algorithm`)
-and one retrievability, labelled "Retrievability" or "Probability of recall"
-as `ui.simple-recall-wording` says:
+and one retrievability, labelled "Retrievability", which explains itself on
+hover (`ui.retrievability-advanced-only`):
 
 | Algorithm    | Stability       | Difficulty | Retrievability         | Forgetting curve  |
 | ------------ | --------------- | ---------- | ---------------------- | ----------------- |
@@ -989,7 +942,8 @@ yet, the Retrievability row reads "Calculating…". Card info shows no other
 RWKV rows: no second retrievability, no answer-button probabilities, no
 next-S90 rows per button, no "R After Review" or "R After 10min", and no
 retrievability source. In Simple mode (`ui.mode-switch`) card info shows no
-stability, difficulty or retrievability at all; the forgetting curve stays.
+stability, difficulty or retrievability at all, and no forgetting curve
+(`ui.retrievability-advanced-only`).
 
 **Why:** Andrew, 2026-09-15: "It's too much clutter, just remove all of this
 and keep one R value"; "don't show DSR values in card info in Simple mode";
@@ -1142,19 +1096,15 @@ gone.
 
 ## ui.stats-total-knowledge
 
-Given the Stats page, in both Simple and Advanced mode, the Total Knowledge
-graph shows, for each day from the first rating of a card in the page's
+Given the Stats page in Advanced mode (the graph is Advanced-only,
+`ui.retrievability-advanced-only`), the Total Knowledge graph shows, for each day from the first rating of a card in the page's
 search through today, the sum of the cards' R that day under the
 collection's algorithm only ("Known", blue; `sched.one-global-algorithm`,
 `ui.stats-one-algorithm`), and it may show a second line, the cards of the
 search rated at least once by that day ("Reviewed", grey, the upper bound).
 It always covers the whole review history; the page's period does not apply.
 
-Simple mode never draws "Reviewed" and has no control for it. Under the
-graph it reads "This is Clanki's best estimate of how many cards you knew at
-each point in your review history."
-
-Advanced mode has a checkbox next to the legend, labelled "Reviewed", which
+It has a checkbox next to the legend, labelled "Reviewed", which
 draws that line and is on when the graph loads, so Advanced mode looks as it
 did before the checkbox. Under the graph it names the collection's algorithm
 ("Algorithm: FSRS-7", "Algorithm: RWKV-Curve" or "Algorithm: RWKV-Instant",
@@ -1163,11 +1113,8 @@ bound on your knowledge: it counts every card you have ever rated, as if you
 never forgot one."
 
 The line under the title reads "The number of cards you would recall on each
-day (the sum of their retrievability), over your whole review history."; with
-the plain recall wording (`ui.simple-recall-wording`) it says the same without
-the word retrievability: "The number of cards you would recall on each day
-(each card counts as its probability of recall), over your whole review
-history."
+day (the sum of their retrievability), over your whole review history.", the
+word explained on hover.
 
 Hovering a day shows the day's date, "Known: N cards" with N the day's sum
 rounded to a whole number of cards, and, where the graph draws it,

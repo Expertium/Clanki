@@ -22,7 +22,6 @@ import anki.lang
 # several aqt modules read translated strings at import time
 anki.lang.set_lang("en")
 
-from anki.config import Config  # noqa: E402
 from aqt import ui_split  # noqa: E402
 
 # Today's split, restated from the spec entries that set it
@@ -123,14 +122,14 @@ TODAY: dict[str, bool] = {
     "browser.sidebar.note_types": False,
     "browser.sidebar.tags": True,
     **{
-        f"browser.column.{column}": column
-        in ("noteFld", "deck", "cardDue", "cardIvl", "retrievability")
+        f"browser.column.{column}": column in ("noteFld", "deck", "cardDue", "cardIvl")
+        # no Retrievability: only Advanced mode shows it (spec
+        # ui.retrievability-advanced-only)
         for column in [
             "noteFld",
             "deck",
             "cardDue",
             "cardIvl",
-            "retrievability",
             "question",
             "answer",
             "template",
@@ -165,22 +164,17 @@ TODAY: dict[str, bool] = {
     "editor.attachMedia": True,
     "editor.recordAudio": False,
     "editor.mathjax": False,
-    # the Stats page (spec ui.mode-switch): Reviews, Card Counts, Retention
-    # and Total Knowledge
+    # the Stats page (spec ui.mode-switch): Reviews, Card Counts and
+    # Retention; the graphs that name retrievability are no items (spec
+    # ui.retrievability-advanced-only)
     "stats.today": False,
     "stats.futureDue": False,
     "stats.calendar": False,
     "stats.reviews": True,
     "stats.cardCounts": True,
     "stats.intervals": False,
-    "stats.stability": False,
     "stats.ease": False,
     "stats.difficulty": False,
-    "stats.retrievability": False,
-    "stats.totalKnowledge": True,
-    "stats.roc": False,
-    "stats.calibration": False,
-    "stats.umPlus": False,
     "stats.trueRetention": True,
     "stats.hours": False,
     "stats.buttons": False,
@@ -215,11 +209,9 @@ TODAY: dict[str, bool] = {
             "leechThreshold",
             "leechAction",
             "leechOnlyIfYoung",
-            "newGatherPriority",
             "newCardSortOrder",
             "newReviewPriority",
             "interdayStepPriority",
-            "reviewSortOrder",
             "algorithm",
             "desiredRetentionTabs",
             "fsrsHelpMeDecide",
@@ -232,7 +224,6 @@ TODAY: dict[str, bool] = {
             "rwkvAllowSameDayReview",
             "rwkvMinInterveningReviews",
             "rwkvMinElapsedSecs",
-            "rwkvMinimumReviewsPerDay",
             "rwkvCandidateRefresh",
             "rwkvRefreshInterval",
             "rwkvRefreshOnExit",
@@ -259,15 +250,12 @@ class ConfigCol:
         self,
         advanced: bool = False,
         stored: Any = None,
-        recall_wording: str | None = None,
     ) -> None:
         self.advanced = advanced
         self.conf: dict[str, Any] = {}
         self.strings: dict[Any, str] = {}
         if stored is not None:
             self.conf[ui_split.CONFIG_KEY] = stored
-        if recall_wording is not None:
-            self.strings[Config.String.RECALL_WORDING] = recall_wording
 
     def get_config_string(self, key: Any) -> str:
         return self.strings.get(key, "")
@@ -348,8 +336,16 @@ def test_the_stats_page_knows_the_same_graphs_in_the_same_order() -> None:
 
     source = _repo_file("ts/routes/graphs/+page.svelte")
     block = source.split("const graphItems: GraphItem[] = [")[1].split("];")[0]
-    names = re.findall(r'id: "(\w+)"', block)
+    names = [
+        name
+        for name, advanced_only in re.findall(
+            r'id: "(\w+)", data: \[[^\]]*\](, advancedOnly: true)?', block
+        )
+        if not advanced_only
+    ]
     assert names == [name for name, _, _ in ui_split.STATS_GRAPHS]
+    # and the page does draw the others, in Advanced mode
+    assert len(re.findall(r"advancedOnly: true", block)) == 6
 
 
 def test_the_deck_options_page_knows_the_same_settings_in_the_same_order() -> None:
@@ -708,7 +704,6 @@ def test_browser_simple_columns_follow_the_split() -> None:
         "noteFld",
         "cardDue",
         "cardIvl",
-        "retrievability",
         "cardEase",
     ]
     # at least one column
@@ -791,117 +786,55 @@ def test_tab_reset_restores_the_defaults(
 
     monkeypatch.setattr(aqt.ui_split_prefs, "askUser", lambda *a, **k: True)
     tab, mw = _tab(qapp, {"reviewer.flag": True})
-    mw.col.strings[Config.String.RECALL_WORDING] = ui_split.RECALL_PLAIN
     tab.on_reset()
     assert ui_split.CONFIG_KEY not in mw.col.conf
-    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_BY_MODE
-    assert tab.recall_wording.currentData() == ui_split.RECALL_BY_MODE
     assert (
         _leaf(tab, "reviewer.flag").checkState(CHECK_COLUMN) == Qt.CheckState.Unchecked
     )
     mw.redraw_for_ui_split.assert_called_once()
 
 
-# The recall wording (spec ui.simple-recall-wording)
+# "Retrievability" only in Advanced mode (spec ui.retrievability-advanced-only)
 ######################################################################
 
 
-def test_the_wording_setting_and_the_mode_together_choose_the_words() -> None:
-    """Pins spec/ui.md#ui.simple-recall-wording."""
-    cases = [
-        (ui_split.RECALL_BY_MODE, False, True),
-        (ui_split.RECALL_BY_MODE, True, False),
-        (ui_split.RECALL_TECHNICAL, False, False),
-        (ui_split.RECALL_TECHNICAL, True, False),
-        (ui_split.RECALL_PLAIN, False, True),
-        (ui_split.RECALL_PLAIN, True, True),
+def test_no_item_of_the_split_names_retrievability() -> None:
+    """Pins spec/ui.md#ui.retrievability-advanced-only: what names
+    retrievability is no item, so no choice can give it to Simple mode (the
+    Browser's Retrievability column, the Stats graphs that name it, the deck
+    options whose choices or help name it)."""
+    from aqt.retrievability import mentions_retrievability
+
+    named = [
+        item.id for item in ui_split.ITEMS if mentions_retrievability(item.label())
     ]
-    for wording, advanced, plain in cases:
-        col = ConfigCol(advanced=advanced, recall_wording=wording)
-        assert ui_split.plain_recall_wording(cast(Any, col)) is plain, (
-            wording,
-            advanced,
-        )
+    assert named == []
+    assert "browser.column.retrievability" not in ui_split.ITEMS_BY_ID
+    for graph in ("stability", "retrievability", "totalKnowledge", "roc"):
+        assert f"stats.{graph}" not in ui_split.ITEMS_BY_ID
+    for graph in ("calibration", "umPlus"):
+        assert f"stats.{graph}" not in ui_split.ITEMS_BY_ID
 
 
-def test_an_unset_or_unknown_wording_reads_as_by_mode() -> None:
-    """Pins spec/ui.md#ui.simple-recall-wording."""
-    assert ui_split.recall_wording(ConfigCol()) == ui_split.RECALL_BY_MODE
-    assert (
-        ui_split.recall_wording(ConfigCol(recall_wording="nonsense"))
-        == ui_split.RECALL_BY_MODE
-    )
-    assert ui_split.recall_wording(None) == ui_split.RECALL_BY_MODE
-
-    col = ConfigCol()
-    ui_split.set_recall_wording(col, ui_split.RECALL_PLAIN)
-    assert col.strings[Config.String.RECALL_WORDING] == ui_split.RECALL_PLAIN
-    assert ui_split.recall_wording(col) == ui_split.RECALL_PLAIN
-    with pytest.raises(ValueError):
-        ui_split.set_recall_wording(col, "nonsense")
+def test_the_tab_has_no_wording_choice(qapp: Any) -> None:
+    """Pins spec/ui.md#ui.retrievability-advanced-only: the recall-wording
+    choice is gone; the interface always says "retrievability"."""
+    tab, _mw = _tab(qapp)
+    assert not hasattr(tab, "recall_wording")
+    assert not hasattr(ui_split, "plain_recall_wording")
 
 
-def test_the_item_labels_follow_the_wording_setting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pins spec/ui.md#ui.simple-recall-wording: the Browser's Retrievability
-    column and the Stats graph are named by the setting, in both modes."""
-    import aqt
-    from aqt.utils import tr
+def test_the_word_is_underlined_and_explained_on_hover(qapp: Any) -> None:
+    """Pins spec/ui.md#ui.retrievability-advanced-only (the Qt hover)."""
+    from aqt import retrievability
+    from aqt.qt import QLabel
 
-    def labels(wording: str, advanced: bool) -> tuple[str, str]:
-        col = ConfigCol(advanced=advanced, recall_wording=wording)
-        monkeypatch.setattr(
-            aqt, "mw", SimpleNamespace(col=col, advanced_ui=lambda: advanced), False
-        )
-        return (
-            ui_split.ITEMS_BY_ID["browser.column.retrievability"].label(),
-            ui_split.ITEMS_BY_ID["stats.retrievability"].label(),
-        )
-
-    technical = (
-        tr.card_stats_fsrs_retrievability(),
-        tr.statistics_card_retrievability_title(),
-    )
-    plain = (
-        tr.card_stats_fsrs_retrievability_plain(),
-        tr.statistics_card_retrievability_title_plain(),
-    )
-    assert labels(ui_split.RECALL_BY_MODE, False) == plain
-    assert labels(ui_split.RECALL_BY_MODE, True) == technical
-    assert labels(ui_split.RECALL_TECHNICAL, False) == technical
-    assert labels(ui_split.RECALL_TECHNICAL, True) == technical
-    assert labels(ui_split.RECALL_PLAIN, False) == plain
-    assert labels(ui_split.RECALL_PLAIN, True) == plain
-
-
-def test_the_tab_offers_three_choices_and_stores_one_at_once(
-    qapp: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Pins spec/ui.md#ui.simple-recall-wording: the one item of the tab that
-    is not a "Show in Simple mode" checkbox."""
-    import aqt
-
-    tab, mw = _tab(qapp)
-    monkeypatch.setattr(aqt, "mw", mw, False)
-    combo = tab.recall_wording
-    assert [combo.itemData(i) for i in range(combo.count())] == list(
-        ui_split.RECALL_WORDING_CHOICES
-    )
-    assert combo.currentData() == ui_split.RECALL_BY_MODE
-
-    combo.setCurrentIndex(combo.findData(ui_split.RECALL_TECHNICAL))
-    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_TECHNICAL
-    mw.redraw_for_ui_split.assert_called_once()
-    # the tab's own item names follow at once
-    from aqt.utils import tr
-
-    column = _leaf(tab, "browser.column.retrievability")
-    assert column.text(0) == tr.card_stats_fsrs_retrievability()
-
-    combo.setCurrentIndex(combo.findData(ui_split.RECALL_PLAIN))
-    assert ui_split.recall_wording(mw.col) == ui_split.RECALL_PLAIN
-    assert column.text(0) == tr.card_stats_fsrs_retrievability_plain()
+    label = QLabel()
+    retrievability.explain_in_label(label, "Mean retrievability at review: 90% → 80%")
+    assert "<u>retrievability</u>" in label.text()
+    assert label.toolTip() == retrievability.explanation()
+    retrievability.explain_in_label(label, "Cards to advance:")
+    assert label.toolTip() == ""
 
 
 # Pins spec/deck-options.md#deck-options.simple-view (Simple mode's name for

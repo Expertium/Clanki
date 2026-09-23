@@ -79,8 +79,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let tableData: TableDatum[] = [];
     let simulating: boolean = false;
     const fsrs = state.fsrs;
-    // spec ui.simple-recall-wording
-    const plainRecall = state.plainRecall;
+    // the review order offers retrievability orders: Advanced mode only
+    // (spec ui.retrievability-advanced-only)
+    const advancedUi = state.advancedUi;
     const bounds = defaultGraphBounds();
 
     let svg: HTMLElement | SVGElement | null = null;
@@ -831,17 +832,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                             </SettingTitle>
                         </SpinBoxRow>
 
-                        <EnumSelectorRow
-                            bind:value={simulateFsrsRequest.reviewOrder}
-                            defaultValue={$config.reviewOrder}
-                            choices={reviewOrderChoices($fsrs, false, $plainRecall)}
-                        >
-                            <SettingTitle
-                                on:click={() => openHelpModal("reviewSortOrder")}
+                        {#if $advancedUi}
+                            <EnumSelectorRow
+                                bind:value={simulateFsrsRequest.reviewOrder}
+                                defaultValue={$config.reviewOrder}
+                                choices={reviewOrderChoices($fsrs, false)}
                             >
-                                {tr.deckConfigReviewSortOrder()}
-                            </SettingTitle>
-                        </EnumSelectorRow>
+                                <SettingTitle
+                                    on:click={() => openHelpModal("reviewSortOrder")}
+                                >
+                                    {tr.deckConfigReviewSortOrder()}
+                                </SettingTitle>
+                            </EnumSelectorRow>
+                        {/if}
 
                         <SwitchRow bind:value={smooth} defaultValue={true}>
                             <SettingTitle

@@ -59,7 +59,6 @@ impl From<StringKeyProto> for StringKey {
             StringKeyProto::SetDueReviewer => StringKey::SetDueReviewer,
             StringKeyProto::DefaultSearchText => StringKey::DefaultSearchText,
             StringKeyProto::CardStateCustomizer => StringKey::CardStateCustomizer,
-            StringKeyProto::RecallWording => StringKey::RecallWording,
         }
     }
 }

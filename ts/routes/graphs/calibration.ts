@@ -162,23 +162,10 @@ export function tiles(series: CalibrationSeries | null): { label: string; value:
     ];
 }
 
-export function calibrationSubtitle(plainRecall: boolean): string {
-    return plainRecall
-        ? tr.statisticsCalibrationSubtitlePlain()
-        : tr.statisticsCalibrationSubtitle();
-}
-
-export function calibrationPredictedLabel(plainRecall: boolean): string {
-    return plainRecall
-        ? tr.statisticsCalibrationPredictedPlain()
-        : tr.statisticsCalibrationPredicted();
-}
-
 export function renderCalibration(
     svgElem: SVGElement,
     bounds: GraphBounds,
     series: CalibrationSeries | null,
-    plainRecall = false,
 ): void {
     const svg = select(svgElem);
     svg.selectAll(".calibration-drawing").remove();
@@ -209,7 +196,7 @@ export function renderCalibration(
         .attr("text-anchor", "middle")
         .attr("fill", "currentColor")
         .attr("font-size", "12px")
-        .text(calibrationPredictedLabel(plainRecall));
+        .text(tr.statisticsCalibrationPredicted());
     drawing
         .append("text")
         .attr("transform", "rotate(-90)")

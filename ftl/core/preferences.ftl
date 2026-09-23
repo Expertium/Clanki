@@ -187,13 +187,3 @@ preferences-ui-split-daily-limit-tabs = Preset / This deck / Today only tabs of 
 preferences-ui-split-desired-retention-tabs = Preset / This deck tabs of desired retention
 preferences-ui-split-fsrs-search-filter = Search filter of the FSRS parameters
 preferences-ui-split-rwkv-maintenance = Maintenance buttons: read the review history again, prepare the Stats graphs
-# The recall-wording setting (spec ui.simple-recall-wording): one setting with
-# three choices, in the UI split tab.
-preferences-recall-wording = Replace "retrievability" with "probability of recall"
-# Choice 1, the default: Simple mode says "probability of recall", Advanced
-# mode says "retrievability".
-preferences-recall-wording-by-mode = In Simple mode only
-# Choice 2: "retrievability" in both modes.
-preferences-recall-wording-technical = Never: always say "retrievability"
-# Choice 3: "probability of recall" in both modes.
-preferences-recall-wording-plain = Always, in both modes

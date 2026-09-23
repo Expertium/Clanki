@@ -15,11 +15,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SwitchRow from "$lib/components/SwitchRow.svelte";
+    import RetrievabilityText from "$lib/components/RetrievabilityText.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
     import { commitEditing, type DeckOptionsState } from "./lib";
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
+    import { helpForMode } from "./ui-split";
 
     export let state: DeckOptionsState;
 
@@ -27,9 +29,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     // which settings show (ui-split.ts); in Advanced mode, every one
     const shown = state.settingShown;
-    // the plain wording never says "retrievability" (spec
-    // ui.simple-recall-wording)
-    const plainRecall = state.plainRecall;
+    // what names retrievability shows in Advanced mode only: the
+    // recommendation line, and rwkvMinimumReviewsPerDay with its help (spec
+    // ui.retrievability-advanced-only)
+    const advancedUi = state.advancedUi;
 
     let forceBuildingRwkvStateCache = false;
     let recomputingRwkvCalibrationData = false;
@@ -51,9 +54,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         },
         rwkvMinimumReviewsPerDay: {
             title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
-            help: $plainRecall
-                ? tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltipPlain()
-                : tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
+            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
         },
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
@@ -80,8 +81,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             help: tr.deckConfigRwkvReviewMinElapsedSecsTooltip(),
         },
     };
-    $: settingKeys = Object.keys(settings);
-    $: helpSections = Object.values(settings) as HelpItem[];
+    $: help = helpForMode<HelpItem>(settings, $advancedUi);
+    $: settingKeys = Object.keys(help);
+    $: helpSections = Object.values(help);
 
     let modal: Modal;
     let carousel: Carousel;
@@ -162,11 +164,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             {#if $config.rwkvReviewInstantOrderEnabled}
                 <h2 class="rwkv-subheading">Review Queue — RWKV-Instant</h2>
-                <span class="rwkv-recommendation">
-                    {$plainRecall
-                        ? tr.deckConfigRwkvReviewInstantOrderRecommendedPlain()
-                        : tr.deckConfigRwkvReviewInstantOrderRecommended()}
-                </span>
+                {#if $advancedUi}
+                    <span class="rwkv-recommendation">
+                        <RetrievabilityText
+                            text={tr.deckConfigRwkvReviewInstantOrderRecommended()}
+                        />
+                    </span>
+                {/if}
 
                 {#if $shown("rwkvAllowSameDayReview", "section")}
                     <SwitchRow

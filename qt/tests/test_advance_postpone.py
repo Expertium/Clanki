@@ -32,14 +32,12 @@ def _mw(
     *,
     advanced: bool = True,
     algorithm: str | None = "fsrs7",
-    recall_wording: str = "",
 ) -> Any:
     return SimpleNamespace(
         advanced_ui=lambda: advanced,
         col=SimpleNamespace(
             get_config=lambda key, default=None: algorithm,
             get_config_bool=lambda key: advanced,
-            get_config_string=lambda key: recall_wording,
         ),
     )
 
@@ -250,9 +248,7 @@ def test_the_move_is_one_collection_op_with_the_chosen_cards(monkeypatch: Any) -
         return FakeOp()
 
     class FakeDialog:
-        def __init__(
-            self, _parent: Any, plan: Any, _plain_recall: bool = False
-        ) -> None:
+        def __init__(self, _parent: Any, plan: Any) -> None:
             self.plan = plan
 
         def exec(self) -> bool:
@@ -346,15 +342,22 @@ def test_the_effect_is_the_mean_retrievability_of_the_chosen_cards() -> None:
     assert effect(3) == "Mean retrievability at review: 90.0% → 81.0%"
 
 
-def test_the_effect_follows_the_recall_wording_setting() -> None:
-    """Pins spec/ui.md#ui.simple-recall-wording."""
-    technical = without_unicode_isolation(ap.effect_text(0.9, 0.8, False))
-    plain = without_unicode_isolation(ap.effect_text(0.9, 0.8, True))
+def test_the_effect_line_explains_retrievability_on_hover() -> None:
+    """Pins spec/ui.md#ui.retrievability-advanced-only: the dialog's effect
+    line underlines the word and explains it on hover."""
+    import os
 
-    assert technical == "Mean retrievability at review: 90.0% → 80.0%"
-    assert "retrievability" not in plain.lower()
-    assert plain == "Mean probability of recall at review: 90.0% → 80.0%"
-    assert (
-        without_unicode_isolation(ap.effect_for_count(_preview([1, 2, 3]), 3, True))
-        == "Mean probability of recall at review: 90.0% → 81.0%"
+    from aqt import retrievability
+    from aqt.qt import QApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    _app = QApplication.instance() or QApplication([])
+    plan = ap.AdvancePostponePlan(
+        mode=ap.ADVANCE,
+        selected_cards=True,
+        rwkv_curve=False,
+        preview=_preview([1, 2]),
     )
+    dialog = ap.AdvancePostponeDialog(None, plan)
+    assert "<u>retrievability</u>" in dialog.effect.text()
+    assert dialog.effect.toolTip() == retrievability.explanation()

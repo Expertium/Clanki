@@ -35,6 +35,7 @@ from aqt.qt import (
     QWidget,
     qconnect,
 )
+from aqt.retrievability import explain_in_label
 from aqt.utils import disable_help_button, tooltip, tr
 
 ADVANCE = AdvancePostponeRequest.ADVANCE
@@ -167,34 +168,20 @@ def skipped_notes(mode: int, preview: Any, rwkv_curve: bool) -> list[str]:
     return notes
 
 
-def _plain_recall(mw: Any) -> bool:
-    """Whether the dialog names the chance of recall in plain words (spec
-    ui.simple-recall-wording)."""
-    col = getattr(mw, "col", None)
-    return col is not None and aqt.ui_split.plain_recall_wording(col)
-
-
-def effect_text(before: float, after: float, plain_recall: bool = False) -> str:
-    """The plain wording never says "retrievability" (spec
-    ui.simple-recall-wording)."""
-    string = (
-        tr.scheduling_advance_postpone_effect_plain
-        if plain_recall
-        else tr.scheduling_advance_postpone_effect
+def effect_text(before: float, after: float) -> str:
+    return tr.scheduling_advance_postpone_effect(
+        before=f"{before * 100:.1f}%", after=f"{after * 100:.1f}%"
     )
-    return string(before=f"{before * 100:.1f}%", after=f"{after * 100:.1f}%")
 
 
-def effect_for_count(
-    preview: AdvancePostponePreview, count: int, plain_recall: bool = False
-) -> str:
+def effect_for_count(preview: AdvancePostponePreview, count: int) -> str:
     """The mean retrievability at review of the first `count` cards, without
     and with the move."""
     if count <= 0:
         return ""
     before = sum(preview.retrievability_before[:count]) / count
     after = sum(preview.retrievability_after[:count]) / count
-    return effect_text(before, after, plain_recall)
+    return effect_text(before, after)
 
 
 def default_count(plan: AdvancePostponePlan) -> int:
@@ -213,11 +200,9 @@ class AdvancePostponeDialog(QDialog):
         self,
         parent: QWidget | None,
         plan: AdvancePostponePlan,
-        plain_recall: bool = False,
     ) -> None:
         super().__init__(parent)
         self.plan = plan
-        self.plain_recall = plain_recall
         preview = plan.preview
         advance = plan.mode == ADVANCE
         available = len(preview.card_ids)
@@ -281,9 +266,9 @@ class AdvancePostponeDialog(QDialog):
         ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         assert ok is not None
         ok.setEnabled(count > 0)
-        self.effect.setText(
-            effect_for_count(self.plan.preview, count, self.plain_recall)
-        )
+        # the word explains itself on hover (spec
+        # ui.retrievability-advanced-only)
+        explain_in_label(self.effect, effect_for_count(self.plan.preview, count))
 
 
 def ask_and_move(parent: QWidget, mw: Any, plan: AdvancePostponePlan) -> None:
@@ -302,7 +287,7 @@ def ask_and_move(parent: QWidget, mw: Any, plan: AdvancePostponePlan) -> None:
             parent=parent,
         )
         return
-    dialog = AdvancePostponeDialog(parent, plan, _plain_recall(mw))
+    dialog = AdvancePostponeDialog(parent, plan)
     if not dialog.exec() or dialog.count() == 0:
         return
     move_cards(
@@ -345,7 +330,6 @@ def move_cards(
             text += "<br>" + effect_text(
                 response.retrievability_before,
                 response.retrievability_after,
-                _plain_recall(mw),
             )
         tooltip(text, parent=parent)
 

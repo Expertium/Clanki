@@ -18,7 +18,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import {
         calibrationBounds,
         calibrationSeries,
-        calibrationSubtitle,
         chooserOptions,
         chosenAlgorithm,
         renderCalibration,
@@ -27,7 +26,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Graph from "./Graph.svelte";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import { chosenCalibrationAlgorithm } from "./metrics-choice";
-    import { plainRecallWording, type RecallWording } from "@tslib/recall-wording";
     import { dataNotes, overlayText, stillComputing, unavailableNotes } from "./roc";
 
     const pollDelayMs = 500;
@@ -37,15 +35,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         readable("deck:current");
     const days =
         getContext<Readable<number> | undefined>("graphsDays") ?? readable(365);
-    // this graph loads its own data, so the wording comes from the page
-    // (spec ui.simple-recall-wording)
-    const advancedUi =
-        getContext<Readable<boolean> | undefined>("graphsAdvancedUi") ?? readable(true);
-    const recallWording =
-        getContext<Readable<RecallWording | undefined> | undefined>(
-            "graphsRecallWording",
-        ) ?? readable(undefined);
-    $: plainRecall = plainRecallWording($recallWording, $advancedUi);
 
     let svg: SVGElement | null = null;
     let progress: ReviewMetricsProgress | null = null;
@@ -59,7 +48,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: panelTiles = tiles(series);
     $: notes = [...dataNotes(progress), ...unavailableNotes(progress)];
     $: if (svg) {
-        renderCalibration(svg, bounds, series, plainRecall);
+        renderCalibration(svg, bounds, series);
     }
     $: overlay = series ? undefined : overlayText(progress);
 
@@ -146,7 +135,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 
     const title = tr.statisticsCalibrationTitle();
-    $: subtitle = calibrationSubtitle(plainRecall);
+    const subtitle = tr.statisticsCalibrationSubtitle();
 </script>
 
 <Graph {title} {subtitle}>

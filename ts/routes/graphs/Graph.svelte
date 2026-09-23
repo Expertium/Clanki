@@ -3,6 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
+    import RetrievabilityText from "$lib/components/RetrievabilityText.svelte";
     import TitledContainer from "$lib/components/TitledContainer.svelte";
 
     // When title is null (default), the graph is inlined, not having TitledContainer wrapper.
@@ -13,7 +14,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {#if title == null}
     <div class="graph d-flex flex-grow-1 flex-column justify-content-center">
         {#if subtitle}
-            <div class="subtitle">{subtitle}</div>
+            <div class="subtitle"><RetrievabilityText text={subtitle} /></div>
         {/if}
         <slot />
     </div>
@@ -22,7 +23,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <slot name="tooltip" slot="tooltip"></slot>
         <div class="graph d-flex flex-grow-1 flex-column justify-content-center">
             {#if subtitle}
-                <div class="subtitle">{subtitle}</div>
+                <div class="subtitle"><RetrievabilityText text={subtitle} /></div>
             {/if}
             <slot />
         </div>

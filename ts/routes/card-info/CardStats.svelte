@@ -4,6 +4,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
     import type { CardStatsResponse } from "@generated/anki/stats_pb";
+
+    import RetrievabilityText from "$lib/components/RetrievabilityText.svelte";
+
     import { rowsFromStats, type StatsRow } from "./lib";
 
     export let stats: CardStatsResponse;
@@ -15,7 +18,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <tbody>
         {#each statsRows as row}
             <tr>
-                <th class="align-start">{row.label}</th>
+                <!-- the Retrievability row (Advanced mode only) explains the
+                word on hover (spec ui.retrievability-advanced-only) -->
+                <th class="align-start"><RetrievabilityText text={row.label} /></th>
                 <td>{row.value}</td>
             </tr>
         {/each}

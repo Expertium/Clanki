@@ -21,7 +21,6 @@ import {
     SMALL_GROUP,
     thinPairNotes,
     umPlusBounds,
-    umPlusDifferenceLabel,
     umPlusView,
 } from "./um-plus";
 
@@ -185,8 +184,9 @@ test("the graph draws a line and a bubble per group for each algorithm", () => {
     expect(svg.querySelectorAll(".um-plus-b-bubble")).toHaveLength(3);
 });
 
-// Pins spec/ui.md#ui.simple-recall-wording
-test("the UM+ X axis follows the recall wording", () => {
-    expect(umPlusDifferenceLabel(true)).toBe(tr.statisticsUmPlusDifferencePlain());
-    expect(umPlusDifferenceLabel(false)).toBe(tr.statisticsUmPlusDifference());
+test("the UM+ X axis names the difference in predicted retrievability", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    renderUmPlus(svg, umPlusBounds(), null);
+    const texts = Array.from(svg.querySelectorAll("text")).map((t) => t.textContent);
+    expect(texts).toContain(tr.statisticsUmPlusDifference());
 });

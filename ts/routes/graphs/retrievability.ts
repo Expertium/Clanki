@@ -163,7 +163,6 @@ export function prepareData(
     dispatch: SearchDispatch,
     browserLinksSupported: boolean,
     quantile?: number,
-    plainRecall = false,
 ): [RetrievabilityHistogramData | null, TableDatum[]] {
     const explicitSeries: NamedSeriesData[] = [
         data.fsrs && {
@@ -219,12 +218,10 @@ export function prepareData(
             .map((series) => {
                 const prefix = series.label ? `${series.label}: ` : "";
                 return `${prefix}${
-                    (plainRecall
-                        ? tr.statisticsRetrievabilityTooltipPlain
-                        : tr.statisticsRetrievabilityTooltip)({
-                            cards: binValue(series.bins[index]),
-                            percent,
-                        })
+                    tr.statisticsRetrievabilityTooltip({
+                        cards: binValue(series.bins[index]),
+                        percent,
+                    })
                 }`;
             })
             .join("<br>");
@@ -242,9 +239,7 @@ export function prepareData(
     const tableData = displaySeries.flatMap((series) => [
         {
             label: tableLabel(
-                plainRecall
-                    ? tr.statisticsAverageRetrievabilityPlain()
-                    : tr.statisticsAverageRetrievability(),
+                tr.statisticsAverageRetrievability(),
                 series.label,
                 includeSeriesLabel,
             ),
@@ -376,18 +371,4 @@ export function retrievabilityHistogramGraph(
             .attr("class", clickableClass)
             .on("click", (_event: MouseEvent, { bin }) => data.onClick!(bin));
     }
-}
-
-/** The graph's title; the plain wording never says "retrievability" (spec
- * ui.simple-recall-wording). */
-export function retrievabilityTitle(plainRecall: boolean): string {
-    return plainRecall
-        ? tr.statisticsCardRetrievabilityTitlePlain()
-        : tr.statisticsCardRetrievabilityTitle();
-}
-
-export function retrievabilitySubtitle(plainRecall: boolean): string {
-    return plainRecall
-        ? tr.statisticsRetrievabilitySubtitlePlain()
-        : tr.statisticsRetrievabilitySubtitle();
 }

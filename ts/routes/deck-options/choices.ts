@@ -18,14 +18,11 @@ import type { Choice } from "$lib/components/EnumSelector.svelte";
 
 export function newGatherPriorityChoices(
     instant = true,
-    plainRecall = false,
 ): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
-    return newGatherChoicesForAlgorithm(allNewGatherPriorityChoices(plainRecall), instant);
+    return newGatherChoicesForAlgorithm(allNewGatherPriorityChoices(), instant);
 }
 
-function allNewGatherPriorityChoices(
-    plainRecall: boolean,
-): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
+function allNewGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
     return [
         {
             label: tr.deckConfigNewGatherPriorityDeck(),
@@ -44,15 +41,11 @@ function allNewGatherPriorityChoices(
             value: DeckConfig_Config_NewCardGatherPriority.HIGHEST_POSITION,
         },
         {
-            label: plainRecall
-                ? tr.deckConfigNewGatherPriorityAscendingRetrievabilityPlain()
-                : tr.deckConfigNewGatherPriorityAscendingRetrievability(),
+            label: tr.deckConfigNewGatherPriorityAscendingRetrievability(),
             value: DeckConfig_Config_NewCardGatherPriority.ASCENDING_RETRIEVABILITY,
         },
         {
-            label: plainRecall
-                ? tr.deckConfigNewGatherPriorityDescendingRetrievabilityPlain()
-                : tr.deckConfigNewGatherPriorityDescendingRetrievability(),
+            label: tr.deckConfigNewGatherPriorityDescendingRetrievability(),
             value: DeckConfig_Config_NewCardGatherPriority.DESCENDING_RETRIEVABILITY,
         },
         {
@@ -94,20 +87,16 @@ export function newSortOrderChoices(): Choice<DeckConfig_Config_NewCardSortOrder
 export function reviewOrderChoices(
     fsrs: boolean,
     rwkv = false,
-    plainRecall = false,
 ): Choice<DeckConfig_Config_ReviewCardOrder>[] {
     // no difficulty orders under RWKV (spec
     // deck-options.no-difficulty-order-under-rwkv)
     return withoutDifficultyOrdersUnderRwkv(
-        allReviewOrderChoices(fsrs, plainRecall),
+        allReviewOrderChoices(fsrs),
         rwkv,
     );
 }
 
-function allReviewOrderChoices(
-    fsrs: boolean,
-    plainRecall: boolean,
-): Choice<DeckConfig_Config_ReviewCardOrder>[] {
+function allReviewOrderChoices(fsrs: boolean): Choice<DeckConfig_Config_ReviewCardOrder>[] {
     return [
         ...[
             {
@@ -132,7 +121,7 @@ function allReviewOrderChoices(
             },
         ],
         ...difficultyOrders(fsrs),
-        ...retrievabilityOrders(fsrs, plainRecall),
+        ...retrievabilityOrders(fsrs),
         ...[
             {
                 label: tr.decksRelativeOverdueness(),
@@ -255,26 +244,17 @@ function difficultyOrders(fsrs: boolean): Choice<DeckConfig_Config_ReviewCardOrd
     return order;
 }
 
-function retrievabilityOrders(
-    fsrs: boolean,
-    plainRecall: boolean,
-): Choice<DeckConfig_Config_ReviewCardOrder>[] {
+function retrievabilityOrders(fsrs: boolean): Choice<DeckConfig_Config_ReviewCardOrder>[] {
     if (!fsrs) {
         return [];
     }
-    // the plain wording never says "retrievability" (spec
-    // ui.simple-recall-wording)
     return [
         {
-            label: plainRecall
-                ? tr.deckConfigSortOrderRetrievabilityAscendingPlain()
-                : tr.deckConfigSortOrderRetrievabilityAscending(),
+            label: tr.deckConfigSortOrderRetrievabilityAscending(),
             value: DeckConfig_Config_ReviewCardOrder.RETRIEVABILITY_ASCENDING,
         },
         {
-            label: plainRecall
-                ? tr.deckConfigSortOrderRetrievabilityDescendingPlain()
-                : tr.deckConfigSortOrderRetrievabilityDescending(),
+            label: tr.deckConfigSortOrderRetrievabilityDescending(),
             value: DeckConfig_Config_ReviewCardOrder.RETRIEVABILITY_DESCENDING,
         },
     ];

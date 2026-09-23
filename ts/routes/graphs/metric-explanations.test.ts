@@ -5,7 +5,6 @@ import * as tr from "@generated/ftl";
 import { expect, test } from "vitest";
 
 import { rocExplanation, rocVerdict, umPlusExplanation, umPlusVerdict } from "./metric-explanations";
-import { rocAucDescription } from "./roc";
 
 // Pins spec/ui.md#ui.stats-model-metrics (the explanations). vitest loads no
 // Fluent bundle, so a string is its key: what is pinned here is which text
@@ -29,12 +28,10 @@ test("UM+ keeps its verdict under the graph and its explanation in the tooltip",
 });
 
 test("AUC-ROC keeps its verdict under the graph and its explanation in the tooltip", () => {
-    for (const plain of [false, true]) {
-        const tooltip = rocExplanation(plain);
-        expect(tooltip).toContain(tr.statisticsRocDescriptionCurve());
-        expect(tooltip).toContain(rocAucDescription(plain));
-        expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionReviews());
-        expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionFirstReviews());
-        expect(tooltip).not.toContain(rocVerdict());
-    }
+    const tooltip = rocExplanation();
+    expect(tooltip).toContain(tr.statisticsRocDescriptionCurve());
+    expect(tooltip).toContain(tr.statisticsRocDescriptionAuc());
+    expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionReviews());
+    expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionFirstReviews());
+    expect(tooltip).not.toContain(rocVerdict());
 });

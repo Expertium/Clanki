@@ -5,6 +5,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import { pageTheme } from "$lib/sveltelib/theme";
 
+    import RetrievabilityText from "./RetrievabilityText.svelte";
+
     const rtl: boolean = window.getComputedStyle(document.body).direction == "rtl";
 
     export let id: string | undefined = undefined;
@@ -24,8 +26,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     style:--container-margin="0"
 >
     <div class="position-relative">
+        <!-- the word "retrievability" explains itself on hover (spec
+             ui.retrievability-advanced-only) -->
         <h1>
-            {title}
+            <RetrievabilityText text={title} />
         </h1>
         <div class="help-badge position-absolute" class:rtl>
             <slot name="tooltip" />

@@ -622,7 +622,7 @@ sorting RWKV cards by it has no meaning.
 ## deck-options.new-retrievability-order-instant-only
 
 Given a preset, the new-card gather orders "Ascending retrievability" and
-"Descending retrievability" (named as `ui.simple-recall-wording` says) rank
+"Descending retrievability" (Advanced-only, `ui.retrievability-advanced-only`) rank
 new cards by RWKV-Instant's scores, so they are offered only when the
 collection runs RWKV-Instant. Under FSRS-7 and
 RWKV-Curve the dropdown does not list them, a preset that stores one of them

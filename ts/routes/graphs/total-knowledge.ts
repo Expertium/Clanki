@@ -7,8 +7,8 @@
  * bound) and the sum of their retrievability under the collection's
  * algorithm. FSRS-7's sum comes with the bound; RWKV's arrives day by day
  * from its job, and the days it has not reached yet are drawn blurred,
- * behind a sweep line. Simple mode draws the sum only; Advanced mode has a
- * checkbox for the bound.
+ * behind a sweep line. A checkbox, on by default, draws the bound. The graph
+ * is Advanced-only (spec ui.retrievability-advanced-only).
  */
 
 import { DeckConfigsForUpdate_SchedulingAlgorithm as SchedulingAlgorithm } from "@generated/anki/deck_config_pb";
@@ -57,26 +57,6 @@ export function algorithmName(algorithm: SchedulingAlgorithm): string {
         default:
             return tr.deckConfigSchedulerChoiceFsrs();
     }
-}
-
-/**
- * The line under the title. The plain wording says the same thing without
- * the word "retrievability" (spec ui.stats-total-knowledge,
- * ui.simple-recall-wording).
- */
-export function subtitleText(plainRecall: boolean): string {
-    return plainRecall
-        ? tr.statisticsTotalKnowledgeSubtitlePlain()
-        : tr.statisticsTotalKnowledgeSubtitle();
-}
-
-/**
- * Whether the "Reviewed" bound is drawn (spec ui.stats-total-knowledge):
- * never in Simple mode, and in Advanced mode as the graph's own checkbox
- * says. The checkbox starts on, so Advanced mode draws it by default.
- */
-export function showsReviewed(advanced: boolean, checked: boolean): boolean {
-    return advanced && checked;
 }
 
 /** RWKV's sum on `day`, or null while its job has not reached it. */
@@ -159,7 +139,7 @@ export function renderTotalKnowledge(
     svgElem: SVGElement,
     bounds: GraphBounds,
     data: TotalKnowledgeData | null,
-    /** Draw the "Reviewed" bound as well as "Known" (`showsReviewed`). */
+    /** Draw the "Reviewed" bound as well as "Known" (the graph's checkbox). */
     reviewed = true,
     now: number = Date.now(),
 ): void {

@@ -31,17 +31,6 @@ from aqt.utils import tr
 
 CONFIG_KEY = "uiSplit"
 
-# The recall-wording setting (spec ui.simple-recall-wording): one setting,
-# three choices, stored in the collection config beside CONFIG_KEY under the
-# string key Config.String.RECALL_WORDING. The three names are the same in
-# Python, Rust (rslib/src/config/recall_wording.rs) and TypeScript
-# (ts/lib/tslib/recall-wording.ts). An unset or unknown value means BY_MODE,
-# so nothing changes for a collection that never set it.
-RECALL_BY_MODE = "by_mode"
-RECALL_TECHNICAL = "technical"
-RECALL_PLAIN = "plain"
-RECALL_WORDING_CHOICES = (RECALL_BY_MODE, RECALL_TECHNICAL, RECALL_PLAIN)
-
 
 class Area(Enum):
     MAIN_WINDOW = "main"
@@ -98,39 +87,18 @@ def _both(first: Callable[[], str], second: Callable[[], str]) -> Callable[[], s
     return lambda: f"{first()} / {second()}"
 
 
-def _recall_wording(
-    technical: Callable[[], str], plain: Callable[[], str]
-) -> Callable[[], str]:
-    """A label that follows the recall-wording setting (spec
-    ui.simple-recall-wording)."""
-
-    def label() -> str:
-        import aqt
-
-        mw = aqt.mw
-        col = getattr(mw, "col", None) if mw else None
-        return plain() if col is not None and plain_recall_wording(col) else technical()
-
-    return label
-
-
-_retrievability_column = _recall_wording(
-    tr.card_stats_fsrs_retrievability, tr.card_stats_fsrs_retrievability_plain
-)
-
-
 _MAIN = Area.MAIN_WINDOW
 _BROWSER = Area.BROWSER
 
 # The Browser's Cards-mode columns, in the order Simple mode shows them: the
-# default five first, in their order, then the rest as the column list has
-# them (spec ui.browser-simple-view).
+# default four first, in their order, then the rest as the column list has
+# them (spec ui.browser-simple-view). Retrievability is no item: only
+# Advanced mode shows it (spec ui.retrievability-advanced-only).
 BROWSER_COLUMNS: list[tuple[str, Callable[[], str], bool]] = [
     ("noteFld", tr.browsing_sort_field, True),
     ("deck", tr.decks_deck, True),
     ("cardDue", tr.statistics_due_date, True),
     ("cardIvl", tr.browsing_interval, True),
-    ("retrievability", _retrievability_column, True),
     ("question", tr.browsing_question, False),
     ("answer", tr.browsing_answer, False),
     ("template", tr.card_stats_card_template, False),
@@ -391,7 +359,9 @@ EDITOR_BUTTONS: list[tuple[str, Callable[[], str], bool]] = [
 ]
 
 # The Stats page's graphs, in page order (spec ui.mode-switch); the ids after
-# "stats." are the page's graph names (ts/routes/graphs/+page.svelte).
+# "stats." are the page's graph names (ts/routes/graphs/+page.svelte). The
+# graphs that name retrievability are no items: only Advanced mode draws them
+# (spec ui.retrievability-advanced-only).
 STATS_GRAPHS: list[tuple[str, Callable[[], str], bool]] = [
     ("today", tr.statistics_today_title, False),
     ("futureDue", tr.statistics_future_due_title, False),
@@ -399,21 +369,8 @@ STATS_GRAPHS: list[tuple[str, Callable[[], str], bool]] = [
     ("reviews", tr.statistics_reviews_title, True),
     ("cardCounts", tr.statistics_counts_title, True),
     ("intervals", tr.statistics_intervals_title, False),
-    ("stability", tr.statistics_card_stability_title, False),
     ("ease", tr.statistics_card_ease_title, False),
     ("difficulty", tr.statistics_card_difficulty_title, False),
-    (
-        "retrievability",
-        _recall_wording(
-            tr.statistics_card_retrievability_title,
-            tr.statistics_card_retrievability_title_plain,
-        ),
-        False,
-    ),
-    ("totalKnowledge", tr.statistics_total_knowledge_title, True),
-    ("roc", tr.statistics_roc_title, False),
-    ("calibration", tr.statistics_calibration_title, False),
-    ("umPlus", tr.statistics_um_plus_title, False),
     ("trueRetention", tr.statistics_true_retention_title, True),
     ("hours", tr.statistics_hours_title, False),
     ("buttons", tr.statistics_answer_buttons_title, False),
@@ -445,7 +402,10 @@ def _rwkv() -> str:
 # grouped as the Preferences tab shows them: the Simple section's settings,
 # then each Advanced-mode section's. The ids after "deckOptions." are the
 # page's setting keys, in the page's order (allSettings() in
-# ts/routes/deck-options/ui-split.ts).
+# ts/routes/deck-options/ui-split.ts). The settings that name retrievability
+# (Review sort order, New card gather order, Minimum reviews per day) are no
+# items: only Advanced mode shows them (ADVANCED_ONLY there; spec
+# ui.retrievability-advanced-only).
 DECK_OPTIONS_SETTINGS: list[
     tuple[Callable[[], str], list[tuple[str, Callable[[], str], bool]]]
 ] = [
@@ -490,11 +450,9 @@ DECK_OPTIONS_SETTINGS: list[
     (
         tr.deck_config_ordering_title,
         [
-            ("newGatherPriority", tr.deck_config_new_gather_priority, False),
             ("newCardSortOrder", tr.deck_config_new_card_sort_order, False),
             ("newReviewPriority", tr.deck_config_new_review_priority, False),
             ("interdayStepPriority", tr.deck_config_interday_step_priority, False),
-            ("reviewSortOrder", tr.deck_config_review_sort_order, False),
         ],
     ),
     (
@@ -541,11 +499,6 @@ DECK_OPTIONS_SETTINGS: list[
                 False,
             ),
             ("rwkvMinElapsedSecs", tr.deck_config_rwkv_review_min_elapsed_secs, False),
-            (
-                "rwkvMinimumReviewsPerDay",
-                tr.deck_config_rwkv_review_minimum_reviews_per_day,
-                False,
-            ),
             (
                 "rwkvCandidateRefresh",
                 tr.deck_config_rwkv_review_candidate_refresh,
@@ -646,45 +599,9 @@ def set_shown_in_simple(col: Any, item_id: str, shown: bool) -> None:
         col.remove_config(CONFIG_KEY)
 
 
-def recall_wording(col: Any) -> str:
-    """The stored choice; an unset or unknown value means BY_MODE."""
-    if col is None:
-        return RECALL_BY_MODE
-    try:
-        stored = col.get_config_string(Config.String.RECALL_WORDING)
-    except Exception:
-        return RECALL_BY_MODE
-    return stored if stored in RECALL_WORDING_CHOICES else RECALL_BY_MODE
-
-
-def set_recall_wording(col: Any, wording: str) -> None:
-    if wording not in RECALL_WORDING_CHOICES:
-        raise ValueError(f"unknown recall wording: {wording}")
-    col.set_config_string(Config.String.RECALL_WORDING, wording)
-
-
-def plain_recall_wording(col: Any, advanced: bool | None = None) -> bool:
-    """Whether the interface names the chance of recall in plain words. This
-    is the one helper the Python side resolves the setting with: plain words
-    when the setting is PLAIN, or when it is BY_MODE and the UI is in Simple
-    mode (spec ui.simple-recall-wording)."""
-    wording = recall_wording(col)
-    if wording == RECALL_PLAIN:
-        return True
-    if wording == RECALL_TECHNICAL:
-        return False
-    if advanced is None:
-        advanced = bool(
-            col is not None and col.get_config_bool(Config.Bool.ADVANCED_UI)
-        )
-    return not advanced
-
-
 def reset(col: Any) -> None:
-    """Back to the defaults, the recall wording with them. Choices for ids
-    this version does not know (a newer Clanki's items, synced here) are
-    kept."""
-    set_recall_wording(col, RECALL_BY_MODE)
+    """Back to the defaults. Choices for ids this version does not know (a
+    newer Clanki's items, synced here) are kept."""
     raw = col.get_config(CONFIG_KEY, {})
     stored = dict(raw) if isinstance(raw, dict) else {}
     kept = {key: value for key, value in stored.items() if key not in ITEMS_BY_ID}

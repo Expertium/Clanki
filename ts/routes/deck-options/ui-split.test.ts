@@ -4,9 +4,11 @@
 import { expect, test } from "vitest";
 
 import {
+    ADVANCED_ONLY,
     allSettings,
     CURATED,
     deckOptionsItemId,
+    helpForMode,
     IN_SIMPLE_SECTION,
     type Section,
     SECTIONS,
@@ -89,4 +91,39 @@ test("without the split every setting shows", () => {
 test("every setting is listed once", () => {
     const keys = allSettings();
     expect(new Set(keys).size).toBe(keys.length);
+});
+
+// Pins spec/ui.md#ui.retrievability-advanced-only: the settings that name
+// retrievability are not items of the split, and only Advanced mode draws
+// them: not when the split gives them to Simple mode, not when the split
+// cannot be read.
+test("the settings that name retrievability show in Advanced mode only", () => {
+    const keys = allSettings() as readonly string[];
+    const all = Object.fromEntries(
+        [...allSettings(), ...ADVANCED_ONLY].map((key) => [deckOptionsItemId(key), true]),
+    );
+    for (const key of ADVANCED_ONLY) {
+        expect(keys).not.toContain(key);
+        for (const split of [defaults, all, null]) {
+            expect(settingShown(key, "section", false, split)).toBe(false);
+            expect(settingShown(key, "simple", false, split)).toBe(false);
+            expect(settingShown(key, "section", true, split)).toBe(true);
+        }
+    }
+    expect(sectionShown("displayOrder", false, all)).toBe(true);
+    expect(sectionShown("displayOrder", false, defaults)).toBe(false);
+});
+
+// Pins spec/ui.md#ui.retrievability-advanced-only: a help modal of Simple
+// mode leaves out the help of those settings, and keeps the order of the rest.
+test("Simple mode's help leaves out the settings that name retrievability", () => {
+    const help = {
+        newGatherPriority: "gather",
+        newCardSortOrder: "sort",
+        reviewSortOrder: "review",
+        rwkvMinimumReviewsPerDay: "minimum",
+        rwkvCandidateRefresh: "refresh",
+    };
+    expect(helpForMode(help, true)).toBe(help);
+    expect(Object.keys(helpForMode(help, false))).toEqual(["newCardSortOrder", "rwkvCandidateRefresh"]);
 });

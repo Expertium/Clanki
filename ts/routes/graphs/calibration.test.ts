@@ -16,9 +16,7 @@ import {
     axisTenths,
     binPoints,
     calibrationBounds,
-    calibrationPredictedLabel,
     calibrationSeries,
-    calibrationSubtitle,
     chooserOptions,
     chosenAlgorithm,
     COUNT_BAR_COLOUR,
@@ -169,12 +167,9 @@ test("both axes step by 0.1, and the count bars are blue", () => {
     expect(COUNT_BAR_COLOUR).toBe("#6ba3d6");
 });
 
-// Pins spec/ui.md#ui.simple-recall-wording
-test("the calibration subtitle and X axis follow the recall wording", () => {
-    expect(calibrationSubtitle(true)).toBe(tr.statisticsCalibrationSubtitlePlain());
-    expect(calibrationSubtitle(false)).toBe(tr.statisticsCalibrationSubtitle());
-    expect(calibrationPredictedLabel(true)).toBe(
-        tr.statisticsCalibrationPredictedPlain(),
-    );
-    expect(calibrationPredictedLabel(false)).toBe(tr.statisticsCalibrationPredicted());
+test("the X axis names the predicted retrievability", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    renderCalibration(svg, calibrationBounds(), null);
+    const texts = Array.from(svg.querySelectorAll("text")).map((t) => t.textContent);
+    expect(texts).toContain(tr.statisticsCalibrationPredicted());
 });

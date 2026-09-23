@@ -52,6 +52,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // lists the same ids, in the same order) and the data it draws: in
     // Simple mode the page asks the backend only for the data of the graphs
     // it shows (graphs with their own request need none of it).
+    // advancedOnly: the graph names retrievability, which only Advanced mode
+    // shows (spec ui.retrievability-advanced-only)
     const graphItems: GraphItem[] = [
         { id: "today", data: [Graph.TODAY] },
         { id: "futureDue", data: [Graph.FUTURE_DUE] },
@@ -59,14 +61,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         { id: "reviews", data: [Graph.REVIEWS] },
         { id: "cardCounts", data: [Graph.CARD_COUNTS] },
         { id: "intervals", data: [Graph.INTERVALS] },
-        { id: "stability", data: [Graph.STABILITY] },
+        { id: "stability", data: [Graph.STABILITY], advancedOnly: true },
         { id: "ease", data: [Graph.EASES] },
         { id: "difficulty", data: [Graph.DIFFICULTY] },
-        { id: "retrievability", data: [Graph.RETRIEVABILITY] },
-        { id: "totalKnowledge", data: [] },
-        { id: "roc", data: [] },
-        { id: "calibration", data: [] },
-        { id: "umPlus", data: [] },
+        { id: "retrievability", data: [Graph.RETRIEVABILITY], advancedOnly: true },
+        { id: "totalKnowledge", data: [], advancedOnly: true },
+        { id: "roc", data: [], advancedOnly: true },
+        { id: "calibration", data: [], advancedOnly: true },
+        { id: "umPlus", data: [], advancedOnly: true },
         { id: "trueRetention", data: [Graph.TRUE_RETENTION] },
         { id: "hours", data: [Graph.HOURS] },
         { id: "buttons", data: [Graph.BUTTONS] },

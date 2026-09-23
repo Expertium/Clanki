@@ -288,7 +288,6 @@ impl Collection {
             fsrs: self.get_config_bool(BoolKey::Fsrs),
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
             advanced_ui: self.get_config_bool(BoolKey::AdvancedUi),
-            recall_wording: self.recall_wording() as i32,
         };
         Ok(resp)
     }

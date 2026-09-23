@@ -4,7 +4,7 @@
 import { GraphsRequest_Graph as Graph } from "@generated/anki/stats_pb";
 import { expect, test } from "vitest";
 
-import { graphsForMode, simpleDataOf, simpleGraphsOf, statsItemId } from "./ui-mode";
+import { type GraphItem, graphsForMode, simpleDataOf, simpleGraphsOf, statsItemId } from "./ui-mode";
 
 // Pins spec/ui.md#ui.mode-switch: Simple shows only the Simple graphs, in
 // page order; Advanced shows all; a page without a Simple list shows all.
@@ -92,4 +92,23 @@ test("graphs with their own request ask for one small part only", () => {
 test("without the split every graph shows, with all its data", () => {
     expect(simpleGraphsOf(names, items, null)).toStrictEqual(names);
     expect(simpleDataOf(items, null)).toStrictEqual([]);
+});
+
+// Pins spec/ui.md#ui.retrievability-advanced-only: a graph that names
+// retrievability is never drawn in Simple mode, whatever the split says, and
+// also when the split cannot be read.
+test("an Advanced-only graph never shows in Simple mode", () => {
+    const withAdvancedOnly: GraphItem[] = [
+        { id: "reviews", data: [Graph.REVIEWS] },
+        { id: "retrievability", data: [Graph.RETRIEVABILITY], advancedOnly: true },
+        { id: "totalKnowledge", data: [], advancedOnly: true },
+    ];
+    const ids = withAdvancedOnly.map((item) => item.id);
+    const everything = Object.fromEntries(withAdvancedOnly.map((item) => [statsItemId(item), true]));
+    for (const split of [everything, null]) {
+        expect(simpleGraphsOf(ids, withAdvancedOnly, split)).toStrictEqual(["reviews"]);
+    }
+    expect(simpleDataOf(withAdvancedOnly, everything)).toStrictEqual([Graph.REVIEWS]);
+    // Advanced mode draws them
+    expect(graphsForMode(ids, simpleGraphsOf(ids, withAdvancedOnly, everything), true)).toStrictEqual(ids);
 });

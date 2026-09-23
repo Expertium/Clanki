@@ -170,26 +170,6 @@ deck-config-new-gather-priority-tooltip-2 =
     `Random notes`: Picks notes at random, then gathers all of its cards.
     
     `Random cards`: Gathers cards in a random order.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-new-gather-priority-tooltip-2-plain =
-    `Deck`: Gathers cards from each subdeck in order, starting from the top. Cards from each subdeck are
-    gathered in ascending position. If the daily limit of the selected deck is reached, gathering
-    can stop before all subdecks have been checked. This order is fastest in large collections, and
-    allows you to prioritize subdecks that are closer to the top.
-
-    `Ascending position`: Gathers cards by ascending position (due #), which is typically
-    the oldest-added first.
-
-    `Descending position`: Gathers cards by descending position (due #), which is typically
-    the latest-added first.
-
-    `Ascending/descending probability of recall (RWKV)`: Gathers cards by the RWKV probability of
-    recall when RWKV queue scores are available. Cards without an RWKV score fall back to ascending
-    position. These are desktop-only RWKV gather modes.
-
-    `Random notes`: Picks notes at random, then gathers all of its cards.
-
-    `Random cards`: Gathers cards in a random order.
 deck-config-new-card-sort-order = New card sort order
 deck-config-new-card-sort-order-tooltip-2 =
     `Card type, then order gathered`: Shows cards in order of card type number.
@@ -244,10 +224,6 @@ deck-config-new-gather-priority-position-highest-first = Descending position
 deck-config-new-gather-priority-ascending-retrievability = Ascending retrievability (RWKV-Instant)
 # Gather new cards ordered by RWKV retrievability percentage, descending (100% to 0%, most easily retrievable to least retrievable).
 deck-config-new-gather-priority-descending-retrievability = Descending retrievability (RWKV-Instant)
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-new-gather-priority-ascending-retrievability-plain = Ascending probability of recall (RWKV-Instant)
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-new-gather-priority-descending-retrievability-plain = Descending probability of recall (RWKV-Instant)
 # Gather the cards ordered by random notes, ensuring all cards of the same note are grouped together.
 deck-config-new-gather-priority-random-notes = Random notes
 # Gather new cards randomly.
@@ -290,10 +266,6 @@ deck-config-sort-order-descending-difficulty = Difficult cards first
 deck-config-sort-order-retrievability-ascending = Ascending retrievability
 # Sort the cards by retrievability percentage, in descending order (100% to 0%, most easily retrievable to least retrievable).
 deck-config-sort-order-retrievability-descending = Descending retrievability
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-sort-order-retrievability-ascending-plain = Ascending probability of recall
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-sort-order-retrievability-descending-plain = Descending probability of recall
 
 ## Timer section
 
@@ -394,15 +366,6 @@ deck-config-rwkv-review-minimum-reviews-per-day-tooltip =
     studying a parent deck. The normal maximum review limits and same-day repeat
     safeguards still apply. Set this to 0 to let RWKV alone decide how many
     reviews are ready.
-# The same string in the plain recall wording (spec ui.simple-recall-wording).
-deck-config-rwkv-review-minimum-reviews-per-day-tooltip-plain =
-    If RWKV-Instant finds fewer reviews than this daily target, pull forward the
-    review cards with the lowest probability of recall until the target is met.
-    Reviews already completed today count toward the target, including reviews
-    completed in subdecks when this deck is studied. Subdeck targets are also
-    respected when studying a parent deck. The normal maximum review limits and
-    same-day repeat safeguards still apply. Set this to 0 to let RWKV alone
-    decide how many reviews are ready.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to

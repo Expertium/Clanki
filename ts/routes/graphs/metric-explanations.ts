@@ -3,8 +3,6 @@
 
 import * as tr from "@generated/ftl";
 
-import { rocAucDescription } from "./roc";
-
 /*
  * The model-quality graphs keep one short line under the graph, which way is
  * better, and put how the number is calculated in the tooltip of the info
@@ -38,10 +36,10 @@ export function rocVerdict(): string {
 }
 
 /** The AUC-ROC graph's tooltip. */
-export function rocExplanation(plainRecall: boolean): string {
+export function rocExplanation(): string {
     return [
         tr.statisticsRocDescriptionCurve(),
-        rocAucDescription(plainRecall),
+        tr.statisticsRocDescriptionAuc(),
         tr.statisticsModelMetricsDescriptionReviews(),
         tr.statisticsModelMetricsDescriptionFirstReviews(),
     ].join(PARAGRAPH);

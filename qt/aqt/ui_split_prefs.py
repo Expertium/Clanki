@@ -5,9 +5,6 @@
 collapsible group per area, a "Show in Simple mode" checkbox per item, a
 search field that filters the list and a "Reset to defaults" button.
 
-Above the list sits the one setting of the tab that is not a checkbox: the
-recall wording, with three choices (spec ui.simple-recall-wording).
-
 A change is stored at once (in the collection config, aqt.ui_split) and the
 open windows redraw in place, the same way a Simple | Advanced switch does.
 """
@@ -18,7 +15,6 @@ from typing import TYPE_CHECKING
 
 from aqt import ui_split
 from aqt.qt import (
-    QComboBox,
     QFont,
     QHBoxLayout,
     QHeaderView,
@@ -57,8 +53,6 @@ class UiSplitPreferences(QWidget):
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
 
-        layout.addLayout(self._recall_wording_row())
-
         row = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr.actions_search())
@@ -89,46 +83,6 @@ class UiSplitPreferences(QWidget):
         self._leaves: list[QTreeWidgetItem] = []
         self._build()
         qconnect(self.tree.itemChanged, self._on_item_changed)
-
-    # The recall wording (spec ui.simple-recall-wording)
-    ######################################################################
-
-    def _recall_wording_row(self) -> QHBoxLayout:
-        """The one setting of this tab with three choices instead of a
-        "Show in Simple mode" checkbox."""
-        row = QHBoxLayout()
-        label = QLabel(tr.preferences_recall_wording())
-        label.setWordWrap(True)
-        row.addWidget(label)
-        self.recall_wording = QComboBox()
-        for wording, text in (
-            (ui_split.RECALL_BY_MODE, tr.preferences_recall_wording_by_mode()),
-            (ui_split.RECALL_TECHNICAL, tr.preferences_recall_wording_technical()),
-            (ui_split.RECALL_PLAIN, tr.preferences_recall_wording_plain()),
-        ):
-            self.recall_wording.addItem(text, wording)
-        self._load_recall_wording()
-        qconnect(self.recall_wording.currentIndexChanged, self._on_recall_wording)
-        row.addWidget(self.recall_wording)
-        row.addStretch()
-        return row
-
-    def _load_recall_wording(self) -> None:
-        index = self.recall_wording.findData(ui_split.recall_wording(self.mw.col))
-        self.recall_wording.blockSignals(True)
-        self.recall_wording.setCurrentIndex(max(0, index))
-        self.recall_wording.blockSignals(False)
-
-    def _on_recall_wording(self, _index: int) -> None:
-        ui_split.set_recall_wording(self.mw.col, self.recall_wording.currentData())
-        self._relabel()
-        self.mw.redraw_for_ui_split()
-
-    def _relabel(self) -> None:
-        """The item names that hold the word (the Browser's Retrievability
-        column, the Stats graph) follow the setting at once."""
-        for leaf in self._leaves:
-            leaf.setText(0, ui_split.ITEMS_BY_ID[leaf.data(0, ITEM_ID_ROLE)].label())
 
     # Building
     ######################################################################
@@ -194,8 +148,6 @@ class UiSplitPreferences(QWidget):
             return
         ui_split.reset(self.mw.col)
         self._load_checks()
-        self._load_recall_wording()
-        self._relabel()
         self.mw.redraw_for_ui_split()
 
     # Search
