@@ -41,6 +41,12 @@ pub(crate) const REVIEW_SCHEDULER_TABLE: &str = "review_scheduler";
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
 const RWKV_CURVE_SOURCE_TAGS_TABLE: &str = "rwkv_curve_source_tags";
+/// Lets the check that the recordings are all still there count a tag's
+/// sources without reading them: every row of the table holds a 256-byte
+/// source, so a count over the table read ~170 MB, and over this index 28 ms
+/// against 149 ms warm (656,445 sources). Built once, on the first write or
+/// read of the sources after an update.
+const RWKV_CURVE_SOURCES_TAG_INDEX: &str = "ix_rwkv_curve_sources_tag";
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
     "reviewRetrievabilityCacheCleanupFullSync";
 const REVIEW_RETRIEVABILITY_CACHE_WRITE_SAVEPOINT: &str = "review_retrievability_cache_write";
@@ -794,6 +800,8 @@ impl SqliteStorage {
                 tag INTEGER NOT NULL,
                 source BLOB NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS {RETRIEVABILITY_CACHE_DB_SCHEMA}.{RWKV_CURVE_SOURCES_TAG_INDEX}
+                ON {RWKV_CURVE_SOURCES_TABLE} (tag, revlog_id);
             "
         ))?;
         Ok(())
@@ -1697,6 +1705,35 @@ mod tests {
             format: 1,
             kernel: 1,
         }
+    }
+
+    /// The recordings check in qt/aqt/rwkv_scheduler.py
+    /// (`_rwkv_recorded_row_counts`) counts a tag's sources with this query;
+    /// it must be answered from the index, not by reading every source.
+    #[test]
+    fn the_recordings_check_counts_curve_sources_from_the_index() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("curve_sources_index")?;
+        col.storage
+            .set_rwkv_curve_sources(&curve_tag("model-a"), &[10, 20], &[1, 1, 2, 2], 2)?;
+        let plan: Vec<String> = col
+            .storage
+            .db
+            .prepare(&format!(
+                "explain query plan
+                 select count(*) from {RETRIEVABILITY_CACHE_DB_SCHEMA}.{RWKV_CURVE_SOURCES_TABLE} s
+                 join {RETRIEVABILITY_CACHE_DB_SCHEMA}.{RWKV_CURVE_SOURCE_TAGS_TABLE} t
+                   on t.id = s.tag
+                 where t.model = ? and t.format = ? and t.kernel = ? and s.revlog_id <= ?"
+            ))?
+            .query_map(params!["model-a", 1, 1, 20], |row| row.get(3))?
+            .collect::<std::result::Result<_, _>>()?;
+        assert!(
+            plan.iter().any(
+                |step| step.contains(&format!("COVERING INDEX {RWKV_CURVE_SOURCES_TAG_INDEX}"))
+            ),
+            "{plan:?}"
+        );
+        Ok(())
     }
 
     // Pins spec/ui.md#ui.card-info-rwkv-curve: curve sources are saved in
