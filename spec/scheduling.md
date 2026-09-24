@@ -1192,7 +1192,12 @@ has no intervals at all.
 
 Given a preset that RWKV-Instant schedules, the preset has no learning steps
 and no relearning steps, whatever steps it stores: a card it answers never
-enters the learning or relearning queue, and the deck-options rows for
+enters the learning or relearning queue. This holds for sub-day intervals too:
+an answer whose FSRS-7 interval is under a day (Again on a new card with the
+default parameters, for one) makes the card a review card due in whole days
+(at least one), as with no learning queue, instead of an intraday learning
+card whose return FSRS-7 would decide; RWKV-Instant's scores then decide when
+it comes back (`sched.rwkv-instant-waits`). The deck-options rows for
 Learning steps, Relearning steps, Maximum interval, Minimum interval and
 Maximum number of same-day reviews are not shown. The stored values are kept
 untouched, so a preset that returns to FSRS-7 or RWKV-Curve gets its steps
@@ -1207,11 +1212,15 @@ steps should merely be hidden or should stop working, he answered that they
 must not exist under Instant. RWKV-Instant decides when a card comes back
 from the card's own score, so every setting that shapes an interval has
 nothing to act on; a setting that is shown but does nothing is worse than no
-setting.
+setting. Andrew, 2026-09-24, "fix the bugs on our side": the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3) found that
+FSRS-7's sub-day intervals still sent Instant cards to the learning queue,
+which RWKV-Instant does not score, so FSRS-7 decided their return.
 
 **Pinned by:** `rwkv_instant_has_no_steps_and_no_same_day_limit`
 (`rslib/src/deckconfig/mod.rs`),
-`rwkv_instant_answers_a_new_card_without_a_learning_step`
+`rwkv_instant_answers_a_new_card_without_a_learning_step`,
+`rwkv_instant_sub_day_fsrs7_intervals_stay_out_of_the_learning_queue`
 (`rslib/src/scheduler/answering/mod.rs`) and
 `ts/routes/deck-options/scheduler-choice.test.ts`.
 
