@@ -938,7 +938,8 @@ Good, Easy:
   the sub-day button or sub-day step before it; a learning card stays
   learning, and a review or relearning card becomes a relearning card with
   no remaining steps (a passing answer keeps its lapse count, and the
-  card's interval field holds a whole number of days, at least 1);
+  card's interval field holds a whole number of days, at least 1; its next
+  answer is a review, `sched.sub-day-pass-then-again`);
 - any other button (18 hours or more, or after a day button or a day-long
   step) gets whole days (at least 1) after review fuzz, and at least one
   day more than the day button or day-long step before it: with all four
@@ -1018,6 +1019,47 @@ rollover stays due at the rollover). Andrew, 2026-09-21: "Currently, any
 state tests; `test_rwkv_curve_states_*` and
 `test_unrounded_interval_from_recall_curve_keeps_sub_day_crossings`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.sub-day-pass-then-again
+
+Given a card scheduled by FSRS-7 or RWKV-Curve (or RWKV-Instant, which
+stores FSRS states, `sched.rwkv-instant-no-intervals`) that is a relearning
+card with no remaining steps, and whose last rated review (leaving out preview answers
+in a filtered deck) was Hard, Good or Easy, its next answer is the answer of
+a review card with the card's interval field as its interval:
+
+- Again adds a lapse, runs the leech check (the leech tag, and the leech
+  action), and relearns as a failed review card does (the relearning steps,
+  or a sub-day Again, `sched.sub-day-intervals`);
+- Hard, Good and Easy follow the review rules of `sched.sub-day-intervals`;
+- the review-log row has the kind Review, and its previous interval is the
+  interval field (1 day) instead of 0. Under RWKV-Curve the reviewer sets
+  the row's kind from RWKV's state for the answer
+  (`test_live_same_day_review_uses_scheduler_valid_synthetic_state`): for an
+  answer on the same day as that passing answer it is Filtered, or
+  Relearning after a relearning card's Hard. RWKV gets that state as its
+  input too.
+
+Such a card got there from a passing answer with a sub-day interval: a
+review card's Hard, Good or Easy, or a relearning card's Hard, Good or Easy
+after its steps (it left relearning). A relearning card whose last answer
+was Again is still relearning, and another Again adds no lapse.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", and later that night "fix
+the bugs on our side", about the FSRS-7 review
+(`clanki-logs/reviews/algo-2026-09-24/fsrs7.md`, section 3). A passing
+sub-day answer stores the card as a relearning card, and the Again after it
+kept the lapse count, ran no leech check and logged as Relearning. The
+database cannot tell such a card from one that lapsed, so the last rated
+review decides. Two side effects for Andrew to confirm or veto: (1) a
+relearning card that finished its steps with a sub-day Hard, Good or Easy
+now also gets a lapse for its next Again, as upstream Anki counts a lapse
+after relearning ends; (2) Hard, Good and Easy on such a card now log as
+Review (not Relearning), with a previous interval of 1 day (not 0).
+
+**Pinned by:** `again_after_a_sub_day_pass_is_a_review_lapse`,
+`again_while_relearning_is_not_a_second_lapse`
+(`rslib/src/scheduler/answering/mod.rs`, both for FSRS-7 and RWKV-Curve).
 
 ## sched.rwkv-review-order
 

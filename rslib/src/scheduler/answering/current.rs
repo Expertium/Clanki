@@ -114,6 +114,19 @@ impl CardStateUpdater {
                 memory_state,
             }
             .into(),
+            // a passing answer gave the card a sub-day interval, so it left
+            // relearning: its next answer is a review, and Again a lapse
+            // (spec sched.sub-day-pass-then-again)
+            CardType::Relearn if self.relearning_left_by_passing_answer => ReviewState {
+                scheduled_days: interval,
+                fuzz_delta_days: 0,
+                elapsed_days: interval,
+                ease_factor,
+                lapses,
+                leeched: false,
+                memory_state,
+            }
+            .into(),
             CardType::Relearn => {
                 let last_ivl = self.relearn_steps().current_delay_secs(remaining_steps);
                 RelearnState {
