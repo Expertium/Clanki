@@ -1339,6 +1339,36 @@ noticed the mismatch.
 **Pinned by:** `an_addon_edit_of_the_s90_rebuilds_the_fsrs7_traces`
 (`rslib/src/card/service.rs`).
 
+## sched.addon-s90-only-memory-state
+
+Given a card written through `update_cards` (`col.update_card`,
+`col.update_cards`, AnkiConnect) with a memory state that has a stability
+and a difficulty but no FSRS-7 internal stability (an add-on's
+`FSRSMemoryState(stability=..., difficulty=...)`), the stability is stored
+as the card's S90 with the written difficulty, and never as its internal
+stability:
+
+- under FSRS-7, the card's stored internal and fast stabilities keep their
+  ratio and are scaled so that the curve gives the written S90; when the S90
+  and the difficulty are the stored ones, the traces stay as they are;
+- under RWKV-Curve and RWKV-Instant, the stability is not FSRS-7's, so the
+  stored traces stay as they are;
+- a card without stored traces gets the S90 conversion of
+  `sync.fsrs7-state-of-foreign-cards` (the fsrs crate's fast/internal ratio,
+  scaled to the S90, with the written difficulty).
+
+A write that carries the internal stability follows
+`sched.fsrs7-addon-stability-edit`.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: such a write stored the S90 as the
+internal stability as well, which made the card's intervals about 2.3
+times too long, and since the row then had an internal stability, the
+repair of foreign cards never fixed it.
+
+**Pinned by:** `an_addon_s90_only_memory_state_gets_fsrs7_traces`
+(`rslib/src/card/service.rs`).
+
 ## sched.fsrs7-fractional-elapsed-time
 
 Given a card answered with FSRS (always FSRS-7, `sched.fsrs7-only`), the

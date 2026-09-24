@@ -1606,6 +1606,64 @@ impl Collection {
         Ok(())
     }
 
+    /// An add-on that writes `FSRSMemoryState(stability, difficulty)` gives
+    /// a card only an S90 and a difficulty, with no FSRS-7 traces (spec
+    /// sched.addon-s90-only-memory-state). Stored as it came, the S90 would
+    /// become the internal stability too, and the row would no longer look
+    /// foreign to the repair. Under FSRS-7 the card's stored traces are
+    /// scaled to the written S90 (unchanged when the S90 and the difficulty
+    /// are the stored ones); a card without them gets the S90 conversion of
+    /// the foreign repair. Under RWKV the stability is RWKV's S90, so the
+    /// stored traces stay FSRS-7's own, and a card without them gets the S90
+    /// conversion.
+    pub(crate) fn fsrs7_traces_for_an_s90_only_write(
+        &mut self,
+        card: &mut Card,
+        existing: &Card,
+    ) -> Result<()> {
+        let Some(written) = card.memory_state else {
+            return Ok(());
+        };
+        let s90 = written.stability;
+        if !(s90.is_finite() && s90 > 0.0) {
+            return Ok(());
+        }
+        let stored_traces = existing
+            .memory_state
+            .filter(|state| state.stability_fast.is_some());
+        let fsrs7 = self.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7;
+        let fsrs = FSRS::new(&self.fsrs_preset_for_card(card)?.params)?;
+        let state = match stored_traces {
+            Some(stored)
+                if !fsrs7 || (stored.stability == s90 && stored.difficulty == written.difficulty) =>
+            {
+                Some(FsrsMemoryState {
+                    stability: s90,
+                    difficulty: written.difficulty,
+                    ..stored
+                })
+            }
+            Some(stored) => {
+                let shape = MemoryState {
+                    difficulty: written.difficulty,
+                    ..MemoryState::from(stored)
+                };
+                let scaled = scale_state_to_interval(&fsrs, shape, s90, 0.9);
+                Some(FsrsMemoryState {
+                    stability: s90,
+                    stability_internal: scaled.stability,
+                    stability_fast: Some(scaled.stability_fast),
+                    difficulty: written.difficulty,
+                })
+            }
+            None => fsrs_memory_state_for_s90_and_difficulty(&fsrs, s90, written.difficulty),
+        };
+        if state.is_some() {
+            card.memory_state = state;
+        }
+        Ok(())
+    }
+
     pub fn compute_and_update_memory_state(&mut self, card: &mut Card) -> Result<()> {
         let fsrs_data = self.compute_memory_state(card.id)?;
         card.memory_state = fsrs_data.state.map(Into::into);

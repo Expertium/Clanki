@@ -1092,7 +1092,7 @@ mod test {
             card.queue = CardQueue::Review;
             cards.push(card);
         }
-        col.update_cards_maybe_undoable(cards, false)?;
+        col.update_cards_maybe_undoable(cards, false, &Default::default())?;
         col.set_deck_review_order(&mut deck, ReviewCardOrder::RelativeOverdueness);
         assert_eq!(col.queue_as_due_and_ivl(deck.id), expected_queue);
 
