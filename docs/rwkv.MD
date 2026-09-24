@@ -583,9 +583,11 @@ for normal review cards in the requested scope, filtered to RWKV-enabled deck
 configs.
 Full interval/S90 predictions use a fixed batch size of `128` to bound the
 transient recurrent-state memory used by this operation. It uses the
-current/query RWKV-Curve, not a
-hypothetical answer-button curve, to compute the target-retention interval and
-the current S90 value. The backend applies those values to the card without
+RWKV-Curve curve stored at the card's last answered review (the curve after
+that answer), not the curve of a query row, which training never gives a loss,
+and not a hypothetical answer-button curve, to compute the target-retention
+interval and the current S90 value; a card without a stored curve is not
+rescheduled (`sched.rwkv-curve-reschedule`). The backend applies those values to the card without
 writing a review-log entry: `memory_state.stability` is updated to the RWKV S90,
 existing `memory_state.stability_internal` is preserved, the review interval and
 due day are recomputed from the card's last review day. New, learning,

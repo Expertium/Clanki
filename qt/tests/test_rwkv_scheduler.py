@@ -2731,23 +2731,26 @@ def test_backend_resident_current_intervals_require_runtime_support() -> None:
     def predict_current_intervals_many_from_warm_up(
         review_inputs: list[RwkvReviewInput],
     ) -> list[tuple[float, int, float, float]]:
-        assert review_inputs == [review_input, review_input]
-        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
+        assert review_inputs == [review_input, review_input, review_input]
+        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0), (0.0, 0, 0.0, 0.0)]
 
     runtime.predict_current_intervals_many_from_warm_up = (  # type: ignore[attr-defined]
         predict_current_intervals_many_from_warm_up
     )
     assert backend.supports_resident_current_intervals
+    # the first value is the stored curve's recall (spec
+    # sched.rwkv-curve-reschedule), never RWKV-Instant's; 0 means no curve
     assert backend.predict_current_intervals_inputs_from_warm_up(
-        [review_input, review_input]
+        [review_input, review_input, review_input]
     ) == [
         RwkvReviewPrediction(
-            retrievability=0.5,
+            curve_retrievability=0.5,
             current_interval=7,
             current_interval_unrounded=6.2,
             current_s90=12,
         ),
-        RwkvReviewPrediction(retrievability=0.4),
+        RwkvReviewPrediction(curve_retrievability=0.4),
+        RwkvReviewPrediction(),
     ]
     assert backend.predict_current_intervals_inputs_from_warm_up([]) == []
 
@@ -2761,7 +2764,7 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
         batch: list[tuple[object, ...]],
     ) -> list[tuple[float, int, float, float]]:
         rows.extend(batch)
-        return [(0.5, 7, 12.0, 6.2), (0.4, 0, 0.0, 0.0)]
+        return [(0.5, 7, 12.0, 6.2), (0.0, 0, 0.0, 0.0)]
 
     runtime = _RustRwkvRuntime.__new__(_RustRwkvRuntime)
     runtime._process = SimpleNamespace(
@@ -2777,7 +2780,7 @@ def test_rust_runtime_current_intervals_map_zero_to_none() -> None:
     outputs = runtime.predict_current_intervals_many_from_warm_up(inputs)
 
     assert len(rows) == 2 and rows[0][0] == 1 and rows[1][0] == 2
-    assert outputs == [(0.5, 7, 12, 6.2), (0.4, None, None, None)]
+    assert outputs == [(0.5, 7, 12, 6.2), (None, None, None, None)]
 
 
 def test_reviewer_rwkv_curve_intervals_go_through_review_fuzz() -> None:

@@ -523,7 +523,10 @@ pub struct ReviewPredictionOutput {
 /// from a single query pass against the resident warm-up state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReviewIntervalPrediction {
-    pub retrievability: f32,
+    /// The recall of the curve RWKV stored at the card's last answered
+    /// review, at the time since that review (`current_curve_retrievability`);
+    /// `None` when the card has no stored curve or no elapsed time.
+    pub curve_retrievability: Option<f32>,
     pub current_interval: Option<u32>,
     /// `current_interval` unrounded, in days (spec
     /// sched.rwkv-curve-reschedule).
@@ -946,15 +949,18 @@ impl RwkvInference {
         Ok(self.model.review_retrievability_many_borrowed(&work_items))
     }
 
-    /// Current interval and S90 for each query input, straight from the
-    /// resident warm-up state.
+    /// Current interval and S90 for each query input, from the curve RWKV
+    /// stored for the card at its last answered review (the curve after that
+    /// answer), for "Reschedule cards with RWKV-Curve" (spec
+    /// sched.rwkv-curve-reschedule).
     ///
-    /// This is what "Reschedule cards with RWKV-Curve" needs. `predict_many`
-    /// also runs the four simulated-answer passes and requires the caller to
-    /// ship each card's serialized state across the Python bridge; here the
-    /// state is borrowed in place and only the query pass runs, so the result
-    /// is identical to `predict_many`'s `retrievability` / `current_interval`
-    /// / `current_s90` at a fifth of the compute and none of the copying.
+    /// The curve of a query row is never read here: training masks every
+    /// curve loss on query rows (`ahead_mask = (1 - is_query) * has_label`),
+    /// so that head output is never supervised, and card info, the Browser,
+    /// filtered decks and Stats all read the stored curve
+    /// (ui.rwkv-curve-r-stored-curve). No model pass runs and no state is
+    /// read or changed. A card without a stored curve gets no interval and
+    /// no S90; no other value stands in for it.
     pub fn predict_current_intervals_many_from_warm_up(
         &mut self,
         inputs: Vec<ReviewInput>,
@@ -968,33 +974,24 @@ impl RwkvInference {
             }
         }
 
-        self.warm_up_states.ensure_loaded_many(&inputs)?;
-
-        let features = inputs
-            .iter()
-            .map(|input| self.features.features_for(input))
-            .collect::<Vec<_>>();
-        let work_items = inputs
-            .iter()
-            .zip(features)
-            .map(|(input, features)| ReviewPredictionBorrowedWorkItem {
-                features,
-                state: self.warm_up_states.state_ref(input),
-            })
-            .collect::<Vec<_>>();
-
-        let heads = self.model.review_many_borrowed(&work_items);
         Ok(inputs
             .iter()
-            .zip(heads)
-            .map(|(input, heads)| {
-                let current = self.current_intervals(input, &heads);
-                ReviewIntervalPrediction {
-                    retrievability: heads.retrievability,
-                    current_interval: current.whole_days,
-                    current_interval_unrounded: current.unrounded,
-                    current_s90: current.s90,
+            .map(|input| match self.curves.get(&input.card_id) {
+                Some(curve) => {
+                    let current = self.current_intervals_for_curve(input, curve);
+                    ReviewIntervalPrediction {
+                        curve_retrievability: current_curve_retrievability(input, curve),
+                        current_interval: current.whole_days,
+                        current_interval_unrounded: current.unrounded,
+                        current_s90: current.s90,
+                    }
                 }
+                None => ReviewIntervalPrediction {
+                    curve_retrievability: None,
+                    current_interval: None,
+                    current_interval_unrounded: None,
+                    current_s90: None,
+                },
             })
             .collect())
     }
@@ -1735,17 +1732,21 @@ insert into segments (
     /// whole days (`interval_for_curve`) and unrounded (for the RWKV-Curve
     /// reschedule, spec sched.rwkv-curve-reschedule), and the current S90.
     fn current_intervals(&self, input: &ReviewInput, heads: &ReviewHeads) -> CurrentIntervals {
+        self.current_intervals_for_curve(input, &heads.curve)
+    }
+
+    fn current_intervals_for_curve(
+        &self,
+        input: &ReviewInput,
+        curve: &ReviewCurve,
+    ) -> CurrentIntervals {
         let target_retention = input.target_retentions[2].unwrap_or(self.target_retention);
         let unrounded =
-            unrounded_interval_for_curve(&heads.curve, target_retention, self.max_interval_days);
+            unrounded_interval_for_curve(curve, target_retention, self.max_interval_days);
         CurrentIntervals {
             whole_days: unrounded.map(|days| clamped_interval_days(days, self.max_interval_days)),
             unrounded,
-            s90: unrounded_interval_for_curve(
-                &heads.curve,
-                S90_TARGET_RETENTION,
-                self.max_interval_days,
-            ),
+            s90: unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, self.max_interval_days),
         }
     }
 
@@ -9879,22 +9880,24 @@ order by e.id, e.cid
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
     }
 
-    /// Pins the fast "Reschedule cards with RWKV-Curve" path: the query-only,
-    /// resident-state prediction must return exactly the retrievability,
-    /// current interval and S90 that the full `predict_many` path returns.
+    /// Pins sched.rwkv-curve-reschedule: "Reschedule cards with RWKV-Curve"
+    /// takes the current interval and S90 from the curve RWKV stored at the
+    /// card's last answered review, not from the curve of a query row (a head
+    /// output that training never supervises). A card without a stored curve
+    /// gets no interval and no S90, and the call changes no state.
     #[test]
-    fn current_intervals_from_warm_up_match_predict_many() {
+    fn reschedule_intervals_come_from_the_stored_curve() {
         let Some(weights) = embedded_weights_path() else {
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
         let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
-        let reviews = bulk_parity_reviews(120);
+        let reviews = curve_source_reviews(160);
         inference
             .warm_up_reviews_sequential(reviews.clone(), false)
             .unwrap();
 
-        // one query per card, built from that card's most recent review
+        // one query per card, a day after that card's most recent review
         let mut seen = std::collections::HashSet::new();
         let queries = reviews
             .iter()
@@ -9903,42 +9906,81 @@ order by e.id, e.cid
             .map(|review| ReviewInput {
                 is_query: true,
                 ease: None,
+                duration_millis: None,
+                card_type: Some(2),
+                day_offset: review.day_offset.map(|day| day + 1),
+                current_elapsed_days: Some(1),
+                current_elapsed_seconds: Some(SECONDS_PER_DAY),
                 ..review.clone()
             })
             .collect::<Vec<_>>();
         assert!(queries.len() > 10, "fixture should cover many cards");
 
-        let requests = queries
+        // the curve of each query row, which the reschedule must not read
+        let work_items = queries
             .iter()
-            .map(|input| ReviewPredictionRequest {
-                input: input.clone(),
-                state: inference.warm_up_state(input).unwrap(),
+            .map(|input| {
+                let state = inference.warm_up_state(input).unwrap();
+                inference.prediction_work_item(input, &state).unwrap()
             })
             .collect::<Vec<_>>();
-        let expected = inference.predict_many(requests).unwrap();
+        let query_heads = inference.model.review_many(&work_items);
+        let unseen = ReviewInput {
+            card_id: 99_999,
+            ..queries[0].clone()
+        };
+        let mut asked = queries.clone();
+        asked.push(unseen);
+        let state_before = inference.cache_state();
         let actual = inference
-            .predict_current_intervals_many_from_warm_up(queries)
+            .predict_current_intervals_many_from_warm_up(asked)
             .unwrap();
+        assert_eq!(
+            inference.cache_state(),
+            state_before,
+            "the reschedule's read must not change the state"
+        );
 
-        assert_eq!(expected.len(), actual.len());
+        assert_eq!(actual.len(), queries.len() + 1);
         let mut with_interval = 0;
-        for (expected, actual) in expected.iter().zip(&actual) {
-            assert_eq!(expected.retrievability, actual.retrievability);
-            assert_eq!(expected.current_interval, actual.current_interval);
-            assert_eq!(
-                expected.current_interval_unrounded,
-                actual.current_interval_unrounded
-            );
+        let mut differs_from_query_curve = 0;
+        for ((input, actual), query_heads) in queries.iter().zip(&actual).zip(&query_heads) {
+            let curve = inference.curves.get(&input.card_id).expect("stored curve");
+            let unrounded = unrounded_interval_for_curve(curve, 0.9, 36_500);
+            assert_eq!(actual.current_interval_unrounded, unrounded);
             assert_eq!(
                 actual.current_interval,
-                actual
-                    .current_interval_unrounded
-                    .map(|days| clamped_interval_days(days, 36_500))
+                unrounded.map(|days| clamped_interval_days(days, 36_500))
             );
-            assert_eq!(expected.current_s90, actual.current_s90);
+            assert_eq!(
+                actual.current_s90,
+                unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, 36_500)
+            );
+            assert_eq!(
+                actual.curve_retrievability,
+                current_curve_retrievability(input, curve)
+            );
             with_interval += usize::from(actual.current_interval.is_some());
+            differs_from_query_curve += usize::from(
+                actual.current_s90
+                    != unrounded_interval_for_curve(
+                        &query_heads.curve,
+                        S90_TARGET_RETENTION,
+                        36_500,
+                    ),
+            );
         }
         assert!(with_interval > 0, "fixture should produce intervals");
+        assert!(
+            differs_from_query_curve > 0,
+            "the query row's curve must differ somewhere, or this pin cannot fail"
+        );
+
+        let unseen = actual.last().unwrap();
+        assert_eq!(unseen.curve_retrievability, None);
+        assert_eq!(unseen.current_interval, None);
+        assert_eq!(unseen.current_interval_unrounded, None);
+        assert_eq!(unseen.current_s90, None);
     }
 
     /// Pins the fast Stats Retrievability path: the query-only,
@@ -10285,26 +10327,17 @@ order by e.id, e.cid
         );
 
         let expected = resident
-            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .predict_retrievability_many_from_warm_up(sample.clone())
             .unwrap();
         let actual = lazy
-            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .predict_retrievability_many_from_warm_up(sample.clone())
             .unwrap();
         assert_eq!(expected.len(), sample.len());
         for (index, (expected, actual)) in expected.iter().zip(&actual).enumerate() {
             assert_eq!(
-                expected.retrievability.to_bits(),
-                actual.retrievability.to_bits(),
+                expected.to_bits(),
+                actual.to_bits(),
                 "retrievability diverged at row {index}"
-            );
-            assert_eq!(
-                expected.current_interval, actual.current_interval,
-                "interval diverged at row {index}"
-            );
-            assert_eq!(
-                expected.current_s90.map(f32::to_bits),
-                actual.current_s90.map(f32::to_bits),
-                "S90 diverged at row {index}"
             );
         }
 

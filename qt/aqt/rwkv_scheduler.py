@@ -2052,13 +2052,14 @@ class RwkvStatefulReviewerBackend:
         self,
         review_inputs: Sequence[RwkvReviewInput],
     ) -> Sequence[RwkvReviewPrediction | None] | None:
-        """Query-only current interval and S90 straight from the resident state.
+        """Current interval and S90 from the curve RWKV stored at each card's
+        last answered review (spec sched.rwkv-curve-reschedule).
 
-        This is all that "Reschedule cards with RWKV-Curve" needs. The full
-        prediction path additionally runs the four simulated-answer passes,
-        serializes each card's state across the bridge, hashes it, and holds
-        the GIL; none of that changes the two numbers used here. Returns None
-        when the runtime cannot do it, so callers fall back to the full path.
+        This is all that "Reschedule cards with RWKV-Curve" needs. It never
+        reads the curve of a query row, which training does not supervise,
+        and runs no model pass. A card without a stored curve gets no
+        interval. Returns None when the runtime cannot do it, so callers
+        fall back to the full path.
         """
 
         predict_many = getattr(
@@ -2078,12 +2079,14 @@ class RwkvStatefulReviewerBackend:
             raise ValueError("RWKV current interval prediction count mismatch")
         return [
             RwkvReviewPrediction(
-                retrievability=float(retrievability),
+                curve_retrievability=(
+                    float(curve_retrievability) if curve_retrievability else None
+                ),
                 current_interval=int(current_interval) if current_interval else None,
                 current_interval_unrounded=float(unrounded) if unrounded else None,
                 current_s90=float(current_s90) if current_s90 else None,
             )
-            for retrievability, current_interval, current_s90, unrounded in outputs
+            for curve_retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     @property
@@ -21388,10 +21391,10 @@ def _rwkv_review_reschedule_items_for_deck(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -21661,10 +21664,10 @@ def _rwkv_review_reschedule_items_from_input_build(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -22180,7 +22183,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
     *,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
 ) -> list[RwkvReviewPrediction | None] | None | _ResidentIntervalsUnavailable:
-    """Query-only current interval and S90 straight from the resident state.
+    """Current interval and S90 from the curve RWKV stored at each card's
+    last answered review (spec sched.rwkv-curve-reschedule).
 
     Used by rescheduling, which needs nothing else. Returns the
     `_RESIDENT_INTERVALS_UNAVAILABLE` sentinel when the backend cannot do it,
@@ -22211,8 +22215,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
         if predictions is None:
             return _RESIDENT_INTERVALS_UNAVAILABLE
         logger.debug(
-            "RWKV review inputs predicted from resident state (current intervals "
-            "only): inputs=%s elapsed_ms=%.1f",
+            "RWKV current intervals read from the stored curves: inputs=%s "
+            "elapsed_ms=%.1f",
             len(inputs_by_card_id),
             (time.monotonic() - start) * 1000,
         )
