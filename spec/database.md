@@ -98,7 +98,8 @@ DB proxy (`col.db.execute`, `scalar`, `all`, `first`, `list`,
 `executemany`), the proxy classifies it by what SQLite reports for the
 prepared statement, never by its text. A statement is a read when SQLite
 reports that it changes nothing in the database (`sqlite3_stmt_readonly`)
-**and** it returns rows. A read keeps the Undo step the user has (for
+**and** it has a result set: result columns, which the prepared statement
+has before it runs. A read that matches no row is still a read. A read keeps the Undo step the user has (for
 example "Undo Answer Card"), keeps the study queues, and does not mark the
 collection modified. Every other statement is a write: it drops the Undo
 step and the study queues, and the next commit sets the collection's
@@ -106,7 +107,7 @@ modification time, as upstream Anki does for every write. So `WITH ...
 SELECT`, `PRAGMA table_info(...)` and `VALUES (...)` are reads, and
 `WITH ... DELETE`, `WITH ... UPDATE`, `WITH ... INSERT` and
 `INSERT ... RETURNING` are writes. `SAVEPOINT`, `RELEASE`, `BEGIN`, `COMMIT`,
-`ROLLBACK`, `ATTACH` and `DETACH` return no rows, so they are writes too,
+`ROLLBACK`, `ATTACH` and `DETACH` have no result set, so they are writes too,
 although SQLite calls them read-only: they change what the connection sees.
 A statement that SQLite cannot prepare returns its error and changes
 nothing.

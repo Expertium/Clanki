@@ -168,10 +168,12 @@ fn update_state_after_modification(col: &mut Collection, sql: &str) -> Result<()
 }
 
 /// True if the statement only reads: SQLite reports that it changes nothing
-/// in the database (`sqlite3_stmt_readonly`), and it returns rows. The second
-/// half keeps the statements SQLite also calls read-only but that change what
-/// the collection holds or sees (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE,
-/// ATTACH, DETACH): none of them returns rows. The text of the statement is
+/// in the database (`sqlite3_stmt_readonly`), and it has a result set (result
+/// columns, known from the prepared statement before it runs; a read that
+/// matches no row is still a read). The second half keeps the statements
+/// SQLite also calls read-only but that change what the collection holds or
+/// sees (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE, ATTACH, DETACH): none of
+/// them has result columns. The text of the statement is
 /// not looked at, so `WITH ... SELECT` is a read and `WITH ... DELETE` is a
 /// write (spec database.dbproxy-read-only).
 ///
@@ -301,6 +303,9 @@ mod test {
              SELECT i FROM n",
             "pragma table_info(cards)",
             "values (1), (2)",
+            // a result set with no rows: still a read
+            "select id from cards where 0",
+            "with eligible as (select id, cid from revlog where 0) select id, cid from eligible",
         ] {
             assert!(kept_as_a_read(sql)?, "{sql}");
         }
