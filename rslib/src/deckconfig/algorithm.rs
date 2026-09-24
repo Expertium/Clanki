@@ -138,6 +138,10 @@ impl Collection {
             let configs = self.storage.get_deck_config_map()?;
             let entries = self.memory_state_entries_for_presets(&configs, false)?;
             self.update_memory_state(entries)?;
+            // every memory state now comes from the FSRS-7 parameters, which
+            // is all the one-time FSRS-7 migration would compute again
+            // (spec sched.fsrs7-only)
+            self.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
         }
         Ok(())
     }
@@ -388,6 +392,9 @@ mod test {
         let after = col.get_first_card();
         assert!(after.memory_state.is_some());
         assert_eq!(after.due, before.due);
+        // one replay: the FSRS-7 migration of the same open computes nothing
+        // again
+        assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
         // the next open has nothing to do
         assert!(!col.enforce_scheduling_algorithm()?);
         Ok(())
