@@ -284,8 +284,15 @@ def test_older_reviews_are_counted_once_and_newer_ones_every_time(
             col.add_note(note, deck)
             card_ids += note.card_ids()
 
+        used_ids: set[int] = set()
+
         def add_review(card_id: int, days_ago: float, ease: int = 3) -> None:
             review_id = int(time.time() * 1000) - int(days_ago * DAY * 1000)
+            # two reviews "12.5 days ago" in the same millisecond would share
+            # an id, which the review log refuses (seen on the macOS runner)
+            while review_id in used_ids:
+                review_id -= 1
+            used_ids.add(review_id)
             col.db.execute(
                 "INSERT INTO revlog VALUES (?, ?, -1, ?, 1, 0, 2500, 1000, 1)",
                 review_id,
