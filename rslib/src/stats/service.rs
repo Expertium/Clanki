@@ -59,6 +59,19 @@ impl crate::services::BackendStatsService for Backend {
         Ok(response)
     }
 
+    /// Total Knowledge's RWKV replay: the review log read in parts, the rest
+    /// built with the collection free (spec ui.stats-total-knowledge).
+    fn total_knowledge_rwkv_replay(
+        &self,
+        input: anki_proto::stats::TotalKnowledgeRwkvReplayRequest,
+    ) -> error::Result<anki_proto::stats::TotalKnowledgeRwkvReplayResponse> {
+        super::total_knowledge_rwkv::total_knowledge_rwkv_replay(
+            input,
+            crate::scheduler::rwkv::RWKV_FINGERPRINT_PART_ROWS,
+            &mut |step| self.with_col(|col| step(col)),
+        )
+    }
+
     /// Reads both models' cached per-review predictions (spec
     /// ui.stats-model-metrics).
     fn review_predictions(

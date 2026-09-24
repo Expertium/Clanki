@@ -82,6 +82,7 @@ use crate::scheduler::rwkv::rwkv_historical_review_fingerprint_in_parts;
 use crate::scheduler::rwkv::rwkv_historical_review_rows_in_parts;
 use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::rwkv::RWKV_FINGERPRINT_PART_ROWS;
+use crate::scheduler::rwkv_inputs::rwkv_historical_review_inputs;
 use crate::scheduler::states::CardState;
 use crate::scheduler::states::LearnState;
 use crate::scheduler::states::SchedulingStates;
@@ -1270,6 +1271,15 @@ impl crate::services::BackendSchedulerService for Backend {
             out.learning_starts.push(u8::from(row.is_learning_start));
         }
         Ok(out)
+    }
+
+    fn rwkv_historical_review_inputs(
+        &self,
+        input: scheduler::RwkvHistoricalReviewInputsRequest,
+    ) -> Result<scheduler::RwkvHistoricalReviewInputsResponse> {
+        rwkv_historical_review_inputs(input, RWKV_FINGERPRINT_PART_ROWS, &mut |step| {
+            self.with_col(|col| step(col))
+        })
     }
 
     /// Holds the collection for one part of the review log at a time, so a

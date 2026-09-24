@@ -32,6 +32,12 @@ service BackendStatsService {
   // then replays FSRS-7 with the collection free.
   rpc ReviewPredictions(ReviewPredictionsRequest)
       returns (ReviewPredictionsResponse);
+  // Total Knowledge under RWKV (spec ui.stats-total-knowledge): what the
+  // job's day loop reads, built from the whole history's replay inputs
+  // (scheduler.RwkvHistoricalReviewInputs). Fails where those inputs would;
+  // the job then builds them in Python.
+  rpc TotalKnowledgeRwkvReplay(TotalKnowledgeRwkvReplayRequest)
+      returns (TotalKnowledgeRwkvReplayResponse);
 }
 
 message ReviewLogs {
@@ -177,6 +183,41 @@ message TotalKnowledgeRwkvRequest {
   string search = 1;
   // RWKV-Curve's head; RWKV-Instant's otherwise.
   bool curve = 2;
+}
+
+message TotalKnowledgeRwkvReplayRequest {
+  // The searched cards, one little-endian int64 each.
+  bytes card_ids = 1;
+  // As in scheduler.RwkvHistoricalReviewInputsRequest.
+  map<string, int64> stable_preset_ids = 2;
+  map<int64, bool> first_review_uses_creation_by_config_id = 3;
+  // The job's scheduler day and next day start (seconds), which date the
+  // resets.
+  int64 today = 4;
+  int64 next_day_at = 5;
+  // The days to give `_history_digest` of.
+  repeated int64 digest_days = 6;
+}
+
+// The int64 columns are little-endian, one value per entry.
+message TotalKnowledgeRwkvReplayResponse {
+  // The first day of the loop (a scheduler day); the loop runs through
+  // today.
+  int64 first_day = 1;
+  uint64 review_count = 2;
+  // For each day of the loop: how many reviews end by it, and how many
+  // changes.
+  bytes day_review_ends = 3;
+  bytes day_change_ends = 4;
+  // Each review of the replay as a packed warm-up row (95 bytes).
+  bytes packed_rows = 5;
+  // Each change: the card, the index of its rating in the replay (-1: a
+  // reset), and the day of the card's next change.
+  bytes change_card_ids = 6;
+  bytes change_review_indexes = 7;
+  bytes change_until_days = 8;
+  // One per digest day, hex.
+  repeated string digests = 9;
 }
 
 message TotalKnowledgeRwkvJob {

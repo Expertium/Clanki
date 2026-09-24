@@ -1358,6 +1358,16 @@ impl SqliteStorage {
         Ok(max_rows.map_or(true, |max_rows| read < max_rows))
     }
 
+    /// Every reset's review id and card (a Forget row: `type` 4 with no ease
+    /// factor), as Total Knowledge reads them (spec ui.stats-total-knowledge).
+    pub(crate) fn rwkv_reset_review_ids_and_cards(&self) -> Result<Vec<(i64, i64)>> {
+        self.db
+            .prepare("select id, cid from revlog where type = 4 and factor = 0")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
+    }
+
     /// Which of the reviews the caller asks to ignore still belong to the
     /// rated history, in id order.
     fn rwkv_active_ignored_review_ids(&self, ignored_review_ids: &[RevlogId]) -> Result<Vec<i64>> {

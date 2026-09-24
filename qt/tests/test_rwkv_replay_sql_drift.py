@@ -108,8 +108,15 @@ class _DriftingDB:
 
 
 def test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the Python query, which the backend's build of the whole history
+    # would otherwise stand in for
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_backend_historical_rwkv_review_inputs",
+        lambda *_args, **_kwargs: None,
+    )
     col = Collection(str(tmp_path / "rwkv-replay-drift.anki2"))
     try:
         _add_forgotten_review_only_card(col)

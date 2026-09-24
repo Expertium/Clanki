@@ -201,6 +201,15 @@ _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
+# The input layout the state cache's states were replayed with: which
+# feature encoder turned the review stream into the model's inputs
+# (rslib/src/scheduler/rwkv_inputs). Today's is the published model's. A
+# model with another layout names its own, so that a cache replayed with one
+# encoder is rebuilt rather than read by a model that expects another. A
+# cache written before the tag existed holds the published layout.
+_RWKV_PUBLISHED_FEATURE_LAYOUT = "published-92"
+_RWKV_FEATURE_LAYOUT = _RWKV_PUBLISHED_FEATURE_LAYOUT
+_RWKV_FEATURE_LAYOUT_KEY = "featureLayout"
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
 # which model, source format and replay semantics the last full recording
 # pass ran with (spec sched.rwkv-recordings-automatic)
@@ -17055,6 +17064,7 @@ def _rwkv_state_cache_metadata_base(
         "dynamicPresetReplay": _rwkv_dynamic_preset_replay_enabled_for_collection(
             reviewer
         ),
+        _RWKV_FEATURE_LAYOUT_KEY: _RWKV_FEATURE_LAYOUT,
     }
     if (collection_mod := _rwkv_collection_modified(reviewer)) is not None:
         metadata[_RWKV_STATE_CACHE_COLLECTION_MOD_KEY] = collection_mod
@@ -17159,7 +17169,11 @@ def _rwkv_state_cache_metadata_compatible(
         _RWKV_STATE_CACHE_LEGACY_JSON_VERSION,
     ):
         return False
-    if metadata.get("presetReplaySemantics") != _RWKV_PRESET_REPLAY_SEMANTICS_VERSION:
+    if (
+        metadata.get("presetReplaySemantics") != _RWKV_PRESET_REPLAY_SEMANTICS_VERSION
+        or metadata.get(_RWKV_FEATURE_LAYOUT_KEY, _RWKV_PUBLISHED_FEATURE_LAYOUT)
+        != _RWKV_FEATURE_LAYOUT
+    ):
         return False
     if metadata.get("collection") != _rwkv_collection_cache_key(reviewer):
         return False
@@ -18440,18 +18454,9 @@ def _replay_rwkv_cache_reviews(
         warm_up(reviews)
 
 
-def _rwkv_historical_review_fingerprint(
-    reviewer: object,
-    *,
-    ignored_review_ids: Sequence[int] = (),
-    expected_identity: _RwkvHistoryPrefixIdentity | None = None,
-) -> _RwkvHistoricalReviewFingerprint | None:
-    col = _collection(reviewer)
-    backend = getattr(col, "_backend", None)
-    fingerprint = getattr(backend, "rwkv_historical_review_fingerprint", None)
-    if not callable(fingerprint):
-        return None
-
+def _rwkv_stable_preset_ids(reviewer: object) -> dict[str, int]:
+    """The stable id of every add-on preset the overlay names, for the
+    backend, which cannot compute `_stable_preset_id` itself."""
     stable_preset_ids: dict[str, int] = {}
     overlay = _fsrs_preset_overlay_config(reviewer)
     if overlay is not None:
@@ -18467,16 +18472,36 @@ def _rwkv_historical_review_fingerprint(
                 )
                 if isinstance(preset_id, str) and preset_id:
                     stable_preset_ids[preset_id] = _stable_preset_id(preset_id)
+    return stable_preset_ids
 
+
+def _rwkv_first_review_uses_creation_by_config_id(
+    reviewer: object,
+) -> dict[int, bool]:
+    """`_rwkv_first_review_elapsed_config_key` for the backend: whether each
+    preset measures a card's first review from the card's creation."""
+    return {
+        config_id: uses_creation
+        for config_id, uses_creation in _rwkv_first_review_elapsed_config_key(reviewer)
+        if isinstance(config_id, int) and isinstance(uses_creation, bool)
+    }
+
+
+def _rwkv_historical_review_fingerprint(
+    reviewer: object,
+    *,
+    ignored_review_ids: Sequence[int] = (),
+    expected_identity: _RwkvHistoryPrefixIdentity | None = None,
+) -> _RwkvHistoricalReviewFingerprint | None:
+    col = _collection(reviewer)
+    backend = getattr(col, "_backend", None)
+    fingerprint = getattr(backend, "rwkv_historical_review_fingerprint", None)
+    if not callable(fingerprint):
+        return None
+
+    stable_preset_ids = _rwkv_stable_preset_ids(reviewer)
     start = time.monotonic()
     try:
-        first_review_uses_creation_by_config_id = {
-            config_id: uses_creation
-            for config_id, uses_creation in _rwkv_first_review_elapsed_config_key(
-                reviewer
-            )
-            if isinstance(config_id, int) and isinstance(uses_creation, bool)
-        }
         response = fingerprint(
             ignored_review_ids=ignored_review_ids,
             dynamic_preset_replay=(
@@ -18484,7 +18509,7 @@ def _rwkv_historical_review_fingerprint(
             ),
             stable_preset_ids=stable_preset_ids,
             first_review_uses_creation_by_config_id=(
-                first_review_uses_creation_by_config_id
+                _rwkv_first_review_uses_creation_by_config_id(reviewer)
             ),
             expected_identity=(
                 scheduler_pb2.RwkvHistoricalReviewIdentity(
@@ -18678,7 +18703,6 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
 
     start = time.monotonic()
     steps = _RwkvPreparationSteps(between_steps)
-    requested_deck_id = deck_id
     previous_ids = dict(previous_review_id_by_card or {})
     previous_intervals = dict(previous_interval_days_by_card or {})
     review_counts = dict(review_count_by_card or {})
@@ -18720,7 +18744,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                 "last_review_id=%s review_count=%s deck_id=%s elapsed_ms=%.1f",
                 after_review_id,
                 review_count,
-                requested_deck_id,
+                deck_id,
                 (time.monotonic() - start) * 1000,
             )
             return RwkvHistoricalReviewInputs(
@@ -18731,7 +18755,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                 review_count_by_card=review_counts,
                 last_review_id=after_review_id,
                 review_count=review_count,
-                deck_id=requested_deck_id,
+                deck_id=deck_id,
                 history_hash=history_hash,
                 replay_key=replay_key,
             )
@@ -18748,10 +18772,37 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             review_count_by_card=review_counts,
             last_review_id=after_review_id or 0,
             review_count=sum(review_counts.values()),
-            deck_id=requested_deck_id,
+            deck_id=deck_id,
             history_hash=history_hash,
             replay_key=replay_key,
         )
+
+    # The whole history from nothing is built by the backend
+    # (rslib/src/scheduler/rwkv_inputs): the same inputs, without holding
+    # the GIL for every review. A read after a cutoff, of a deck, from a
+    # previous state or with dynamic preset replay stays here.
+    if (
+        after_review_id is None
+        and deck_id is None
+        and previous_review_id_by_card is None
+        and previous_interval_days_by_card is None
+        and review_count_by_card is None
+        and previous_history_hash is None
+        and (
+            built := _backend_historical_rwkv_review_inputs(
+                reviewer,
+                replay_key=replay_key,
+                first_review_elapsed_source=first_review_elapsed_source,
+                ignored_review_ids=ignored_review_ids,
+                hash_history=hash_history,
+                prepare_recovery_checkpoint=prepare_recovery_checkpoint,
+                steps=steps,
+                progress=progress,
+            )
+        )
+        is not None
+    ):
+        return built
 
     rows_start = time.monotonic()
     # An incremental read already holds the counts of everything before the
@@ -18925,7 +18976,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                     review_count_by_card=dict(review_counts),
                     last_review_id=review_ids[-1],
                     review_count=checkpoint_review_count,
-                    deck_id=requested_deck_id,
+                    deck_id=deck_id,
                     history_hash=history_hasher.hexdigest(),
                     replay_key=replay_key,
                     ignored_review_ids=active_ignored_review_ids,
@@ -19057,7 +19108,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
         deck_config_elapsed_ms,
         preset_elapsed_ms,
         (time.monotonic() - start) * 1000,
-        requested_deck_id,
+        deck_id,
     )
     history_hash = history_hasher.hexdigest()
     return RwkvHistoricalReviewInputs(
@@ -19068,7 +19119,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
         review_count_by_card=review_counts,
         last_review_id=last_review_id,
         review_count=review_count,
-        deck_id=requested_deck_id,
+        deck_id=deck_id,
         history_hash=history_hash,
         replay_key=replay_key,
         ignored_review_ids=active_ignored_review_ids,
@@ -19391,6 +19442,217 @@ def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | N
         end = start + BACKEND_ROWS_CHUNK
         whole.extend(zip(*(column[start:end].tolist() for column in columns)))
     return whole
+
+
+# the backend's per-review int64 columns (RwkvHistoricalReviewInputsResponse),
+# in the order `_backend_historical_rwkv_review_inputs` unpacks them
+_BACKEND_INPUT_COLUMNS = (
+    "review_ids",
+    "card_ids",
+    "note_ids",
+    "deck_ids",
+    "preset_ids",
+    "eases",
+    "durations_millis",
+    "card_types",
+    "review_kinds",
+    "interval_days",
+    "ease_factors",
+    "day_offsets",
+    "elapsed_days",
+    "elapsed_seconds",
+)
+_BACKEND_FIRST_REVIEW_ELAPSED_SOURCES = {
+    RwkvFirstReviewElapsedSource.DECK_CONFIG: (
+        scheduler_pb2.RwkvHistoricalReviewInputsRequest.DECK_CONFIG
+    ),
+    RwkvFirstReviewElapsedSource.CARD_CREATION: (
+        scheduler_pb2.RwkvHistoricalReviewInputsRequest.CARD_CREATION
+    ),
+    RwkvFirstReviewElapsedSource.MISSING: (
+        scheduler_pb2.RwkvHistoricalReviewInputsRequest.MISSING
+    ),
+}
+
+
+def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
+    reviewer: object,
+    *,
+    replay_key: str,
+    first_review_elapsed_source: RwkvFirstReviewElapsedSource,
+    ignored_review_ids: AbstractSet[int],
+    hash_history: bool,
+    prepare_recovery_checkpoint: bool,
+    steps: _RwkvPreparationSteps,
+    progress: RwkvStateCacheProgressCallback | None,
+) -> RwkvHistoricalReviewInputs | None:
+    """`_historical_rwkv_review_inputs` of the whole history from nothing,
+    built by the backend (rslib/src/scheduler/rwkv_inputs): the same inputs,
+    value for value. Python only turns the backend's columns into review
+    inputs, in chunks. None where the backend does not build them -- dynamic
+    preset replay, or a collection it would read another way than Python
+    does; the caller then builds them itself."""
+    col = _collection(reviewer)
+    build = getattr(
+        getattr(col, "_backend", None), "rwkv_historical_review_inputs", None
+    )
+    if (
+        not callable(build)
+        or sys.byteorder != "little"
+        or _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
+    ):
+        return None
+    # a caller that has already stopped does not start the build
+    steps.step()
+    try:
+        response = build(
+            ignored_review_ids=sorted(ignored_review_ids),
+            stable_preset_ids=_rwkv_stable_preset_ids(reviewer),
+            first_review_uses_creation_by_config_id=(
+                _rwkv_first_review_uses_creation_by_config_id(reviewer)
+            ),
+            first_review_elapsed_source=(
+                _BACKEND_FIRST_REVIEW_ELAPSED_SOURCES[first_review_elapsed_source]
+            ),
+            hash_history=hash_history,
+            recovery_checkpoint_max_age_millis=(
+                _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+                if prepare_recovery_checkpoint
+                else 0
+            ),
+        )
+        columns = [
+            memoryview(getattr(response, name)).cast("q")
+            for name in _BACKEND_INPUT_COLUMNS
+        ]
+        cards = memoryview(response.cards).cast("q").tolist()
+    except Exception:
+        logger.debug("the backend did not build the RWKV replay inputs", exc_info=True)
+        return None
+    steps.step()
+
+    total = len(columns[0])
+    started_at = time.monotonic()
+    _report_rwkv_review_input_prepare_progress(
+        progress, processed=0, total=total, started_at=started_at
+    )
+    reviews: list[RwkvReviewInput] = []
+    review_ids: list[int] = []
+    for start in range(0, total, BACKEND_ROWS_CHUNK):
+        end = start + BACKEND_ROWS_CHUNK
+        chunk = [column[start:end].tolist() for column in columns]
+        review_ids.extend(chunk[0])
+        reviews.extend(_review_inputs_from_backend_columns(chunk))
+        _report_rwkv_review_input_prepare_progress(
+            progress,
+            processed=min(end, total),
+            total=total,
+            started_at=started_at,
+        )
+        steps.rows(len(chunk[0]))
+
+    def per_card(prefix: str, card_count: int | None = None) -> list[dict[int, int]]:
+        return [
+            dict(
+                zip(
+                    cards[:card_count],
+                    memoryview(getattr(response, f"{prefix}{name}")).cast("q").tolist(),
+                    strict=True,
+                )
+            )
+            for name in (
+                "card_previous_review_ids",
+                "card_previous_interval_days",
+                "card_review_counts",
+            )
+        ]
+
+    active_ignored_review_ids = tuple(response.active_ignored_review_ids)
+    prepared_checkpoint_histories: dict[int, RwkvHistoricalReviewInputs] = {}
+    if checkpoint_review_count := response.checkpoint_review_count:
+        checkpoint_ids, checkpoint_intervals, checkpoint_counts = per_card(
+            "checkpoint_",
+            len(response.checkpoint_card_review_counts) // 8,
+        )
+        prepared_checkpoint_histories[checkpoint_review_count] = (
+            RwkvHistoricalReviewInputs(
+                reviews=[],
+                review_ids=[],
+                previous_review_id_by_card=checkpoint_ids,
+                previous_interval_days_by_card=checkpoint_intervals,
+                review_count_by_card=checkpoint_counts,
+                last_review_id=response.checkpoint_last_review_id,
+                review_count=checkpoint_review_count,
+                history_hash=response.checkpoint_history_hash,
+                replay_key=replay_key,
+                ignored_review_ids=active_ignored_review_ids,
+            )
+        )
+    previous_ids, previous_intervals, review_counts = per_card("")
+    return RwkvHistoricalReviewInputs(
+        reviews=reviews,
+        review_ids=review_ids,
+        previous_review_id_by_card=previous_ids,
+        previous_interval_days_by_card=previous_intervals,
+        review_count_by_card=review_counts,
+        last_review_id=response.last_review_id,
+        review_count=response.review_count,
+        history_hash=response.history_hash,
+        replay_key=replay_key,
+        ignored_review_ids=active_ignored_review_ids,
+        prepared_checkpoint_histories=prepared_checkpoint_histories,
+    )
+
+
+def _review_inputs_from_backend_columns(
+    chunk: Sequence[Sequence[int]],
+) -> list[RwkvReviewInput]:
+    """The review inputs of one chunk of the backend's columns (all of
+    `_BACKEND_INPUT_COLUMNS`, the review ids included)."""
+    inputs: list[RwkvReviewInput] = []
+    for (
+        _review_id,
+        card_id,
+        note_id,
+        deck_id,
+        preset_id,
+        ease,
+        duration_millis,
+        card_type,
+        review_kind,
+        interval_days,
+        ease_factor,
+        day_offset,
+        elapsed_days,
+        elapsed_seconds,
+    ) in zip(*chunk, strict=True):
+        state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
+        inputs.append(
+            RwkvReviewInput(
+                identity=RwkvReviewIdentity(
+                    card_id=card_id,
+                    note_id=note_id,
+                    deck_id=deck_id,
+                    preset_id=preset_id,
+                ),
+                is_query=False,
+                ease=ease,
+                duration_millis=duration_millis,
+                card_type=card_type,
+                card_queue=_historical_review_queue(review_kind),
+                card_due=None,
+                interval_days=interval_days,
+                ease_factor=ease_factor,
+                reps=None,
+                lapses=None,
+                day_offset=day_offset,
+                current_state_kind=state_kind,
+                current_normal_state_kind=normal_state_kind,
+                current_elapsed_days=elapsed_days,
+                current_elapsed_seconds=elapsed_seconds,
+            )
+        )
+    return inputs
 
 
 # how many card-id ranges a stoppable whole-history query runs in. Each range

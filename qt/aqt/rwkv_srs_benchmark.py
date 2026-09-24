@@ -777,6 +777,31 @@ class _RustRwkvRuntime:
                     )
                 processed += len(chunk)
 
+    def warm_up_packed_rows_in_place(self, rows: bytes, count: int) -> None:
+        """`warm_up_reviews_in_place` for `count` reviews already packed
+        (`_packed_review_input_row`'s rows, one after another): the same
+        chunks, the same calls."""
+
+        if count == 0:
+            return
+        backend_chunk_size = _rust_warmup_chunk_size(
+            count,
+            record_predictions=False,
+        )
+        width = _PACKED_PREDICTION_REQUEST_ROW.size
+        processed = 0
+        with self._locked_process():
+            while processed < count:
+                chunk = min(backend_chunk_size, count - processed)
+                self._process.warm_up_reviews_packed(
+                    _PACKED_PREDICTION_REQUEST_HEADER.pack(
+                        _PACKED_WARM_UP_REVIEW_MAGIC, chunk
+                    )
+                    + rows[processed * width : (processed + chunk) * width],
+                    False,
+                )
+                processed += chunk
+
     def reset_warm_up_state(self) -> None:
         reset = getattr(self._process, "reset_warm_up_state", None)
         if callable(reset):
@@ -1757,7 +1782,15 @@ class MemorisedDayRows:
     again goes to the end. So the sum over the rows keeps its old order.
     """
 
-    __slots__ = ("_rows", "_inputs", "_card_ids", "_index", "_unpacked", "_removed")
+    __slots__ = (
+        "_rows",
+        "_inputs",
+        "_card_ids",
+        "_index",
+        "_unpacked",
+        "_removed",
+        "_prepacked",
+    )
 
     def __init__(self) -> None:
         # a row is None when its card is gone, or when the input is new and
@@ -1768,6 +1801,8 @@ class MemorisedDayRows:
         self._index: dict[int, int] = {}
         self._unpacked: list[int] = []
         self._removed = 0
+        # a row came packed (`set_row`): it has no input to give back
+        self._prepacked = False
 
     def __len__(self) -> int:
         return len(self._index)
@@ -1786,6 +1821,21 @@ class MemorisedDayRows:
             self._rows[position] = None
             self._inputs[position] = review_input
             self._unpacked.append(position)
+
+    def set_row(self, card_id: int, row: bytes) -> None:
+        """`set` for a rating that comes packed already
+        (`_packed_review_input_row(review_input)`)."""
+
+        self._prepacked = True
+        position = self._index.get(card_id)
+        if position is None:
+            self._index[card_id] = len(self._rows)
+            self._rows.append(row)
+            self._inputs.append(None)
+            self._card_ids.append(card_id)
+        else:
+            self._rows[position] = row
+            self._inputs[position] = None
 
     def remove(self, card_id: int) -> None:
         """Drop the card's row. The later rows keep their places, and the
@@ -1849,6 +1899,8 @@ class MemorisedDayRows:
     def review_inputs(self) -> list[RwkvReviewInput]:
         """The cards' rating inputs, in the order `card_ids` gives."""
 
+        if self._prepacked:
+            raise ValueError("a row set packed has no rating input")
         return [
             review_input for review_input in self._inputs if review_input is not None
         ]
