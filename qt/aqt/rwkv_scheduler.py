@@ -200,7 +200,11 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
+# Part of every state cache's and every recording's identity, so a change
+# here rebuilds both. 4: the reviews of deleted cards are replayed and id
+# codes are a function of the id (spec sched.rwkv-replay-deleted-cards,
+# sched.rwkv-id-codes).
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 4
 # The input layout the state cache's states were replayed with: which
 # feature encoder turned the review stream into the model's inputs
 # (rslib/src/scheduler/rwkv_inputs). Today's is the published model's. A
@@ -17746,8 +17750,9 @@ def _active_ignored_review_ids(
     ignored_review_ids: AbstractSet[int],
 ) -> tuple[int, ...]:
     """Which of the reviews the state cache ignores still belong to the rated
-    history, in id order: a rated review of a card that exists, wherever its
-    card's start row is. The backend fingerprint's
+    history, in id order: a rated review, of a card that exists or not (spec
+    sched.rwkv-replay-deleted-cards), wherever its card's start row is. The
+    backend fingerprint's
     `rwkv_active_ignored_review_ids` (`rslib/src/storage/revlog/mod.rs`),
     clause for clause, because the state cache stores these ids and the
     fingerprint compares them with its own."""
@@ -17769,7 +17774,6 @@ def _active_ignored_review_ids(
             f"""
 select r.id
 from revlog r
-join cards c on c.id = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
   and r.id in {ids2str(valid_ids)}
 order by r.id
@@ -17989,8 +17993,11 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     preset_id_by_card.update(
         _resolved_fsrs_preset_ids(
             reviewer,
+            # a card that is gone has no preset to resolve
             _historical_rwkv_review_card_ids(
-                row for _index, row, _state in retained_rows()
+                row
+                for _index, row, _state in retained_rows()
+                if len(row) >= 4 and row[3] is not None
             ),
         )
     )
@@ -18051,11 +18058,13 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             interval_days,
             ease_factor,
         ) = row[:9]
+        # a deleted card's review has no note and no deck (spec
+        # sched.rwkv-replay-deleted-cards)
         if not (
             isinstance(review_id, int)
             and isinstance(card_id, int)
-            and isinstance(note_id, int)
-            and isinstance(row_deck_id, int)
+            and (note_id is None or isinstance(note_id, int))
+            and (row_deck_id is None or isinstance(row_deck_id, int))
             and isinstance(ease, int)
             and isinstance(duration_millis, int)
             and isinstance(review_kind, int)
@@ -18136,8 +18145,11 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             interval_days=historical_interval_days,
             review_count=review_count_so_far,
         )
-        if historical_preset_id is not None:
-            base_preset_id: int | str | None = historical_preset_id
+        if row_deck_id is None:
+            # a card that is gone has no deck, so no preset
+            base_preset_id: int | str | None = None
+        elif historical_preset_id is not None:
+            base_preset_id = historical_preset_id
             historical_preset_rule_matches += 1
         else:
             base_preset_id = preset_id_by_card[card_id]
@@ -18576,17 +18588,28 @@ def _backend_historical_rwkv_review_rows(
             memoryview(getattr(rows, name)).cast("q") for name in _BACKEND_INT64_COLUMNS
         ]
         columns.append(memoryview(rows.learning_starts).cast("B"))
+        deleted = memoryview(rows.deleted_cards).cast("B")
     except Exception:
         logger.exception("the backend could not read the RWKV replay rows")
         return None
     count = len(columns[0])
-    if any(len(column) != count for column in columns):
+    if any(len(column) != count for column in (*columns, deleted)):
         logger.error("the backend's RWKV replay columns differ in length")
         return None
     whole: list[Sequence[object]] = []
     for start in range(0, count, BACKEND_ROWS_CHUNK):
         end = start + BACKEND_ROWS_CHUNK
-        whole.extend(zip(*(column[start:end].tolist() for column in columns)))
+        rows_of_chunk = zip(*(column[start:end].tolist() for column in columns))
+        flags = deleted[start:end]
+        if any(flags):
+            # a card that is gone has no note and no deck (spec
+            # sched.rwkv-replay-deleted-cards)
+            whole.extend(
+                (row[0], row[1], None, None, *row[4:]) if flag else row
+                for row, flag in zip(rows_of_chunk, flags, strict=True)
+            )
+        else:
+            whole.extend(rows_of_chunk)
     return whole
 
 
@@ -18671,6 +18694,7 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
             memoryview(getattr(response, name)).cast("q")
             for name in _BACKEND_INPUT_COLUMNS
         ]
+        deleted = memoryview(response.deleted_cards).cast("B")
         cards = memoryview(response.cards).cast("q").tolist()
     except Exception:
         logger.debug("the backend did not build the RWKV replay inputs", exc_info=True)
@@ -18680,6 +18704,9 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
     steps.step()
 
     total = len(columns[0])
+    if len(deleted) != total:
+        logger.error("the backend's RWKV replay input columns differ in length")
+        return None
     started_at = time.monotonic()
     _report_rwkv_review_input_prepare_progress(
         progress, processed=0, total=total, started_at=started_at
@@ -18690,7 +18717,7 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
         end = start + BACKEND_ROWS_CHUNK
         chunk = [column[start:end].tolist() for column in columns]
         review_ids.extend(chunk[0])
-        reviews.extend(_review_inputs_from_backend_columns(chunk))
+        reviews.extend(_review_inputs_from_backend_columns(chunk, deleted[start:end]))
         _report_rwkv_review_input_prepare_progress(
             progress,
             processed=min(end, total),
@@ -18764,7 +18791,12 @@ def _remember_backend_preset_ids(
     Python build would have used that one, so the caller builds the inputs
     itself."""
     cache = _resolved_preset_id_cache.setdefault(_preset_id_cache_key(reviewer), {})
-    pairs = list(zip(card_ids, preset_ids, strict=True))
+    # a card that is gone has no preset, which the backend sends as ""
+    pairs = [
+        (card_id, preset_id)
+        for card_id, preset_id in zip(card_ids, preset_ids, strict=True)
+        if preset_id
+    ]
     if any(cache.get(card_id, preset_id) != preset_id for card_id, preset_id in pairs):
         return False
     for card_id, preset_id in pairs:
@@ -18774,9 +18806,12 @@ def _remember_backend_preset_ids(
 
 def _review_inputs_from_backend_columns(
     chunk: Sequence[Sequence[int]],
+    deleted: Sequence[int],
 ) -> list[RwkvReviewInput]:
     """The review inputs of one chunk of the backend's columns (all of
-    `_BACKEND_INPUT_COLUMNS`, the review ids included)."""
+    `_BACKEND_INPUT_COLUMNS`, the review ids included). `deleted` holds 1
+    for a review of a card that is gone, which has no note, deck or preset
+    (spec sched.rwkv-replay-deleted-cards)."""
     inputs: list[RwkvReviewInput] = []
     for (
         _review_id,
@@ -18793,15 +18828,20 @@ def _review_inputs_from_backend_columns(
         day_offset,
         elapsed_days,
         elapsed_seconds,
-    ) in zip(*chunk, strict=True):
+        card_is_deleted,
+    ) in zip(*chunk, deleted, strict=True):
         state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
         inputs.append(
             RwkvReviewInput(
-                identity=RwkvReviewIdentity(
-                    card_id=card_id,
-                    note_id=note_id,
-                    deck_id=deck_id,
-                    preset_id=preset_id,
+                identity=(
+                    RwkvReviewIdentity(card_id=card_id)
+                    if card_is_deleted
+                    else RwkvReviewIdentity(
+                        card_id=card_id,
+                        note_id=note_id,
+                        deck_id=deck_id,
+                        preset_id=preset_id,
+                    )
                 ),
                 is_query=False,
                 ease=ease,
@@ -18949,7 +18989,9 @@ with eligible as (
     cast(r.factor as integer) as ease_factor,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  -- a review of a card that is gone stays, with no note and no deck (spec
+  -- sched.rwkv-replay-deleted-cards); a deck clause leaves it out
+  left join cards c on c.id = r.cid
   where {_rwkv_historical_answer_sql_condition("r")}
     {ignored_clause}
     {deck_clause}
@@ -19077,7 +19119,7 @@ with eligible as (
     r.type,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  left join cards c on c.id = r.cid
   where {_rwkv_historical_answer_sql_condition("r")}
     {deck_clause}
 ), retained_starts as (

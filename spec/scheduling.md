@@ -823,7 +823,8 @@ For this rule an ignored review is not rated: it is never a learning start, and
 it does not separate two Learning runs. An ignored Forget row still cuts the
 history. The ignored reviews a history reports as active, which the state
 cache stores and the fingerprint compares, are the ignored reviews that are
-rated reviews of an existing card, wherever that card's start row is.
+rated reviews, of an existing card or a deleted one
+(`sched.rwkv-replay-deleted-cards`), wherever that card's start row is.
 **Why:** Andrew, 2026-09-24: "Yes, fix B-028". The RWKV session's reason:
 training's `filter_revlog` (button_chosen >= 1, not a filtered-deck reschedule
 with ease 0) runs before anything else, so a learning start is always a rated
@@ -848,6 +849,73 @@ again.
 `test_a_failed_save_of_new_ignored_reviews_keeps_memory_and_file_apart`,
 `test_a_failed_store_metadata_write_keeps_the_deltas_the_old_metadata_needs`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-replay-deleted-cards
+
+Given rated reviews of a card that no longer exists (its row is gone from the
+cards table, its review log rows are not), the RWKV replay keeps them in the
+history, in review-id order among the other reviews, under the same start-row
+rule (`sched.rwkv-replay-start-row`). Such a review has no note, no deck and
+no preset: the three "id is missing" inputs of the published model are 1, and
+the note, deck and preset streams it reads and advances are the one
+placeholder note, deck and preset that every review without an id shares
+(`ID_PLACEHOLDER`), each with a real recurrent state. It advances the card's
+own stream and every per-user count (reviews today, new cards today, reviews
+and new cards since the card's last review, the global stream) as any other
+review does. Under the default first-review source (the preset's setting),
+its first review measures no elapsed time from the card's creation, because
+the card has no preset to ask. Every read agrees: the
+backend fingerprint, the backend's replay rows and replay inputs, Total
+Knowledge, and the Python query (whole, in parts and after a review id); a
+read of one deck leaves them out, as they are in no deck.
+**Why:** Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule 1:
+the model's training kept these reviews. Its dataset builder never looks at
+the cards table and `data_processing.py` left-joins it, so a deleted card's
+reviews stay with note, deck and preset missing and the `*_id_is_nan` flags
+set (about 11% of training rows over seven sampled users; 23.8% of the rated
+rows in Andrew's collection). The shipped model's training cast the filled
+placeholder ids to int32, which saturated all of them to one value, so it
+learned one shared note, deck and preset entity for them. A replay that
+drops those reviews gives every later prediction a state training never
+produced. A future model trained with int64 ids (a note per deleted card)
+gets its own encoder and layout name.
+**Pinned by:** `a_deleted_cards_reviews_stay_in_the_replay_without_ids`
+(`rslib/src/scheduler/rwkv_inputs/mod.rs`),
+`rwkv_replay_read_matches_the_query_it_replaced`
+(`rslib/src/storage/revlog/mod.rs`),
+`feature_state_encodes_missing_ids_as_one_shared_placeholder`,
+`reviews_without_ids_share_one_placeholder_stream` (`rslib/src/rwkv/mod.rs`),
+`test_a_deleted_cards_reviews_are_replayed_without_ids`
+(`qt/tests/test_rwkv_replay_inputs_backend.py`) and
+`test_the_backend_reads_the_same_whole_history_rows_as_the_query`
+(`qt/tests/test_rwkv_replay_sql_drift.py`).
+
+## sched.rwkv-id-codes
+
+Given a card, note, deck or preset id, the RWKV model's code for that entity
+(12 values for a card or a note, 8 for a deck or a preset, each one of -1.5,
+-0.5, 0.5 and 1.5) is a function of the kind and the id alone: torch's
+`torch.randint(0, 4, (dim,), generator=g) - 1.5` with
+`g = torch.Generator().manual_seed(seed)`, where `seed` is the low 32 bits of
+splitmix64 of the id (as an unsigned 64-bit value) XOR the kind shifted left
+by 62 bits (card 0, note 1, deck 2, preset 3). The replay, a live answer, a
+query, a rebuild, the recording pass and Total Knowledge therefore give an
+entity the same code, whatever order they meet it in. A query (a prediction
+of a card that is not being answered) leaves the resident state exactly as it
+found it: it adds no code and changes no count. The codes are not saved with
+the state cache.
+**Why:** Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule 3.
+The codes used to come from one random stream in the order entities first
+appeared, and a query of an unseen card, note or deck drew from it on the live
+state, so every entity met after that query got another code than a replay of
+the same history gives: live Instant R and the recorded Stats rows disagreed,
+depending on which screens had been opened. Training draws a fresh uniform
+code per id, so any stable code drawn from the same uniform family is
+faithful to it; seeding torch's own generator by the id keeps the family and
+lets the RWKV session reproduce every code in PyTorch.
+**Pinned by:** `id_codes_match_torch_seeded_by_the_id`,
+`id_codes_do_not_depend_on_order_and_queries_change_nothing`,
+`feature_state_cache_round_trips_without_id_codes` (`rslib/src/rwkv/mod.rs`).
 
 **The rule has one implementation: the SQL.** The backend query
 (`rwkv_historical_review_rows`, `rslib/src/storage/revlog/mod.rs`) and the

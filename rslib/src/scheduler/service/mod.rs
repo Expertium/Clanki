@@ -1262,12 +1262,14 @@ impl crate::services::BackendSchedulerService for Backend {
             interval_days: Vec::with_capacity(wide),
             ease_factors: Vec::with_capacity(wide),
             learning_starts: Vec::with_capacity(rows.len()),
+            deleted_cards: Vec::with_capacity(rows.len()),
         };
         for row in rows {
             out.review_ids.extend(row.review_id.to_le_bytes());
             out.card_ids.extend(row.card_id.to_le_bytes());
-            out.note_ids.extend(row.note_id.to_le_bytes());
-            out.deck_ids.extend(row.deck_id.to_le_bytes());
+            out.note_ids.extend(row.note_id.unwrap_or(0).to_le_bytes());
+            out.deck_ids.extend(row.deck_id.unwrap_or(0).to_le_bytes());
+            out.deleted_cards.push(u8::from(row.deck_id.is_none()));
             out.eases.extend(row.ease.to_le_bytes());
             out.durations_millis
                 .extend(row.duration_millis.to_le_bytes());

@@ -14,9 +14,12 @@ import pytest
 _RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_CURVE_COUNT = 128
 _RWKV_GOLDEN_CARD_ID = 1549775725979
-_RWKV_GOLDEN_ROW0_IMMEDIATE = 0.89073008298873901
-_RWKV_GOLDEN_ROW34_IMMEDIATE = 0.70197033882141113
-_RWKV_GOLDEN_ROW34_AHEAD = 0.63239266440118969
+# From the PyTorch reference runner (`qt/aqt/rwkv_inference/process.py`) with
+# its id codes drawn as spec sched.rwkv-id-codes draws them: torch.randint on
+# a generator seeded by the id. The Rust runtime agrees within 2e-7.
+_RWKV_GOLDEN_ROW0_IMMEDIATE = 0.9020914435386658
+_RWKV_GOLDEN_ROW34_IMMEDIATE = 0.6945977210998535
+_RWKV_GOLDEN_ROW34_AHEAD = 0.6248379945755005
 _RWKV_ABS_TOL = 1e-6
 
 _RWKV_GOLDEN_REVIEWS = [
@@ -507,19 +510,10 @@ def _skip_rwkv_feature_state(cursor: _RwkvCacheCursor) -> None:
     cursor.skip_i64_map()
     cursor.i64()
 
-    for _ in range(cursor.u32()):
-        cursor.u8()
-        cursor.i64()
-        cursor.f32_vec()
-
-    cursor.u32()
-    for _ in range(624):
-        cursor.u32()
-
 
 def _rwkv_curves_from_cache(cache: bytes) -> dict[int, tuple[list[float], list[float]]]:
     cursor = _RwkvCacheCursor(cache)
-    cursor.expect_magic(b"ARWKVPROCSTATE2")
+    cursor.expect_magic(b"ARWKVPROCSTATE3")
     _skip_rwkv_feature_state(cursor)
     curves = {}
     for _ in range(cursor.u32()):
