@@ -166,9 +166,7 @@ impl ExchangeData {
                 .chain(
                     data.cards
                         .iter()
-                        .filter(|card| {
-                            card.memory_state.is_none() && card.ctype != CardType::New
-                        })
+                        .filter(|card| card.memory_state.is_none() && card.ctype != CardType::New)
                         .map(|card| card.id),
                 )
                 .collect();

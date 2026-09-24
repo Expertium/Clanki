@@ -627,7 +627,10 @@ mod tests {
         let missing_home = add_card(&mut col);
         let filtered_home = add_card(&mut col);
         // one minute apart: review ids are unique
-        for (minute, card_id) in [healthy, missing_home, filtered_home].into_iter().enumerate() {
+        for (minute, card_id) in [healthy, missing_home, filtered_home]
+            .into_iter()
+            .enumerate()
+        {
             let minute = minute as i64;
             entry(
                 &mut col,

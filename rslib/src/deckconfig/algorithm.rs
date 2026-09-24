@@ -705,5 +705,4 @@ mod test {
         assert_eq!(stability(&col, card), 123.0);
         Ok(())
     }
-
 }

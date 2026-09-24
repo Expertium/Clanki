@@ -348,9 +348,15 @@ mod tests {
                     skip_undo_entry: false,
                 },
             )?;
-            Ok(col.storage.get_card(card_id)?.unwrap().memory_state.unwrap())
+            Ok(col
+                .storage
+                .get_card(card_id)?
+                .unwrap()
+                .memory_state
+                .unwrap())
         };
-        let traces_s90 = |state: FsrsMemoryState| fsrs.interval_at_retrievability(state.into(), 0.9);
+        let traces_s90 =
+            |state: FsrsMemoryState| fsrs.interval_at_retrievability(state.into(), 0.9);
 
         for card_id in [with_traces, without_state] {
             let written = write(&mut col, card_id, 40.0)?;
@@ -361,8 +367,14 @@ mod tests {
             assert!((traces_s90(written) - 40.0).abs() < 0.05, "{written:?}");
         }
         // the card with traces keeps their fast/internal ratio
-        let ratio = |state: FsrsMemoryState| state.stability_fast.unwrap() / state.stability_internal;
-        let written = col.storage.get_card(with_traces)?.unwrap().memory_state.unwrap();
+        let ratio =
+            |state: FsrsMemoryState| state.stability_fast.unwrap() / state.stability_internal;
+        let written = col
+            .storage
+            .get_card(with_traces)?
+            .unwrap()
+            .memory_state
+            .unwrap();
         assert!((ratio(written) - ratio(stored)).abs() < 1e-3);
         // writing the same S90 and difficulty again keeps the traces
         assert_eq!(write(&mut col, with_traces, 40.0)?, written);
@@ -375,5 +387,4 @@ mod tests {
         assert_eq!(rwkv.stability_fast, written.stability_fast);
         Ok(())
     }
-
 }

@@ -781,10 +781,7 @@ impl Collection {
         let usn = self.usn()?;
         for (config_id, card_ids) in card_ids_by_config {
             // the Default preset may itself be missing: the built-in defaults
-            let config = self
-                .storage
-                .get_deck_config(config_id)?
-                .unwrap_or_default();
+            let config = self.storage.get_deck_config(config_id)?.unwrap_or_default();
             let revlog =
                 self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
             let params = config.fsrs_params();
@@ -884,10 +881,9 @@ impl Collection {
                 None => {
                     let deck = self.get_deck(deck_id)?;
                     let home_config = match deck.as_ref().and_then(|deck| deck.config_id()) {
-                        Some(config_id) => self
-                            .storage
-                            .get_deck_config(config_id)?
-                            .map(|_| config_id),
+                        Some(config_id) => {
+                            self.storage.get_deck_config(config_id)?.map(|_| config_id)
+                        }
                         None => None,
                     };
                     if let Some(normal) = deck.as_ref().and_then(|deck| deck.normal().ok()) {
@@ -951,10 +947,7 @@ impl Collection {
         let usn = self.usn()?;
         for (config_id, card_ids) in card_ids_by_config {
             // the Default preset may itself be missing: the built-in defaults
-            let config = self
-                .storage
-                .get_deck_config(config_id)?
-                .unwrap_or_default();
+            let config = self.storage.get_deck_config(config_id)?.unwrap_or_default();
             let revlog =
                 self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
             let params = config.fsrs_params();
@@ -1635,7 +1628,8 @@ impl Collection {
         let fsrs = FSRS::new(&self.fsrs_preset_for_card(card)?.params)?;
         let state = match stored_traces {
             Some(stored)
-                if !fsrs7 || (stored.stability == s90 && stored.difficulty == written.difficulty) =>
+                if !fsrs7
+                    || (stored.stability == s90 && stored.difficulty == written.difficulty) =>
             {
                 Some(FsrsMemoryState {
                     stability: s90,
@@ -2090,7 +2084,12 @@ mod tests {
         };
         let assert_repaired = |col: &Collection| -> Result<()> {
             for card_id in &card_ids {
-                let state = col.storage.get_card(*card_id)?.unwrap().memory_state.unwrap();
+                let state = col
+                    .storage
+                    .get_card(*card_id)?
+                    .unwrap()
+                    .memory_state
+                    .unwrap();
                 assert_eq!(state.stability, 20.0);
                 assert_ne!(state.stability_internal, 20.0, "{card_id:?}: {state:?}");
                 assert!(state.stability_fast.is_some());
@@ -2119,7 +2118,12 @@ mod tests {
         col.transact_no_undo(|col| col.reconcile_fsrs_state_after_sync(conflicts))?;
         // an itemless card keeps the agreed state: nothing failed
         for card_id in &card_ids {
-            assert!(col.storage.get_card(*card_id)?.unwrap().memory_state.is_some());
+            assert!(col
+                .storage
+                .get_card(*card_id)?
+                .unwrap()
+                .memory_state
+                .is_some());
         }
         Ok(())
     }
