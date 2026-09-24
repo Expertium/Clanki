@@ -2165,6 +2165,9 @@ title="{}" {}>{}</button>""".format(
         from aqt.deckoptions import setup_deck_options_web_views
 
         setup_deck_options_web_views()
+        from aqt.webview import setup_spare_web_page
+
+        setup_spare_web_page()
 
         self._activeWindowOnPlay: QWidget | None = None
 
