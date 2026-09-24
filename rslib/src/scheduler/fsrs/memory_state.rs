@@ -19,6 +19,7 @@ use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
@@ -1522,6 +1523,55 @@ impl Collection {
     // Used for extra-ordinary circumstances where a memory state is needed but is
     // not availiable, e.g. the card has been moved to a different deck.
     // Try to use update_memory_state where you can.
+    /// An add-on that changes a card's `memory_state.stability` (the S90,
+    /// spec sched.next-state-s90) through `update_cards` writes it next to
+    /// the FSRS-7 traces it read, which still give the old S90. Under
+    /// FSRS-7, when the written S90 is not the stored one and the written
+    /// traces do not give it, the traces are rebuilt to give it: the written
+    /// difficulty and fast/internal ratio, scaled to the new S90 (spec
+    /// sched.fsrs7-addon-stability-edit). Under RWKV the stability is RWKV's
+    /// S90 and the traces stay FSRS-7's own.
+    pub(crate) fn rebuild_fsrs7_traces_for_edited_s90(
+        &mut self,
+        card: &mut Card,
+        existing: &Card,
+    ) -> Result<()> {
+        let Some(written) = card.memory_state else {
+            return Ok(());
+        };
+        let s90 = written.stability;
+        if existing.memory_state.map(|state| state.stability) == Some(s90)
+            || !(s90.is_finite() && s90 > 0.0)
+            || self.effective_scheduling_algorithm()? != SchedulingAlgorithm::Fsrs7
+        {
+            return Ok(());
+        }
+        let params = self.fsrs_preset_for_card(card)?.params;
+        let fsrs = FSRS::new(&params)?;
+        let traces = MemoryState::from(written);
+        let traces_s90 = fsrs.interval_at_retrievability(traces, 0.9);
+        if (traces_s90 - s90).abs() <= 1e-3 * s90 + 1e-4 {
+            return Ok(());
+        }
+        let usable_traces = traces.stability.is_finite()
+            && traces.stability > 0.0
+            && traces.stability_fast.is_finite()
+            && traces.stability_fast > 0.0;
+        card.memory_state = if usable_traces {
+            let rebuilt = scale_state_to_interval(&fsrs, traces, s90, 0.9);
+            Some(FsrsMemoryState {
+                stability: s90,
+                stability_internal: rebuilt.stability,
+                stability_fast: Some(rebuilt.stability_fast),
+                difficulty: written.difficulty,
+            })
+        } else {
+            fsrs_memory_state_for_s90_and_difficulty(&fsrs, s90, written.difficulty)
+                .or(Some(written))
+        };
+        Ok(())
+    }
+
     pub fn compute_and_update_memory_state(&mut self, card: &mut Card) -> Result<()> {
         let fsrs_data = self.compute_memory_state(card.id)?;
         card.memory_state = fsrs_data.state.map(Into::into);

@@ -297,6 +297,7 @@ impl Collection {
             self.transact(Op::UpdateCard, |col| {
                 for mut card in cards {
                     let existing = col.storage.get_card(card.id)?.or_not_found(card.id)?;
+                    col.rebuild_fsrs7_traces_for_edited_s90(&mut card, &existing)?;
                     col.update_card_inner(&mut card, existing, col.usn()?)?
                 }
                 Ok(())
@@ -305,6 +306,7 @@ impl Collection {
             self.transact_no_undo(|col| {
                 for mut card in cards {
                     let existing = col.storage.get_card(card.id)?.or_not_found(card.id)?;
+                    col.rebuild_fsrs7_traces_for_edited_s90(&mut card, &existing)?;
                     col.update_card_inner(&mut card, existing, col.usn()?)?;
                 }
                 Ok(OpOutput {

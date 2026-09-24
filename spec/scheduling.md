@@ -1305,6 +1305,30 @@ S90" row and add-ons showed the internal stability under the S90 name.
 `leech_only_if_young_uses_fsrs_stability`
 (`rslib/src/scheduler/states/review.rs`).
 
+## sched.fsrs7-addon-stability-edit
+
+Given a collection that runs FSRS-7, and a card written through
+`update_cards` (`col.update_card`, `col.update_cards`, AnkiConnect) whose
+memory state's `stability` (its S90) is not the stored one and is not the
+S90 of the internal and fast stabilities written with it, the card's FSRS-7
+traces are rebuilt before it is stored: its written difficulty and
+fast/internal stability ratio, scaled so that the curve gives the written
+S90 (a state with no usable traces gets the S90 conversion of
+`sched.fsrs7-sm2-conversion` with its difficulty). Retrievability, the
+retrievability review orders and the next intervals then follow the
+edit. A write that keeps the stored S90, or whose traces already give it,
+is stored as written. Under RWKV-Curve and RWKV-Instant the stability is
+not FSRS-7's, and the traces are stored as written.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: an add-on that changed `memory_state.stability` stored the new
+S90 next to the old traces, so the Browser Stability column showed the edit
+while retrievability and scheduling used the old traces, and nothing
+noticed the mismatch.
+
+**Pinned by:** `an_addon_edit_of_the_s90_rebuilds_the_fsrs7_traces`
+(`rslib/src/card/service.rs`).
+
 ## sched.fsrs7-fractional-elapsed-time
 
 Given a card answered with FSRS (always FSRS-7, `sched.fsrs7-only`), the
