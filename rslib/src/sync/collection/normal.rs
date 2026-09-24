@@ -159,7 +159,11 @@ impl NormalSyncer<'_> {
                 .count(),
             "reconciling fsrs state"
         );
-        self.col.reconcile_fsrs_state_after_sync(fsrs_conflicts)?;
+        // a failure leaves the cards as the merge left them and must not
+        // stop the sync (spec sync.fsrs-reconcile-after-sync)
+        if let Err(err) = self.col.reconcile_fsrs_state_after_sync(fsrs_conflicts) {
+            tracing::warn!(?err, "reconciling the fsrs state after sync failed");
+        }
         // cards the server sent as another client wrote them (spec
         // sync.fsrs7-state-of-foreign-cards), uploaded by this same sync; a
         // failure leaves them as they came and must not stop the sync

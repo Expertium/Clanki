@@ -1,2 +1,3 @@
 - Importing an `.apkg` no longer recomputes the package's memory states with the package's default parameters: imported cards keep the memory state they had (an RWKV-Curve stability included), and cards from other apps get theirs from your own preset.
 - Check Database no longer asks for a full sync when it changed nothing.
+- One card whose deck or preset is missing no longer stops a sync, or the repair of cards that other apps changed.
