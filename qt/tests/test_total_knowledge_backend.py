@@ -24,6 +24,7 @@ import pytest
 
 import aqt.rwkv_scheduler
 from anki.collection import Collection
+from anki.stats_pb2 import TotalKnowledgeRwkvReplayResponse
 from aqt import total_knowledge
 from aqt.rwkv_srs_benchmark import (
     _PACKED_PREDICTION_REQUEST_ROW,
@@ -177,3 +178,37 @@ def test_kept_sums_are_read_back_through_the_backends_digest(
     assert reads and reads[0] == len(first.sum_r) - 1
     assert again.sum_r == first.sum_r
     assert runtime.warm_ups
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"first_day": -3, "review_count": 2**40, "digests": ["ab", ""]},
+        {"packed_rows": b"\x01" * 95 * 3},
+        {
+            "first_day": 19_000,
+            "review_count": 7,
+            "day_review_ends": bytes(range(16)),
+            "day_change_ends": b"\x02" * 8,
+            "packed_rows": bytes(range(256)) * 1000,
+            "change_card_ids": b"\x03" * 24,
+            "change_review_indexes": b"\xff" * 24,
+            "change_until_days": b"\x04" * 24,
+            "digests": ["00" * 32],
+            "preset_card_ids": b"\x05" * 16,
+            "card_fsrs_preset_ids": ["1", "1600000000000"],
+        },
+    ],
+    ids=["empty", "no-columns", "rows-only", "every-field"],
+)
+def test_the_replay_response_reads_as_parsed(fields: dict[str, Any]) -> None:
+    """`_replay_response` gives every field the parsed message gives, the
+    byte columns as views of the response."""
+    message = TotalKnowledgeRwkvReplayResponse(**fields)
+    raw = message.SerializeToString()
+    response, columns = total_knowledge._replay_response(raw)
+    for name in total_knowledge._REPLAY_COLUMNS.values():
+        assert bytes(columns[name]) == getattr(message, name)
+        message.ClearField(name)  # type: ignore[arg-type]
+    assert response == message
