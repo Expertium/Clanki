@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use super::button_intervals::button_intervals;
+use super::button_intervals::ButtonInput;
 use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
@@ -40,23 +41,30 @@ impl RelearnState {
     }
 
     /// The FSRS (or RWKV-Curve) outcome of each button that is not decided by
-    /// a relearning step (spec sched.sub-day-intervals). All `None` under SM-2.
+    /// a relearning step; the steps floor the buttons after them (spec
+    /// sched.sub-day-intervals). All `None` under SM-2.
     fn fsrs_button_intervals(self, ctx: &StateContext) -> [Option<ButtonInterval>; 4] {
         let Some(states) = &ctx.fsrs_next_states else {
             return [None; 4];
         };
-        let steps = ctx.fsrs_uses_learning_queues();
+        let step = |delay: Option<u32>| delay.filter(|_| ctx.fsrs_uses_learning_queues());
         let remaining = self.learning.remaining_steps;
-        let again_step = steps && ctx.relearn_steps.again_delay_secs_learn().is_some();
-        let hard_step = steps && ctx.relearn_steps.hard_delay_secs(remaining).is_some();
-        let good_step = steps && ctx.relearn_steps.good_delay_secs(remaining).is_some();
         button_intervals(
             ctx,
             [
-                (!again_step).then_some(states.again.interval),
-                (!hard_step).then_some(states.hard.interval),
-                (!good_step).then_some(states.good.interval),
-                Some(states.easy.interval),
+                ButtonInput::new(
+                    step(ctx.relearn_steps.again_delay_secs_learn()),
+                    states.again.interval,
+                ),
+                ButtonInput::new(
+                    step(ctx.relearn_steps.hard_delay_secs(remaining)),
+                    states.hard.interval,
+                ),
+                ButtonInput::new(
+                    step(ctx.relearn_steps.good_delay_secs(remaining)),
+                    states.good.interval,
+                ),
+                ButtonInput::new(None, states.easy.interval),
             ],
             DayRule::Relearning,
         )
@@ -294,14 +302,21 @@ mod test {
             panic!("Good should stay in short-term relearning after final configured step");
         };
         assert_eq!(good.learning.remaining_steps, 0);
-        assert_eq!(good.learning.scheduled_secs, 5);
+        // FSRS's 5 s is raised to Hard's 900 s step before it (spec
+        // sched.sub-day-intervals)
+        let CardState::Normal(super::super::NormalState::Relearning(hard)) = next.hard else {
+            panic!("Hard should repeat the step");
+        };
+        assert_eq!(hard.learning.scheduled_secs, 900);
+        assert_eq!(good.learning.scheduled_secs, 900);
 
         let followup = good.next_states(&ctx);
         let CardState::Normal(super::super::NormalState::Relearning(hard)) = followup.hard else {
             panic!("Hard should stay in FSRS short-term relearning");
         };
         assert_eq!(hard.learning.remaining_steps, 0);
-        assert_eq!(hard.learning.scheduled_secs, 5);
+        // FSRS's 5 s is raised to Again's 600 s step (the first step)
+        assert_eq!(hard.learning.scheduled_secs, 600);
     }
 }
 

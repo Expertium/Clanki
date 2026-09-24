@@ -1387,6 +1387,97 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// How long each answer puts the card away, in seconds, for comparing
+    /// the four buttons.
+    fn answer_secs(state: CardState) -> u32 {
+        match state {
+            CardState::Normal(NormalState::Learning(learn)) => learn.scheduled_secs,
+            CardState::Normal(NormalState::Relearning(relearn)) => relearn.learning.scheduled_secs,
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days * 86_400,
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+
+    fn assert_buttons_in_order(states: &SchedulingStates) {
+        let secs = [states.again, states.hard, states.good, states.easy].map(answer_secs);
+        assert!(
+            secs.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the buttons must not go backwards: {secs:?}"
+        );
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: with steps "10m 1d"
+    // and the default FSRS-7 parameters, a new card after Again sits at the
+    // 10 m step; Good's 1 d step used to be longer than Easy's 2.25 h model
+    // interval. Easy is now a day button, above the 1 d step.
+    #[test]
+    fn fsrs7_easy_is_not_shorter_than_a_learning_step() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.change_scheduling_algorithm(SchedulingAlgorithm::Fsrs7)?;
+        col.set_default_learn_steps(vec![10.0, 1440.0]);
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.answer_again().card_id;
+
+        let states = col.get_scheduling_states(cid)?;
+        assert_eq!(answer_secs(states.hard), 43_500, "Hard is its step");
+        assert_eq!(answer_secs(states.good), 86_400, "Good is its step");
+        let CardState::Normal(NormalState::Review(easy)) = states.easy else {
+            panic!("Easy should be a day button, got {:?}", states.easy);
+        };
+        assert!(easy.scheduled_days >= 2, "{easy:?}");
+        assert_buttons_in_order(&states);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals for RWKV-Curve, which
+    // shares the button rules: its intervals are floored by the steps before
+    // them, on a learning and on a relearning card.
+    #[test]
+    fn rwkv_curve_buttons_are_not_shorter_than_a_step_before_them() -> Result<()> {
+        fn rwkv_curve_collection() -> Result<Collection> {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)?;
+            col.set_default_learn_steps(vec![10.0, 1440.0]);
+            col.set_default_relearn_steps(vec![10.0]);
+            Ok(col)
+        }
+        let mut col = rwkv_curve_collection()?;
+
+        // a learning card at the 10 m step: Hard 12 h 5 m and Good 1 d are
+        // steps, and RWKV-Curve's 2.25 h Easy becomes a day button above them
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.answer_again().card_id;
+        let states =
+            col.scheduling_states_with_intervals(cid, [None, None, None, Some(0.094)], [None; 4])?;
+        let CardState::Normal(NormalState::Review(easy)) = states.easy else {
+            panic!("Easy should be a day button, got {:?}", states.easy);
+        };
+        assert_eq!(easy.scheduled_days, 2);
+        assert_buttons_in_order(&states);
+
+        // a relearning card at its 10 m step: Hard repeats it at 15 m, and
+        // RWKV-Curve's 86 s Good and 173 s Easy are raised to 15 m
+        let mut col = rwkv_curve_collection()?;
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        col.answer_again();
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [None, None, Some(0.001), Some(0.002)],
+            [None; 4],
+        )?;
+        assert_eq!(answer_secs(states.hard), 900);
+        assert_eq!(answer_secs(states.good), 900);
+        assert_eq!(answer_secs(states.easy), 900);
+        assert_buttons_in_order(&states);
+        Ok(())
+    }
+
     // Pins spec/scheduling.md#sched.rwkv-answers-with-fsrs-switch-off: a new
     // collection runs RWKV-Curve while its `fsrs` switch is still off; the
     // answer states still take RWKV-Curve's intervals (not SM-2's), RWKV-Instant
