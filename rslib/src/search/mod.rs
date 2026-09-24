@@ -1390,8 +1390,10 @@ mod test {
         let timing = col.timing_today()?;
         let mut card1 = col.storage.get_card(card1_id)?.unwrap();
         let mut card2 = col.storage.get_card(card2_id)?.unwrap();
-        let s90_1 = col.fsrs_single_trace_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
-        let s90_2 = col.fsrs_single_trace_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
+        let s90_1 =
+            col.fsrs_single_trace_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
+        let s90_2 =
+            col.fsrs_single_trace_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
         for card in [&mut card1, &mut card2] {
             card.ctype = CardType::Review;
             card.queue = CardQueue::Review;

@@ -2073,7 +2073,10 @@ mod tests {
         NoteAdder::basic(&mut col).add(&mut col);
         let card_id = col.get_first_card().id;
         // R is 90% at the S90, and the interval at 90% is the S90 itself
-        assert_close(col.fsrs_current_retrievability_for_card(card_id, 94.4, 94.4)?, 0.9);
+        assert_close(
+            col.fsrs_current_retrievability_for_card(card_id, 94.4, 94.4)?,
+            0.9,
+        );
         assert_close(
             col.fsrs_interval_at_retrievability_for_card(card_id, 94.4, 0.9)?,
             94.4,
@@ -3067,11 +3070,8 @@ mod tests {
             &[(config_id, stability)],
             target_retrievability,
         )?[0];
-        let expected = fsrs_interval_at_retrievability_for_s90(
-            &params_7,
-            stability,
-            target_retrievability,
-        )?;
+        let expected =
+            fsrs_interval_at_retrievability_for_s90(&params_7, stability, target_retrievability)?;
         assert!((actual - expected).abs() < 1e-6);
         Ok(())
     }

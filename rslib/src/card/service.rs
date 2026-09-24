@@ -255,17 +255,28 @@ mod tests {
                     skip_undo_entry: false,
                 },
             )?;
-            Ok(col.storage.get_card(card.id)?.unwrap().memory_state.unwrap())
+            Ok(col
+                .storage
+                .get_card(card.id)?
+                .unwrap()
+                .memory_state
+                .unwrap())
         };
 
-        let before = col.storage.get_card(card.id)?.unwrap().memory_state.unwrap();
+        let before = col
+            .storage
+            .get_card(card.id)?
+            .unwrap()
+            .memory_state
+            .unwrap();
         let edited = write_s90(&mut col, 50.0)?;
         assert_eq!(edited.stability, 50.0);
         let traces_s90 = fsrs.interval_at_retrievability(edited.into(), 0.9);
         assert!((traces_s90 - 50.0).abs() < 0.05, "{traces_s90}");
         // the difficulty and the fast/internal ratio stay
         assert_eq!(edited.difficulty, before.difficulty);
-        let ratio = |state: FsrsMemoryState| state.stability_fast.unwrap() / state.stability_internal;
+        let ratio =
+            |state: FsrsMemoryState| state.stability_fast.unwrap() / state.stability_internal;
         assert!((ratio(edited) - ratio(before)).abs() < 1e-3);
 
         // an unchanged S90 keeps the traces

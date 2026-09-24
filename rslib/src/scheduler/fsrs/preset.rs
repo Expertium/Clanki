@@ -810,7 +810,8 @@ mod test {
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         col.update_default_deck_config(|config| {
             config.rwkv_review_enabled = false;
-            config.review_order = crate::deckconfig::ReviewCardOrder::RetrievabilityDescending as i32;
+            config.review_order =
+                crate::deckconfig::ReviewCardOrder::RetrievabilityDescending as i32;
         });
         let mut no_preset_deck = crate::tests::DeckAdder::new("no preset").add(&mut col);
         no_preset_deck.normal_mut()?.config_id = 999;
