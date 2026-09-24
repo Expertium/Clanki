@@ -88,8 +88,7 @@ impl GraphsContext {
                 card.memory_state
                     .filter(|_| !rwkv_algorithm)
                     .and_then(|state| {
-                        let elapsed_seconds =
-                            card.seconds_since_last_review(&timing);
+                        let elapsed_seconds = card.seconds_since_last_review(&timing);
                         let preset_id = self.fsrs_preset_by_card.get(&card.id)?;
                         let state = state.into();
                         let elapsed_days = elapsed_seconds as f32 / 86_400.0;

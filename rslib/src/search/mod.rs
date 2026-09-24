@@ -484,8 +484,7 @@ impl Collection {
         let Some(state) = card.memory_state else {
             return Ok(None);
         };
-        let elapsed_days =
-            card.seconds_since_last_review(&timing) as f32 / 86_400.0;
+        let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
         let r = fsrs_current_retrievability_for_state(params, state, elapsed_days)?;
         Ok(Some((r, state.stability)))
     }
@@ -1096,18 +1095,12 @@ mod test {
         let mut card = Card::new(NoteId(1), 0, DeckId(1), 0);
         card.last_review_time = Some(timing.now.adding_secs(60));
 
-        assert_eq!(
-            card.seconds_since_last_review(&timing),
-            0
-        );
+        assert_eq!(card.seconds_since_last_review(&timing), 0);
 
         card.last_review_time = None;
         card.due = timing.now.adding_secs(60).0 as i32;
         card.interval = 0;
-        assert_eq!(
-            card.seconds_since_last_review(&timing),
-            0
-        );
+        assert_eq!(card.seconds_since_last_review(&timing), 0);
 
         Ok(())
     }

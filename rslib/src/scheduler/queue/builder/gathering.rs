@@ -489,11 +489,14 @@ impl QueueBuilder {
         // read; intraday learning cards are not ranked (they come by due time)
         let mut rows = Vec::new();
         for kind in [DueCardKind::Learning, DueCardKind::Review] {
-            col.storage
-                .for_each_due_card_row_in_active_decks(self.context.timing, kind, |card| {
+            col.storage.for_each_due_card_row_in_active_decks(
+                self.context.timing,
+                kind,
+                |card| {
                     rows.push((card, kind));
                     Ok(())
-                })?;
+                },
+            )?;
         }
 
         // the add-on overlay presets of the cards the keys rank by FSRS-7,
@@ -518,14 +521,12 @@ impl QueueBuilder {
             self.context.sort_options.review_order,
             ReviewCardOrder::RetrievabilityDescending
         );
-        with_key.sort_by(
-            |(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
-                let ord = key_a.total_cmp(key_b);
-                let ord = if descending { ord.reverse() } else { ord };
-                ord.then_with(|| hash_a.cmp(hash_b))
-                    .then_with(|| card_a.id.cmp(&card_b.id))
-            },
-        );
+        with_key.sort_by(|(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
+            let ord = key_a.total_cmp(key_b);
+            let ord = if descending { ord.reverse() } else { ord };
+            ord.then_with(|| hash_a.cmp(hash_b))
+                .then_with(|| card_a.id.cmp(&card_b.id))
+        });
 
         for (card, _, _) in with_key {
             if self.limits.root_limit_reached(LimitKind::Review) {

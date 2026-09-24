@@ -413,8 +413,7 @@ fn exact_retrievability_key_for_card(
         SchedulingAlgorithm::RwkvInstant => Ok(entry.and_then(|entry| entry.retrievability)),
         SchedulingAlgorithm::Fsrs7 => {
             if let Some(state) = card.memory_state {
-                let elapsed_days =
-                    card.seconds_since_last_review(&timing) as f32 / 86_400.0;
+                let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                 curves
                     .current_retrievability(col, card, state, elapsed_days)
                     .map(Some)
@@ -442,8 +441,7 @@ fn exact_fsrs_search_key_for_card(
         ExactFsrsSearchOrder::RelativeOverdueness => match keys.algorithm {
             SchedulingAlgorithm::Fsrs7 => {
                 if let Some(state) = card.memory_state {
-                    let elapsed_days =
-                        card.seconds_since_last_review(&timing) as f32 / 86_400.0;
+                    let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                     curves
                         .relative_overdueness(col, card, state, elapsed_days)
                         .map(Some)
