@@ -388,6 +388,115 @@ def _weak_hook_handler(
     return handler
 
 
+class _SparePage:
+    """Keeps one started web page ready in the background, so the next Add,
+    Edit, Browser editor or Card Info view does not start a renderer
+    process of its own.
+
+    Starting a view's renderer is about half the time of its first page:
+    measured offscreen on a copy of Andrew's collection, a new editor view
+    took 210-373 ms to its page, and 106-187 ms when its renderer had been
+    started before (Card Info: 230-494 ms and 129-236 ms). The spare page
+    loads an empty page from the media server, so its renderer belongs to
+    the same site as the real pages, which then reuse it.
+
+    A view of one of KINDS adopts the spare page instead of making one, if
+    the spare has finished loading; otherwise it makes its own, as before.
+    The page is used by one view only and goes with it. A new spare is made
+    REWARM_MS later. The first one is made WARM_DELAY_MS after the profile
+    opens, never while start-up work or a window that holds the user runs,
+    and it is released when the profile closes. It costs one renderer
+    process (about 30-50 MB)."""
+
+    # the kinds that use the API profile, whose pages the spare can serve
+    KINDS = (AnkiWebViewKind.EDITOR, AnkiWebViewKind.BROWSER_CARD_INFO)
+    WARM_DELAY_MS = 45_000
+    WARM_RETRY_MS = 10_000
+    REWARM_MS = 2_000
+
+    def __init__(self) -> None:
+        self._page: AnkiWebPage | None = None
+        self._ready = False
+        self._profile = 0
+
+    def on_profile_did_open(self) -> None:
+        self._profile += 1
+        self._warm_later(self.WARM_DELAY_MS)
+
+    def on_profile_will_close(self) -> None:
+        # a pending warm-up belongs to this profile
+        self._profile += 1
+        page, self._page, self._ready = self._page, None, False
+        if page is not None:
+            self._forget(page)
+            page.deleteLater()
+
+    def _warm_later(self, delay_ms: int) -> None:
+        from aqt import mw
+
+        profile = self._profile
+        mw.progress.single_shot(delay_ms, lambda: self._warm(profile), False)
+
+    def _warm(self, profile: int) -> None:
+        import aqt.fsrs_predictions
+        from aqt import mw, rwkv_scheduler
+        from aqt.mediasrv import PageContext
+
+        if profile != self._profile or mw.col is None or self._page is not None:
+            return
+        if (
+            rwkv_scheduler.rwkv_state_cache_loading(mw)
+            or aqt.fsrs_predictions.is_holding_collection()
+            or mw.state not in ("deckBrowser", "overview", "review")
+            or mw.app.activeModalWidget() is not None
+        ):
+            self._warm_later(self.WARM_RETRY_MS)
+            return
+        page = AnkiWebPage(lambda _cmd: None, self.KINDS[0])
+        page.setBackgroundColor(theme_manager.qcolor(colors.CANVAS))
+        self._page, self._ready = page, False
+
+        def loaded(ok: bool) -> None:
+            if self._page is page:
+                self._ready = ok
+
+        qconnect(page.loadFinished, loaded)
+        mw.mediaServer.set_page_html(id(page), "", PageContext.UNKNOWN)
+        page.load(QUrl(f"{mw.serverURL()}_anki/legacyPageData?id={id(page)}"))
+
+    def take(
+        self, kind: AnkiWebViewKind, handler: BridgeCommandHandler, view: QObject
+    ) -> AnkiWebPage | None:
+        """The started page, now the view's, or None to make a new one."""
+        if kind not in self.KINDS or not self._ready or self._page is None:
+            return None
+        page, self._page, self._ready = self._page, None, False
+        page.setParent(view)
+        page._onBridgeCmd = handler
+        page._kind = kind
+        history = page.history()
+        if history is not None:
+            history.clear()
+        self._forget(page)
+        self._warm_later(self.REWARM_MS)
+        return page
+
+    def _forget(self, page: AnkiWebPage) -> None:
+        from aqt import mw
+
+        mw.progress.single_shot(
+            5000, lambda: mw.mediaServer.clear_page_html(id(page)), False
+        )
+
+
+_spare_page = _SparePage()
+
+
+def setup_spare_web_page() -> None:
+    gui_hooks.profile_did_open.append(_spare_page.on_profile_did_open)
+    gui_hooks.profile_will_close.append(_spare_page.on_profile_will_close)
+
+
 class AnkiWebView(QWebEngineView):
     allow_drops = False
     _kind: AnkiWebViewKind
@@ -401,7 +510,10 @@ class AnkiWebView(QWebEngineView):
         QWebEngineView.__init__(self, parent=parent)
         self._kind = kind
         self.set_title(kind.value)
-        self.setPage(AnkiWebPage(self._onBridgeCmd, kind, self))
+        self.setPage(
+            _spare_page.take(kind, self._onBridgeCmd, self)
+            or AnkiWebPage(self._onBridgeCmd, kind, self)
+        )
         # reduce flicker
         self.page().setBackgroundColor(theme_manager.qcolor(colors.CANVAS))
 
