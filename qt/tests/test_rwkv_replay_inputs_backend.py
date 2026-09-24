@@ -7,7 +7,7 @@ Python builds, value for value.
 `_historical_rwkv_review_inputs` of the whole history from nothing comes from
 the backend (`rslib/src/scheduler/rwkv_inputs`); every other read, and every
 collection the backend would read another way, stays in Python. The state
-cache, the recording pass, the Memorised history and Total Knowledge all read
+cache, the recording pass and Total Knowledge all read
 these inputs, so each of their ways of asking is compared here with the
 Python build of the same collection.
 """
