@@ -383,6 +383,7 @@ impl SqliteStorage {
         Ok(dropped)
     }
 
+    #[cfg(test)]
     pub(crate) fn review_retrievability_cache_cleanup_full_sync_marked(&self) -> Result<bool> {
         Ok(self
             .get_config_value::<bool>(REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER)?

@@ -159,14 +159,12 @@ impl Collection {
         out.invalid_ids = self.maybe_fix_invalid_ids()?;
 
         debug!("legacy retrievability cache tables");
-        let migrated_legacy_retrievability_cache_tables = self
+        // a full sync only when the collection file itself changed (spec
+        // database.legacy-retrievability-cache-cleanup)
+        if self
             .storage
             .migrate_review_retrievability_cache_to_sidecar()?
-            > 0;
-        if migrated_legacy_retrievability_cache_tables
-            || !self
-                .storage
-                .review_retrievability_cache_cleanup_full_sync_marked()?
+            > 0
         {
             self.storage
                 .mark_review_retrievability_cache_cleanup_full_sync()?;
@@ -702,29 +700,23 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/database.md#database.legacy-retrievability-cache-cleanup:
+    // Check Database on a collection without the legacy tables asks for no
+    // full sync, the first time or any later time.
     #[test]
-    fn legacy_retrievability_cache_cleanup_marker_forces_one_sync() -> Result<()> {
+    fn check_database_without_legacy_tables_needs_no_full_sync() -> Result<()> {
         let mut col = Collection::new();
         col.storage
             .set_schema_modified_time(TimestampMillis(1_000))?;
         col.storage.set_last_sync(TimestampMillis(1_000))?;
 
-        assert!(!col
-            .storage
-            .review_retrievability_cache_cleanup_full_sync_marked()?);
-        assert_eq!(col.check_database()?, Default::default());
-        let timestamps = col.storage.get_collection_timestamps()?;
-        assert!(timestamps.schema_changed_since_sync());
-        assert!(col
-            .storage
-            .review_retrievability_cache_cleanup_full_sync_marked()?);
-
-        col.storage.set_last_sync(timestamps.schema_change)?;
-        assert_eq!(col.check_database()?, Default::default());
-        assert!(!col
-            .storage
-            .get_collection_timestamps()?
-            .schema_changed_since_sync());
+        for _ in 0..2 {
+            assert_eq!(col.check_database()?, Default::default());
+            assert!(!col
+                .storage
+                .get_collection_timestamps()?
+                .schema_changed_since_sync());
+        }
 
         Ok(())
     }
