@@ -156,10 +156,20 @@ impl Backend {
 impl RwkvInference {
     #[new]
     #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500))]
-    fn new(model_path: &str, target_retention: f32, max_interval_days: u32) -> PyResult<Self> {
-        rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
-            .map(|inner| Self { inner })
-            .map_err(|err| PyException::new_err(err.to_string()))
+    fn new(
+        py: Python<'_>,
+        model_path: &str,
+        target_retention: f32,
+        max_interval_days: u32,
+    ) -> PyResult<Self> {
+        // reading the model takes ~20 ms: other threads, the main one
+        // included, keep running Python meanwhile
+        py.detach(|| {
+            rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
+                .map_err(|err| err.to_string())
+        })
+        .map(|inner| Self { inner })
+        .map_err(PyException::new_err)
     }
 
     #[allow(clippy::too_many_arguments)]
