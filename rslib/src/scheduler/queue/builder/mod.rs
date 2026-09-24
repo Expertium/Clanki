@@ -279,13 +279,7 @@ impl QueueBuilder {
                     reps: card.reps,
                 };
                 self.get_and_update_bury_mode_for_note(card.into());
-                if self.context.non_news_sorted_by_retrievability()
-                    && card.due <= self.context.timing.now.0 as i32
-                {
-                    self.r_sorted_non_new.push(card);
-                } else {
-                    self.learning.push(card);
-                }
+                self.learning.push(card);
             }
             CardQueue::Review | CardQueue::DayLearn => {
                 let card = DueCard {
@@ -304,7 +298,7 @@ impl QueueBuilder {
                 };
                 if self.context.non_news_sorted_by_retrievability() {
                     require!(
-                        self.add_due_card_for_retrievability_sort(card, true),
+                        self.add_due_card_for_retrievability_sort(card),
                         "current review card was buried"
                     );
                     self.r_sorted_non_new.push(card);
@@ -334,28 +328,24 @@ impl QueueBuilder {
         let intraday_learning = sort_learning(self.learning);
         let now = TimestampSecs::now();
         let cutoff = now.adding_secs(learn_ahead_secs);
+        // the retrievability orders rank interday learning and review cards
+        // together; intraday learning cards keep their due times either way
         let shared_r_sort = self.context.non_news_sorted_by_retrievability();
-        let r_sorted_learning_count = self
-            .r_sorted_non_new
-            .iter()
-            .filter(|card| matches!(card.kind, DueCardKind::Learning))
-            .count();
-        let r_sorted_review_count = self
-            .r_sorted_non_new
-            .iter()
-            .filter(|card| matches!(card.kind, DueCardKind::Review))
-            .count();
-        let learn_count = if shared_r_sort {
-            r_sorted_learning_count
+        let (day_learning_count, review_count) = if shared_r_sort {
+            let day_learning_count = self
+                .r_sorted_non_new
+                .iter()
+                .filter(|card| matches!(card.kind, DueCardKind::Learning))
+                .count();
+            (
+                day_learning_count,
+                self.r_sorted_non_new.len() - day_learning_count,
+            )
         } else {
-            intraday_learning.iter().filter(|e| e.due <= cutoff).count() + self.day_learning.len()
+            (self.day_learning.len(), self.review.len())
         };
-
-        let review_count = if shared_r_sort {
-            r_sorted_review_count
-        } else {
-            self.review.len()
-        };
+        let learn_count =
+            intraday_learning.iter().filter(|e| e.due <= cutoff).count() + day_learning_count;
         let new_count = self.new.len();
 
         // merge due non-new and new cards into main
@@ -391,7 +381,6 @@ impl QueueBuilder {
             fsrs_short_term_with_steps: self.context.fsrs_short_term_with_steps,
             current_learning_cutoff: now,
             shown_top_card: None,
-            non_news_sorted_by_retrievability: shared_r_sort,
             deferred_rwkv_reviews: self.deferred_rwkv_reviews,
             rwkv_scores_pending: self.context.rwkv_scores_pending(),
         }
@@ -1387,9 +1376,11 @@ mod test {
             30.0,
         )?;
 
+        // the due intraday learning card comes first, by its due time; the
+        // retrievability order ranks the other two
         assert_eq!(
             col.queue_as_ids(deck.id),
-            vec![review, day_learning, intraday_learning]
+            vec![intraday_learning, review, day_learning]
         );
         assert_eq!(col.counts(), [0, 2, 1]);
         Ok(())
@@ -1633,8 +1624,60 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-review-order: a relearning card
+    // due within the learn-ahead limit is shown after the due cards and
+    // counted, as in the other review orders.
     #[test]
-    fn fsrs_retrievability_order_excludes_future_intraday_learning() -> Result<()> {
+    fn fsrs_retrievability_order_keeps_learn_ahead() -> Result<()> {
+        for order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_review_order(&mut deck, order);
+
+            let timing = col.timing_today()?;
+            let review = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                2 * 86_400,
+                30.0,
+            )?;
+            let relearning = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Learn,
+                CardType::Relearn,
+                (timing.now.0 + 60) as i32,
+                6 * 86_400,
+                30.0,
+            )?;
+
+            assert_eq!(
+                col.queue_as_ids(deck.id),
+                vec![review, relearning],
+                "{order:?}"
+            );
+            assert_eq!(col.counts(), [0, 1, 1], "{order:?}");
+            col.set_current_deck(deck.id)?;
+            col.answer_good();
+            // with the review done, the relearning card is next, learnt ahead
+            assert_eq!(col.queued_card_ids(1)?, vec![relearning], "{order:?}");
+            assert_eq!(col.counts(), [0, 1, 0], "{order:?}");
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-review-order: due intraday learning
+    // cards come by due time, before the ranked cards, not by retrievability.
+    #[test]
+    fn fsrs_retrievability_order_shows_due_intraday_learning_by_due_time() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, true)?;
         let mut deck = col.get_or_create_normal_deck("Default")?;
@@ -1647,21 +1690,65 @@ mod test {
             CardQueue::Review,
             CardType::Review,
             timing.days_elapsed as i32,
-            2 * 86_400,
-            30.0,
+            40 * 86_400,
+            1.0,
         )?;
-        add_memory_state_card(
+        // due first, and the most likely to be recalled
+        let due_earlier = add_memory_state_card(
             &mut col,
             deck.id,
+            CardQueue::Learn,
+            CardType::Relearn,
+            (timing.now.0 - 120) as i32,
+            600,
+            100.0,
+        )?;
+        let due_later = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Learn,
+            CardType::Relearn,
+            (timing.now.0 - 60) as i32,
+            20 * 86_400,
+            1.0,
+        )?;
+        for card_id in [due_earlier, due_later] {
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            card.reps = 1;
+            col.storage.update_card(&card)?;
+        }
+
+        assert_eq!(
+            col.queue_as_ids(deck.id),
+            vec![due_earlier, due_later, review]
+        );
+        assert_eq!(col.counts(), [0, 2, 1]);
+        Ok(())
+    }
+
+    // RWKV-Curve shares the queue: its retrievability orders keep learn-ahead
+    // too (spec sched.rwkv-review-order).
+    #[test]
+    fn rwkv_curve_retrievability_order_keeps_learn_ahead() -> Result<()> {
+        let mut col = Collection::new();
+        let (deck_id, ids) = rwkv_curve_deck(
+            &mut col,
+            ReviewCardOrder::RetrievabilityDescending,
+            &[(10, 10, 10.0)],
+        )?;
+        let timing = col.timing_today()?;
+        let relearning = add_memory_state_card(
+            &mut col,
+            deck_id,
             CardQueue::Learn,
             CardType::Relearn,
             (timing.now.0 + 60) as i32,
             6 * 86_400,
             30.0,
         )?;
-
-        assert_eq!(col.queue_as_ids(deck.id), vec![review]);
-        assert_eq!(col.counts(), [0, 0, 1]);
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[0], relearning]);
+        col.set_current_deck(deck_id)?;
+        assert_eq!(col.counts(), [0, 1, 1]);
         Ok(())
     }
 

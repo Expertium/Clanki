@@ -1030,6 +1030,37 @@ and the retrievability orders gathered the cards in due-day order.
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
+## sched.fsrs7-review-order
+
+Given a preset running FSRS-7 whose review sort order is "Retrievability
+ascending", "Retrievability descending" or "Relative overdueness", the study
+queue ranks the due review cards and interday learning cards together by
+FSRS-7's value for each card (its retrievability now, or its relative
+overdueness), and applies the review limits in that order. Intraday
+learning cards take no part in the ranking: as in the other review orders,
+the ones that are due come before the ranked cards, by due time (cards
+answered before ahead of never-answered ones), and the ones due within the
+learn-ahead limit are shown when nothing else is left. Both count in the
+learning count, and when every count is zero the queue looks again for
+learning cards that became due, as in the other orders.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", after the FSRS-7 review
+(`reviews/algo-2026-09-24/fsrs7.md`, section 3) found that the R orders
+turned learn-ahead off: a relearning card due within the learn-ahead limit
+was neither shown nor counted, so the user got the congratulations screen
+while FSRS-7's short Again intervals (36 s to 4 min with the default
+parameters) were about to come due, and descending retrievability is the
+default order of a new preset. A due learning card also joined the ranked
+list, so in ascending order a card failed seconds ago waited behind every
+due review.
+
+**Pinned by:** `fsrs_retrievability_order_keeps_learn_ahead`,
+`fsrs_retrievability_order_shows_due_intraday_learning_by_due_time`,
+`fsrs_retrievability_order_interleaves_due_non_new_queues`,
+`fsrs_descending_retrievability_order_interleaves_due_non_new_queues`,
+`rwkv_curve_retrievability_order_keeps_learn_ahead` (RWKV-Curve, which
+shares the queue) (`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.filtered-deck-one-algorithm
 
 Given a filtered deck whose search term is ordered by "Retrievability

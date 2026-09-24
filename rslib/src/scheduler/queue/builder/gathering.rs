@@ -27,13 +27,6 @@ use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::NewCardSorting;
 
-#[derive(Debug, Clone, Copy)]
-struct DueCardForRetrievabilitySort {
-    card: DueCard,
-    counts_towards_review_limit: bool,
-    interday_or_review: bool,
-}
-
 pub(super) const RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE: usize = 256;
 
 impl QueueBuilder {
@@ -51,6 +44,7 @@ impl QueueBuilder {
         }
 
         if self.context.non_news_sorted_by_retrievability() {
+            self.gather_intraday_learning_cards(col)?;
             self.gather_due_non_new_cards_with_exact_retrievability(col)?;
             self.gather_new_cards(col)?;
             return Ok(());
@@ -491,74 +485,53 @@ impl QueueBuilder {
         &mut self,
         col: &mut Collection,
     ) -> Result<()> {
-        let mut due_cards = Vec::new();
-        // the rows of the interday cards, read by their gather query; the
-        // few due intraday cards are read one by one
-        let mut rows = HashMap::new();
-        self.gather_intraday_learning_cards_for_retrievability_sort(col, &mut due_cards)?;
-        self.gather_due_cards_for_retrievability_sort(
-            col,
-            DueCardKind::Learning,
-            &mut due_cards,
-            &mut rows,
-        )?;
-        self.gather_due_cards_for_retrievability_sort(
-            col,
-            DueCardKind::Review,
-            &mut due_cards,
-            &mut rows,
-        )?;
+        // the interday learning and review cards, with the rows their keys
+        // read; intraday learning cards are not ranked (they come by due time)
+        let mut rows = Vec::new();
+        for kind in [DueCardKind::Learning, DueCardKind::Review] {
+            col.storage
+                .for_each_due_card_row_in_active_decks(self.context.timing, kind, |card| {
+                    rows.push((card, kind));
+                    Ok(())
+                })?;
+        }
 
         // the result is sorted by (key, hash, id) below, so the order the
         // cards were gathered in does not matter
         let mut keys =
             ExactReviewOrderKeys::new(self.context.timing, self.context.sort_options.review_order);
-        let mut with_key = Vec::with_capacity(due_cards.len());
-        for candidate in due_cards {
-            let card_id = candidate.card.id;
-            let key = match rows.get(&card_id) {
-                Some(card) => keys.key(col, card)?,
-                None => {
-                    let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
-                    keys.key(col, &card)?
-                }
-            };
-            with_key.push((candidate, key, fnvhash_due_card(&candidate.card)));
+        let mut with_key = Vec::with_capacity(rows.len());
+        for (card, kind) in &rows {
+            let due_card = DueCard::from_card(card, *kind);
+            with_key.push((due_card, keys.key(col, card)?, fnvhash_due_card(&due_card)));
         }
         let descending = matches!(
             self.context.sort_options.review_order,
             ReviewCardOrder::RetrievabilityDescending
         );
         with_key.sort_by(
-            |(candidate_a, key_a, hash_a), (candidate_b, key_b, hash_b)| {
+            |(card_a, key_a, hash_a), (card_b, key_b, hash_b)| {
                 let ord = key_a.total_cmp(key_b);
                 let ord = if descending { ord.reverse() } else { ord };
                 ord.then_with(|| hash_a.cmp(hash_b))
-                    .then_with(|| candidate_a.card.id.cmp(&candidate_b.card.id))
+                    .then_with(|| card_a.id.cmp(&card_b.id))
             },
         );
 
-        for (candidate, _, _) in with_key {
-            if candidate.counts_towards_review_limit
-                && (self.limits.root_limit_reached(LimitKind::Review)
-                    || self
-                        .limits
-                        .limit_reached(candidate.card.current_deck_id, LimitKind::Review)?)
+        for (card, _, _) in with_key {
+            if self.limits.root_limit_reached(LimitKind::Review) {
+                break;
+            }
+            if self
+                .limits
+                .limit_reached(card.current_deck_id, LimitKind::Review)?
             {
                 continue;
             }
-
-            if self
-                .add_due_card_for_retrievability_sort(candidate.card, candidate.interday_or_review)
-            {
-                self.r_sorted_non_new.push(candidate.card);
-
-                if candidate.counts_towards_review_limit {
-                    self.limits.reserve_review(
-                        candidate.card.current_deck_id,
-                        candidate.card.original_deck_id,
-                    )?;
-                }
+            if self.add_due_card_for_retrievability_sort(card) {
+                self.r_sorted_non_new.push(card);
+                self.limits
+                    .reserve_review(card.current_deck_id, card.original_deck_id)?;
             }
         }
 
@@ -578,51 +551,6 @@ impl QueueBuilder {
         )?;
 
         Ok(())
-    }
-
-    fn gather_intraday_learning_cards_for_retrievability_sort(
-        &mut self,
-        col: &mut Collection,
-        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
-    ) -> Result<()> {
-        col.storage.for_each_intraday_card_in_active_decks(
-            self.context.timing.next_day_at,
-            |card| {
-                if self.card_is_pinned(card.id) {
-                    return;
-                }
-                if card.due <= self.context.timing.now.0 as i32 {
-                    due_cards.push(DueCardForRetrievabilitySort {
-                        card,
-                        counts_towards_review_limit: false,
-                        interday_or_review: false,
-                    });
-                } else {
-                    self.learning.push(card);
-                }
-            },
-        )?;
-
-        Ok(())
-    }
-
-    fn gather_due_cards_for_retrievability_sort(
-        &mut self,
-        col: &mut Collection,
-        kind: DueCardKind,
-        due_cards: &mut Vec<DueCardForRetrievabilitySort>,
-        rows: &mut HashMap<CardId, Card>,
-    ) -> Result<()> {
-        col.storage
-            .for_each_due_card_row_in_active_decks(self.context.timing, kind, |card| {
-                due_cards.push(DueCardForRetrievabilitySort {
-                    card: DueCard::from_card(&card, kind),
-                    counts_towards_review_limit: true,
-                    interday_or_review: true,
-                });
-                rows.insert(card.id, card);
-                Ok(())
-            })
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
@@ -863,7 +791,7 @@ impl QueueBuilder {
         if self.card_is_pinned(card.id) {
             return false;
         }
-        let added = self.add_due_card_for_retrievability_sort(card, true);
+        let added = self.add_due_card_for_retrievability_sort(card);
         if added {
             match card.kind {
                 DueCardKind::Review => self.review.push(card),
@@ -874,11 +802,7 @@ impl QueueBuilder {
         added
     }
 
-    pub(super) fn add_due_card_for_retrievability_sort(
-        &mut self,
-        card: DueCard,
-        interday_or_review: bool,
-    ) -> bool {
+    pub(super) fn add_due_card_for_retrievability_sort(&mut self, card: DueCard) -> bool {
         if self.card_is_pinned(card.id) {
             return false;
         }
@@ -886,8 +810,7 @@ impl QueueBuilder {
             .get_and_update_bury_mode_for_note(card.into())
             .map(|mode| match card.kind {
                 DueCardKind::Review => mode.bury_reviews,
-                DueCardKind::Learning if interday_or_review => mode.bury_interday_learning,
-                DueCardKind::Learning => false,
+                DueCardKind::Learning => mode.bury_interday_learning,
             })
             .unwrap_or_default();
         !bury_this_card
