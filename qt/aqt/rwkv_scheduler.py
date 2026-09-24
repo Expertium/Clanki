@@ -22305,10 +22305,12 @@ def _rwkv_stored_curve_retrievabilities_for_inputs(
     if values is None:
         logger.warning("RWKV stored curves arrived malformed; no curve values")
         return []
+    # the values are floats: NaN and the infinities fail the comparison, as
+    # they fail `_valid_probability`
     return [
         (card_id, retrievability)
         for (card_id, _), retrievability in zip(inputs_by_card_id, values, strict=True)
-        if _valid_probability(retrievability)
+        if 0.0 <= retrievability <= 1.0
     ]
 
 
