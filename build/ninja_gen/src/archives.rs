@@ -98,7 +98,7 @@ impl BuildAction for DownloadArchive {
     }
 }
 
-struct ExtractArchive<'a, I> {
+pub struct ExtractArchive<'a, I> {
     pub archive_path: BuildInput,
     /// The folder that the archive should be extracted into, relative to
     /// $builddir/extracted. If the archive contains a single top-level

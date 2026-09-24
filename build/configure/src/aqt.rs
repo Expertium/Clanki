@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use ninja_gen::action::BuildAction;
+use ninja_gen::archives::Platform;
 use ninja_gen::command::RunCommand;
 use ninja_gen::copy::CopyFile;
 use ninja_gen::copy::CopyFiles;
@@ -383,7 +384,18 @@ fn check_python(build: &mut Build) -> Result<()> {
                 "$builddir/qt",
                 "$builddir/qt/tools",
             ],
-            deps: inputs![":pylib:anki", ":qt:aqt", glob!["qt/tests/**"]],
+            // on Windows x64 the tests check the MinGW mpv the build adds
+            // (spec ui.audio-mingw-mpv)
+            deps: if build.host_platform == Platform::WindowsX64 {
+                inputs![
+                    ":pylib:anki",
+                    ":qt:aqt",
+                    ":qt:mpv_mingw",
+                    glob!["qt/tests/**"]
+                ]
+            } else {
+                inputs![":pylib:anki", ":qt:aqt", glob!["qt/tests/**"]]
+            },
         },
     )?;
 
