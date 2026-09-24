@@ -809,9 +809,16 @@ each card's start row: the backend fingerprint, the backend's replay inputs
 and replay rows, and the Python query (whole, in parts and after a review id).
 The start-up restore that reads only the reviews after the saved state passes
 the saved state's ignored reviews to that read too. Grade Now and a live answer
-read one card's rows with the state cache's active ignored reviews, through the
-same query, so they continue the resident state from the card's history as the
-cache holds it.
+read one card's rows through the same query, with the ignored reviews the
+resident state was built without, so they continue that state from the card's
+history as the state holds it. That set lives in memory with the state: it is
+set with the state (a rebuild, a restore, a restore that appends deltas) and
+kept while the state only takes answers; it is never read back from the cache
+file, which a failed save can leave behind the state. On disk, the metadata
+file is the save's commit point: it names the history, the stored state and
+the ignored reviews together and is replaced atomically, and the store save
+writes it before it empties the deltas log, so a failed write leaves the old
+cache whole; a state file that no longer matches the metadata is a cache miss.
 For this rule an ignored review is not rated: it is never a learning start, and
 it does not separate two Learning runs. An ignored Forget row still cuts the
 history. The ignored reviews a history reports as active, which the state
@@ -836,7 +843,10 @@ again.
 (`qt/tests/test_rwkv_replay_sql_drift.py`) and
 `test_the_restore_reads_only_the_reviews_after_a_saved_prefix`,
 `test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews`,
-`test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews`
+`test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews`,
+`test_a_failed_metadata_save_leaves_the_ignored_reviews_consistent`,
+`test_a_failed_save_of_new_ignored_reviews_keeps_memory_and_file_apart`,
+`test_a_failed_store_metadata_write_keeps_the_deltas_the_old_metadata_needs`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 **The rule has one implementation: the SQL.** The backend query

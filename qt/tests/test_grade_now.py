@@ -44,6 +44,7 @@ def no_rwkv_backend() -> Iterator[None]:
     finally:
         set_reviewer_backend(previous)
         rwkv_scheduler._reviewer_backend_warmup_states.clear()
+        rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
 
 
 def _use_rwkv(col: Collection, backend: object | None, *, ready: bool = True) -> None:

@@ -646,7 +646,7 @@ def test_a_single_card_read_is_the_cache_history_of_the_card(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pins spec sched.rwkv-replay-start-row: Grade Now and a live answer read
-    one card's rows with the state cache's active ignored reviews, through
+    one card's rows with the resident state's active ignored reviews, through
     the query every history build uses, so they continue the resident state
     from the card's history as the cache holds it. An ignored Learning start
     is no start there either; an ignored review that is no start leaves the
@@ -663,11 +663,12 @@ def test_a_single_card_read_is_the_cache_history_of_the_card(
         cache = rwkv_scheduler._historical_rwkv_review_inputs(
             reviewer, ignored_review_ids=ignored
         )
-        # the cache stores its active ignored reviews in its metadata
+        # the resident state built from this history keeps its active
+        # ignored reviews
         monkeypatch.setattr(
             rwkv_scheduler,
-            "_read_rwkv_state_cache_metadata",
-            lambda _reviewer: {"ignoredReviewIds": list(cache.ignored_review_ids)},
+            "_resident_ignored_review_ids",
+            lambda _reviewer: cache.ignored_review_ids,
         )
         whole = rwkv_scheduler._historical_rwkv_review_rows(
             reviewer, ignored_review_ids=ignored
