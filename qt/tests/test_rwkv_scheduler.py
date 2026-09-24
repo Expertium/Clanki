@@ -22160,3 +22160,81 @@ def test_rwkv_curve_last_replayed_review_skips_previews_and_ignored_reviews(
         )
         is None
     )
+
+
+# Pins spec/scheduling.md#sched.rwkv-live-learning-start-fresh: a live answer that
+# starts a card's history again (its first answer after Forget) starts the
+# card fresh, as a rebuild does: no card state from its earlier reviews, and
+# the runtime forgets the card's own counters and curve first. Other answers
+# continue the card's state.
+def test_live_learning_start_starts_the_card_fresh() -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.card_states: list[object | None] = []
+            self.forgotten: list[int] = []
+
+        def forget_card(self, card_id: int) -> bool:
+            self.forgotten.append(card_id)
+            return True
+
+        def review(
+            self,
+            *,
+            review_input: RwkvReviewInput,
+            card_state: object | None,
+            note_state: object | None,
+            deck_state: object | None,
+            preset_state: object | None,
+            global_state: object | None,
+        ) -> RwkvReviewTransition:
+            del note_state, deck_state, preset_state, global_state
+            self.card_states.append(card_state)
+            return RwkvReviewTransition(
+                card_state=f"card-{len(self.card_states)}".encode()
+            )
+
+    runtime = Runtime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    review = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        card_type=int(RwkvReviewState.REVIEW),
+    )
+    learn_start = replace(review, card_type=int(RwkvReviewState.LEARN_START))
+
+    backend.review_input_answered(review)
+    backend.review_input_answered(review)
+    assert runtime.card_states == [None, b"card-1"]
+    assert runtime.forgotten == []
+    assert not backend.stale_since_forget
+
+    # Forget made the card new; its next answer is a learning start
+    backend.review_input_answered(learn_start)
+    assert runtime.card_states[-1] is None
+    assert runtime.forgotten == [1]
+    # the shared states still hold the card's earlier reviews until a rebuild
+    assert backend.stale_since_forget
+
+    backend.review_input_answered(review)
+    assert runtime.card_states[-1] == b"card-3"
+
+    # the state cache keeps the mark; a replay from nothing clears it
+    set_reviewer_backend(backend)
+    history = _rwkv_checkpoint_test_history(2)
+    metadata = rwkv_scheduler._rwkv_state_cache_metadata(
+        _rwkv_reviewer(),
+        history,
+        snapshot_review_id=history.last_review_id,
+        base_metadata={},
+    )
+    assert metadata["staleSinceForget"] is True
+    backend.reset_cache_snapshot()
+    assert not backend.stale_since_forget
+    metadata = rwkv_scheduler._rwkv_state_cache_metadata(
+        _rwkv_reviewer(),
+        history,
+        snapshot_review_id=history.last_review_id,
+        base_metadata={"staleSinceForget": True},
+    )
+    assert "staleSinceForget" not in metadata

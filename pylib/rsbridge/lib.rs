@@ -806,6 +806,14 @@ impl RwkvInference {
         }
     }
 
+    /// Forgets the card's own feature counters and stored curve before a
+    /// live answer that starts its history again (spec
+    /// sched.rwkv-live-learning-start-fresh). True when the state had seen
+    /// the card.
+    fn forget_card(&mut self, card_id: i64) -> bool {
+        self.inner.forget_card(card_id)
+    }
+
     /// (recall at each of `elapsed_days`, the curve's S90), or None without a
     /// stored curve for the card.
     fn card_curve(&self, card_id: i64, elapsed_days: Vec<f32>) -> Option<(Vec<f32>, f32)> {

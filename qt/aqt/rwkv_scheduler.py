@@ -242,6 +242,7 @@ _RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS12\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS = 8 * 86_400_000
 _RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY = "ignoredReviewIds"
+_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY = "staleSinceForget"
 _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
 _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
 _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
@@ -1075,6 +1076,11 @@ class RwkvStatefulReviewerBackend:
         self._preset_states: dict[int, object | None] = {}
         self._global_state: object | None = None
         self._resident_state_populated = False
+        # True once a live learning start forgot a card the state had seen:
+        # the shared states still hold that card's earlier reviews, which a
+        # rebuild drops (spec sched.rwkv-live-learning-start-fresh). A replay
+        # from nothing clears it; the state cache keeps it across restarts.
+        self._stale_since_forget = False
         self._state_generation = 0
         self._undo_frames: list[RwkvReviewRollbackEntry] = []
         self._redo_frames: list[RwkvReviewRollbackEntry] = []
@@ -1264,9 +1270,21 @@ class RwkvStatefulReviewerBackend:
             if callable(restore_cache_state):
                 restore_cache_state(snapshot.runtime_state)
 
+    @property
+    def stale_since_forget(self) -> bool:
+        """True while the state holds reviews a rebuild would drop, because a
+        live learning start forgot a card it had seen (spec
+        sched.rwkv-live-learning-start-fresh)."""
+        return self._stale_since_forget
+
+    def set_stale_since_forget(self, stale: bool) -> None:
+        """Sets `stale_since_forget`, for a state restored from the cache."""
+        self._stale_since_forget = stale
+
     def reset_cache_snapshot(self) -> None:
         self._clear_python_state_cache()
         self._resident_state_populated = False
+        self._stale_since_forget = False
         self._advance_state_generation()
         self._undo_frames.clear()
         self._redo_frames.clear()
@@ -2486,9 +2504,19 @@ class RwkvStatefulReviewerBackend:
         identity = review_input.identity
         before = self._snapshot(identity, review_input)
         before_curve_prediction = self._curve_prediction_for_card(identity.card_id)
+        card_state = before.card_state
+        if review_input.card_type == int(RwkvReviewState.LEARN_START):
+            # the answer starts the card's history (a new card, or its first
+            # answer after Forget): the card starts fresh, as a rebuild
+            # starts it, not from what its earlier reviews left (spec
+            # sched.rwkv-live-learning-start-fresh); undo restores `before`
+            card_state = None
+            forget_card = getattr(self._runtime, "forget_card", None)
+            if callable(forget_card) and forget_card(identity.card_id):
+                self._stale_since_forget = True
         transition = self._runtime.review(
             review_input=review_input,
-            card_state=before.card_state,
+            card_state=card_state,
             note_state=before.note_state,
             deck_state=before.deck_state,
             preset_state=before.preset_state,
@@ -14143,6 +14171,11 @@ def _restore_reviewer_backend_cache(
         else:
             return None
         del stored_snapshot
+        set_stale_since_forget = getattr(backend, "set_stale_since_forget", None)
+        if callable(set_stale_since_forget):
+            set_stale_since_forget(
+                stored_metadata.get(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY) is True
+            )
         if stored_history.reviews:
             _require_reviewer_backend_warmup_current(is_current)
             _report_rwkv_state_cache_progress(
@@ -16191,6 +16224,12 @@ def _rwkv_state_cache_metadata(
         )
     else:
         metadata.pop(_RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY, None)
+    # the saved state still holds reviews a rebuild would drop (spec
+    # sched.rwkv-live-learning-start-fresh)
+    if getattr(_reviewer_backend, "stale_since_forget", False) is True:
+        metadata[_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY] = True
+    else:
+        metadata.pop(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY, None)
     return metadata
 
 

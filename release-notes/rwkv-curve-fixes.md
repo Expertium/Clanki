@@ -5,3 +5,6 @@
 - RWKV-Curve: card info and AnkiConnect now measure a card's retrievability
   from its last review that RWKV learned from. A later preview in a filtered
   deck no longer makes the value too high.
+- RWKV-Curve and RWKV-Instant: the first answer after Forget now starts the
+  card fresh in RWKV's live state, as a rebuild does, instead of continuing
+  from the card's earlier reviews.

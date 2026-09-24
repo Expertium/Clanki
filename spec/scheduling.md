@@ -911,6 +911,43 @@ may cut at.
 `test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint`
 (`qt/tests/test_rwkv_replay_sql_drift.py`).
 
+## sched.rwkv-live-learning-start-fresh
+
+Given a live answer under RWKV-Curve or RWKV-Instant (the reviewer, Grade
+Now) that is a card's learning start (`sched.rwkv-replay-start-row`), for
+example the first answer after Forget, the resident RWKV state takes it as
+the start of the card's history, as a rebuild does: the card's own recurrent
+state starts empty, and the state forgets the card's own counters (its
+cumulative elapsed time, its first day, its place in the "new cards" and
+"reviews since" counts) and its stored curve before the answer. A rebuild
+drops the card's earlier rows from the history, so it counts the card as a
+new card on that day; the live answer now counts it the same way. The shared
+states (note, deck, preset, global) and the other cards' counters still hold
+the card's earlier reviews until the next rebuild, which reads the history
+without them. Undo of the answer restores the card's earlier state.
+
+When the state had seen the card, it is marked "stale since Forget": the
+mark stays with the resident state, the state cache saves it (the
+`staleSinceForget` key of its metadata) and a restore of that cache brings
+it back; a replay of the whole history from nothing clears it. The mark
+starts no rebuild by itself: the next rebuild that happens for another
+reason (a new model, a cache that does not load, the Advanced-mode button)
+makes the state exact again.
+
+**Why:** Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Curve
+review (`reviews/algo-2026-09-24/rwkv-curve.md`, section 2): after Forget the
+live answer continued the card's old state (card stream, cumulative elapsed
+time, curve), while every rebuild starts the card fresh, so the card's
+intervals changed at the next rebuild. The RWKV session, 2026-09-25: the
+dataset builder drops every row of a card before its last learning start
+from all streams and counters, so a card-local fresh start fixes the card
+stream (the largest part of the error) and a mark records that the rest
+waits for a rebuild; Clanki must not force a full rebuild on every Forget.
+
+**Pinned by:** `a_forgotten_card_has_the_features_of_an_unseen_card`
+(`rslib/src/rwkv/mod.rs`), `test_live_learning_start_starts_the_card_fresh`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-exact-elapsed
 
 Given a learning card that RWKV predicts for, the elapsed time RWKV gets is
