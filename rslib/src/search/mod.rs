@@ -475,25 +475,6 @@ impl Collection {
         )
     }
 
-    fn elapsed_seconds_since_last_review_for_card(
-        &self,
-        card: &Card,
-        timing: SchedTimingToday,
-    ) -> u32 {
-        if let Some(last_review_time) = card.last_review_time {
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let due = card.original_or_current_due() as i64;
-            if due > 365_000 {
-                let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-                timing.now.elapsed_secs_since_clamped(last_review_time)
-            } else {
-                let review_day = due.saturating_sub(card.interval as i64);
-                timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-            }
-        }
-    }
-
     fn exact_fsrs_metrics_for_card_with_params(
         &self,
         card: &Card,
@@ -504,7 +485,7 @@ impl Collection {
             return Ok(None);
         };
         let elapsed_days =
-            self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
+            card.seconds_since_last_review(&timing) as f32 / 86_400.0;
         let r = fsrs_current_retrievability_for_state(params, state, elapsed_days)?;
         Ok(Some((r, state.stability)))
     }
@@ -1116,7 +1097,7 @@ mod test {
         card.last_review_time = Some(timing.now.adding_secs(60));
 
         assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
+            card.seconds_since_last_review(&timing),
             0
         );
 
@@ -1124,16 +1105,41 @@ mod test {
         card.due = timing.now.adding_secs(60).0 as i32;
         card.interval = 0;
         assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
+            card.seconds_since_last_review(&timing),
             0
         );
 
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.elapsed-time-fallback: without
+    // last_review_time, a card due in seconds counts from its due time (its
+    // interval, in days, is not taken off a due in seconds), and a card due in
+    // days was reviewed its interval before its due day.
+    #[test]
+    fn elapsed_time_fallback_is_the_same_rule_for_every_card() -> Result<()> {
+        let mut col = Collection::new();
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(1), 0, DeckId(1), 0);
+        card.last_review_time = None;
+
+        // a relearning card of a 30-day review card, due 60 s ago
+        card.ctype = CardType::Relearn;
+        card.queue = CardQueue::Learn;
         card.due = timing.now.adding_secs(-60).0 as i32;
         card.interval = 30;
-        assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
-            90
-        );
+        assert_eq!(card.seconds_since_last_review(&timing), 60);
+
+        // a review card due today with a 30-day interval (in a new collection
+        // its review day is before the collection's day 0)
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = timing.days_elapsed as i32;
+        assert_eq!(card.seconds_since_last_review(&timing), 30 * 86_400);
+
+        // a review card due in 5 days with a 30-day interval
+        card.due = timing.days_elapsed as i32 + 5;
+        assert_eq!(card.seconds_since_last_review(&timing), 25 * 86_400);
         Ok(())
     }
 

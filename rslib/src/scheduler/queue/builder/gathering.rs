@@ -841,21 +841,6 @@ impl QueueBuilder {
     }
 }
 
-fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
-    if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since_clamped(last_review_time)
-    } else {
-        let due = card.original_or_current_due() as i64;
-        if due > 365_000 {
-            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let review_day = due.saturating_sub(card.interval as i64);
-            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-        }
-    }
-}
-
 /// The sort keys of FSRS's retrievability orders: the card's retrievability,
 /// or its relative overdueness (spec sched.fsrs7-only). During one queue
 /// build each home deck's preset and each parameter set's model are made
@@ -888,7 +873,7 @@ impl ExactReviewOrderKeys {
             };
             return Ok(-((days_elapsed as f32) + 0.001) / (card.interval as f32).max(1.0));
         };
-        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+        let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
         if matches!(self.order, ReviewCardOrder::RelativeOverdueness) {
             self.curves
                 .relative_overdueness(col, card, state, elapsed_days)
@@ -931,7 +916,7 @@ mod test {
     ) -> Result<f32> {
         let card = col.storage.get_card(card_id)?.or_not_found(card_id)?;
         if let Some(state) = card.memory_state {
-            let elapsed_days = elapsed_seconds_since_last_review(&card, timing) as f32 / 86_400.0;
+            let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
             if matches!(order, ReviewCardOrder::RelativeOverdueness) {
                 col.fsrs_relative_overdueness_for_card_state(&card, state, elapsed_days)
             } else {
@@ -1103,7 +1088,7 @@ mod test {
         order: ReviewCardOrder,
     ) -> Result<f32> {
         let state = card.memory_state.unwrap();
-        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+        let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
         let preset = col.fsrs_preset_for_card(card)?;
         let fsrs = FSRS::new(&preset.params)?;
         Ok(if matches!(order, ReviewCardOrder::RelativeOverdueness) {

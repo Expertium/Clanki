@@ -1361,6 +1361,28 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
 
+## sched.elapsed-time-fallback
+
+Given a card with an FSRS-7 memory state but no stored last review time,
+every FSRS-7 retrievability read outside answering (the Browser's
+Retrievability column and sort, `prop:r` searches and sorts, the FSRS-7
+retrievability graph, the study queue's retrievability orders and the
+filtered-deck retrievability orders) takes its elapsed time from the same
+rule: a card due in days was last reviewed its interval in days before its
+due day; a card due in seconds (intraday learning) counts from its due time.
+The elapsed time is never below zero.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", after the FSRS-7 review
+(`reviews/algo-2026-09-24/fsrs7.md`, section 6) found three different
+fallbacks: the Browser used the due time of a learning card, while the
+searches and the queue took the interval, a number of days, off a due time
+in seconds, and a card due in days whose interval reached back before the
+collection's first day got an elapsed time of zero.
+
+**Pinned by:** `elapsed_time_fallback_is_the_same_rule_for_every_card`,
+`exact_retrievability_clamps_future_last_review_time`
+(`rslib/src/search/mod.rs`).
+
 ## sched.no-dynamic-desired-retention
 
 Given a deck preset (or an add-on FSRS preset overlay) that stored dynamic

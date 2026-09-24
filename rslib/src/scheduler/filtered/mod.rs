@@ -377,21 +377,6 @@ fn fnvhash_card_and_mod(card: &Card) -> i64 {
     hasher.finish() as i64
 }
 
-fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
-    if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since_clamped(last_review_time)
-    } else {
-        let due = card.original_or_current_due() as i64;
-        if due > 365_000 {
-            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let review_day = due.saturating_sub(card.interval as i64);
-            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-        }
-    }
-}
-
 /// What a filtered deck's retrievability order reads: the collection's
 /// algorithm, and the RWKV scores the filtered-deck preparation published
 /// for the deck's own cards (`FILTERED_DECK_RWKV_SCORES_SEARCH`).
@@ -420,7 +405,7 @@ fn exact_retrievability_key_for_card(
         SchedulingAlgorithm::Fsrs7 => {
             if let Some(state) = card.memory_state {
                 let elapsed_days =
-                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                    card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                 curves
                     .current_retrievability(col, card, state, elapsed_days)
                     .map(Some)
@@ -449,7 +434,7 @@ fn exact_fsrs_search_key_for_card(
             SchedulingAlgorithm::Fsrs7 => {
                 if let Some(state) = card.memory_state {
                     let elapsed_days =
-                        elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                        card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                     curves
                         .relative_overdueness(col, card, state, elapsed_days)
                         .map(Some)
@@ -591,7 +576,7 @@ mod test {
                 let preset = col.fsrs_preset_for_card(card)?;
                 let fsrs = fsrs::FSRS::new(&preset.params)?;
                 let state = card.memory_state.unwrap().into();
-                let elapsed = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                let elapsed = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                 let expected = match order {
                     ExactFsrsSearchOrder::Retrievability { .. } => {
                         fsrs.current_retrievability(state, elapsed.max(0.0))
