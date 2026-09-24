@@ -927,22 +927,32 @@ relearning or review — is decided the same way, in the order Again, Hard,
 Good, Easy:
 
 - a button decided by a remaining learning or relearning step keeps the
-  step's delay and takes no part in what follows;
-- a button whose unrounded interval is under 18 hours goes to the
-  intraday learning queue with that interval in seconds, unrounded and
-  without review fuzz (at least the preset's minimum interval, 1 second by
-  default), and at least as long as the sub-day button before it; a
-  learning card stays learning, and a review or relearning card becomes a
-  relearning card with no remaining steps (a passing answer keeps its lapse
-  count, and the card's interval field holds a whole number of days, at
-  least 1);
-- a button of 18 hours or more gets whole days (at least 1) after review
-  fuzz, and at least one day more than the day button before it: with all
-  four at 18 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
+  step's delay; the buttons after it are at least as long. A step under 18
+  hours counts as a sub-day button with its delay, and a step of 18 hours
+  or more as a day button of its delay in whole days, rounded up (1 d is 1
+  day, 36 h is 2 days);
+- a button whose unrounded interval is under 18 hours, with no day button
+  or day-long step before it, goes to the intraday learning queue with that
+  interval in seconds, unrounded and without review fuzz (at least the
+  preset's minimum interval, 1 second by default), and at least as long as
+  the sub-day button or sub-day step before it; a learning card stays
+  learning, and a review or relearning card becomes a relearning card with
+  no remaining steps (a passing answer keeps its lapse count, and the
+  card's interval field holds a whole number of days, at least 1);
+- any other button (18 hours or more, or after a day button or a day-long
+  step) gets whole days (at least 1) after review fuzz, and at least one
+  day more than the day button or day-long step before it: with all four
+  at 18 hours or more, Hard ≥ Again + 1, Good ≥ Hard + 1 and
   Easy ≥ Good + 1. The fuzz range and the load balancer take the unrounded
   interval for every card (new, learning, relearning and review), so, with
   the same fuzz, 6.6 days gives the same range (5–8 days) on a new card as
   on a review card.
+
+So Again ≤ Hard ≤ Good ≤ Easy for every card, also when some buttons are
+steps and others model intervals. With steps "10m 1d", a new card at the
+10 m step gets Hard 12 h 5 m and Good 1 d (steps) and Easy at least 2 days,
+whatever the model's Easy interval; a card at the 1 d step gets Hard 1 d
+(step), and Good and Easy at least 2 and 3 days.
 
 For RWKV-Curve the answer curves are searched inside the first day as well
 (at 1, 5, 10, 20 and 30 minutes and 1, 2, 3, 4, 6, 8, 12, 16 and 20 hours)
@@ -981,12 +991,24 @@ rollover stays due at the rollover). Andrew, 2026-09-21: "Currently, any
 > The FSRS-7 interval audit (2026-09-15; Andrew: fix it) found new, learning
 > and relearning buttons fuzzed from the interval rounded to whole days (6.6
 > days gave the range 5–9 days, a review card 5–8), an upstream leftover.
+> Andrew, 2026-09-24: "fix FSRS-7 bugs", about the FSRS-7 review
+> (`clanki-logs/reviews/algo-2026-09-24/fsrs7.md`, section 3): steps took
+> no part in the ordering, so with steps "10m 1d" and default parameters
+> Easy (2.25 h) could be shorter than Good's 1 d step, and Good (2.7 h)
+> shorter than Hard's 1 d step.
 
 **Pinned by:** `button_intervals::test::*`, and for the threshold itself
 `eighteen_hours_or_more_is_a_whole_day` and
-`the_sub_day_limit_is_eighteen_hours`
+`the_sub_day_limit_is_eighteen_hours`, for the steps
+`a_sub_day_step_floors_the_sub_day_buttons_after_it`,
+`a_day_long_step_makes_the_buttons_after_it_day_buttons`,
+`a_day_long_step_counts_as_its_delay_rounded_up_to_days`,
+`a_sub_day_interval_after_a_day_button_is_a_day_button` and
+`a_review_again_step_floors_sub_day_passing_buttons`
 (`rslib/src/scheduler/states/button_intervals.rs`),
-`scheduling_states_with_intervals_apply_the_fsrs_rules`
+`scheduling_states_with_intervals_apply_the_fsrs_rules`,
+`fsrs7_easy_is_not_shorter_than_a_learning_step` and
+`rwkv_curve_buttons_are_not_shorter_than_a_step_before_them`
 (`rslib/src/scheduler/answering/mod.rs`),
 `intervals_are_where_the_curve_meets_the_target`,
 `pava_crossings_are_ordered_with_per_grade_targets`,

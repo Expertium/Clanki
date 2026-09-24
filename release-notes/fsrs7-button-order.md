@@ -1,0 +1,1 @@
+- With learning or relearning steps, the answer buttons never go backwards: a button that FSRS-7 or RWKV-Curve schedules is at least as long as a step button before it, so Easy is never shorter than Good.

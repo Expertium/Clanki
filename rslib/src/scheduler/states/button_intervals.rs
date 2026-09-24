@@ -4,17 +4,20 @@
 //! What each answer button schedules under FSRS-7 and RWKV-Curve (spec
 //! `sched.sub-day-intervals`).
 //!
+//! A button decided by a learning or relearning step keeps the step's delay.
 //! A button whose unrounded interval is under 18 hours stays unrounded: it
 //! goes to the intraday learning queue, in seconds, without review fuzz. A
 //! button at 18 hours or more gets whole days (at least one) after review
-//! fuzz. Among the day
-//! buttons each is at least one day above the day button before it (Again <
-//! Hard < Good < Easy); among the sub-day buttons each is at least as long as
-//! the sub-day button before it.
+//! fuzz. Every button is at least as long as the buttons before it (Again <=
+//! Hard <= Good <= Easy), steps included: a sub-day button is at least as
+//! long as the sub-day button or sub-day step before it, and a day button is
+//! at least one day above the day button or day-long step before it. A
+//! button after a day button or a day-long step is a day button.
 
 use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
+use super::SECONDS_PER_DAY;
 
 /// Unrounded intervals from this many days on are scheduled in whole days.
 /// Andrew, 2026-09-15: "Anything >=12h rounds up to 1d"; 2026-09-21: "Raise
@@ -27,6 +30,27 @@ pub(crate) enum ButtonInterval {
     Secs(u32),
     /// 18 hours or more: whole days after fuzz, and how far fuzz moved them.
     Days { days: u32, fuzz_delta_days: i32 },
+}
+
+/// What decides one answer button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ButtonInput {
+    /// A learning or relearning step with this delay decides the button. The
+    /// step keeps its delay, and the buttons after it are at least as long.
+    Step { secs: u32 },
+    /// The model's (FSRS-7's or RWKV-Curve's) unrounded interval, in days.
+    Model { days: f32 },
+}
+
+impl ButtonInput {
+    /// The step's delay if a step decides the button, else the model's
+    /// interval.
+    pub(crate) fn new(step_secs: Option<u32>, model_days: f32) -> Self {
+        match step_secs {
+            Some(secs) => Self::Step { secs },
+            None => Self::Model { days: model_days },
+        }
+    }
 }
 
 /// Which day rules apply to the card being answered.
@@ -44,12 +68,12 @@ pub(crate) enum DayRule {
     Graduating,
 }
 
-/// The four buttons' outcomes, in Again, Hard, Good, Easy order. `None` in
-/// `unrounded` (days) means the button is decided elsewhere, by a learning
-/// step; it gets `None` back and does not take part in the ordering.
+/// The four buttons' outcomes, in Again, Hard, Good, Easy order. A button
+/// decided by a step gets `None` back (the step decides it elsewhere), but
+/// its delay still floors the buttons after it.
 pub(crate) fn button_intervals(
     ctx: &StateContext,
-    unrounded: [Option<f32>; 4],
+    inputs: [ButtonInput; 4],
     rule: DayRule,
 ) -> [Option<ButtonInterval>; 4] {
     let sub_day_allowed = ctx.fsrs_uses_short_term_learning_queue();
@@ -57,11 +81,22 @@ pub(crate) fn button_intervals(
     let mut previous_days: Option<u32> = None;
     let mut out = [None; 4];
 
-    for (index, interval) in unrounded.into_iter().enumerate() {
-        let Some(interval) = interval else {
-            continue;
+    for (index, input) in inputs.into_iter().enumerate() {
+        let interval = match input {
+            ButtonInput::Step { secs } => {
+                if (secs as f32) < SUB_DAY_LIMIT_DAYS * SECONDS_PER_DAY {
+                    previous_secs = previous_secs.max(secs);
+                } else {
+                    // a day-long step counts as its delay in whole days,
+                    // rounded up
+                    let days = secs.div_ceil(SECONDS_PER_DAY as u32).max(1);
+                    previous_days = Some(previous_days.map_or(days, |d| d.max(days)));
+                }
+                continue;
+            }
+            ButtonInput::Model { days } => days,
         };
-        if sub_day_allowed && interval < SUB_DAY_LIMIT_DAYS {
+        if sub_day_allowed && interval < SUB_DAY_LIMIT_DAYS && previous_days.is_none() {
             let secs =
                 fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs).max(previous_secs);
             previous_secs = secs;
@@ -120,8 +155,21 @@ mod test {
         ctx
     }
 
-    fn all(a: f32, h: f32, g: f32, e: f32) -> [Option<f32>; 4] {
-        [Some(a), Some(h), Some(g), Some(e)]
+    fn all(a: f32, h: f32, g: f32, e: f32) -> [ButtonInput; 4] {
+        [model(a), model(h), model(g), model(e)]
+    }
+
+    fn model(days: f32) -> ButtonInput {
+        ButtonInput::Model { days }
+    }
+
+    fn step(secs: u32) -> ButtonInput {
+        ButtonInput::Step { secs }
+    }
+
+    /// A zero-second step: it floors nothing, so the button takes no part.
+    fn skip() -> ButtonInput {
+        step(0)
     }
 
     fn days(days: u32) -> Option<ButtonInterval> {
@@ -190,13 +238,17 @@ mod test {
         assert_eq!(SUB_DAY_LIMIT_DAYS, 0.75);
         let out = button_intervals(
             &ctx(),
-            [Some(0.749_99), None, None, None],
+            [model(0.749_99), skip(), skip(), skip()],
             DayRule::Graduating,
         );
         let Some(ButtonInterval::Secs(_)) = out[0] else {
             panic!("just under 18 hours should stay in seconds");
         };
-        let out = button_intervals(&ctx(), [Some(0.75), None, None, None], DayRule::Graduating);
+        let out = button_intervals(
+            &ctx(),
+            [model(0.75), skip(), skip(), skip()],
+            DayRule::Graduating,
+        );
         assert_eq!(out[0], days(1));
     }
 
@@ -207,13 +259,95 @@ mod test {
     }
 
     #[test]
-    fn step_buttons_are_skipped_and_do_not_floor_later_ones() {
+    fn step_buttons_get_none_back() {
         let out = button_intervals(
             &ctx(),
-            [None, None, Some(2.0), Some(2.0)],
+            [step(60), step(330), model(2.0), model(2.0)],
             DayRule::Graduating,
         );
         assert_eq!(out, [None, None, days(2), days(3)]);
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: a model button is at
+    // least as long as a sub-day step before it.
+    #[test]
+    fn a_sub_day_step_floors_the_sub_day_buttons_after_it() {
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(900), model(0.005), model(0.02)],
+            DayRule::Graduating,
+        );
+        // Good's 432 s is raised to Hard's 900 s step; Easy's 1728 s stays
+        assert_eq!(out, [None, None, secs(900), secs(1728)]);
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: the review's two
+    // cases with steps "10m 1d" and default FSRS-7 parameters, where Easy
+    // (and Good) came out shorter than a step before them.
+    #[test]
+    fn a_day_long_step_makes_the_buttons_after_it_day_buttons() {
+        // a new card after Again, at the 10 m step: Hard 12 h 5 m (step),
+        // Good 1 d (step), Easy 2.25 h (model)
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(43_500), step(86_400), model(0.094)],
+            DayRule::Graduating,
+        );
+        assert_eq!(out, [None, None, None, days(2)]);
+        // at the 1 d step: Hard 1 d (step), Good 2.7 h and Easy 3.3 h
+        // (model)
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(86_400), model(0.1125), model(0.1375)],
+            DayRule::Graduating,
+        );
+        assert_eq!(out, [None, None, days(2), days(3)]);
+        // the same for a relearning card
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(86_400), model(0.1125), model(0.1375)],
+            DayRule::Relearning,
+        );
+        assert_eq!(out, [None, None, days(2), days(3)]);
+    }
+
+    #[test]
+    fn a_day_long_step_counts_as_its_delay_rounded_up_to_days() {
+        // 18 hours is a day-long step (1 day); 36 hours is 2 days
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(64_800), model(0.2), model(1.0)],
+            DayRule::Graduating,
+        );
+        assert_eq!(out, [None, None, days(2), days(3)]);
+        let out = button_intervals(
+            &ctx(),
+            [step(600), step(129_600), model(0.2), model(5.0)],
+            DayRule::Graduating,
+        );
+        assert_eq!(out, [None, None, days(3), days(5)]);
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: a sub-day interval
+    // after a day button is raised to a day button.
+    #[test]
+    fn a_sub_day_interval_after_a_day_button_is_a_day_button() {
+        let out = button_intervals(&ctx(), all(0.1, 1.2, 0.5, 0.6), DayRule::Graduating);
+        assert_eq!(out, [secs(8640), days(1), days(2), days(3)]);
+    }
+
+    // A review card's Again step (a relearning step) floors the sub-day
+    // passing buttons.
+    #[test]
+    fn a_review_again_step_floors_sub_day_passing_buttons() {
+        let out = button_intervals(
+            &ctx(),
+            [step(600), model(0.001), model(0.01), model(2.0)],
+            DayRule::Review {
+                previous_interval: 3,
+            },
+        );
+        assert_eq!(out[..3], [None, secs(600), secs(864)]);
     }
 
     #[test]
@@ -232,7 +366,7 @@ mod test {
         ctx.fsrs_minimum_interval_secs = 600;
         let out = button_intervals(
             &ctx,
-            [Some(0.000_01), None, None, None],
+            [model(0.000_01), skip(), skip(), skip()],
             DayRule::Graduating,
         );
         assert_eq!(out, [secs(600), None, None, None]);
@@ -293,7 +427,7 @@ mod test {
         // 6.6 days: fuzz range 5-8 (from 7 days it would be 5-9 -> 9)
         for (interval, expected) in [(3.4, 5), (6.6, 8)] {
             for rule in [DayRule::Graduating, DayRule::Relearning] {
-                let out = button_intervals(&ctx, [None, None, Some(interval), None], rule);
+                let out = button_intervals(&ctx, [skip(), skip(), model(interval), skip()], rule);
                 let Some(ButtonInterval::Days { days, .. }) = out[2] else {
                     panic!("good should be in days");
                 };
