@@ -1642,9 +1642,10 @@ ratings, because a card's own ratings are not independent). The same
 reviews always give the same line: the cards are resampled in a fixed
 order, from a fixed seed, so opening the page twice does not move the error
 bars. The ratings of
-each bin are drawn as grey bars behind the line, on their own axis at the
-right. Three tiles above the graph give the average predicted probability,
-the actual recall, and the number of ratings.
+each bin are drawn as blue bars behind the line (`#3f84cc` at opacity 0.45),
+on their own axis at the right. The y axis is "Actual retention" and the x
+axis "Predicted retrievability". Three tiles above the graph give the average
+predicted probability, the actual retention, and the number of ratings.
 
 The UM+ comparison draws a PAIR of algorithms, picked from a menu of the
 pairs that share ratings. Three algorithms make three pairs. A pair is
@@ -1669,15 +1670,21 @@ difference, weighted the same way. The binning and the weighting are
 benchmark.
 
 Under the UM+ and AUC-ROC graphs, one line says which way is better: "UM+
-and slope: closer to 0 is better." and "AUC: higher is better, and 0.5 is
-random chance." How to read the graph and how its numbers are made (the axes,
-the bubbles, the oracle, the true and false positive rates, and which answers
-count as remembered) is in a tooltip on the info badge next to the graph's
-title, shown on hover or keyboard focus. The lines about the data itself stay
-under the graph: hidden groups, the ratings each algorithm scored, missing or
-newer predictions. Andrew, 2026-09-23: "Reading is for nerds, lol. Let's not
-have too much text unless the user asks for it", and "Just keep some simple
-'lower=better' or 'closer to 0=better' stuff outside of the tooltip".
+and slope: closer to 0 is better. Against the perfect oracle, any imperfect
+algorithm has a slope of 1." and "AUC: higher is better, and 0.5 is random
+chance." The calibration graph has no line under it. How to read a graph and
+how its numbers are made (the axes, the bubbles, the oracle, the bins and
+bars, the true and false positive rates, and which answers count as
+remembered) is in a tooltip on the info badge next to the graph's title,
+shown on hover or keyboard focus. The lines about the data itself (hidden
+groups, the ratings each algorithm scored, missing or newer predictions)
+follow the explanation in that tooltip for UM+ and calibration, and stay
+under the graph for AUC-ROC. Andrew, 2026-09-23: "Reading is for nerds, lol.
+Let's not have too much text unless the user asks for it", and "Just keep
+some simple 'lower=better' or 'closer to 0=better' stuff outside of the
+tooltip"; 2026-09-24: move the long text under the UM+ and calibration graphs
+into the tooltip, rename "Actual recall" to "Actual retention", and make the
+blue bins less transparent and more saturated.
 
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
@@ -1730,7 +1737,9 @@ user's own rebuild, never to opening a page.
 
 **Pinned by:** "UM+ keeps its verdict under the graph and its explanation in
 the tooltip", "AUC-ROC keeps its verdict under the graph and its explanation in
-the tooltip" (`ts/routes/graphs/metric-explanations.test.ts`),
+the tooltip", "calibration puts its whole explanation in the tooltip", "the
+notes about the data follow the explanation in the tooltip"
+(`ts/routes/graphs/metric-explanations.test.ts`),
 `test_the_metric_graphs_say_which_way_is_better_in_one_line`
 (`qt/tests/test_ui_split.py`); `only_rows_the_algorithm_had_not_seen_are_used`,
 `a_single_rating_of_one_algorithm_narrows_the_comparison_to_it`,

@@ -220,14 +220,14 @@ statistics-calibration-subtitle = How close an algorithm's predicted retrievabil
 # Label of the menu that picks the one algorithm the graph draws.
 statistics-calibration-algorithm = Algorithm
 statistics-calibration-predicted = Predicted retrievability
-statistics-calibration-actual = Actual recall
+statistics-calibration-actual = Actual retention
 # The tiles above the graph.
 statistics-calibration-average-predicted = Average predicted
-statistics-calibration-actual-recall = Actual recall
+statistics-calibration-actual-recall = Actual retention
 statistics-calibration-reviews = Reviews
 # Shown under the graph.
 statistics-calibration-description-line = Each point is a group of reviews with a similar predicted probability: the dashed diagonal is a perfect algorithm, a point above it means the algorithm predicted too little, a point below it too much.
-statistics-calibration-description-bars = The grey bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual recall lies with 95% confidence.
+statistics-calibration-description-bars = The blue bars behind the line are the reviews in each group, on the right-hand axis, and the vertical line through a point is where its actual retention lies with 95% confidence.
 statistics-um-plus-title = Universal Metric+ cross-comparison
 statistics-um-plus-subtitle = Where two algorithms disagree, which of them is wrong.
 # Label of the menu that picks the pair of algorithms.
@@ -244,7 +244,7 @@ statistics-um-plus-legend = { $algorithm }, UM+={ $um }, slope={ $slope }
 statistics-um-plus-description-axes = The X axis shows how much the two algorithms disagree, the Y axis shows how far each algorithm was from reality, and the size of a bubble is how many reviews are in the group.
 statistics-um-plus-description-score = A curve that stays near zero on the Y axis is better: UM+ closer to zero is better, and a slope closer to zero is better. The weaker one algorithm is compared with the other, the closer its slope is to 1.
 # The one line under the UM+ graph; the rest is in the tooltip of the info badge.
-statistics-um-plus-verdict = UM+ and slope: closer to 0 is better.
+statistics-um-plus-verdict = UM+ and slope: closer to 0 is better. Against the perfect oracle, any imperfect algorithm has a slope of 1.
 # In the tooltip of the UM+ graph.
 statistics-um-plus-description-oracle = Disagreeing with the perfect oracle is the same as disagreeing with reality.
 # Shown when small groups are hidden.

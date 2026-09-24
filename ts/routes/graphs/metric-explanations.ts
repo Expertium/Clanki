@@ -42,3 +42,22 @@ export function rocExplanation(): string {
         tr.statisticsModelMetricsDescriptionReviews(),
     ].join(PARAGRAPH);
 }
+
+/** The calibration graph's tooltip; it has no line under the graph. */
+export function calibrationExplanation(): string {
+    return [
+        tr.statisticsCalibrationDescriptionLine(),
+        tr.statisticsCalibrationDescriptionBars(),
+        tr.statisticsModelMetricsDescriptionReviews(),
+    ].join(PARAGRAPH);
+}
+
+/**
+ * A tooltip with the notes about the data after its explanation: the hidden
+ * groups, the reviews scored, missing or newer predictions. Andrew,
+ * 2026-09-24, for UM+ and calibration: move the text under the graph into the
+ * tooltip.
+ */
+export function withNotes(explanation: string, notes: string[]): string {
+    return [explanation, ...notes].join(PARAGRAPH);
+}
