@@ -581,6 +581,7 @@ mod test {
     #[test]
     fn external_intervals_are_dispersed_away_from_siblings() {
         use crate::scheduler::states::button_intervals::button_intervals;
+        use crate::scheduler::states::button_intervals::ButtonInput;
         use crate::scheduler::states::button_intervals::ButtonInterval;
         use crate::scheduler::states::button_intervals::DayRule;
 
@@ -605,7 +606,16 @@ mod test {
             review_fuzz_config: ReviewFuzzConfig::default(),
             next_day_at: TimestampSecs(0),
         };
-        let good_only = [None, None, Some(sibling_day as f32), None];
+        // zero-second steps take no part, so only Good is scheduled
+        let skip = ButtonInput::Step { secs: 0 };
+        let good_only = [
+            skip,
+            skip,
+            ButtonInput::Model {
+                days: sibling_day as f32,
+            },
+            skip,
+        ];
         let good_days = |ctx: &StateContext| match button_intervals(
             ctx,
             good_only,
