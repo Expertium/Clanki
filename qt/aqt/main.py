@@ -908,8 +908,7 @@ class AnkiQt(QMainWindow):
 
     def unloadCollection(self, onsuccess: Callable) -> None:
         def after_media_sync() -> None:
-            self._unloadCollection()
-            onsuccess()
+            self._unloadCollection(onsuccess)
 
         def after_sync(synced: bool) -> None:
             self.media_syncer.show_diag_until_finished(after_media_sync)
@@ -920,45 +919,88 @@ class AnkiQt(QMainWindow):
 
         self.closeAllWindows(before_sync)
 
-    def _unloadCollection(self) -> None:
+    def _unloadCollection(self, on_done: Callable[[], None]) -> None:
+        """Optimize, check, back up and close the collection on a background
+        thread, then call on_done on the main thread (spec
+        ui.close-off-main-thread). mw.col is None from the start: nothing on
+        the main thread may use the collection while it closes."""
         if not self.col:
+            on_done()
             return
 
-        label = (
-            tr.qt_misc_closing() if self.restoring_backup else tr.qt_misc_backing_up()
+        col = self.col
+        self.col = None
+        self._collection_closing = True
+        optimize = self._optimize_due()
+        backup_folder = self.pm.backupFolder()
+        back_up = not dev_mode and not self.restoring_backup
+        if optimize:
+            label = tr.qt_misc_optimizing()
+        elif self.restoring_backup:
+            label = tr.qt_misc_closing()
+        else:
+            label = tr.qt_misc_backing_up()
+        window_shown = False
+        finished = False
+
+        def show_window_if_slow() -> None:
+            # a close that ends within the grace time shows no window
+            nonlocal window_shown
+            if not finished:
+                window_shown = True
+                self.progress.start(label=label, immediate=True)
+
+        def close() -> bool:
+            """Returns whether the collection looks corrupt."""
+            corrupt = False
+            try:
+                if optimize:
+                    col.optimize()
+                if not dev_mode:
+                    # the collection only: an attached cache is rebuildable,
+                    # and checking it took most of the close (B-027)
+                    corrupt = col.db.scalar("pragma main.quick_check") != "ok"
+            except Exception:
+                corrupt = True
+
+            try:
+                if not corrupt and back_up:
+                    try:
+                        # default 5 minute throttle
+                        col.create_backup(
+                            backup_folder=backup_folder,
+                            force=False,
+                            wait_for_completion=False,
+                        )
+                    except Exception:
+                        print("backup on close failed")
+                col.close(downgrade=False)
+                col._backend.await_backup_completion()
+            except Exception as e:
+                print(e)
+                corrupt = True
+            return corrupt
+
+        def after_close(future: Future) -> None:
+            nonlocal finished
+            finished = True
+            self._collection_closing = False
+            if window_shown:
+                self.progress.finish()
+            if optimize:
+                self.pm.profile["lastOptimize"] = int_time()
+                self.pm.save()
+            if future.result():
+                showWarning(tr.qt_misc_your_collection_file_appears_to_be())
+            on_done()
+
+        self.progress.single_shot(
+            int(self.CLOSE_WAIT_GRACE_SECS * 1000),
+            show_window_if_slow,
+            False,
+            even_with_progress=True,
         )
-        self.progress.start(label=label)
-
-        corrupt = False
-
-        try:
-            self.maybeOptimize()
-            if not dev_mode:
-                corrupt = self.col.db.scalar("pragma quick_check") != "ok"
-        except Exception:
-            corrupt = True
-
-        try:
-            if not corrupt and not dev_mode and not self.restoring_backup:
-                try:
-                    # default 5 minute throttle
-                    self.col.create_backup(
-                        backup_folder=self.pm.backupFolder(),
-                        force=False,
-                        wait_for_completion=False,
-                    )
-                except Exception:
-                    print("backup on close failed")
-            self.col.close(downgrade=False)
-        except Exception as e:
-            print(e)
-            corrupt = True
-        finally:
-            self.col = None
-            self.progress.finish()
-
-        if corrupt:
-            showWarning(tr.qt_misc_your_collection_file_appears_to_be())
+        self.taskman.run_in_background(close, after_close)
 
     def apply_collection_options(self) -> None:
         "Setup audio after collection loaded."
@@ -969,11 +1011,16 @@ class AnkiQt(QMainWindow):
     # Auto-optimize
     ##########################################################################
 
-    def maybeOptimize(self) -> None:
+    def _optimize_due(self) -> bool:
         # have two weeks passed?
         if (last_optimize := self.pm.profile.get("lastOptimize")) is not None:
             if (int_time() - last_optimize) < 86400 * 14:
-                return
+                return False
+        return True
+
+    def maybeOptimize(self) -> None:
+        if not self._optimize_due():
+            return
         self.progress.start(label=tr.qt_misc_optimizing())
         self.col.optimize()
         self.pm.profile["lastOptimize"] = int_time()
@@ -1346,6 +1393,7 @@ title="{}" {}>{}</button>""".format(
         self._mainThread = QThread.currentThread()
         self._background_op_count = 0
         self._unload_profile_and_exit_pending = False
+        self._collection_closing = False
         self._close_wait_started = 0.0
         self._close_wait_window_shown = False
 
@@ -1579,6 +1627,9 @@ title="{}" {}>{}</button>""".format(
         else:
             # ignore the event for now, as we need time to clean up
             event.ignore()
+            if self._collection_closing:
+                # the collection is already closing on a background thread
+                return
             self._unloadProfileAndExitWhenIdle()
 
     def _unloadProfileAndExitWhenIdle(self) -> None:
