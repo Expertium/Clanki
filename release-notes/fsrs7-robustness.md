@@ -1,0 +1,1 @@
+- A preset with an invalid "Ignore reviews before" date no longer stops the collection from opening, and no longer breaks Card Info or answering its cards.

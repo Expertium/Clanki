@@ -189,7 +189,7 @@ impl Collection {
         let historical_retention = fsrs_preset.historical_retention;
         let params = &fsrs_preset.params;
         let fsrs = fsrs_preset.fsrs()?;
-        let ignore_before = fsrs_preset.ignore_revlogs_before_ms()?;
+        let ignore_before = fsrs_preset.ignore_revlogs_before_ms();
 
         let mut result = Vec::new();
         if let Some(item) = fsrs_item_for_memory_state(
@@ -348,6 +348,26 @@ mod test {
         let (mut col, cid) = test_collection()?;
         let _report = col.card_stats(cid)?;
 
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: card info
+    // reads an unparsable "ignore reviews before" date as no date.
+    #[test]
+    fn card_stats_survive_a_bad_ignore_before_date() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = false);
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![cid.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        col.update_default_deck_config(|config| {
+            config.ignore_revlogs_before_date = "2024-02-30".into();
+        });
+        let stats = col.card_stats(cid)?;
+        assert!(stats.revlog[0].memory_state.is_some());
         Ok(())
     }
 

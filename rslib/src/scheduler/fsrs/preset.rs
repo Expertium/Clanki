@@ -15,7 +15,7 @@ use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::decks::Deck;
 use crate::prelude::*;
-use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_or_none;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::search::FieldSearchMode;
 use crate::search::Node;
@@ -139,8 +139,10 @@ impl FsrsPreset {
         Ok(FSRS::new(&self.params)?)
     }
 
-    pub(crate) fn ignore_revlogs_before_ms(&self) -> Result<TimestampMillis> {
-        ignore_revlogs_before_date_to_ms(&self.ignore_revlogs_before_date)
+    /// An unparsable date counts as no date (spec
+    /// sched.fsrs7-bad-ignore-before-date).
+    pub(crate) fn ignore_revlogs_before_ms(&self) -> TimestampMillis {
+        ignore_revlogs_before_ms_or_none(&self.ignore_revlogs_before_date, &self.name)
     }
 }
 

@@ -720,7 +720,7 @@ impl Collection {
                     params,
                     revlog,
                     fsrs_preset.historical_retention,
-                    fsrs_preset.ignore_revlogs_before_ms()?,
+                    fsrs_preset.ignore_revlogs_before_ms(),
                 )?;
                 card.set_memory_state(&fsrs, params, item, fsrs_preset.historical_retention)?;
             }
@@ -1258,6 +1258,37 @@ pub(crate) mod test {
             assert_eq!(memory_state.stability, s90);
             assert_ne!(memory_state.stability, memory_state.stability_internal);
         }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a card
+    // without a memory state in a preset whose "ignore reviews before" date
+    // is unparsable still answers, with the date read as no date.
+    #[test]
+    fn a_bad_ignore_before_date_does_not_stop_answering() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = false;
+            config.ignore_revlogs_before_date = "not a date".into();
+        });
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        let states = col.get_scheduling_states(cid)?;
+        col.answer_card(&mut CardAnswer {
+            card_id: cid,
+            current_state: states.current,
+            new_state: states.good,
+            rating: Rating::Good,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: true,
+        })?;
+        assert!(col.storage.get_card(cid)?.unwrap().memory_state.is_some());
         Ok(())
     }
 

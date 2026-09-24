@@ -1330,6 +1330,28 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
 
+## sched.fsrs7-bad-ignore-before-date
+
+Given a preset whose "Ignore reviews before" date is not a valid
+`YYYY-MM-DD` date (another client, an add-on or a damaged collection can
+write one), the collection still opens. The one-time FSRS-7 migration
+(`sched.fsrs7-only`) skips that preset, logs it, and still sets its done
+flag, so the next open does not try again. Card info and answering a card
+without a memory state read the date as no date (every review counts) and
+log it.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: the migration propagated the date's parse error out of the
+collection open, so one bad date failed every open (the done flag was never
+set), and the same date failed card info for every card of the preset and
+the answer of a card that had no memory state.
+
+**Pinned by:** `migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date`
+(`rslib/src/deckconfig/update.rs`),
+`card_stats_survive_a_bad_ignore_before_date` (`rslib/src/stats/card.rs`),
+`a_bad_ignore_before_date_does_not_stop_answering`
+(`rslib/src/scheduler/answering/mod.rs`).
+
 ## sched.no-dynamic-desired-retention
 
 Given a deck preset (or an add-on FSRS preset overlay) that stored dynamic

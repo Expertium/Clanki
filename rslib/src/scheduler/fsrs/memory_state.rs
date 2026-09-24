@@ -1453,7 +1453,7 @@ impl Collection {
             params,
             revlog,
             historical_retention,
-            fsrs_preset.ignore_revlogs_before_ms()?,
+            fsrs_preset.ignore_revlogs_before_ms(),
         )?;
         let memory_state = if item.is_some() || infer_from_current_card_state {
             let mut card = card.clone();
