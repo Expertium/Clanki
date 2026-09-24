@@ -446,13 +446,33 @@ impl QueueSortOptions {
     }
 }
 
+/// The review order the queue gathers a preset's cards in. "Easy cards
+/// first" and "Difficult cards first" sort by FSRS-7 difficulty, which RWKV
+/// has no counterpart of, so under RWKV-Curve and RWKV-Instant a preset that
+/// still stores one gathers as the deck-options screen shows it, by
+/// descending retrievability (spec deck-options.no-difficulty-order-under-rwkv).
+fn review_order_for_algorithm(config: &DeckConfig) -> ReviewCardOrder {
+    let order = config.inner.review_order();
+    let rwkv = config.inner.rwkv_review_enabled || config.inner.rwkv_review_instant_order_enabled;
+    if rwkv
+        && matches!(
+            order,
+            ReviewCardOrder::EaseAscending | ReviewCardOrder::EaseDescending
+        )
+    {
+        ReviewCardOrder::RetrievabilityDescending
+    } else {
+        order
+    }
+}
+
 fn sort_options(deck: &Deck, config_map: &HashMap<DeckConfigId, DeckConfig>) -> QueueSortOptions {
     deck.config_id()
         .and_then(|config_id| config_map.get(&config_id))
         .map(|config| QueueSortOptions {
             new_order: config.inner.new_card_sort_order(),
             new_gather_priority: config.inner.new_card_gather_priority(),
-            review_order: config.inner.review_order(),
+            review_order: review_order_for_algorithm(config),
             day_learn_mix: config.inner.interday_learning_mix(),
             new_review_mix: config.inner.new_mix(),
             rwkv_review_enabled: config.inner.rwkv_review_enabled,
@@ -1253,6 +1273,73 @@ mod test {
             assert_eq!(
                 col.queue_as_ids(deck_id),
                 expected.map(|index| ids[index]).to_vec(),
+                "{order:?}"
+            );
+        }
+        Ok(())
+    }
+
+    fn set_card_difficulty(col: &mut Collection, card_id: CardId, difficulty: f32) {
+        let mut card = col.storage.get_card(card_id).unwrap().unwrap();
+        card.memory_state.as_mut().unwrap().difficulty = difficulty;
+        col.storage.update_card(&card).unwrap();
+    }
+
+    // Pins spec/deck-options.md#deck-options.no-difficulty-order-under-rwkv:
+    // under RWKV-Curve a stored "Easy/Difficult cards first" order gathers by
+    // RWKV-Curve's retrievability, highest first, never by FSRS-7 difficulty.
+    #[test]
+    fn rwkv_curve_difficulty_orders_gather_by_descending_retrievability() -> Result<()> {
+        // (interval, elapsed): 0.9^2 = 0.81, 0.9^1 = 0.9, 0.9^3 = 0.73
+        let cards = [(10, 20, 1.0), (10, 10, 1.0), (10, 30, 1.0)];
+        for order in [ReviewCardOrder::EaseAscending, ReviewCardOrder::EaseDescending] {
+            let mut col = Collection::new();
+            let (deck_id, ids) = rwkv_curve_deck(&mut col, order, &cards)?;
+            // FSRS-7 difficulty would give [0, 2, 1] or [1, 2, 0]
+            for (id, difficulty) in ids.iter().zip([9.0, 1.0, 5.0]) {
+                set_card_difficulty(&mut col, *id, difficulty);
+            }
+            assert_eq!(
+                col.queue_as_ids(deck_id),
+                vec![ids[1], ids[0], ids[2]],
+                "{order:?}"
+            );
+        }
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.no-difficulty-order-under-rwkv:
+    // under RWKV-Instant a stored "Easy/Difficult cards first" order ranks by
+    // RWKV-Instant's scores, highest first, never by FSRS-7 difficulty.
+    #[test]
+    fn rwkv_instant_difficulty_orders_gather_by_descending_retrievability() -> Result<()> {
+        for order in [ReviewCardOrder::EaseAscending, ReviewCardOrder::EaseDescending] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_rwkv_instant_order(&mut deck, order);
+            let today = col.timing_today()?.days_elapsed as i32;
+            let mut ids = Vec::new();
+            for difficulty in [9.0, 1.0, 5.0] {
+                let id = add_memory_state_card(
+                    &mut col,
+                    deck.id,
+                    CardQueue::Review,
+                    CardType::Review,
+                    today,
+                    10 * 86_400,
+                    10.0,
+                )?;
+                set_card_difficulty(&mut col, id, difficulty);
+                ids.push(id);
+            }
+            col.set_rwkv_review_queue_scores(
+                deck.id,
+                HashMap::from([(ids[0], 0.8), (ids[1], 0.9), (ids[2], 0.7)]),
+            )?;
+            assert_eq!(
+                col.queue_as_ids(deck.id),
+                vec![ids[1], ids[0], ids[2]],
                 "{order:?}"
             );
         }

@@ -612,12 +612,22 @@ first" (the difficulty orders, stored as `EASE_ASCENDING` /
 `EASE_DESCENDING`). A preset that stores one of them reads as the default
 order, descending retrievability (`deck-options.new-preset-defaults`), when
 the deck-options screen shows it under RWKV, in either
-mode, and saving writes that value. Under FSRS-7 both orders stay available.
+mode, and saving writes that value. Until the preset is saved, the study
+queue gathers such a preset's review cards the same way, by descending
+retrievability under the running RWKV mode (`sched.rwkv-review-order`,
+`sched.rwkv-instant-waits`): no FSRS-7 difficulty orders them. Under FSRS-7
+both orders stay available.
 
 **Why:** Andrew, 2026-09-15: difficulty is an FSRS state variable, so
-sorting RWKV cards by it has no meaning.
+sorting RWKV cards by it has no meaning. Andrew, 2026-09-24 ("fix the bugs on
+our side"): the queue still sorted RWKV cards by FSRS-7 difficulty while the
+preset kept the stored order, which mixes two algorithms; the order the
+preset reads as on the screen is the least surprising one.
 
-**Pinned by:** `ts/routes/deck-options/review-order.test.ts`.
+**Pinned by:** `ts/routes/deck-options/review-order.test.ts`;
+`rwkv_curve_difficulty_orders_gather_by_descending_retrievability`,
+`rwkv_instant_difficulty_orders_gather_by_descending_retrievability`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
 
 ## deck-options.new-retrievability-order-instant-only
 
