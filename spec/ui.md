@@ -1886,6 +1886,14 @@ tries again. An empty FSRS-7 series on its own cannot be told apart from a
 series still being computed, and a pass that reports no progress reports no
 failure either.
 
+A preset's folds train on the reviews its FSRS-7 optimization trains on
+(`deck-options.fsrs-optimize-keeps-better-params`): the reviews of its search
+filter when it has one, otherwise of its cards that are not suspended, and
+none from before its "Ignore reviews before" date. The series therefore
+scores the model the preset runs with. A search filter can reach cards of
+other presets; their reviews train the folds, but only the preset's own
+reviews get its rows, so no preset writes over another preset's rows.
+
 The stored rows are validation folds, so nothing that produced a row had
 seen the review it predicts. The rows written while answering carry a
 different sample role, and the graph takes the first role of its list that
@@ -1943,7 +1951,9 @@ which is a few milliseconds beside the write it guards.
 (`rslib/src/deckconfig/update.rs`);
 `the_pass_covers_every_preset_with_uncovered_reviews`,
 `a_presets_rows_are_written_one_bounded_batch_at_a_time`,
-`a_save_midway_through_the_write_takes_back_what_was_written`
+`a_save_midway_through_the_write_takes_back_what_was_written`,
+`the_folds_train_on_the_optimizers_reviews`,
+`a_search_filter_writes_rows_for_the_presets_own_reviews_only`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 

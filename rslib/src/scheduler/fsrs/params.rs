@@ -38,9 +38,12 @@ use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::curve::Fsrs7Curve;
+use crate::search::JoinSearches;
+use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
+use crate::search::StateKind;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
 use crate::storage::FsrsReviewRetrievabilitySampleRole;
 
@@ -68,6 +71,21 @@ pub(crate) fn ignore_revlogs_before_date_to_ms(
 
 pub(crate) fn ignore_revlogs_before_ms_from_config(config: &DeckConfig) -> Result<TimestampMillis> {
     ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date)
+}
+
+/// The search a preset's FSRS-7 parameters are trained on: its search
+/// filter when it has one, otherwise the preset's cards that are not
+/// suspended. "Optimize All Presets", the automatic optimization and the
+/// Stats validation folds all read their reviews with it.
+pub(crate) fn fsrs_optimizer_search(config: &DeckConfig) -> Result<String> {
+    Ok(if config.inner.param_search.trim().is_empty() {
+        SearchNode::Preset(config.name.clone())
+            .and(SearchNode::State(StateKind::Suspended).negated())
+            .try_into_search()?
+            .to_string()
+    } else {
+        config.inner.param_search.clone()
+    })
 }
 
 pub struct ComputeParamsRequest<'t> {

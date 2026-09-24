@@ -12,15 +12,19 @@
 //! the deck on screen would leave the same gap everywhere else.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::deckconfig::DeckConfig;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
+use crate::scheduler::fsrs::params::fsrs_optimizer_search;
 use crate::scheduler::fsrs::params::fsrs_review_retrievability_cache_rows;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::search::writer::preset_search;
+use crate::search::SortMode;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
 
 /// What the pass stores its rows under. The same string names them again
@@ -159,6 +163,7 @@ pub(crate) struct FsrsReviewPredictionJob {
     key: FsrsReviewPredictionJobKey,
     params: Vec<f32>,
     context: FsrsReviewPredictionContext,
+    own_reviews: Option<HashSet<RevlogId>>,
 }
 
 /// What the rows depend on besides the reviews read: the preset as saved
@@ -181,6 +186,8 @@ pub(crate) struct FsrsReviewPredictionRead {
     key: FsrsReviewPredictionJobKey,
     params: Vec<f32>,
     revlogs: Vec<RevlogEntry>,
+    /// The preset's own reviews among `revlogs`; None when all are.
+    own_reviews: Option<HashSet<RevlogId>>,
     ignore_revlogs_before: TimestampMillis,
     num_relearning_steps: usize,
 }
@@ -201,6 +208,7 @@ impl FsrsReviewPredictionRead {
             key: self.key,
             params: self.params,
             context,
+            own_reviews: self.own_reviews,
         })
     }
 }
@@ -215,6 +223,9 @@ impl FsrsReviewPredictionJob {
     pub(crate) fn rows(&self) -> Result<Vec<FsrsReviewRetrievabilityCacheRow>> {
         let mut rows =
             fsrs_review_retrievability_cache_rows(&self.params, &self.context, true, None)?;
+        if let Some(own) = &self.own_reviews {
+            rows.retain(|row| own.contains(&row.revlog_id));
+        }
         rows.sort_unstable_by_key(|row| (row.revlog_id, row.fold_index));
         Ok(rows)
     }
@@ -300,16 +311,32 @@ impl Collection {
         let Some(config) = self.storage.get_deck_config(preset)? else {
             return Ok(None);
         };
-        let revlogs = self.revlog_for_srs(preset_search(&config.name).as_str())?;
+        // the reviews the optimizer trains this preset on (spec
+        // ui.stats-fsrs-predictions-ready)
+        let revlogs = self.revlog_for_srs(fsrs_optimizer_search(&config)?.as_str())?;
+        // a search filter can reach cards of other presets: those reviews
+        // train the folds, but only the preset's own reviews get rows
+        let own_reviews = if config.inner.param_search.trim().is_empty() {
+            None
+        } else {
+            let own_cards: HashSet<CardId> = self
+                .search_cards(preset_search(&config.name).as_str(), SortMode::NoOrder)?
+                .into_iter()
+                .collect();
+            Some(
+                revlogs
+                    .iter()
+                    .filter(|revlog| own_cards.contains(&revlog.cid))
+                    .map(|revlog| revlog.id)
+                    .collect(),
+            )
+        };
         Ok(Some(FsrsReviewPredictionRead {
             key: self.fsrs_review_prediction_job_key(&config)?,
             params: config.fsrs_params().to_vec(),
             revlogs,
-            ignore_revlogs_before: config
-                .inner
-                .ignore_revlogs_before_date
-                .parse()
-                .unwrap_or(0.into()),
+            own_reviews,
+            ignore_revlogs_before: ignore_revlogs_before_ms_from_config(&config)?,
             num_relearning_steps: config.inner.relearn_steps.len(),
         }))
     }
@@ -468,7 +495,16 @@ mod test {
     }
 
     fn card_with_reviews(col: &mut Collection) {
-        let note = NoteAdder::basic(col).add(col);
+        card_with_reviews_in(col, DeckId(1));
+    }
+
+    fn card_with_reviews_in(col: &mut Collection, deck: DeckId) -> CardId {
+        card_with_reviews_days_later(col, deck, 0)
+    }
+
+    /// The reviews of `card_with_reviews`, `later` days closer to today.
+    fn card_with_reviews_days_later(col: &mut Collection, deck: DeckId, later: i64) -> CardId {
+        let note = NoteAdder::basic(col).deck(deck).add(col);
         let card = col
             .storage
             .all_cards_of_note(note.id)
@@ -484,7 +520,7 @@ mod test {
             col.storage
                 .add_revlog_entry(
                     &RevlogEntry {
-                        id: RevlogId(now - days_ago * 86_400_000),
+                        id: RevlogId(now - (days_ago - later) * 86_400_000),
                         cid: card.id,
                         button_chosen: 3,
                         review_kind: if interval == 0 {
@@ -500,6 +536,7 @@ mod test {
                 )
                 .unwrap();
         }
+        card.id
     }
 
     fn fold_rows(col: &Collection) -> usize {
@@ -807,6 +844,116 @@ mod test {
                 FsrsReviewPredictionContext::from_prepared(&prepared)
             );
             assert_eq!(job.params, config.fsrs_params());
+        }
+        Ok(())
+    }
+
+    /// The folds train on the reviews the optimizer trains the preset on:
+    /// no suspended card, and nothing before "Ignore reviews before".
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn the_folds_train_on_the_optimizers_reviews() -> Result<()> {
+        let mut col = Collection::new();
+        // learned 40 and 20 days ago
+        let cards: Vec<CardId> = (0..8)
+            .map(|card| card_with_reviews_days_later(&mut col, DeckId(1), (card % 2) * 20))
+            .collect();
+        col.storage.db.execute(
+            "update cards set queue = -1 where id = ?",
+            [cards[1].0],
+        )?;
+        let preset = DeckConfigId(1);
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        // after the older cards' last review (30 days ago), before the newer
+        // cards' first (20)
+        config.inner.ignore_revlogs_before_date = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(25))
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        col.storage.update_deck_conf(&config)?;
+
+        let optimizer = |col: &mut Collection, search: &str, ignore_before| {
+            col.prepare_compute_params(PrepareComputeParamsInput {
+                search,
+                ignore_revlogs_before: ignore_before,
+                current_params: config.fsrs_params(),
+                num_of_relearning_steps: config.inner.relearn_steps.len(),
+                enable_scheduling_penalties: true,
+            })
+        };
+        let prepared = optimizer(
+            &mut col,
+            &fsrs_optimizer_search(&config)?,
+            ignore_revlogs_before_ms_from_config(&config)?,
+        )?;
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .expect("a read")
+            .job()
+            .expect("a job");
+        assert_eq!(
+            job.context,
+            FsrsReviewPredictionContext::from_prepared(&prepared)
+        );
+        // before the date, suspended, and a card that trains
+        assert!(!prepared.item_card_ids.contains(&cards[0].0));
+        assert!(!prepared.item_card_ids.contains(&cards[1].0));
+        assert!(prepared.item_card_ids.contains(&cards[3].0));
+        // the control: the whole preset, with every review, is another set
+        let everything = optimizer(&mut col, &preset_search(&config.name), 0.into())?;
+        assert_ne!(
+            job.context,
+            FsrsReviewPredictionContext::from_prepared(&everything)
+        );
+        Ok(())
+    }
+
+    /// A search filter that reaches another preset's cards trains the folds
+    /// on them, but gives rows to the preset's own reviews only.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_search_filter_writes_rows_for_the_presets_own_reviews_only() -> Result<()> {
+        let mut col = Collection::new();
+        let other = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        let mut own = HashSet::new();
+        for _ in 0..8 {
+            own.insert(card_with_reviews_in(&mut col, DeckId(1)));
+            card_with_reviews_in(&mut col, other.id);
+        }
+        let preset = DeckConfigId(1);
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        config.inner.param_search = "deck:*".to_string();
+        col.storage.update_deck_conf(&config)?;
+
+        let job = col
+            .fsrs_review_prediction_read(preset)?
+            .expect("a read")
+            .job()
+            .expect("a job");
+        let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+            search: "deck:*",
+            ignore_revlogs_before: 0.into(),
+            current_params: config.fsrs_params(),
+            num_of_relearning_steps: config.inner.relearn_steps.len(),
+            enable_scheduling_penalties: true,
+        })?;
+        assert_eq!(
+            job.context,
+            FsrsReviewPredictionContext::from_prepared(&prepared)
+        );
+        let rows = job.rows()?;
+        assert!(!rows.is_empty());
+        let card_of = |review: RevlogId| -> CardId {
+            col.storage
+                .db
+                .query_row("select cid from revlog where id = ?", [review.0], |row| row.get(0))
+                .unwrap()
+        };
+        for row in &rows {
+            assert!(own.contains(&card_of(row.revlog_id)));
         }
         Ok(())
     }

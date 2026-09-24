@@ -29,15 +29,14 @@ use crate::scheduler::fsrs::memory_state::ComputeMemoryPresetProgress;
 use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
+use crate::scheduler::fsrs::params::fsrs_optimizer_search;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 use crate::search::JoinSearches;
-use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
-use crate::search::StateKind;
 use crate::storage::comma_separated_ids;
 
 #[derive(Debug, Clone)]
@@ -629,14 +628,7 @@ impl Collection {
         // calculate and apply params to each preset
         let mut jobs = Vec::with_capacity(req.configs.len());
         for (idx, config) in req.configs.iter().enumerate() {
-            let search = if config.inner.param_search.trim().is_empty() {
-                SearchNode::Preset(config.name.clone())
-                    .and(SearchNode::State(StateKind::Suspended).negated())
-                    .try_into_search()?
-                    .to_string()
-            } else {
-                config.inner.param_search.clone()
-            };
+            let search = fsrs_optimizer_search(config)?;
             let ignore_revlogs_before_ms = ignore_revlogs_before_ms_from_config(config)?;
             let num_of_relearning_steps = config.inner.relearn_steps.len();
             let current_params = config.fsrs_params().to_vec();
