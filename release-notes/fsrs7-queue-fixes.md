@@ -8,3 +8,6 @@
   retrievability. Before, searches and the queue counted a learning card's
   interval in days as extra seconds, and took a card whose interval began
   before the collection was created as just reviewed.
+- FSRS-7 with add-on preset overlays: the retrievability review orders and
+  the retrievability filtered-deck orders build faster, since each overlay
+  rule is now one search for all cards instead of one search per card.

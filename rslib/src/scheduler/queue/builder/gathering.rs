@@ -496,6 +496,15 @@ impl QueueBuilder {
                 })?;
         }
 
+        // the add-on overlay presets of the cards the keys rank by FSRS-7,
+        // resolved with one search per rule instead of one per card
+        let with_memory_state: Vec<&Card> = rows
+            .iter()
+            .map(|(card, _)| card)
+            .filter(|card| card.memory_state.is_some())
+            .collect();
+        col.resolve_fsrs_overlay_presets_for_cards(&with_memory_state)?;
+
         // the result is sorted by (key, hash, id) below, so the order the
         // cards were gathered in does not matter
         let mut keys =

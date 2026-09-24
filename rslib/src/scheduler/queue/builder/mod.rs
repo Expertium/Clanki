@@ -1752,6 +1752,89 @@ mod test {
         Ok(())
     }
 
+    // With add-on preset overlay rules, the retrievability order resolves
+    // its cards' overlay presets with one search per rule, not one per card,
+    // and still ranks each card by its own preset.
+    #[test]
+    fn fsrs_retrievability_order_resolves_overlay_presets_per_rule() -> Result<()> {
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+        use crate::scheduler::fsrs::preset::PER_CARD_OVERLAY_SEARCHES;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        col.set_deck_fsrs7_defaults(deck.id);
+        let timing = col.timing_today()?;
+        let mut ids = Vec::new();
+        for index in 0..12 {
+            let id = add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32,
+                (3 + index) * 86_400,
+                5.0 + index as f32,
+            )?;
+            if index % 2 == 0 {
+                let note_id = col.storage.get_card(id)?.unwrap().note_id;
+                col.add_tags_to_notes(&[note_id], "overlay")?;
+            }
+            ids.push(id);
+        }
+        // the tagged cards run other parameters than their home preset
+        let params: Vec<f32> = DEFAULT_PARAMETERS
+            .iter()
+            .enumerate()
+            .map(|(index, &param)| if index < 4 { param / 20.0 } else { param })
+            .collect();
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:fast".into(),
+                    name: "Fast".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params,
+                    desired_retention: 0.9,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "tag:overlay".into(),
+                    preset_id: "addon:test:fast".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+
+        // the order of the per-card retrievability
+        let mut expected = Vec::new();
+        for &id in &ids {
+            let card = col.storage.get_card(id)?.unwrap();
+            let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
+            let r = col.fsrs_current_retrievability_for_card_state(
+                id,
+                card.memory_state.unwrap(),
+                elapsed_days,
+            )?;
+            expected.push((r, id));
+        }
+        expected.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let expected: Vec<_> = expected.into_iter().map(|(_, id)| id).collect();
+
+        col.state.fsrs_preset_overlay_cache = None;
+        PER_CARD_OVERLAY_SEARCHES.with(|count| count.set(0));
+        assert_eq!(col.queue_as_ids(deck.id), expected);
+        assert_eq!(PER_CARD_OVERLAY_SEARCHES.with(|count| count.get()), 0);
+        Ok(())
+    }
+
     #[test]
     fn fsrs_retrievability_order_preserves_new_card_mix() -> Result<()> {
         let mut col = Collection::new();
