@@ -3676,44 +3676,6 @@ def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
     assert review_input.current_elapsed_seconds == 30
 
 
-def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -> None:
-    now = 42 * 86_400 + 100
-    card = rwkv_scheduler.RwkvStatsGraphCard(
-        id=(now - 90_000) * 1000,
-        nid=10,
-        did=100,
-        odid=0,
-        type=0,
-        queue=0,
-        due=50,
-        odue=0,
-        ivl=0,
-        factor=0,
-        reps=0,
-        lapses=0,
-        last_review_time=None,
-    )
-
-    review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
-        card=card,
-        deck_config={
-            "id": 1000,
-            "rwkvReviewEnabled": True,
-        },
-        timing=SimpleNamespace(
-            now=now,
-            days_elapsed=42,
-            next_day_at=43 * 86_400,
-        ),
-    )
-
-    assert review_input is not None
-    assert review_input.current_state_kind == "normal"
-    assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days == 1
-    assert review_input.current_elapsed_seconds == 90_000
-
-
 def test_record_reviewer_answer_does_not_write_card_s90_separately() -> None:
     class Backend:
         def __init__(self) -> None:
@@ -9978,6 +9940,102 @@ def test_fsrs7_card_gets_no_rwkv_prediction_and_no_card_info_rows() -> None:
     )
 
 
+# Pins spec/scheduling.md#sched.rwkv-no-first-review-retrievability
+def test_rwkv_instant_reviewer_does_not_predict_a_new_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _card_runs_rwkv(monkeypatch)
+    curve = False
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_review_enabled", lambda *args: curve)
+    runtime = _SharedReviewRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    reviewer = SimpleNamespace()
+    new_card = SimpleNamespace(id=1, type=0)
+    review_card = SimpleNamespace(id=2, type=2)
+
+    # RWKV-Instant: no query for a first review, so the answer stores none
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, new_card)
+    assert current_reviewer_retrievability(reviewer, new_card) is None
+    assert runtime.queries == []
+
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, review_card)
+    assert current_reviewer_retrievability(reviewer, review_card) == pytest.approx(0.45)
+    assert [card_id for card_id, _, _ in runtime.queries] == [2]
+
+    # RWKV-Curve still needs the curve for the first answer's intervals
+    curve = True
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, new_card)
+    assert [card_id for card_id, _, _ in runtime.queries] == [2, 1]
+
+
+# Pins spec/scheduling.md#sched.rwkv-no-first-review-retrievability
+def test_rwkv_instant_card_info_has_no_value_for_a_new_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _SharedReviewRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_card_info", lambda *args: True
+    )
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
+    review_card = _rwkv_card(card_id=2, note_id=20, duration_millis=0)
+    new_card = _rwkv_card(card_id=1, note_id=10, duration_millis=0)
+    new_card.type = 0
+    new_card.queue = 0
+
+    # a review card gets its RWKV-Instant row
+    assert (
+        rwkv_card_info_rows(reviewer=reviewer, card=review_card, fallback_source="FSRS")
+        != []
+    )
+    queries = len(runtime.queries)
+    # a new card gets no row and no query, and AnkiConnect's prop:r reads
+    # the same diagnostics
+    assert (
+        rwkv_card_info_rows(reviewer=reviewer, card=new_card, fallback_source="SM2")
+        == []
+    )
+    assert (
+        rwkv_scheduler._queried_card_info_diagnostics(
+            reviewer, new_card, fallback_source="SM2"
+        )
+        is None
+    )
+    assert len(runtime.queries) == queries
+
+
+# Pins spec/scheduling.md#sched.rwkv-no-first-review-retrievability
+def test_rwkv_instant_scores_no_new_card() -> None:
+    """Every Python path that scores cards for Stats, a Browser search, a
+    filtered deck or the queue reads a card's state from these fields."""
+    timing = SimpleNamespace(
+        now=42 * 86_400 + 100, days_elapsed=42, next_day_at=43 * 86_400
+    )
+    for from_creation in (False, True):
+        fields = rwkv_scheduler._rwkv_state_fields_for_stats_graph_values(
+            card_id=1_000,
+            card_type=0,
+            queue=0,
+            last_review_time=None,
+            timing=timing,
+            include_suspended_review=True,
+            first_review_elapsed_from_card_creation=from_creation,
+        )
+        assert fields[0] is rwkv_scheduler._UNSUPPORTED_RWKV_STATE
+    review = rwkv_scheduler._rwkv_state_fields_for_stats_graph_values(
+        card_id=1_000,
+        card_type=2,
+        queue=2,
+        last_review_time=40 * 86_400,
+        timing=timing,
+        include_suspended_review=True,
+        first_review_elapsed_from_card_creation=False,
+    )
+    assert review[:2] == ("normal", "review")
+
+
 # Pins spec/ui.md#ui.fsrs7-no-rwkv-values
 def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
     monkeypatch: pytest.MonkeyPatch,
@@ -13639,76 +13697,6 @@ def test_stats_graph_scores_build_direct_review_inputs(
     assert review_input.current_normal_state_kind == "review"
     assert review_input.current_elapsed_days == 39
     assert review_input.target_retentions == (0.86, 0.86, 0.86, 0.86)
-
-
-def test_stats_graph_scores_build_direct_new_card_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    now = 42 * 86_400 + 100
-    card_id = (now - 90_000) * 1000
-
-    class Runtime(_SharedReviewRuntime):
-        def predict_retrievability_many(
-            self,
-            requests: list[RwkvReviewPredictionRequest],
-        ) -> list[float]:
-            self.query_inputs.extend(request.review_input for request in requests)
-            return [0.83 for _ in requests]
-
-    class Decks:
-        def config_dict_for_deck_id(self, deck_id: int) -> dict[str, object]:
-            assert deck_id == 100
-            return {
-                "id": 1000,
-                "rwkvReviewEnabled": True,
-                "rwkvReviewFirstReviewElapsedFromCardCreation": True,
-                "desiredRetention": 0.86,
-            }
-
-    class Scheduler:
-        def _timing_today(self) -> SimpleNamespace:
-            return SimpleNamespace(
-                now=now,
-                days_elapsed=42,
-                next_day_at=43 * 86_400,
-            )
-
-    class DB:
-        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
-            assert args == ()
-            if "from revlog" in sql:
-                return []
-            assert "from cards" in sql
-            return [(card_id, 10, 100, 0, 0, 0, 50, 0, 0, 0, 0, 0, "")]
-
-    runtime = Runtime()
-    backend = RwkvStatefulReviewerBackend(runtime)
-    reviewer = SimpleNamespace(
-        mw=SimpleNamespace(
-            col=SimpleNamespace(
-                _backend=SimpleNamespace(),
-                db=DB(),
-                decks=Decks(),
-                sched=Scheduler(),
-            )
-        )
-    )
-    previous_backend = set_reviewer_backend(backend)
-    try:
-        scores = rwkv_scheduler._rwkv_stats_graph_scores(
-            reviewer=reviewer,
-            card_ids=[card_id],
-        )
-    finally:
-        set_reviewer_backend(previous_backend)
-
-    assert scores == [(card_id, pytest.approx(0.83))]
-    assert len(runtime.query_inputs) == 1
-    review_input = runtime.query_inputs[0]
-    assert review_input.current_state_kind == "normal"
-    assert review_input.current_normal_state_kind == "new"
-    assert review_input.current_elapsed_days == 1
-    assert review_input.current_elapsed_seconds == 90_000
 
 
 def test_stats_graph_scores_backend_card_rows_can_include_new_cards() -> None:

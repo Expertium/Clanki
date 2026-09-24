@@ -16,7 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import {
-        newGatherPriorityForAlgorithm,
+        newGatherPriorityWithoutRetrievability,
         reviewOrderForAlgorithm,
     } from "./review-order";
     import type { Placement } from "./ui-split";
@@ -86,13 +86,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 return c;
             });
         }
-        // The retrievability new-card orders read RWKV-Instant's scores; under
-        // another algorithm a stored one reads as the default (spec
-        // deck-options.new-retrievability-order-instant-only).
-        const gather = newGatherPriorityForAlgorithm(
-            current.newCardGatherPriority,
-            flags.rwkvInstant,
-        );
+        // No algorithm ranks new cards by retrievability: a stored
+        // retrievability new-card order reads as the default (spec
+        // deck-options.no-new-card-retrievability-order).
+        const gather = newGatherPriorityWithoutRetrievability(current.newCardGatherPriority);
         if (gather !== current.newCardGatherPriority) {
             config.update((c) => {
                 c.newCardGatherPriority = gather;

@@ -192,6 +192,43 @@ using FSRS-7's values.
 `test_rwkv_instant_card_info_says_the_model_is_missing`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-no-first-review-retrievability
+
+Given a card whose next answer is its first review (a new card, also one that
+Forget reset to new), no algorithm computes a probability of recall for it,
+and RWKV-Instant never queries the model for it:
+
+- a Stats search, a Browser `prop:rwkv:r` search or a filtered deck scores no
+  new card, also when the search says `is:new`: such a card has no RWKV value,
+  so the Stats retrievability graph does not draw it, `prop:rwkv:r` does not
+  match it, and a filtered deck ordered by retrievability puts it after the
+  cards with a value (`sched.filtered-deck-one-algorithm`);
+- card info and AnkiConnect's `prop:r` give no RWKV-Instant value for it;
+- the reviewer asks RWKV-Instant for no prediction when it shows it, so its
+  first answer stores no RWKV-Instant prediction of that review;
+- no new-card gather order ranks by retrievability
+  (`deck-options.no-new-card-retrievability-order`).
+
+RWKV-Curve still computes its curve when the reviewer shows a new card: the
+curve gives the first answer's intervals, and RWKV-Curve has no value for the
+card before that answer.
+
+**Why:** Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): the value for
+a first review depends only on the deck, the preset and the creation date, so
+it says nothing about the card's memory. Before, RWKV-Instant scored new cards
+for the new-card gather orders, for `is:new` searches, for card info and when
+the reviewer showed one; each query also drew the card's model ID code on the
+live state.
+
+**Pinned by:** `review_input_rows_never_score_a_new_card`,
+`review_input_rows_for_search_uses_search_table` (`is:new`)
+(`rslib/src/scheduler/rwkv.rs`);
+`test_rwkv_instant_scores_no_new_card`,
+`test_rwkv_instant_card_info_has_no_value_for_a_new_card`,
+`test_rwkv_instant_reviewer_does_not_predict_a_new_card`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-waits
 
 Given a collection that runs RWKV-Instant:

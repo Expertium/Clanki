@@ -44,11 +44,12 @@ export function reviewOrderForAlgorithm(
 }
 
 /**
- * The new-card gather orders that rank by RWKV-Instant's scores. Only
- * RWKV-Instant has a value for a new card, so under FSRS-7 and RWKV-Curve
- * they are not offered (spec deck-options.new-retrievability-order-instant-only).
+ * The new-card gather orders "Ascending/Descending retrievability". No
+ * algorithm has a retrievability for a card's first review, so they are never
+ * offered, and a preset that stores one gathers as "Deck" (spec
+ * deck-options.no-new-card-retrievability-order).
  */
-export const INSTANT_NEW_GATHER_ORDERS: readonly NewCardGatherPriority[] = [
+export const RETRIEVABILITY_NEW_GATHER_ORDERS: readonly NewCardGatherPriority[] = [
     NewCardGatherPriority.ASCENDING_RETRIEVABILITY,
     NewCardGatherPriority.DESCENDING_RETRIEVABILITY,
 ];
@@ -56,22 +57,18 @@ export const INSTANT_NEW_GATHER_ORDERS: readonly NewCardGatherPriority[] = [
 /** The new-card gather order a preset gets when it held one of those. */
 export const DEFAULT_NEW_GATHER_PRIORITY = NewCardGatherPriority.DECK;
 
-/** Drops the RWKV-Instant new-card orders unless RWKV-Instant schedules. */
-export function newGatherChoicesForAlgorithm<T extends { value: NewCardGatherPriority }>(
+/** Drops the retrievability new-card orders from a list of choices. */
+export function withoutRetrievabilityNewGatherOrders<T extends { value: NewCardGatherPriority }>(
     choices: T[],
-    instant: boolean,
 ): T[] {
-    return instant
-        ? choices
-        : choices.filter((choice) => !INSTANT_NEW_GATHER_ORDERS.includes(choice.value));
+    return choices.filter((choice) => !RETRIEVABILITY_NEW_GATHER_ORDERS.includes(choice.value));
 }
 
-/** The new-card gather order a preset should hold under its algorithm. */
-export function newGatherPriorityForAlgorithm(
+/** The new-card gather order a preset should hold. */
+export function newGatherPriorityWithoutRetrievability(
     priority: NewCardGatherPriority,
-    instant: boolean,
 ): NewCardGatherPriority {
-    return !instant && INSTANT_NEW_GATHER_ORDERS.includes(priority)
+    return RETRIEVABILITY_NEW_GATHER_ORDERS.includes(priority)
         ? DEFAULT_NEW_GATHER_PRIORITY
         : priority;
 }
