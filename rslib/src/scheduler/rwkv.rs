@@ -1294,9 +1294,9 @@ mod test {
 
     use super::*;
     use crate::notes::NoteId;
-    use crate::scheduler::rwkv_inputs::published::PublishedReviewInput;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::rwkv_inputs::published::PublishedReviewInput;
 
     #[test]
     fn historical_fingerprint_matches_python_cache_encoding() {

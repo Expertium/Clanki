@@ -32,7 +32,6 @@ const SIGMA: [[usize; 16]; 10] = [
 
 const BLOCK: usize = 128;
 
-#[derive(Clone)]
 pub(crate) struct Blake2b {
     h: [u64; 8],
     /// bytes compressed so far
@@ -59,7 +58,7 @@ impl Blake2b {
 
     pub(crate) fn update(&mut self, mut data: &[u8]) {
         while !data.is_empty() {
-            // the last block is compressed by `finish`, with the final flag,
+            // the last block is compressed by `hex_digest`, with the final flag,
             // so a full buffer waits until more data comes
             if self.buffered == BLOCK {
                 self.counter += BLOCK as u128;
@@ -83,10 +82,13 @@ impl Blake2b {
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .take(self.digest_size)
-            .fold(String::with_capacity(self.digest_size * 2), |mut out, byte| {
-                write!(out, "{byte:02x}").unwrap();
-                out
-            })
+            .fold(
+                String::with_capacity(self.digest_size * 2),
+                |mut out, byte| {
+                    write!(out, "{byte:02x}").unwrap();
+                    out
+                },
+            )
     }
 }
 

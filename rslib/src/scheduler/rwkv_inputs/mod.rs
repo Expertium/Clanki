@@ -5,13 +5,13 @@
 //!
 //! Two stages, so that a model with another input layout changes only the
 //! second:
-//! - (a) `stream`: the raw per-review event stream. One event per rated
-//!   review of the replay history, holding what the collection knows about
-//!   it (answer time, show time, duration, rating, card, note, deck and
-//!   preset ids, the replay start) and nothing a model derives.
-//! - (b) `published`: the feature encoder of today's published model. It
-//!   turns the stream into the model's per-review input records, the records
-//!   Python's `_historical_rwkv_review_inputs` builds.
+//! - (a) `stream`: the raw per-review event stream. One event per rated review
+//!   of the replay history, holding what the collection knows about it (answer
+//!   time, show time, duration, rating, card, note, deck and preset ids, the
+//!   replay start) and nothing a model derives.
+//! - (b) `published`: the feature encoder of today's published model. It turns
+//!   the stream into the model's per-review input records, the records Python's
+//!   `_historical_rwkv_review_inputs` builds.
 //!
 //! This module reads the collection for both and runs them for the whole
 //! history (`rwkv_historical_review_inputs`). Its output is that of the
@@ -111,7 +111,10 @@ impl Collection {
                 presets
                     .iter()
                     .map(|(card_id, preset)| {
-                        Ok((card_id, python_stable_preset_id(&preset.id, stable_preset_ids)?))
+                        Ok((
+                            card_id,
+                            python_stable_preset_id(&preset.id, stable_preset_ids)?,
+                        ))
                     })
                     .collect::<Result<HashMap<_, _>>>()?,
             )
@@ -319,11 +322,11 @@ fn inputs_response(inputs: RwkvReplayInputs) -> RwkvHistoricalReviewInputsRespon
         history_hash,
         checkpoint,
     } = inputs;
-    let review_column = |value: fn(&PublishedReviewInput) -> i64| i64_column(reviews.iter().map(value));
-    let card_column =
-        |cards: &[PublishedCardState], value: fn(&PublishedCardState) -> i64| {
-            i64_column(cards.iter().map(value))
-        };
+    let review_column =
+        |value: fn(&PublishedReviewInput) -> i64| i64_column(reviews.iter().map(value));
+    let card_column = |cards: &[PublishedCardState], value: fn(&PublishedCardState) -> i64| {
+        i64_column(cards.iter().map(value))
+    };
     let mut response = RwkvHistoricalReviewInputsResponse {
         review_ids: review_column(|review| review.review_id),
         card_ids: review_column(|review| review.card_id),
@@ -407,7 +410,10 @@ mod test {
         Ok(())
     }
 
-    fn inputs(col: &mut Collection, settings: &RwkvReplayInputsSettings) -> Result<RwkvReplayInputs> {
+    fn inputs(
+        col: &mut Collection,
+        settings: &RwkvReplayInputsSettings,
+    ) -> Result<RwkvReplayInputs> {
         let rows = col.storage.rwkv_historical_review_rows(&[])?.0;
         col.rwkv_replay_inputs_job(rows, &HashMap::new())?
             .encode(settings)
@@ -440,12 +446,20 @@ mod test {
         .into_iter()
         .enumerate()
         {
-            add_review(&mut col, &card, card.id.0 + 10_000 + step as i64 * 86_400_000, kind)?;
+            add_review(
+                &mut col,
+                &card,
+                card.id.0 + 10_000 + step as i64 * 86_400_000,
+                kind,
+            )?;
         }
         let inputs = inputs(&mut col, &settings(&[]))?;
         let fingerprint = col.rwkv_historical_review_fingerprint(Default::default())?;
         assert_eq!(inputs.reviews.len(), 4);
-        assert_eq!(inputs.history_hash.as_deref(), Some(fingerprint.history_hash.as_str()));
+        assert_eq!(
+            inputs.history_hash.as_deref(),
+            Some(fingerprint.history_hash.as_str())
+        );
         assert_eq!(inputs.reviews[0].card_type, 0);
         assert_eq!(inputs.reviews[0].elapsed_seconds, 10);
         assert_eq!(inputs.cards[0].review_count, 4);
@@ -466,7 +480,11 @@ mod test {
         add_review(&mut col, &card, first + 2_000, RevlogReviewKind::Review)?;
         let inputs = inputs(&mut col, &settings(&[first + 1_000, 5]))?;
         assert_eq!(inputs.active_ignored_review_ids, [first + 1_000]);
-        let review_ids: Vec<i64> = inputs.reviews.iter().map(|review| review.review_id).collect();
+        let review_ids: Vec<i64> = inputs
+            .reviews
+            .iter()
+            .map(|review| review.review_id)
+            .collect();
         assert_eq!(review_ids, [first + 2_000]);
         Ok(())
     }
@@ -478,7 +496,12 @@ mod test {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
         col.add_card(&mut card)?;
-        add_review(&mut col, &card, card.id.0 + 10_000, RevlogReviewKind::Review)?;
+        add_review(
+            &mut col,
+            &card,
+            card.id.0 + 10_000,
+            RevlogReviewKind::Review,
+        )?;
         assert!(inputs(&mut col, &settings(&[])).is_ok());
 
         // a review id below 0: Python floors its division, Rust truncates
@@ -506,7 +529,12 @@ mod test {
         add_review(&mut col, &first, start, RevlogReviewKind::Review)?;
         add_review(&mut col, &second, start + day, RevlogReviewKind::Review)?;
         add_review(&mut col, &first, start + 20 * day, RevlogReviewKind::Review)?;
-        add_review(&mut col, &second, start + 21 * day, RevlogReviewKind::Review)?;
+        add_review(
+            &mut col,
+            &second,
+            start + 21 * day,
+            RevlogReviewKind::Review,
+        )?;
         let inputs = inputs(
             &mut col,
             &RwkvReplayInputsSettings {

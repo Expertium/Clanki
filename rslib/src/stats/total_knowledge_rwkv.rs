@@ -52,8 +52,7 @@ pub(crate) fn total_knowledge_rwkv_replay(
         .encode(&RwkvReplayInputsSettings {
             ignored_review_ids: &[],
             first_review_elapsed_source: FirstReviewElapsedSource::DeckConfig,
-            first_review_uses_creation_by_config_id: &input
-                .first_review_uses_creation_by_config_id,
+            first_review_uses_creation_by_config_id: &input.first_review_uses_creation_by_config_id,
             hash_history: false,
             recovery_checkpoint_max_age_millis: 0,
         })?
@@ -267,18 +266,31 @@ mod test {
 
     #[test]
     fn events_drop_resets_before_the_first_rating_and_keep_the_rating_order() {
-        let reviews = [review(10, 2, 1), review(20, 1, 1), review(30, 3, 2), review(40, 2, 3)];
+        let reviews = [
+            review(10, 2, 1),
+            review(20, 1, 1),
+            review(30, 3, 2),
+            review(40, 2, 3),
+        ];
         let resets = [(5, 2), (25, 1), (35, 4)];
         let searched = HashSet::from([1, 2, 4]);
         let events = card_events(&reviews, &resets, &searched, 5, 1_000_000);
         let cards: Vec<i64> = events.iter().map(|(card_id, _)| *card_id).collect();
         assert_eq!(cards, [2, 1]);
         assert_eq!(
-            events[0].1.iter().map(|event| event.review_id).collect::<Vec<_>>(),
+            events[0]
+                .1
+                .iter()
+                .map(|event| event.review_id)
+                .collect::<Vec<_>>(),
             [10, 40]
         );
         assert_eq!(
-            events[1].1.iter().map(|event| event.review_index).collect::<Vec<_>>(),
+            events[1]
+                .1
+                .iter()
+                .map(|event| event.review_index)
+                .collect::<Vec<_>>(),
             [Some(1), None]
         );
     }
