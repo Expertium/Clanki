@@ -320,8 +320,7 @@ impl Collection {
         let enabled_deck_ids = (!input.include_disabled_decks)
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
         let parsed_search = parse_search(&input.search)?;
-        let candidate_search =
-            broaden_retrievability_properties(Node::Group(parsed_search), false);
+        let candidate_search = broaden_retrievability_properties(Node::Group(parsed_search), false);
         let guard = self.search_cards_into_table(candidate_search, SortMode::NoOrder)?;
         let searched_cards = guard.cards as u32;
         let cards = guard
@@ -395,7 +394,8 @@ impl Collection {
         let loaded_cards = cards.len() as u32;
 
         for card in cards {
-            let Some(state) = self.rwkv_review_input_state(&card, timing, include_suspended_review)?
+            let Some(state) =
+                self.rwkv_review_input_state(&card, timing, include_suspended_review)?
             else {
                 continue;
             };
@@ -2240,7 +2240,11 @@ mod test {
             )?;
             for response in [by_ids, by_search, by_deck] {
                 let rows: Vec<_> = response.rows.iter().map(|row| row.card_id).collect();
-                assert_eq!(rows, vec![review_card.id.0], "include_new_cards={include_new_cards}");
+                assert_eq!(
+                    rows,
+                    vec![review_card.id.0],
+                    "include_new_cards={include_new_cards}"
+                );
             }
         }
         Ok(())

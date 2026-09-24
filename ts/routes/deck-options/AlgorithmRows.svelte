@@ -89,7 +89,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         // No algorithm ranks new cards by retrievability: a stored
         // retrievability new-card order reads as the default (spec
         // deck-options.no-new-card-retrievability-order).
-        const gather = newGatherPriorityWithoutRetrievability(current.newCardGatherPriority);
+        const gather = newGatherPriorityWithoutRetrievability(
+            current.newCardGatherPriority,
+        );
         if (gather !== current.newCardGatherPriority) {
             config.update((c) => {
                 c.newCardGatherPriority = gather;
