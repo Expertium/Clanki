@@ -295,12 +295,10 @@ const MAX_CHANNEL_MIXER_DIM: usize = 256;
 const MAX_LORA_RANK: usize = 16;
 const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
 /// The id a review without a note, deck or preset (the reviews of a deleted
-/// card) is encoded and streamed with, for all three (spec
-/// sched.rwkv-replay-deleted-cards). The published model was trained with
-/// the dataset builder's placeholder fill cast to int32, which saturated
-/// every placeholder to one value: one shared note, one shared deck and one
-/// shared preset. The value lies far above any Anki id (epoch milliseconds),
-/// so it never meets a real entity.
+/// card) is encoded and streamed with (spec sched.rwkv-replay-deleted-cards):
+/// the deck and the preset always, the note as `RwkvIdPipeline` says. The
+/// value lies far above any Anki id (epoch milliseconds), so it never meets a
+/// real entity.
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
 /// MT19937's state words: the `dim` first outputs after a seed read the
@@ -347,29 +345,61 @@ pub struct ReviewInput {
     pub enforce_grade_order: bool,
 }
 
+/// Which entities a review without a note, deck or preset (a deleted
+/// card's) streams through and is encoded with: a property of the id
+/// pipeline the model was trained with, so of the model version (spec
+/// sched.rwkv-replay-deleted-cards; the RWKV session's DEPLOY_FUNCTIONS.md
+/// section 7). Deck and preset share one placeholder in both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwkvIdPipeline {
+    /// The shipped model: srs-benchmark cast the filled ids to int32, which
+    /// saturated every placeholder to one value, so all missing notes are
+    /// one shared note too.
+    Int32,
+    /// A model trained on the int64 pipeline (2026-08-21 on): a missing note
+    /// is `ID_PLACEHOLDER + card_id`, a note of its own per card.
+    Int64,
+}
+
+/// The id pipeline of the weights format `SrsModel::load` reads: the shipped
+/// model's. A model trained another way comes with its own loader and says
+/// its own pipeline.
+const PUBLISHED_MODEL_ID_PIPELINE: RwkvIdPipeline = RwkvIdPipeline::Int32;
+
+impl RwkvIdPipeline {
+    /// The note a card without one streams through.
+    fn missing_note_id(self, card_id: i64) -> i64 {
+        match self {
+            RwkvIdPipeline::Int32 => ID_PLACEHOLDER,
+            RwkvIdPipeline::Int64 => ID_PLACEHOLDER + card_id,
+        }
+    }
+}
+
 impl ReviewInput {
     /// The note whose stream the review reads and advances. A review without
-    /// a note (a deleted card's) uses `ID_PLACEHOLDER`, the one note all such
-    /// reviews share (spec sched.rwkv-replay-deleted-cards).
-    fn note_key(&self) -> i64 {
-        self.note_id.unwrap_or(ID_PLACEHOLDER)
+    /// a note (a deleted card's) uses the model's placeholder note
+    /// (`RwkvIdPipeline`).
+    fn note_key(&self, ids: RwkvIdPipeline) -> i64 {
+        self.note_id
+            .unwrap_or_else(|| ids.missing_note_id(self.card_id))
     }
 
-    /// The deck stream, as `note_key`.
+    /// The deck stream: one shared placeholder for every review without one.
     fn deck_key(&self) -> i64 {
         self.deck_id.unwrap_or(ID_PLACEHOLDER)
     }
 
-    /// The preset stream, as `note_key`.
+    /// The preset stream, as `deck_key`.
     fn preset_key(&self) -> i64 {
         self.preset_id.unwrap_or(ID_PLACEHOLDER)
     }
 
     /// The entities whose codes the review's features hold, in feature order.
-    fn encoded_ids(&self) -> [(IdKind, i64); 4] {
+    fn encoded_ids(&self, ids: RwkvIdPipeline) -> [(IdKind, i64); 4] {
         [
             (IdKind::Card, self.card_id),
-            (IdKind::Note, self.note_key()),
+            (IdKind::Note, self.note_key(ids)),
             (IdKind::Deck, self.deck_key()),
             (IdKind::Preset, self.preset_key()),
         ]
@@ -688,11 +718,13 @@ struct RwkvWorkloadTargetSweep {
 
 impl RwkvInference {
     pub fn load(path: PathBuf, target_retention: f32, max_interval_days: u32) -> io::Result<Self> {
+        let model = Arc::new(SrsModel::load(&path)?);
+        let ids = model.ids;
         Ok(Self {
-            model: Arc::new(SrsModel::load(&path)?),
-            features: FeatureState::default(),
+            model,
+            features: FeatureState::new(ids),
             curves: HashMap::new(),
-            warm_up_states: ReviewStateMaps::default(),
+            warm_up_states: ReviewStateMaps::new(ids),
             state_cache_store: None,
             target_retention,
             max_interval_days,
@@ -1078,6 +1110,7 @@ impl RwkvInference {
         };
         let mut worker = self.worker_from_cache_state(runtime_state)?;
         let mut state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1120,8 +1153,9 @@ impl RwkvInference {
                 "RWKV future prediction requires a runtime state snapshot",
             ));
         };
-        let mut base_features = read_runtime_feature_state(runtime_state)?;
+        let mut base_features = read_runtime_feature_state(runtime_state, self.model.ids)?;
         let base_state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1537,7 +1571,7 @@ insert into segments (
         // they are read now; the card and note states are read one at a time
         // when a card actually comes up.
         let index = build_state_cache_index(&connection, &segment_chain)?;
-        let mut warm_up_states = ReviewStateMaps::default();
+        let mut warm_up_states = ReviewStateMaps::new(self.model.ids);
         for (entity_id, row_id) in &index.deck {
             if let Some(state) =
                 read_state_cache_entity(&connection, STATE_CACHE_KIND_DECK, *entity_id, *row_id)?
@@ -1567,7 +1601,7 @@ insert into segments (
             card: index.card,
             note: index.note,
         });
-        let (features, curves) = read_runtime_cache_state(&runtime_state)?;
+        let (features, curves) = read_runtime_cache_state(&runtime_state, self.model.ids)?;
 
         self.warm_up_states = warm_up_states;
         self.features = features;
@@ -1577,6 +1611,7 @@ insert into segments (
 
     pub fn restore_warm_up_snapshot(&mut self, snapshot: RwkvWarmUpSnapshot) -> io::Result<()> {
         self.warm_up_states = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1600,7 +1635,7 @@ insert into segments (
 
     pub fn reset_warm_up_state(&mut self) {
         self.state_cache_store = None;
-        self.warm_up_states = ReviewStateMaps::default();
+        self.warm_up_states = ReviewStateMaps::new(self.model.ids);
     }
 
     fn review_heads(
@@ -1772,14 +1807,14 @@ insert into segments (
     }
 
     pub fn restore_cache_state(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (features, curves) = read_runtime_cache_state(bytes)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.model.ids)?;
         self.features = features;
         self.curves = curves;
         Ok(())
     }
 
     fn worker_from_cache_state(&self, bytes: &[u8]) -> io::Result<RwkvInference> {
-        let (features, curves) = read_runtime_cache_state(bytes)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.model.ids)?;
         Ok(self.workload_worker(features, curves))
     }
 
@@ -1811,6 +1846,7 @@ insert into segments (
         let base_features = reviewless_worker.features.clone();
         let base_curves = reviewless_worker.curves.clone();
         let reviewless_state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1890,6 +1926,7 @@ insert into segments (
         for (offset, dr) in target_drs.into_iter().enumerate() {
             let mut worker = self.workload_worker(base_features.clone(), base_curves.clone());
             let mut state_maps = ReviewStateMaps::from_serialized(
+                self.model.ids,
                 &snapshot.card_states,
                 &snapshot.note_states,
                 &snapshot.deck_states,
@@ -1932,7 +1969,7 @@ insert into segments (
             model: Arc::clone(&self.model),
             features,
             curves,
-            warm_up_states: ReviewStateMaps::default(),
+            warm_up_states: ReviewStateMaps::new(self.model.ids),
             state_cache_store: None,
             target_retention: self.target_retention,
             max_interval_days: self.max_interval_days,
@@ -2247,10 +2284,10 @@ fn predict_retrievability_many_after_reviews_for_identity(
         .collect()
 }
 
-fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
+fn read_runtime_feature_state(bytes: &[u8], ids: RwkvIdPipeline) -> io::Result<FeatureState> {
     let mut cursor = Cursor::new(bytes);
     cursor.expect_magic(b"ARWKVPROCSTATE3")?;
-    let features = FeatureState::read_cache_state(&mut cursor)?;
+    let features = FeatureState::read_cache_state(&mut cursor, ids)?;
     let curve_count = cursor.u32()? as usize;
     for _ in 0..curve_count {
         cursor.i64()?;
@@ -2261,10 +2298,13 @@ fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
     Ok(features)
 }
 
-fn read_runtime_cache_state(bytes: &[u8]) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
+fn read_runtime_cache_state(
+    bytes: &[u8],
+    ids: RwkvIdPipeline,
+) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
     let mut cursor = Cursor::new(bytes);
     cursor.expect_magic(b"ARWKVPROCSTATE3")?;
-    let features = FeatureState::read_cache_state(&mut cursor)?;
+    let features = FeatureState::read_cache_state(&mut cursor, ids)?;
     let curve_count = cursor.u32()? as usize;
     let mut curves = HashMap::with_capacity(curve_count);
     for _ in 0..curve_count {
@@ -2586,10 +2626,12 @@ struct FeatureState {
     /// code without keeping it.
     id_encodings: HashMap<(IdKind, i64), Vec<f32>>,
     review_index: i64,
+    /// The model's id pipeline: which note a review without one encodes.
+    ids: RwkvIdPipeline,
 }
 
-impl Default for FeatureState {
-    fn default() -> Self {
+impl FeatureState {
+    fn new(ids: RwkvIdPipeline) -> Self {
         Self {
             first_day_offset: None,
             previous_day_offset: None,
@@ -2604,6 +2646,7 @@ impl Default for FeatureState {
             card_elapsed_seconds_cumulative: HashMap::new(),
             id_encodings: HashMap::new(),
             review_index: 0,
+            ids,
         }
     }
 }
@@ -2774,7 +2817,7 @@ impl FeatureState {
             if input.is_query { 1.0 } else { 0.0 },
         ]);
 
-        for (kind, id) in input.encoded_ids() {
+        for (kind, id) in input.encoded_ids(self.ids) {
             match self.id_encodings.get(&(kind, id)) {
                 Some(encoding) => features.extend_from_slice(encoding),
                 None => features.extend(id_encoding(kind, id)),
@@ -2823,7 +2866,7 @@ impl FeatureState {
         }
 
         self.previous_day_offset = Some(day_offset);
-        for key in input.encoded_ids() {
+        for key in input.encoded_ids(self.ids) {
             self.id_encodings
                 .entry(key)
                 .or_insert_with(|| id_encoding(key.0, key.1));
@@ -2871,7 +2914,7 @@ impl FeatureState {
         out.write_all(&self.review_index.to_le_bytes())
     }
 
-    fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
+    fn read_cache_state(cursor: &mut Cursor<'_>, ids: RwkvIdPipeline) -> io::Result<Self> {
         Ok(Self {
             first_day_offset: cursor.option_i64()?,
             previous_day_offset: cursor.option_i64()?,
@@ -2886,6 +2929,7 @@ impl FeatureState {
             card_elapsed_seconds_cumulative: read_i64_map(cursor)?,
             review_index: cursor.i64()?,
             id_encodings: HashMap::new(),
+            ids,
         })
     }
 }
@@ -3309,6 +3353,8 @@ impl<'a> Cursor<'a> {
 }
 
 struct SrsModel {
+    /// The id pipeline the model was trained with (`RwkvIdPipeline`).
+    ids: RwkvIdPipeline,
     features_0: Linear,
     features_norm: Norm,
     features_3: Linear,
@@ -3372,6 +3418,7 @@ impl SrsModel {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Self {
+            ids: PUBLISHED_MODEL_ID_PIPELINE,
             features_0: weights.linear("features2card.0", CARD_FEATURES, HEAD_DIM, true)?,
             features_norm: weights.layer_norm("features2card.2", HEAD_DIM, 1e-5)?,
             features_3: weights.linear("features2card.3", HEAD_DIM, D_MODEL, true)?,
@@ -3788,8 +3835,10 @@ struct SrsState {
     global: ModuleState,
 }
 
-#[derive(Default)]
 struct ReviewStateMaps {
+    /// The model's id pipeline: which note stream a review without one
+    /// reads.
+    ids: RwkvIdPipeline,
     card: HashMap<i64, ModuleState>,
     note: HashMap<i64, ModuleState>,
     deck: HashMap<i64, ModuleState>,
@@ -3807,7 +3856,25 @@ struct ReviewStateMaps {
 }
 
 impl ReviewStateMaps {
+    fn new(ids: RwkvIdPipeline) -> Self {
+        Self {
+            ids,
+            card: HashMap::new(),
+            note: HashMap::new(),
+            deck: HashMap::new(),
+            preset: HashMap::new(),
+            global: None,
+            lazy: None,
+            dirty_card: HashSet::new(),
+            dirty_note: HashSet::new(),
+            dirty_deck: HashSet::new(),
+            dirty_preset: HashSet::new(),
+            global_dirty: false,
+        }
+    }
+
     fn from_serialized(
+        ids: RwkvIdPipeline,
         card_states: &[(i64, Vec<u8>)],
         note_states: &[(i64, Vec<u8>)],
         deck_states: &[(i64, Vec<u8>)],
@@ -3815,6 +3882,7 @@ impl ReviewStateMaps {
         global_state: Option<&[u8]>,
     ) -> io::Result<Self> {
         Ok(Self {
+            ids,
             card: deserialize_state_map(card_states)?,
             note: deserialize_state_map(note_states)?,
             deck: deserialize_state_map(deck_states)?,
@@ -3832,7 +3900,7 @@ impl ReviewStateMaps {
     fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
         SrsStateRef {
             card: self.card.get(&input.card_id),
-            note: self.note.get(&input.note_key()),
+            note: self.note.get(&input.note_key(self.ids)),
             deck: self.deck.get(&input.deck_key()),
             preset: self.preset.get(&input.preset_key()),
             global: self.global.as_ref(),
@@ -3842,7 +3910,7 @@ impl ReviewStateMaps {
     fn state_owned(&self, input: &ReviewInput) -> SrsStateOwned {
         SrsStateOwned {
             card: self.card.get(&input.card_id).cloned(),
-            note: self.note.get(&input.note_key()).cloned(),
+            note: self.note.get(&input.note_key(self.ids)).cloned(),
             deck: self.deck.get(&input.deck_key()).cloned(),
             preset: self.preset.get(&input.preset_key()).cloned(),
             global: self.global.clone(),
@@ -3852,7 +3920,10 @@ impl ReviewStateMaps {
     fn serialized_state(&self, input: &ReviewInput) -> ReviewStateOwned {
         ReviewStateOwned {
             card: self.card.get(&input.card_id).map(serialize_module_state),
-            note: self.note.get(&input.note_key()).map(serialize_module_state),
+            note: self
+                .note
+                .get(&input.note_key(self.ids))
+                .map(serialize_module_state),
             deck: self.deck.get(&input.deck_key()).map(serialize_module_state),
             preset: self
                 .preset
@@ -3877,8 +3948,8 @@ impl ReviewStateMaps {
             ),
             note: branched_module_state(
                 &self.note,
-                query.note_key(),
-                answer.note_key(),
+                query.note_key(self.ids),
+                answer.note_key(self.ids),
                 &next_state.note,
             ),
             deck: branched_module_state(
@@ -3898,10 +3969,10 @@ impl ReviewStateMaps {
     }
 
     fn store(&mut self, input: &ReviewInput, state: SrsState) {
-        self.forget_lazy(input.card_id, input.note_key());
+        self.forget_lazy(input.card_id, input.note_key(self.ids));
         self.card.insert(input.card_id, state.card);
         self.mark_dirty(input);
-        self.note.insert(input.note_key(), state.note);
+        self.note.insert(input.note_key(self.ids), state.note);
         self.deck.insert(input.deck_key(), state.deck);
         self.preset.insert(input.preset_key(), state.preset);
         self.global = Some(state.global);
@@ -3909,14 +3980,14 @@ impl ReviewStateMaps {
 
     fn mark_dirty(&mut self, input: &ReviewInput) {
         self.dirty_card.insert(input.card_id);
-        self.dirty_note.insert(input.note_key());
+        self.dirty_note.insert(input.note_key(self.ids));
         self.dirty_deck.insert(input.deck_key());
         self.dirty_preset.insert(input.preset_key());
         self.global_dirty = true;
     }
 
-    /// Puts one review's saved states back. A missing id is the stream all
-    /// reviews without one share, as in `ReviewInput::note_key`.
+    /// Puts one review's saved states back. A missing id is the placeholder
+    /// stream `ReviewInput::note_key` and its siblings give.
     fn restore_serialized(
         &mut self,
         card_id: i64,
@@ -3925,7 +3996,7 @@ impl ReviewStateMaps {
         preset_id: Option<i64>,
         state: &ReviewStateOwned,
     ) -> io::Result<()> {
-        let note_id = note_id.unwrap_or(ID_PLACEHOLDER);
+        let note_id = note_id.unwrap_or_else(|| self.ids.missing_note_id(card_id));
         let deck_id = deck_id.unwrap_or(ID_PLACEHOLDER);
         let preset_id = preset_id.unwrap_or(ID_PLACEHOLDER);
         self.forget_lazy(card_id, note_id);
@@ -4048,7 +4119,7 @@ impl ReviewStateMaps {
             return Ok(());
         }
         self.load_lazy(STATE_CACHE_KIND_CARD, input.card_id)?;
-        self.load_lazy(STATE_CACHE_KIND_NOTE, input.note_key())
+        self.load_lazy(STATE_CACHE_KIND_NOTE, input.note_key(self.ids))
     }
 
     fn ensure_loaded_many(&mut self, inputs: &[ReviewInput]) -> io::Result<()> {
@@ -11871,7 +11942,7 @@ create table segment_state_chunks (
             preset: Some(serialized.clone()),
             global: Some(serialized.clone()),
         };
-        let mut states = ReviewStateMaps::default();
+        let mut states = ReviewStateMaps::new(PUBLISHED_MODEL_ID_PIPELINE);
 
         states
             .restore_serialized(1, Some(2), Some(3), Some(4), &populated)
@@ -11949,7 +12020,7 @@ create table segment_state_chunks (
 
     #[test]
     fn feature_state_scales_duration_from_milliseconds() {
-        let features = FeatureState::default();
+        let features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let input = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -11998,25 +12069,27 @@ create table segment_state_chunks (
         };
 
         for (state, expected_scaled_state) in [(2, 0.0), (4, 2.0), (5, 3.0)] {
-            let values = FeatureState::default().features_for(&ReviewInput {
-                card_type: Some(state),
-                ..input.clone()
-            });
+            let values =
+                FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&ReviewInput {
+                    card_type: Some(state),
+                    ..input.clone()
+                });
             assert_eq!(values[22], expected_scaled_state);
         }
 
-        let query_values = FeatureState::default().features_for(&ReviewInput {
-            is_query: true,
-            ease: None,
-            card_type: Some(4),
-            ..input
-        });
+        let query_values =
+            FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&ReviewInput {
+                is_query: true,
+                ease: None,
+                card_type: Some(4),
+                ..input
+            });
         assert_eq!(query_values[22], 0.0);
     }
 
     #[test]
     fn feature_state_normalizes_day_offset_to_first_raw_review_day() {
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let first = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -12065,55 +12138,72 @@ create table segment_state_chunks (
     }
 
     /// A review without a note, deck or preset (a deleted card's) has the
-    /// three flags set and the codes and streams of the one placeholder
-    /// entity all such reviews share, as the published model was trained
+    /// three flags set. Under the shipped model's id pipeline (int32) it has
+    /// the codes and streams of the one placeholder note, deck and preset all
+    /// such reviews share; under the int64 pipeline its note is a
+    /// placeholder of its own per card, while deck and preset stay shared
     /// (spec sched.rwkv-replay-deleted-cards).
     #[test]
-    fn feature_state_encodes_missing_ids_as_one_shared_placeholder() {
+    fn missing_ids_encode_as_the_model_versions_placeholders() {
         let input = ReviewInput {
             note_id: None,
             deck_id: None,
             preset_id: None,
             ..id_test_input()
         };
-        let values = FeatureState::default().features_for(&input);
-        assert_eq!(&values[13..16], &[1.0, 1.0, 1.0]);
-        assert_eq!(
-            &values[36..48],
-            &id_encoding(IdKind::Note, ID_PLACEHOLDER)[..]
-        );
-        assert_eq!(
-            &values[48..56],
-            &id_encoding(IdKind::Deck, ID_PLACEHOLDER)[..]
-        );
-        assert_eq!(
-            &values[56..64],
-            &id_encoding(IdKind::Preset, ID_PLACEHOLDER)[..]
-        );
-        // another deleted card shares the note code, and the note stream
         let other = ReviewInput {
             card_id: 124,
             ..input.clone()
         };
-        assert_eq!(
-            &FeatureState::default().features_for(&other)[36..64],
-            &values[36..64]
-        );
-        assert_eq!(input.note_key(), other.note_key());
-        assert_eq!(input.deck_key(), ID_PLACEHOLDER);
-        assert_eq!(input.preset_key(), ID_PLACEHOLDER);
+        assert_eq!(PUBLISHED_MODEL_ID_PIPELINE, RwkvIdPipeline::Int32);
+        for ids in [RwkvIdPipeline::Int32, RwkvIdPipeline::Int64] {
+            let features = FeatureState::new(ids);
+            let values = features.features_for(&input);
+            let other_values = features.features_for(&other);
+            assert_eq!(&values[13..16], &[1.0, 1.0, 1.0]);
+            assert_eq!(
+                &values[48..56],
+                &id_encoding(IdKind::Deck, ID_PLACEHOLDER)[..]
+            );
+            assert_eq!(
+                &values[56..64],
+                &id_encoding(IdKind::Preset, ID_PLACEHOLDER)[..]
+            );
+            // deck and preset are shared in both pipelines
+            assert_eq!(&other_values[48..64], &values[48..64]);
+            assert_eq!(input.deck_key(), ID_PLACEHOLDER);
+            assert_eq!(input.preset_key(), ID_PLACEHOLDER);
+            let (note, other_note) = (input.note_key(ids), other.note_key(ids));
+            assert_eq!(&values[36..48], &id_encoding(IdKind::Note, note)[..]);
+            match ids {
+                RwkvIdPipeline::Int32 => {
+                    assert_eq!((note, other_note), (ID_PLACEHOLDER, ID_PLACEHOLDER));
+                    assert_eq!(&other_values[36..48], &values[36..48]);
+                }
+                RwkvIdPipeline::Int64 => {
+                    assert_eq!(
+                        (note, other_note),
+                        (ID_PLACEHOLDER + 123, ID_PLACEHOLDER + 124)
+                    );
+                    assert_ne!(&other_values[36..48], &values[36..48]);
+                }
+            }
+        }
+        // a real note is its own in both
+        assert_eq!(id_test_input().note_key(RwkvIdPipeline::Int64), 456);
     }
 
-    /// The reviews of deleted cards advance one shared note, deck and preset
-    /// stream, as training streamed its one placeholder entity (spec
-    /// sched.rwkv-replay-deleted-cards); before, each read a fresh state and
-    /// kept nothing.
+    /// The reviews of deleted cards advance real placeholder streams, as
+    /// training streamed its placeholder entities (spec
+    /// sched.rwkv-replay-deleted-cards): one shared note, deck and preset
+    /// under the shipped model's pipeline; a note per card, deck and preset
+    /// shared, under the int64 one. Before, each read a fresh state and kept
+    /// nothing.
     #[test]
-    fn reviews_without_ids_share_one_placeholder_stream() {
+    fn reviews_without_ids_stream_through_the_model_versions_placeholders() {
         let Some(model_path) = embedded_weights_path() else {
             return;
         };
-        let mut inference = RwkvInference::load(model_path, 0.9, 36_500).unwrap();
         let reviews = [200, 201]
             .map(|card_id| ReviewInput {
                 card_id,
@@ -12123,12 +12213,29 @@ create table segment_state_chunks (
                 ..id_test_input()
             })
             .to_vec();
-        inference.warm_up_reviews(reviews, false).unwrap();
-        let states = &inference.warm_up_states;
-        for map in [&states.note, &states.deck, &states.preset] {
-            assert_eq!(map.keys().copied().collect::<Vec<_>>(), [ID_PLACEHOLDER]);
+        for (ids, notes) in [
+            (RwkvIdPipeline::Int32, vec![ID_PLACEHOLDER]),
+            (
+                RwkvIdPipeline::Int64,
+                vec![ID_PLACEHOLDER + 200, ID_PLACEHOLDER + 201],
+            ),
+        ] {
+            let mut inference = RwkvInference::load(model_path.clone(), 0.9, 36_500).unwrap();
+            if ids != inference.model.ids {
+                Arc::get_mut(&mut inference.model).unwrap().ids = ids;
+                inference.features = FeatureState::new(ids);
+                inference.warm_up_states = ReviewStateMaps::new(ids);
+            }
+            inference.warm_up_reviews(reviews.clone(), false).unwrap();
+            let states = &inference.warm_up_states;
+            let mut note_keys: Vec<i64> = states.note.keys().copied().collect();
+            note_keys.sort_unstable();
+            assert_eq!(note_keys, notes);
+            for map in [&states.deck, &states.preset] {
+                assert_eq!(map.keys().copied().collect::<Vec<_>>(), [ID_PLACEHOLDER]);
+            }
+            assert_eq!(states.card.len(), 2);
         }
-        assert_eq!(states.card.len(), 2);
     }
 
     /// An id code is torch's `randint(0, 4, (dim,), generator=g) - 1.5` with
@@ -12138,7 +12245,7 @@ create table segment_state_chunks (
     fn id_codes_match_torch_seeded_by_the_id() {
         assert_eq!(id_code_seed(IdKind::Card, 123), 1_658_732_843);
         assert_eq!(id_code_seed(IdKind::Note, ID_PLACEHOLDER), 1_456_629_865);
-        let values = FeatureState::default().features_for(&id_test_input());
+        let values = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&id_test_input());
         assert_eq!(
             &values[24..36],
             &[1.5, 1.5, 1.5, -0.5, -0.5, -1.5, -1.5, 1.5, 0.5, 0.5, -1.5, 0.5]
@@ -12190,11 +12297,11 @@ create table segment_state_chunks (
             ..first.clone()
         };
 
-        let mut plain = FeatureState::default();
+        let mut plain = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         plain.store_review(&first);
         let plain_second = plain.features_for(&second);
 
-        let mut queried = FeatureState::default();
+        let mut queried = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         queried.features_for(&unseen_query);
         queried.store_review(&first);
         queried.features_for(&unseen_query);
@@ -12202,13 +12309,13 @@ create table segment_state_chunks (
         assert_eq!(queried.features_for(&second), plain_second);
 
         // the second review's codes are its own, met first or second
-        let alone = FeatureState::default().features_for(&second);
+        let alone = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&second);
         assert_eq!(&alone[24..64], &plain_second[24..64]);
     }
 
     #[test]
     fn feature_state_initializes_today_like_benchmark() {
-        let features = FeatureState::default();
+        let features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let input = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -12233,7 +12340,7 @@ create table segment_state_chunks (
 
     #[test]
     fn feature_state_cache_round_trips_without_id_codes() {
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let input = id_test_input();
         features.store_review(&input);
         let next_input = ReviewInput {
@@ -12252,7 +12359,8 @@ create table segment_state_chunks (
         features.write_cache_state(&mut cache);
         assert_eq!(cache.len(), features.cache_state_len());
         let mut cursor = Cursor::new(&cache);
-        let restored = FeatureState::read_cache_state(&mut cursor).unwrap();
+        let restored =
+            FeatureState::read_cache_state(&mut cursor, PUBLISHED_MODEL_ID_PIPELINE).unwrap();
         cursor.expect_end().unwrap();
 
         assert!(restored.id_encodings.is_empty());
@@ -12262,7 +12370,7 @@ create table segment_state_chunks (
 
     #[test]
     fn feature_state_for_card_restores_review_mutations() {
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let before = features.state_for_card(123);
         let input = ReviewInput {
             card_id: 123,

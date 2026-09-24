@@ -379,7 +379,7 @@ fn run_state_only_module_wavefront(
 }
 
 fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
-    let mut module_states = ReviewStateMaps::default();
+    let mut module_states = ReviewStateMaps::new(states.ids);
     match module_id {
         0 => module_states.card = std::mem::take(&mut states.card),
         1 => module_states.deck = std::mem::take(&mut states.deck),
@@ -409,11 +409,11 @@ fn put_module_states(
 /// The recurrent-state scope a module's streams are keyed by, as
 /// `ReviewStateMaps::{state_ref, store}` key them: a review without a note,
 /// deck or preset streams with every other review without one.
-fn stream_key(module_id: usize, input: &ReviewInput) -> i64 {
+fn stream_key(module_id: usize, input: &ReviewInput, ids: RwkvIdPipeline) -> i64 {
     match module_id {
         0 => input.card_id,
         1 => input.deck_key(),
-        2 => input.note_key(),
+        2 => input.note_key(ids),
         3 => input.preset_key(),
         _ => 0,
     }
@@ -463,13 +463,13 @@ struct ModulePlan {
 }
 
 impl ModulePlan {
-    fn build(module_id: usize, inputs: &[ReviewInput]) -> Self {
+    fn build(module_id: usize, inputs: &[ReviewInput], ids: RwkvIdPipeline) -> Self {
         let mut streams: Vec<StreamPlan> = Vec::new();
         let mut stream_of_row = Vec::with_capacity(inputs.len());
         let mut prev_row = Vec::with_capacity(inputs.len());
         let mut stream_by_key: HashMap<i64, u32> = HashMap::new();
         for (row, input) in inputs.iter().enumerate() {
-            let key = stream_key(module_id, input);
+            let key = stream_key(module_id, input, ids);
             let stream_index = *stream_by_key.entry(key).or_insert_with(|| {
                 streams.push(StreamPlan {
                     key,
@@ -514,7 +514,7 @@ fn run_module(
     query_recurrence: QueryRecurrence,
 ) {
     let rows = inputs.len();
-    let plan = ModulePlan::build(module_id, inputs);
+    let plan = ModulePlan::build(module_id, inputs, states.ids);
     let layer_count = module.layers.len();
 
     let mut stream_layers: Vec<Vec<LayerState>> = plan

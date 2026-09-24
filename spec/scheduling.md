@@ -857,9 +857,16 @@ cards table, its review log rows are not), the RWKV replay keeps them in the
 history, in review-id order among the other reviews, under the same start-row
 rule (`sched.rwkv-replay-start-row`). Such a review has no note, no deck and
 no preset: the three "id is missing" inputs of the published model are 1, and
-the note, deck and preset streams it reads and advances are the one
-placeholder note, deck and preset that every review without an id shares
-(`ID_PLACEHOLDER`), each with a real recurrent state. It advances the card's
+it reads and advances placeholder note, deck and preset streams, each with a
+real recurrent state and its own id code. Which placeholders is a property of
+the model version (the id pipeline it was trained with, `RwkvIdPipeline`):
+for the shipped model (int32) every review without an id shares ONE
+placeholder note, deck and preset (`ID_PLACEHOLDER`); for a model trained on
+the int64 pipeline a missing note is a placeholder of its own per card
+(`ID_PLACEHOLDER + card id`), while deck and preset stay one shared
+placeholder each. The PyTorch reference runner
+(`qt/aqt/rwkv_inference/process.py`) follows the same rule (its
+`id_pipeline`). It advances the card's
 own stream and every per-user count (reviews today, new cards today, reviews
 and new cards since the card's last review, the global stream) as any other
 review does. Under the default first-review source (the preset's setting),
@@ -875,16 +882,19 @@ reviews stay with note, deck and preset missing and the `*_id_is_nan` flags
 set (about 11% of training rows over seven sampled users; 23.8% of the rated
 rows in Andrew's collection). The shipped model's training cast the filled
 placeholder ids to int32, which saturated all of them to one value, so it
-learned one shared note, deck and preset entity for them. A replay that
-drops those reviews gives every later prediction a state training never
-produced. A future model trained with int64 ids (a note per deleted card)
-gets its own encoder and layout name.
+learned one shared note, deck and preset entity for them; the int64 pipeline
+(2026-08-21 on) keeps the per-card note fill (the RWKV session's
+DEPLOY_FUNCTIONS.md section 7). A replay that drops those reviews gives every
+later prediction a state training never produced.
 **Pinned by:** `a_deleted_cards_reviews_stay_in_the_replay_without_ids`
 (`rslib/src/scheduler/rwkv_inputs/mod.rs`),
 `rwkv_replay_read_matches_the_query_it_replaced`
 (`rslib/src/storage/revlog/mod.rs`),
-`feature_state_encodes_missing_ids_as_one_shared_placeholder`,
-`reviews_without_ids_share_one_placeholder_stream` (`rslib/src/rwkv/mod.rs`),
+`missing_ids_encode_as_the_model_versions_placeholders`,
+`reviews_without_ids_stream_through_the_model_versions_placeholders`
+(`rslib/src/rwkv/mod.rs`),
+`test_reference_runner_missing_note_follows_the_id_pipeline`
+(`qt/tests/test_rwkv_inference_process.py`),
 `test_a_deleted_cards_reviews_are_replayed_without_ids`
 (`qt/tests/test_rwkv_replay_inputs_backend.py`) and
 `test_the_backend_reads_the_same_whole_history_rows_as_the_query`
@@ -903,7 +913,10 @@ query, a rebuild, the recording pass and Total Knowledge therefore give an
 entity the same code, whatever order they meet it in. A query (a prediction
 of a card that is not being answered) leaves the resident state exactly as it
 found it: it adds no code and changes no count. The codes are not saved with
-the state cache.
+the state cache. The PyTorch reference runner
+(`qt/aqt/rwkv_inference/process.py`) draws its codes by the same rule by
+default; `id_codes="in_order"` keeps srs-benchmark's draw from the global
+stream, for reproducing srs-benchmark only.
 **Why:** Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule 3.
 The codes used to come from one random stream in the order entities first
 appeared, and a query of an unseen card, note or deck drew from it on the live
@@ -915,7 +928,10 @@ faithful to it; seeding torch's own generator by the id keeps the family and
 lets the RWKV session reproduce every code in PyTorch.
 **Pinned by:** `id_codes_match_torch_seeded_by_the_id`,
 `id_codes_do_not_depend_on_order_and_queries_change_nothing`,
-`feature_state_cache_round_trips_without_id_codes` (`rslib/src/rwkv/mod.rs`).
+`feature_state_cache_round_trips_without_id_codes` (`rslib/src/rwkv/mod.rs`),
+`test_reference_runner_seeds_id_codes_as_the_runtime_does`,
+`test_reference_runner_with_its_own_codes_gives_the_golden_rows`
+(`qt/tests/test_rwkv_inference_process.py`).
 
 **The rule has one implementation: the SQL.** The backend query
 (`rwkv_historical_review_rows`, `rslib/src/storage/revlog/mod.rs`) and the
