@@ -107,40 +107,6 @@ fn syncserver() -> PyResult<()> {
     Err(PyException::new_err(err.to_string()))
 }
 
-/// Responses above this size are copied into their Python bytes with the GIL
-/// released.
-const LARGE_RESPONSE_BYTES: usize = 1 << 20;
-
-/// `data` as a Python bytes object. A large one is copied, and freed, with
-/// the GIL released: Total Knowledge's replay is ~77 MB on Andrew's
-/// collection, and copying it held the GIL for ~10 ms while the main thread
-/// waited.
-fn py_bytes_filled_without_the_gil(py: Python<'_>, data: Vec<u8>) -> PyResult<Bound<'_, PyBytes>> {
-    if data.len() < LARGE_RESPONSE_BYTES {
-        return Ok(PyBytes::new(py, &data));
-    }
-    // SAFETY: a new bytes object of the right size, not yet shared with any
-    // other thread (bytes are not tracked by the garbage collector), so its
-    // buffer can be written while other threads run Python; its contents are
-    // uninitialised only until the copy below.
-    unsafe {
-        let bytes = pyo3::ffi::PyBytes_FromStringAndSize(
-            std::ptr::null(),
-            data.len() as pyo3::ffi::Py_ssize_t,
-        );
-        let bytes = Bound::from_owned_ptr_or_err(py, bytes)?.cast_into_unchecked::<PyBytes>();
-        let buffer = std::slice::from_raw_parts_mut(
-            pyo3::ffi::PyBytes_AsString(bytes.as_ptr()) as *mut u8,
-            data.len(),
-        );
-        py.detach(move || {
-            buffer.copy_from_slice(&data);
-            drop(data);
-        });
-        Ok(bytes)
-    }
-}
-
 #[pyfunction]
 fn open_backend(init_msg: &Bound<'_, PyBytes>) -> PyResult<Backend> {
     match init_backend(init_msg.as_bytes()) {
@@ -181,6 +147,40 @@ impl Backend {
         let out_bytes = out_res?;
         let out_obj = PyBytes::new(py, &out_bytes);
         Ok(out_obj)
+    }
+}
+
+/// Responses above this size are copied into their Python bytes with the GIL
+/// released.
+const LARGE_RESPONSE_BYTES: usize = 1 << 20;
+
+/// `data` as a Python bytes object. A large one is copied, and freed, with
+/// the GIL released: Total Knowledge's replay is ~77 MB on Andrew's
+/// collection, and copying and freeing it held the GIL for ~26 ms while the main
+/// thread waited.
+fn py_bytes_filled_without_the_gil(py: Python<'_>, data: Vec<u8>) -> PyResult<Bound<'_, PyBytes>> {
+    if data.len() < LARGE_RESPONSE_BYTES {
+        return Ok(PyBytes::new(py, &data));
+    }
+    // SAFETY: a new bytes object of the right size, not yet shared with any
+    // other thread (bytes are not tracked by the garbage collector), so its
+    // buffer can be written while other threads run Python; its contents are
+    // uninitialised only until the copy below.
+    unsafe {
+        let bytes = pyo3::ffi::PyBytes_FromStringAndSize(
+            std::ptr::null(),
+            data.len() as pyo3::ffi::Py_ssize_t,
+        );
+        let bytes = Bound::from_owned_ptr_or_err(py, bytes)?.cast_into_unchecked::<PyBytes>();
+        let buffer = std::slice::from_raw_parts_mut(
+            pyo3::ffi::PyBytes_AsString(bytes.as_ptr()) as *mut u8,
+            data.len(),
+        );
+        py.detach(move || {
+            buffer.copy_from_slice(&data);
+            drop(data);
+        });
+        Ok(bytes)
     }
 }
 
