@@ -24,7 +24,9 @@ export const axisTenths = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
 
 const COUNT_COLOUR = "#8a8a8a";
 /** The count bars, blue so that they do not read as a disabled graph. */
-export const COUNT_BAR_COLOUR = "#6ba3d6";
+export const COUNT_BAR_COLOUR = "#3f84cc";
+// Andrew, 2026-09-24: "make the blue bins less transparent, more saturated"
+export const COUNT_BAR_OPACITY = 0.45;
 
 /** The drawing area is square, as on the AUC-ROC graph. */
 export function calibrationBounds(): GraphBounds {
@@ -242,7 +244,7 @@ export function renderCalibration(
             .attr("width", width)
             .attr("height", bounds.height - bounds.marginBottom - countScale(point.count))
             .attr("fill", COUNT_BAR_COLOUR)
-            .attr("opacity", 0.25);
+            .attr("opacity", COUNT_BAR_OPACITY);
     }
     drawing
         .append("g")

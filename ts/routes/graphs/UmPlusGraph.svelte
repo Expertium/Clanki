@@ -17,7 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import InfoTooltip from "$lib/components/InfoTooltip.svelte";
 
     import Graph from "./Graph.svelte";
-    import { umPlusExplanation, umPlusVerdict } from "./metric-explanations";
+    import { umPlusExplanation, umPlusVerdict, withNotes } from "./metric-explanations";
     import { chosenUmPlusPair, showSmallUmPlusGroups } from "./metrics-choice";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import { dataNotes, overlayText, stillComputing, unavailableNotes } from "./roc";
@@ -49,6 +49,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: pair = chosenPair(progress, $chosenUmPlusPair);
     $: view = umPlusView(pair, $showSmallUmPlusGroups);
     $: notes = [
+        ...(view && view.hidden > 0
+            ? [tr.statisticsUmPlusHidden({ groups: String(view.hidden) })]
+            : []),
         ...dataNotes(progress),
         ...thinPairNotes(progress),
         ...unavailableNotes(progress),
@@ -144,7 +147,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Graph {title} {subtitle}>
-    <InfoTooltip slot="tooltip" text={umPlusExplanation()} />
+    <InfoTooltip slot="tooltip" text={withNotes(umPlusExplanation(), notes)} />
     <div class="controls">
         <label>
             {tr.statisticsUmPlusAlgorithms()}
@@ -183,12 +186,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </svg>
     <div class="description">
         <div>{umPlusVerdict()}</div>
-        {#if view && view.hidden > 0}
-            <div>{tr.statisticsUmPlusHidden({ groups: String(view.hidden) })}</div>
-        {/if}
-        {#each notes as note}
-            <div class="note">{note}</div>
-        {/each}
     </div>
 </Graph>
 
@@ -226,11 +223,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         text-align: center;
         font-size: 0.85rem;
         opacity: 0.8;
-    }
-
-    .note {
-        margin-top: 0.25rem;
-        opacity: 0.9;
     }
 
     .computing {

@@ -15,6 +15,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { getContext, onDestroy } from "svelte";
     import { type Readable, readable } from "svelte/store";
 
+    import InfoTooltip from "$lib/components/InfoTooltip.svelte";
+
     import {
         calibrationBounds,
         calibrationSeries,
@@ -24,6 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         tiles,
     } from "./calibration";
     import Graph from "./Graph.svelte";
+    import { calibrationExplanation, withNotes } from "./metric-explanations";
     import NoDataOverlay from "./NoDataOverlay.svelte";
     import { chosenCalibrationAlgorithm } from "./metrics-choice";
     import { dataNotes, overlayText, stillComputing, unavailableNotes } from "./roc";
@@ -139,6 +142,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Graph {title} {subtitle}>
+    <InfoTooltip slot="tooltip" text={withNotes(calibrationExplanation(), notes)} />
     <div class="chooser">
         <label>
             {tr.statisticsCalibrationAlgorithm()}
@@ -170,14 +174,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <NoDataOverlay {bounds} text={overlay} />
             {/if}
         </svg>
-    </div>
-    <div class="description">
-        <div>{tr.statisticsCalibrationDescriptionLine()}</div>
-        <div>{tr.statisticsCalibrationDescriptionBars()}</div>
-        <div>{tr.statisticsModelMetricsDescriptionReviews()}</div>
-        {#each notes as note}
-            <div class="note">{note}</div>
-        {/each}
     </div>
 </Graph>
 
@@ -227,18 +223,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .square svg {
         width: 100%;
         height: auto;
-    }
-
-    .description {
-        margin-top: 0.5rem;
-        text-align: center;
-        font-size: 0.85rem;
-        opacity: 0.8;
-    }
-
-    .note {
-        margin-top: 0.25rem;
-        opacity: 0.9;
     }
 
     .computing {

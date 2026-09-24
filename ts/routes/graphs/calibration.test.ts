@@ -20,6 +20,7 @@ import {
     chooserOptions,
     chosenAlgorithm,
     COUNT_BAR_COLOUR,
+    COUNT_BAR_OPACITY,
     renderCalibration,
     tiles,
 } from "./calibration";
@@ -163,8 +164,10 @@ test("both axes step by 0.1, and the count bars are blue", () => {
     expect(axisTenths).toHaveLength(11);
     expect(axisTenths[1] - axisTenths[0]).toBeCloseTo(0.1);
     expect(axisTenths[axisTenths.length - 1]).toBe(1);
-    // the reference diagonal stays grey; only the bars changed
-    expect(COUNT_BAR_COLOUR).toBe("#6ba3d6");
+    // the reference diagonal stays grey; only the bars changed. Andrew,
+    // 2026-09-24: "make the blue bins less transparent, more saturated"
+    expect(COUNT_BAR_COLOUR).toBe("#3f84cc");
+    expect(COUNT_BAR_OPACITY).toBe(0.45);
 });
 
 test("the X axis names the predicted retrievability", () => {

@@ -885,8 +885,16 @@ def test_the_long_steps_warning_names_the_algorithm_not_fsrs() -> None:
 def test_the_metric_graphs_say_which_way_is_better_in_one_line() -> None:
     assert (
         english_message("statistics-um-plus-verdict", STATISTICS_FTL)
-        == "UM+ and slope: closer to 0 is better."
+        == "UM+ and slope: closer to 0 is better. Against the perfect oracle, "
+        "any imperfect algorithm has a slope of 1."
     )
+    # the calibration graph's retention wording (Andrew, 2026-09-24)
+    assert english_message("statistics-calibration-actual", STATISTICS_FTL) == (
+        "Actual retention"
+    )
+    assert english_message(
+        "statistics-calibration-actual-recall", STATISTICS_FTL
+    ) == ("Actual retention")
     assert (
         english_message("statistics-roc-verdict", STATISTICS_FTL)
         == "AUC: higher is better, and 0.5 is random chance."
