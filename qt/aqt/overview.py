@@ -96,6 +96,11 @@ class Overview:
                 or aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
                 or aqt.rwkv_scheduler.rwkv_review_scores_pending(col)
             )
+            # the draw checks the heatmap's fingerprint on the main thread;
+            # its card scan is done here instead
+            from aqt.review_heatmap import HeatmapView, read_sums_before_draw
+
+            read_sums_before_draw(HeatmapView.overview, current_deck_only=True)
             return pending
 
         QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
