@@ -2,3 +2,4 @@
 - Check Database no longer asks for a full sync when it changed nothing.
 - One card whose deck or preset is missing no longer stops a sync, or the repair of cards that other apps changed.
 - An add-on that sets a card's memory state from a stability and a difficulty alone no longer makes the card's intervals about 2.3 times too long.
+- When a sync or an older collection moves presets from RWKV-Curve to FSRS-7, their cards get FSRS-7 memory states again, so no RWKV-Curve stability is shown as FSRS-7's.

@@ -1760,18 +1760,27 @@ algorithm of the presets that schedule the most review and relearning cards
 filtered deck by its original deck; a deck or preset that is missing counts
 as the Default preset). With no review or relearning cards, all cards
 count. Ties go to RWKV-Curve, then FSRS-7, then RWKV-Instant. Every preset
-then takes that algorithm (`sched.one-global-algorithm`); due dates and
-memory states do not change (a collection whose FSRS switch is off follows
-`sched.no-sm2` instead). Given a collection without cards, nothing is
-written, so a new, empty collection does not need a full sync.
+then takes that algorithm (`sched.one-global-algorithm`); due dates do not
+change. When that algorithm is FSRS-7, the cards whose home deck's preset
+ran RWKV-Curve get their FSRS-7 memory state computed again from their
+review logs, as a deck-options switch to FSRS-7 computes it, so no
+RWKV-Curve stability stays behind; every other memory state stays (a
+collection whose FSRS switch is off follows `sched.no-sm2` instead). Given
+a collection without cards, nothing is written, so a new, empty collection
+does not need a full sync.
 
 **Why:** Andrew, 2026-09-15: a collection whose presets used different
-algorithms keeps the one that schedules the most review cards.
+algorithms keeps the one that schedules the most review cards. The
+recompute: Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the cards of an RWKV-Curve preset kept
+the curve's S90, which the Browser, card info, the Stats Stability graph
+and `prop:s` then showed as FSRS-7's (never mix two algorithms).
 
 **Pinned by:**
 `a_collection_without_an_algorithm_gets_the_one_with_most_review_cards`,
 `migration_counts_filtered_cards_by_home_deck_and_breaks_ties`,
-`a_collection_without_cards_gets_no_algorithm`
+`a_collection_without_cards_gets_no_algorithm`,
+`a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
 (`rslib/src/deckconfig/algorithm.rs`);
 `new_empty_collection_should_not_require_full_sync`
 (`rslib/src/sync/collection/tests.rs`).

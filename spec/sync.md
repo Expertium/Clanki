@@ -177,9 +177,12 @@ step: a preset that another client switched to another algorithm (a client
 that knows only the preset flags, such as an older build, AnkiDroid or an
 add-on) gets the collection's algorithm back, and the next sync uploads it.
 A collection that arrived without the `schedulingAlgorithm` key gets one
-(`sched.global-algorithm-migration`). The collection's key wins over a
-preset's flags because the config table syncs as a whole, newest first, and
-presets sync row by row. The step runs after the sync because deck configs
+(`sched.global-algorithm-migration`). When the collection's algorithm is
+FSRS-7, the cards of a preset that the step moves from RWKV-Curve get their
+FSRS-7 memory state computed again from their review logs (due dates stay),
+so the RWKV-Curve S90 another client wrote is not shown as FSRS-7's. The
+collection's key wins over a preset's flags because the config table syncs
+as a whole, newest first, and presets sync row by row. The step runs after the sync because deck configs
 travel before the post-sync passes, and a change written during the sync
 would be left unsent. Nothing is written when all presets agree. An
 algorithm that changes by sync asks no question
@@ -190,4 +193,6 @@ clients only know the per-preset flags, so the mirror must repair what they
 change.
 
 **Pinned by:** `sync_reverts_a_preset_another_client_gave_another_algorithm`
-(`rslib/src/sync/collection/tests.rs`).
+(`rslib/src/sync/collection/tests.rs`);
+`a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
+(`rslib/src/deckconfig/algorithm.rs`).
