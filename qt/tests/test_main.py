@@ -78,6 +78,7 @@ def setup_mw() -> tuple[AnkiQt, list[str], Progress]:
     mw.progress = progress
     mw._background_op_count = 0
     mw._unload_profile_and_exit_pending = False
+    mw._collection_closing = False
     mw._close_wait_started = 0.0
     mw._close_wait_window_shown = False
     mw.unloadProfileAndExit = lambda: calls.append("unload")  # type: ignore[method-assign]
@@ -856,3 +857,147 @@ def test_the_close_wait_keeps_polling_while_its_own_window_is_open(
     mw._background_op_count = 0
     progress.scheduled.pop()()
     assert calls == ["unload"]
+
+
+# Pins spec/ui.md#ui.close-off-main-thread
+
+
+class _ClosingCollection:
+    """Records what the close does with the collection, and on which thread."""
+
+    def __init__(self, quick_check: str = "ok") -> None:
+        self.calls: list[str] = []
+        self.threads: set[str] = set()
+        self._quick_check = quick_check
+        self.db = SimpleNamespace(scalar=self._scalar)
+        self._backend = SimpleNamespace(
+            await_backup_completion=lambda: self._call("await backup")
+        )
+
+    def _call(self, name: str) -> None:
+        self.calls.append(name)
+        self.threads.add(threading.current_thread().name)
+
+    def _scalar(self, sql: str) -> str:
+        self._call(sql)
+        return self._quick_check
+
+    def optimize(self) -> None:
+        self._call("optimize")
+
+    def create_backup(self, **kwargs: object) -> None:
+        self._call("backup")
+
+    def close(self, downgrade: bool) -> None:
+        self._call("close")
+
+
+class _Taskman:
+    def __init__(self) -> None:
+        self.tasks: list[tuple[Callable[[], object], Callable]] = []
+
+    def run_in_background(self, task: Callable[[], object], on_done: Callable) -> None:
+        self.tasks.append((task, on_done))
+
+    def run(self) -> None:
+        """Run the queued task on another thread, then its on_done here."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        task, on_done = self.tasks.pop()
+        with ThreadPoolExecutor(thread_name_prefix="close") as pool:
+            future = pool.submit(task)
+            future.result()
+        on_done(future)
+
+
+def _closing_mw(
+    col: _ClosingCollection, optimize_due: bool = False
+) -> tuple[AnkiQt, Progress, _Taskman, list[str]]:
+    mw, _calls, progress = setup_mw()
+    taskman = _Taskman()
+    done: list[str] = []
+    mw.col = col  # type: ignore[assignment]
+    mw.taskman = taskman  # type: ignore[assignment]
+    mw.restoring_backup = False
+    last = 0 if optimize_due else aqt.main.int_time()
+    mw.pm = SimpleNamespace(  # type: ignore[assignment]
+        backupFolder=lambda: "backups",
+        profile={"lastOptimize": last},
+        save=lambda: done.append("pm saved"),
+    )
+    return mw, progress, taskman, done
+
+
+def test_the_collection_closes_on_a_background_thread(monkeypatch) -> None:
+    monkeypatch.setattr(aqt.main, "dev_mode", False)
+    col = _ClosingCollection()
+    mw, progress, taskman, done = _closing_mw(col)
+
+    mw._unloadCollection(lambda: done.append("unloaded"))
+
+    # nothing has touched the collection yet, and the main thread can no
+    # longer reach it
+    assert col.calls == []
+    assert mw.col is None
+    assert done == []
+    # a second close request while it closes is ignored
+    event = CloseEvent()
+    mw.closeEvent(event)  # type: ignore[arg-type]
+    assert event.ignored and mw._unload_profile_and_exit_pending is False
+
+    taskman.run()
+
+    # only the collection is checked, not the attached cache (B-027)
+    assert col.calls == ["pragma main.quick_check", "backup", "close", "await backup"]
+    assert threading.current_thread().name not in col.threads
+    assert done == ["unloaded"]
+    assert mw._collection_closing is False
+    # a close within the grace time shows no window
+    assert progress.started == []
+
+
+def test_a_slow_close_says_it_is_backing_up(monkeypatch) -> None:
+    monkeypatch.setattr(aqt.main, "dev_mode", False)
+    col = _ClosingCollection()
+    mw, progress, taskman, done = _closing_mw(col)
+
+    mw._unloadCollection(lambda: done.append("unloaded"))
+    # the grace time passes before the close ends
+    progress.scheduled.pop()()
+
+    from aqt.utils import tr
+
+    labels = [started["label"] for started in progress.started]
+    assert labels == [tr.qt_misc_backing_up()]
+    taskman.run()
+    assert progress.finished == 1
+    assert done == ["unloaded"]
+
+
+def test_a_due_optimize_runs_with_the_close(monkeypatch) -> None:
+    monkeypatch.setattr(aqt.main, "dev_mode", False)
+    col = _ClosingCollection()
+    mw, progress, taskman, done = _closing_mw(col, optimize_due=True)
+
+    mw._unloadCollection(lambda: done.append("unloaded"))
+    taskman.run()
+
+    assert col.calls[0] == "optimize"
+    assert mw.pm.profile["lastOptimize"] > 0
+    assert done == ["pm saved", "unloaded"]
+
+
+def test_a_corrupt_collection_is_not_backed_up_and_says_so(monkeypatch) -> None:
+    monkeypatch.setattr(aqt.main, "dev_mode", False)
+    warnings: list[str] = []
+    monkeypatch.setattr(aqt.main, "showWarning", warnings.append)
+    col = _ClosingCollection(quick_check="*** in database main ***")
+    mw, progress, taskman, done = _closing_mw(col)
+
+    mw._unloadCollection(lambda: done.append("unloaded"))
+    taskman.run()
+
+    assert "backup" not in col.calls
+    assert "close" in col.calls
+    assert len(warnings) == 1
+    assert done == ["unloaded"]

@@ -1433,6 +1433,37 @@ be stopped at all.
 `test_the_cancel_button_sets_the_same_flag_as_escape`
 (`qt/tests/test_progress.py`).
 
+## ui.close-off-main-thread
+
+Given a close of the profile (quitting Clanki, switching profile, restoring a
+backup), the collection's close-time work runs on a background thread, after
+any collection task already running: the two-weekly optimize when it is due,
+the integrity check, the backup (with its 5-minute throttle) and the close
+itself, including the wait for the backup to finish. The main window stays
+responsive, disabled, and a second close request in that time is ignored.
+From the start of that work the main thread has no collection (`mw.col` is
+None). A window says "Backing Up..." (or "Optimizing...", or "Closing..." when
+restoring a backup) only when the work takes longer than 1 second. The
+integrity check covers the collection only, not an attached cache: a cache
+that fails the check does not make Clanki say the collection file looks
+corrupt. A collection that fails it is closed without a backup and the
+warning says so, as before.
+
+**Why:** B-027, Andrew 2026-09-24: closing showed "(Not Responding)" for a
+few seconds and the "Collection sync complete." tooltip drew black borders.
+The check ran on the main thread over every attached database, the 937 MB
+retrievability cache included: 5.5-5.9 s, against 0.47 s for the collection
+alone. Andrew chose both steps: check the collection only, and move the
+close work off the main thread. Measured offscreen on a copy of his profile,
+3 runs each: the longest main-thread gap during a close went from 3.7-8.2 s
+to 9.5-18 ms.
+
+**Pinned by:** `test_the_collection_closes_on_a_background_thread`,
+`test_a_slow_close_says_it_is_backing_up`,
+`test_a_due_optimize_runs_with_the_close`,
+`test_a_corrupt_collection_is_not_backed_up_and_says_so`
+(`qt/tests/test_main.py`).
+
 ## ui.tooltip-style
 
 Given a short message over the current window (a finished sync, a
