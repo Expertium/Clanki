@@ -284,6 +284,15 @@ _reviewer_backend_warmup_states: dict[
 _reviewer_backend_warmup_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_warmup_pending_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_cold_fallback_generations: dict[tuple[int, int], int] = {}
+# The ignored reviews each resident state was built without, set with the
+# state (a rebuild, a restore, a restore that appends deltas) and kept while
+# the state only takes answers. A single-card read that continues the state
+# (Grade Now, a live answer) reads it here, never from the cache file, which
+# a failed save can leave behind the state (spec sched.rwkv-replay-start-row).
+# It counts only while its key is in `_reviewer_backend_warmup_states`.
+_reviewer_backend_resident_ignored_review_ids: dict[
+    tuple[int, int], tuple[int, ...]
+] = {}
 _rwkv_memorised_history_identity_cache: dict[
     tuple[int, int],
     tuple[int, RwkvResidentStateIdentity],
@@ -755,6 +764,10 @@ class RwkvResidentStateIdentity:
     review_count: int
     history_hash: str
     replay_key: str
+    # The ignored reviews the state was built without. The hash already
+    # names the replayed rows, so two identities compare without them; the
+    # set rides along to `_reviewer_backend_resident_ignored_review_ids`.
+    ignored_review_ids: tuple[int, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -851,6 +864,7 @@ class _ReviewerBackendTemporaryOperation:
     generation: int
     previous_state_present: bool
     previous_identity: RwkvResidentStateIdentity | None
+    previous_ignored_review_ids: tuple[int, ...] = ()
 
     def is_current(self) -> bool:
         return _reviewer_backend_warmup_is_current(
@@ -3685,6 +3699,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
             _reviewer_backend_warmup_generations.get(key, 0) + 1
         )
     _reviewer_backend_warmup_states.clear()
+    _reviewer_backend_resident_ignored_review_ids.clear()
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_memorised_history_identity_cache.clear()
@@ -4012,6 +4027,9 @@ def _claim_reviewer_backend_temporary_operation(
             generation = _reviewer_backend_warmup_generations.get(key, 0)
             previous_state_present = key in _reviewer_backend_warmup_states
             previous_identity = _reviewer_backend_warmup_states.pop(key, None)
+            previous_ignored_review_ids = (
+                _reviewer_backend_resident_ignored_review_ids.pop(key, ())
+            )
             _rwkv_memorised_history_identity_cache.pop(key, None)
             _reviewer_backend_warmup_pending_generations[key] = generation
 
@@ -4023,6 +4041,7 @@ def _claim_reviewer_backend_temporary_operation(
             generation=generation,
             previous_state_present=previous_state_present,
             previous_identity=previous_identity,
+            previous_ignored_review_ids=previous_ignored_review_ids,
         )
     finally:
         if not claimed:
@@ -4049,6 +4068,9 @@ def _finish_reviewer_backend_temporary_operation(
         )
         if current and restored and operation.previous_state_present:
             _reviewer_backend_warmup_states[operation.key] = operation.previous_identity
+            _reviewer_backend_resident_ignored_review_ids[operation.key] = (
+                operation.previous_ignored_review_ids
+            )
             if operation.previous_identity is not None:
                 _rwkv_memorised_history_identity_cache[operation.key] = (
                     operation.generation,
@@ -10124,6 +10146,7 @@ def _resident_state_identity(
         review_count=history.review_count,
         history_hash=history.history_hash,
         replay_key=history.replay_key,
+        ignored_review_ids=tuple(history.ignored_review_ids),
     )
 
 
@@ -10199,6 +10222,9 @@ def _publish_reviewer_backend_state(
         backend_changed = current_backend_id != key[0]
         if current_generation == expected_generation and not backend_changed:
             _reviewer_backend_warmup_states[key] = identity
+            _reviewer_backend_resident_ignored_review_ids[key] = (
+                identity.ignored_review_ids
+            )
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_memorised_history_identity_cache[key] = (
                 current_generation,
@@ -15764,12 +15790,15 @@ def _save_reviewer_backend_cache(
         ):
             if checkpoint_path not in retained_checkpoint_paths:
                 checkpoint_path.unlink()
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, _rwkv_empty_deltas_log()
-        )
+        # the metadata first: it names the snapshot, so the deltas the old
+        # metadata still needs stay until the new one is in place, and the
+        # new one reads no delta at or before its snapshot
         _atomic_write(
             cache_dir / _RWKV_STATE_CACHE_META_FILE,
             json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
+        )
+        _atomic_write(
+            cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, _rwkv_empty_deltas_log()
         )
         _remove_legacy_rwkv_state_cache_files(cache_dir)
         logger.debug(
@@ -15842,13 +15871,19 @@ def _save_reviewer_backend_state_store(
         context.state_store_temporary = False
     elif store_path != live_store_path:
         raise ValueError("unexpected RWKV state-cache store path")
-    _atomic_write(
-        context.cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
-        _rwkv_empty_deltas_log(),
-    )
+    # The metadata is the commit point of the save: it names the store
+    # generation, the head segment, the history hash and the ignored
+    # reviews, in one file replaced atomically. It is written before the
+    # deltas log is emptied, so a failed write leaves the old metadata with
+    # the deltas and the segment it names (pruned only below): the old cache,
+    # whole. The new metadata reads no delta at or before its head segment.
     _atomic_write(
         context.cache_dir / _RWKV_STATE_CACHE_META_FILE,
         json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
+    )
+    _atomic_write(
+        context.cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
+        _rwkv_empty_deltas_log(),
     )
     (context.cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE).unlink(missing_ok=True)
     _remove_legacy_rwkv_state_cache_files(context.cache_dir)
@@ -19349,20 +19384,26 @@ def _historical_preset_id_for_review(
 def _rwkv_card_history_rows(
     reviewer: object, card_ids: Sequence[int]
 ) -> list[Sequence[object]]:
-    """The replay rows of these cards as the state cache holds them: the
-    cache's active ignored reviews leave the rows before each card's start
-    row is found, by the query every history build uses (spec
+    """The replay rows of these cards as the resident state holds them: the
+    ignored reviews the state was built without leave the rows before each
+    card's start row is found, by the query every history build uses (spec
     sched.rwkv-replay-start-row). Grade Now and a live answer continue the
-    resident state from these rows, so they must be the cache's."""
+    resident state from these rows, so they must be the state's."""
     return _historical_rwkv_review_rows(
         reviewer,
         card_ids=card_ids,
-        ignored_review_ids=frozenset(
-            _rwkv_state_cache_ignored_review_ids(
-                _read_rwkv_state_cache_metadata(reviewer)
-            )
-        ),
+        ignored_review_ids=frozenset(_resident_ignored_review_ids(reviewer)),
     )
+
+
+def _resident_ignored_review_ids(reviewer: object) -> tuple[int, ...]:
+    """The ignored reviews the resident state was built without; none when
+    no state is resident."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    with _reviewer_backend_state_lock:
+        if key is None or key not in _reviewer_backend_warmup_states:
+            return ()
+        return _reviewer_backend_resident_ignored_review_ids.get(key, ())
 
 
 def _historical_rwkv_review_rows(

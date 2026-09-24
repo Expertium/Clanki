@@ -1808,6 +1808,7 @@ def algorithm_server(
     finally:
         rwkv_scheduler.set_reviewer_backend(previous)
         rwkv_scheduler._reviewer_backend_warmup_states.clear()
+        rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
         for service, col in started:
             service.shutdown()
             col.close()

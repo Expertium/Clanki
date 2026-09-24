@@ -15,6 +15,7 @@ import threading
 import time
 from array import array
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
@@ -112,6 +113,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_model_cache_signature = rwkv_scheduler._rwkv_model_cache_signature
     previous_model_cache_value = rwkv_scheduler._rwkv_model_cache_value
     rwkv_scheduler._reviewer_backend_warmup_states.clear()
+    rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
     rwkv_scheduler._reviewer_backend_assignment_generation = 0
     rwkv_scheduler._reviewer_backend_warmup_generations.clear()
     rwkv_scheduler._reviewer_backend_warmup_pending_generations.clear()
@@ -144,6 +146,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         )
         rwkv_scheduler._reviewer_backend_warmup_states.clear()
         rwkv_scheduler._reviewer_backend_warmup_states.update(previous_warmup_states)
+        rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.update(
             previous_warmup_generations
@@ -1032,8 +1035,8 @@ def _rows_with_the_cache_ignored_review_dropped(
 
 
 # Pins spec sched.rwkv-replay-start-row: a live answer checks the card's
-# rows as the state cache holds them, with the cache's ignored reviews
-# dropped before the start row is found. Here the ignored review sits
+# rows as the resident state holds them, with the ignored reviews the state
+# was built without dropped before the start row is found. Here the ignored review sits
 # between two Learning runs, so the new Learning answer is no start: the
 # card starts at the earlier run, and the resident state cannot simply
 # append the answer as a learning start.
@@ -1041,10 +1044,12 @@ def test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ignored_review_id = 1_000
+    # the cache file is not the source: a failed save can leave it behind
+    # the resident state
     monkeypatch.setattr(
         rwkv_scheduler,
         "_read_rwkv_state_cache_metadata",
-        lambda _reviewer: {"ignoredReviewIds": [ignored_review_id]},
+        lambda _reviewer: {"ignoredReviewIds": []},
     )
     sqls: list[str] = []
 
@@ -1065,6 +1070,15 @@ def test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews(
     reviewer = _rwkv_reviewer()
     reviewer.mw.col.db = DB()
     reviewer.mw.col.get_config = lambda _key: {}
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    # the resident state, built without the ignored review, takes answers
+    # with its identity unknown
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = None
+    rwkv_scheduler._reviewer_backend_resident_ignored_review_ids[warmup_key] = (
+        ignored_review_id,
+    )
     review_input = replace(
         _rwkv_review_input(card_id=1, note_id=10),
         is_query=False,
@@ -1096,7 +1110,7 @@ def test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews(
 
 
 # Pins spec sched.rwkv-replay-start-row: Grade Now continues the resident
-# state from the card's rows as the state cache holds them. The cache's
+# state from the card's rows as that state holds them. The state's
 # ignored review sat between two Learning runs; without it the Grade Now
 # Learning answer follows a Learning row, so it is no learning start and
 # the answer is appended, as the cache's own history would replay it.
@@ -1106,10 +1120,12 @@ def test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews(
     learning_review_id = (40 * 86_400 + 100) * 1000
     ignored_review_id = (41 * 86_400 + 100) * 1000
     grade_now_review_id = (42 * 86_400 + 100) * 1000
+    # the cache file is not the source: a failed save can leave it behind
+    # the resident state
     monkeypatch.setattr(
         rwkv_scheduler,
         "_read_rwkv_state_cache_metadata",
-        lambda _reviewer: {"ignoredReviewIds": [ignored_review_id]},
+        lambda _reviewer: {"ignoredReviewIds": []},
     )
 
     class DB:
@@ -1142,11 +1158,16 @@ def test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews(
     set_reviewer_backend(backend)
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None
-    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
-        _rwkv_resident_identity(
-            last_review_id=ignored_review_id,
-            review_count=1,
-        )
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        warmup_key,
+        replace(
+            _rwkv_resident_identity(
+                last_review_id=ignored_review_id,
+                review_count=1,
+            ),
+            ignored_review_ids=(ignored_review_id,),
+        ),
+        expected_generation=0,
     )
 
     reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, [1])
@@ -8622,6 +8643,199 @@ def test_post_sync_refresh_replays_from_historical_checkpoint(
         == _tr().qt_misc_review_history_after_sync()
     )
     assert taskman.with_progress_kwargs["uses_collection"] is True
+
+
+# Pins spec sched.rwkv-replay-start-row: the ignored reviews a single-card
+# read uses are the resident state's, kept in memory with the state, and a
+# failed metadata save leaves them and the saved cache consistent. The
+# metadata file is the save's commit point: it names the history, the state
+# and the ignored reviews together, and it is written before the deltas it
+# replaces are emptied, so a failed write leaves the old cache whole.
+def test_a_failed_metadata_save_leaves_the_ignored_reviews_consistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    review_ids = {day: (day * 86_400 + 100) * 1000 for day in (0, 7, 8, 12, 16, 17)}
+    rows = [
+        (review_ids[day], 1, 10, 100, ease, 1234, 1, day + 1, 2500)
+        for day, ease in zip((0, 8, 12, 16), (2, 3, 4, 2), strict=True)
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+
+    def warm_up(**kwargs: Any) -> tuple[_CacheRuntime, tuple[int, int]]:
+        runtime = _CacheRuntime()
+        set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, **kwargs) is True
+        key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+        assert key is not None
+        return runtime, key
+
+    def saved() -> dict[str, object]:
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+        assert metadata is not None
+        return metadata
+
+    warm_up()
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == ()
+
+    # a sync brings a review older than eight days: the state goes on
+    # without it
+    rows.append((review_ids[7], 1, 10, 100, 1, 1234, 1, 8, 2400))
+    rows.sort()
+    runtime, _key = warm_up(additional_ignored_review_ids=(review_ids[7],))
+    assert runtime.reviewed == []
+    assert saved()["ignoredReviewIds"] == [review_ids[7]]
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == (review_ids[7],)
+    # the single-card read drops it
+    reads: list[AbstractSet[int]] = []
+
+    def read(
+        _reviewer: object,
+        *,
+        card_ids: Sequence[int],
+        ignored_review_ids: AbstractSet[int],
+    ) -> list[Sequence[object]]:
+        reads.append(ignored_review_ids)
+        return []
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rwkv_scheduler, "_historical_rwkv_review_rows", read)
+        assert rwkv_scheduler._rwkv_card_history_rows(reviewer, [1]) == []
+    assert reads == [frozenset({review_ids[7]})]
+
+    # a new review, and the metadata cannot be written: the restore appends
+    # the review to the resident state, which keeps its ignored reviews, and
+    # the saved cache stays the one before
+    rows.append((review_ids[17], 1, 10, 100, 3, 1234, 1, 18, 2500))
+    before = (tmp_path / "rwkv-state-cache" / "state-v1.meta.json").read_bytes()
+    atomic_write = rwkv_scheduler._atomic_write
+
+    def failing_write(path: Path, data: bytes) -> None:
+        if path.name == rwkv_scheduler._RWKV_STATE_CACHE_META_FILE:
+            raise OSError("disk full")
+        atomic_write(path, data)
+
+    monkeypatch.setattr(rwkv_scheduler, "_atomic_write", failing_write)
+    runtime, _key = warm_up()
+    assert runtime.reviewed == [(1, 3)]
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == (review_ids[7],)
+    assert (tmp_path / "rwkv-state-cache" / "state-v1.meta.json").read_bytes() == (
+        before
+    )
+
+    # the next start reads the old cache, whole, with its ignored review,
+    # and replays only the new review again
+    monkeypatch.setattr(rwkv_scheduler, "_atomic_write", atomic_write)
+    runtime, _key = warm_up()
+    assert runtime.reviewed == [(1, 3)]
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == (review_ids[7],)
+    assert saved()["ignoredReviewIds"] == [review_ids[7]]
+    assert saved()["lastReviewId"] == review_ids[17]
+
+
+# The other half: the save that would record a new ignored review fails. The
+# resident state goes on without the review and says so in memory; the file
+# still holds the cache without it, so the next start finds that cache no
+# longer describes the history and builds it again, with nothing ignored.
+def test_a_failed_save_of_new_ignored_reviews_keeps_memory_and_file_apart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    review_ids = {day: (day * 86_400 + 100) * 1000 for day in (0, 7, 8, 12, 16)}
+    rows = [
+        (review_ids[day], 1, 10, 100, ease, 1234, 1, day + 1, 2500)
+        for day, ease in zip((0, 8, 12, 16), (2, 3, 4, 2), strict=True)
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    meta_path = tmp_path / "rwkv-state-cache" / "state-v1.meta.json"
+
+    def warm_up(**kwargs: Any) -> _CacheRuntime:
+        runtime = _CacheRuntime()
+        set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+        assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, **kwargs) is True
+        return runtime
+
+    warm_up()
+    before = meta_path.read_bytes()
+    rows.append((review_ids[7], 1, 10, 100, 1, 1234, 1, 8, 2400))
+    rows.sort()
+    atomic_write = rwkv_scheduler._atomic_write
+
+    def failing_write(path: Path, data: bytes) -> None:
+        if path.name == rwkv_scheduler._RWKV_STATE_CACHE_META_FILE:
+            raise OSError("disk full")
+        atomic_write(path, data)
+
+    monkeypatch.setattr(rwkv_scheduler, "_atomic_write", failing_write)
+    assert warm_up(additional_ignored_review_ids=(review_ids[7],)).reviewed == []
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == (review_ids[7],)
+    assert meta_path.read_bytes() == before
+
+    monkeypatch.setattr(rwkv_scheduler, "_atomic_write", atomic_write)
+    assert len(warm_up().reviewed) == len(rows)
+    assert rwkv_scheduler._resident_ignored_review_ids(reviewer) == ()
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert "ignoredReviewIds" not in metadata
+
+
+def test_a_failed_store_metadata_write_keeps_the_deltas_the_old_metadata_needs(
+    tmp_path: Path,
+) -> None:
+    """The store save writes its metadata, the commit point, before it
+    empties the deltas log: a failed write leaves the old metadata with the
+    deltas and the segment it names, the old cache whole."""
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    live_store = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_STORE_FILE
+    live_store.write_bytes(b"delta-store")
+    meta_path = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE
+    meta_path.write_bytes(b'{"old":true}')
+    deltas_path = cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_DELTAS_FILE
+    deltas_path.write_bytes(b"old-deltas")
+    context = rwkv_scheduler._RwkvStateCacheWriteContext(
+        cache_dir=cache_dir,
+        metadata_base={"version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION},
+        state_store_path=live_store,
+        state_store_generation="generation",
+        state_store_temporary=False,
+        state_store_head_segment_id=2,
+    )
+
+    class Backend:
+        def finish_state_cache_checkpoints(self) -> None:
+            pass
+
+    def failing_write(path: Path, data: bytes) -> None:
+        if path == meta_path:
+            raise OSError("disk full")
+        path.write_bytes(data)
+
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rwkv_scheduler, "_atomic_write", failing_write)
+        with pytest.raises(OSError, match="disk full"):
+            rwkv_scheduler._save_reviewer_backend_state_store(
+                reviewer,
+                _rwkv_checkpoint_test_history(3),
+                backend=cast(Any, Backend()),
+                checkpoint_entries=[],
+                context=context,
+            )
+
+    assert meta_path.read_bytes() == b'{"old":true}'
+    assert deltas_path.read_bytes() == b"old-deltas"
+    assert live_store.read_bytes() == b"delta-store"
 
 
 # Pins spec/scheduling.md#sched.rwkv-recordings-automatic: a sync that
