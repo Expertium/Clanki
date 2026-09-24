@@ -9,7 +9,14 @@ A difference of one byte would make every stored state cache stale."""
 from __future__ import annotations
 
 import random
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import pytest
+
+from anki.collection import Collection
 from aqt import rwkv_scheduler as rwkv
 from aqt.rwkv_scheduler import RwkvReviewIdentity, RwkvReviewInput
 
@@ -121,3 +128,55 @@ def test_the_hasher_refuses_an_invalid_starting_hash() -> None:
         except ValueError:
             continue
         raise AssertionError(f"accepted {bad!r}")
+
+
+def _collection_with_history(path: Path) -> Collection:
+    """Two cards with a few rated reviews each, as raw rows (the notetype
+    names depend on the collection's language)."""
+    col = Collection(str(path))
+    day = 86_400 * 1000
+    for card_id in (1_700_000_000_000, 1_700_000_500_000):
+        col.db.execute(
+            "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, "
+            "ivl, factor, reps, lapses, left, odue, odid, flags, data) "
+            "values (?, 1, 1, 0, 0, -1, 2, 2, 1, 20, 2500, 0, 0, 0, 0, 0, 0, '')",
+            card_id,
+        )
+        for offset, (ease, kind) in enumerate(((3, 0), (3, 1), (1, 1), (3, 2))):
+            col.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, "
+                "time, type) values (?, ?, -1, ?, 10, 5, 2500, 1000, ?)",
+                card_id + (offset + 1) * day,
+                card_id,
+                ease,
+                kind,
+            )
+    return col
+
+
+def test_a_history_read_without_its_hash_holds_the_same_reviews(
+    tmp_path: Path,
+) -> None:
+    """Total Knowledge reads the history without the hash; everything else
+    it gets is what a hashed read gets, from the SQL rows and from the Rust
+    rows (the whole-history read with `between_steps`)."""
+    col = _collection_with_history(tmp_path / "history.anki2")
+    try:
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        row_paths: tuple[dict[str, Any], ...] = ({}, {"between_steps": lambda: None})
+        for kwargs in row_paths:
+            hashed = rwkv._historical_rwkv_review_inputs(reviewer, **kwargs)
+            unhashed = rwkv._historical_rwkv_review_inputs(
+                reviewer, hash_history=False, **kwargs
+            )
+            assert len(hashed.reviews) == 8
+            assert rwkv._rwkv_history_hash_is_valid(hashed.history_hash)
+            assert hashed.history_hash != rwkv._RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+            assert unhashed.history_hash == ""
+            assert replace(unhashed, history_hash=hashed.history_hash) == hashed
+        with pytest.raises(ValueError):
+            rwkv._historical_rwkv_review_inputs(
+                reviewer, hash_history=False, prepare_recovery_checkpoint=True
+            )
+    finally:
+        col.close()

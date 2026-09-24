@@ -350,7 +350,9 @@ def test_a_closed_page_stops_the_job_while_the_history_is_built(
     job = total_knowledge._Job(job_id=1, key=(), curve=False)
     reached_rows = []
 
-    def history(reviewer: Any, *, progress: Any, between_steps: Any) -> Any:
+    def history(
+        reviewer: Any, *, progress: Any, between_steps: Any, hash_history: bool
+    ) -> Any:
         progress("Preparing RWKV review inputs", 0, 2000)
         job.cancel_event.set()  # the page closes here
         progress("Preparing RWKV review inputs", 1000, 2000)
@@ -394,7 +396,9 @@ def test_a_closed_page_stops_the_history_query_between_its_parts(
     job = total_knowledge._Job(job_id=1, key=(), curve=False)
     parts_run = []
 
-    def history(reviewer: Any, *, progress: Any, between_steps: Any) -> Any:
+    def history(
+        reviewer: Any, *, progress: Any, between_steps: Any, hash_history: bool
+    ) -> Any:
         between_steps()
         parts_run.append(1)
         job.cancel_event.set()  # the page closes during the first range

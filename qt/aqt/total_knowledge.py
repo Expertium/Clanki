@@ -225,11 +225,13 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
     # a page that is already gone does not start the history at all
     if job.cancel_event.is_set():
         raise InterruptedError()
-    # RWKV's own history of every card: its state depends on all of them
+    # RWKV's own history of every card: its state depends on all of them.
+    # Without the history hash, which nothing here reads.
     history = rwkv._historical_rwkv_review_inputs(
         reviewer,
         progress=stop_if_cancelled,
         between_steps=stop_between_steps,
+        hash_history=False,
     )
     reviews: list[tuple[int, Any, int]] = [
         (review_id, review, review.day_offset)
