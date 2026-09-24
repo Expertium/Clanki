@@ -2,3 +2,4 @@
 - A card whose home deck or preset is missing no longer breaks `prop:r`/`prop:s` searches, the FSRS-7 Stats graphs, the retrievability review orders or its Browser row: FSRS-7 reads it with the Default preset.
 - The add-on functions `fsrs_current_retrievability` and `fsrs_interval_at_retrievability*` now read the stability they get as the card's S90 (the stability Clanki shows), like `fsrs_next_interval`.
 - When an add-on changes a card's FSRS-7 stability, the card's retrievability and next intervals now follow the new stability.
+- Card Info's FSRS-7 forgetting curve now comes from the same FSRS-7 code that schedules the card, so it matches the scheduler also for parameters outside the usual range.

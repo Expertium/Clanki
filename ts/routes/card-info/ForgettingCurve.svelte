@@ -14,11 +14,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         renderForgettingCurve,
         TimeRange,
         calculateMaxDays,
+        chartCurve,
         chartRevlog,
         CurveAlgorithm,
         curveInputs,
         forgettingCurveMessage,
         offersCurveToggle,
+        type Fsrs7Curves,
         type RwkvCurvePoints,
     } from "./forgetting-curve";
     import { defaultGraphBounds } from "../graphs/graph-helpers";
@@ -26,7 +28,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let revlog: RevlogEntry[];
     export let desiredRetention: number;
-    export let fsrsParams: number[] = [];
+    /** FSRS-7's curves, computed by fsrs-rs in the backend (spec
+     * sched.fsrs-rs-latest). */
+    export let fsrs7Curves: Fsrs7Curves | undefined = undefined;
     export let rwkvCurve: RwkvCurvePoints | undefined = undefined;
     /** FSRS-7's own reviews of an RWKV-Curve card, sent only in Advanced
      * mode, for the FSRS-7 / RWKV-Curve toggle (spec ui.card-info-rwkv-curve). */
@@ -41,6 +45,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: drawn = curveInputs(revlog, rwkvCurve, fsrs7Revlog, chosen);
 
     $: filteredRevlog = chartRevlog(drawn.revlog, drawn.rwkvCurve);
+    $: curve = chartCurve(filteredRevlog, drawn.rwkvCurve, fsrs7Curves);
     // why there is no curve, in plain words, instead of "NO DATA"
     // (spec ui.card-info-curve-messages)
     $: emptyMessage = forgettingCurveMessage(drawn.revlog, drawn.rwkvCurve);
@@ -65,8 +70,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         svg as SVGElement,
         bounds,
         desiredRetention,
-        fsrsParams,
-        drawn.rwkvCurve,
+        curve,
     );
 </script>
 

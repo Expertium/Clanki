@@ -1204,7 +1204,6 @@ reschedule treated a card's S90 as its only stability.
 and `rslib/src/deckconfig/update.rs` (including the migration);
 `fsrs7_only_calibration_predictions_without_fsrs7_params_use_the_defaults`
 in `rslib/src/scheduler/fsrs/params.rs`;
-`ts/routes/card-info/forgetting-curve.test.ts` (`stabilityS90`);
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
@@ -1217,6 +1216,11 @@ dependency follows the `main` branch of open-spaced-repetition/fsrs-rs, and
 `cargo update -p fsrs`. Every FSRS-7 value is the crate's own: Clanki keeps
 no copy of the FSRS-7 curve or interval solver (the retrievability of the
 Browser, Stats, searches, sorts, queue orders and Total Knowledge included).
+Card info's forgetting curve is the crate's too: in Advanced mode the
+backend sends, for each review with an FSRS-7 memory state, the crate's
+recall of that state (with the parameters the crate clips) at 0 and at 300
+elapsed times evenly spaced in log time from one minute to 100 years, and
+the page joins the points with straight lines (within 0.1% of the curve).
 
 **Why:** Andrew, 2026-09-16: "don't pin to a specific commit, always use the
 latest version of fsrs-rs (there won't be FSRS-8 for years, if ever)"; the
@@ -1229,10 +1233,16 @@ day (all over 360 days: float rounding), memory states differ by under 1e-4
 relative, and the new optimizer fits his reviews as well (review-weighted
 log loss 0.0003 lower over 9 presets). Measured (120 pairs, RELEASE builds):
 memory states from the history 9.6x faster, next states 15.6x faster,
-optimization unchanged.
+optimization unchanged. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
+FSRS-7 review of that day: card info still drew the curve and solved the S90
+with a TypeScript copy, on the stored parameters rather than the ones the
+crate clips.
 
 **Pinned by:** `the_curve_is_the_crates_own`
-(`rslib/src/scheduler/fsrs/curve.rs`).
+(`rslib/src/scheduler/fsrs/curve.rs`); `card_info_curves_are_the_crates_own`
+(`rslib/src/stats/card.rs`); "an FSRS-7 chart draws the backend's curve after
+each review, with its S90", "without the backend's FSRS-7 curve the chart
+has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## sched.fsrs7-sm2-conversion
 
