@@ -192,7 +192,16 @@ impl Collection {
             algorithm,
             rwkv_scores: &rwkv_scores,
         };
-        for card in self.all_cards_for_search(search)? {
+        let cards = self.all_cards_for_search(search)?;
+        if algorithm == SchedulingAlgorithm::Fsrs7
+            || matches!(order, ExactFsrsSearchOrder::RelativeOverdueness)
+        {
+            // the keys read the cards' presets: resolve their add-on overlay
+            // presets with one search per rule instead of one per card
+            let card_refs: Vec<&Card> = cards.iter().collect();
+            self.resolve_fsrs_overlay_presets_for_cards(&card_refs)?;
+        }
+        for card in cards {
             let key =
                 exact_fsrs_search_key_for_card(self, &card, ctx.timing, order, &mut curves, &keys)?;
             let hash = fnvhash_card_and_mod(&card);
@@ -377,21 +386,6 @@ fn fnvhash_card_and_mod(card: &Card) -> i64 {
     hasher.finish() as i64
 }
 
-fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
-    if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since_clamped(last_review_time)
-    } else {
-        let due = card.original_or_current_due() as i64;
-        if due > 365_000 {
-            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let review_day = due.saturating_sub(card.interval as i64);
-            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-        }
-    }
-}
-
 /// What a filtered deck's retrievability order reads: the collection's
 /// algorithm, and the RWKV scores the filtered-deck preparation published
 /// for the deck's own cards (`FILTERED_DECK_RWKV_SCORES_SEARCH`).
@@ -419,8 +413,7 @@ fn exact_retrievability_key_for_card(
         SchedulingAlgorithm::RwkvInstant => Ok(entry.and_then(|entry| entry.retrievability)),
         SchedulingAlgorithm::Fsrs7 => {
             if let Some(state) = card.memory_state {
-                let elapsed_days =
-                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                 curves
                     .current_retrievability(col, card, state, elapsed_days)
                     .map(Some)
@@ -448,8 +441,7 @@ fn exact_fsrs_search_key_for_card(
         ExactFsrsSearchOrder::RelativeOverdueness => match keys.algorithm {
             SchedulingAlgorithm::Fsrs7 => {
                 if let Some(state) = card.memory_state {
-                    let elapsed_days =
-                        elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                    let elapsed_days = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                     curves
                         .relative_overdueness(col, card, state, elapsed_days)
                         .map(Some)
@@ -591,7 +583,7 @@ mod test {
                 let preset = col.fsrs_preset_for_card(card)?;
                 let fsrs = fsrs::FSRS::new(&preset.params)?;
                 let state = card.memory_state.unwrap().into();
-                let elapsed = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                let elapsed = card.seconds_since_last_review(&timing) as f32 / 86_400.0;
                 let expected = match order {
                     ExactFsrsSearchOrder::Retrievability { .. } => {
                         fsrs.current_retrievability(state, elapsed.max(0.0))
@@ -713,6 +705,91 @@ mod test {
         });
         let expected_ids: Vec<_> = expected_order.into_iter().map(|(id, _, _)| id).collect();
         assert_eq!(ordered_ids, expected_ids);
+        Ok(())
+    }
+
+    // With add-on preset overlay rules, an exact filtered-deck order resolves
+    // its cards' overlay presets with one search per rule, not one per card.
+    #[test]
+    fn filtered_deck_exact_order_resolves_overlay_presets_per_rule() -> Result<()> {
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::AddonFsrsVersion;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+        use crate::scheduler::fsrs::preset::PER_CARD_OVERLAY_SEARCHES;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let timing = col.timing_today()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for index in 0..8 {
+            let mut note = nt.new_note();
+            note.set_field(0, format!("front {index}"))?;
+            col.add_note(&mut note, DeckId(1))?;
+            if index % 2 == 0 {
+                col.add_tags_to_notes(&[note.id], "overlay")?;
+            }
+            let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.due = 0;
+            card.interval = 5;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 5.0 + index as f32,
+                stability_internal: 5.0 + index as f32,
+                stability_fast: None,
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-5 * 86_400));
+            col.storage.update_card(&card)?;
+        }
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:overlay".into(),
+                    name: "Overlay".into(),
+                    fsrs_version: AddonFsrsVersion::Seven,
+                    params: Vec::new(),
+                    desired_retention: 0.8,
+                    historical_retention: 0.9,
+                    ignore_revlogs_before_date: String::new(),
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "tag:overlay".into(),
+                    preset_id: "addon:test:overlay".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+
+        for order in [
+            FilteredSearchOrder::RetrievabilityAscending,
+            FilteredSearchOrder::RelativeOverdueness,
+        ] {
+            col.state.fsrs_preset_overlay_cache = None;
+            PER_CARD_OVERLAY_SEARCHES.with(|count| count.set(0));
+            let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;
+            deck.allow_empty = true;
+            deck.config.search_terms[0].search = "is:review".into();
+            deck.config.search_terms[0].limit = 100;
+            deck.config.search_terms[0].order = order as i32;
+            deck.config.search_terms[1].search = String::new();
+            deck.config.search_terms[1].limit = 0;
+            let filtered_did = col.add_or_update_filtered_deck(deck)?.output;
+            assert_eq!(
+                col.storage.all_cards_in_single_deck(filtered_did)?.len(),
+                8,
+                "{order:?}"
+            );
+            assert_eq!(
+                PER_CARD_OVERLAY_SEARCHES.with(|count| count.get()),
+                0,
+                "{order:?}"
+            );
+            col.remove_decks_and_child_decks(&[filtered_did])?;
+        }
         Ok(())
     }
 

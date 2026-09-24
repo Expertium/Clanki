@@ -27,6 +27,14 @@ use crate::search::TryIntoSearch;
 pub(crate) const FSRS_PRESET_OVERLAY_CONFIG_KEY: &str = "fsrsPresetOverlay";
 const FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS: usize = 128;
 
+#[cfg(test)]
+thread_local! {
+    /// The per-card overlay rule searches this thread ran (a test counts
+    /// them).
+    pub(crate) static PER_CARD_OVERLAY_SEARCHES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FsrsPresetId {
     DeckConfig(DeckConfigId),
@@ -488,7 +496,17 @@ impl Collection {
         Ok(!self.fsrs_preset_overlay_cache()?.rules.is_empty())
     }
 
+    /// Resolves the add-on overlay presets of `cards` with one search per
+    /// rule and keeps them in the overlay cache, so that
+    /// `fsrs_overlay_preset_for_card` then finds each card there instead of
+    /// running one search per card and rule.
+    pub(crate) fn resolve_fsrs_overlay_presets_for_cards(&mut self, cards: &[&Card]) -> Result<()> {
+        self.fsrs_overlay_presets_for_cards(cards).map(|_| ())
+    }
+
     fn fsrs_preset_rule_matches_card(&mut self, card_id: CardId, rule_node: Node) -> Result<bool> {
+        #[cfg(test)]
+        PER_CARD_OVERLAY_SEARCHES.with(|count| count.set(count.get() + 1));
         let node = Node::Group(vec![
             Node::Search(SearchNode::CardIds(card_id.to_string())),
             Node::And,

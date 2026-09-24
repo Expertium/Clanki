@@ -130,22 +130,25 @@ impl Card {
         }
     }
 
-    /// If last_review_date isn't stored in the card, this uses card.due and
-    /// card.ivl to infer the elapsed time, which won't be accurate if
-    /// 'set due date' or an add-on has changed the due date.
-    pub(crate) fn seconds_since_last_review(&self, timing: &SchedTimingToday) -> Option<u32> {
-        if let Some(last_review_time) = self.last_review_time {
-            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
-        } else if self.is_due_in_days() {
-            self.due_time(timing).map(|due| {
-                let last_review_time =
-                    due.adding_secs(-86_400_i64.saturating_mul(self.interval as i64));
-                timing.now.elapsed_secs_since_clamped(last_review_time)
-            })
-        } else {
-            let last_review_time = TimestampSecs(self.original_or_current_due() as i64);
-            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
-        }
+    /// The seconds since the card's last review, the elapsed time of every
+    /// FSRS-7 retrievability (Browser, searches, sorts, the study queue and
+    /// filtered decks; spec sched.elapsed-time-fallback). Without
+    /// last_review_time it is inferred: a card due in days was reviewed its
+    /// interval in days before its due day; a card due in seconds (intraday
+    /// learning) counts from its due time. The inference is wrong where 'set
+    /// due date' or an add-on moved the due date.
+    pub(crate) fn seconds_since_last_review(&self, timing: &SchedTimingToday) -> u32 {
+        let last_review_time = self.last_review_time.unwrap_or_else(|| {
+            let due = self.original_or_current_due() as i64;
+            if self.is_due_in_days() {
+                let review_day = due.saturating_sub(self.interval as i64);
+                let days_ago = (timing.days_elapsed as i64).saturating_sub(review_day);
+                timing.now.adding_secs(-days_ago.saturating_mul(86_400))
+            } else {
+                TimestampSecs(due)
+            }
+        });
+        timing.now.elapsed_secs_since_clamped(last_review_time)
     }
 }
 
@@ -415,7 +418,7 @@ impl RowContext {
             .then_some(cards[0].memory_state)
             .flatten();
         let fsrs_retrievability = memory_state
-            .zip(cards[0].seconds_since_last_review(&timing))
+            .zip(Some(cards[0].seconds_since_last_review(&timing)))
             .map(|(state, seconds)| {
                 col.fsrs_current_retrievability_for_card_state(
                     cards[0].id,

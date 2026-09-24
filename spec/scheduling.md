@@ -1052,6 +1052,37 @@ and the retrievability orders gathered the cards in due-day order.
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
 
+## sched.fsrs7-review-order
+
+Given a preset running FSRS-7 whose review sort order is "Retrievability
+ascending", "Retrievability descending" or "Relative overdueness", the study
+queue ranks the due review cards and interday learning cards together by
+FSRS-7's value for each card (its retrievability now, or its relative
+overdueness), and applies the review limits in that order. Intraday
+learning cards take no part in the ranking: as in the other review orders,
+the ones that are due come before the ranked cards, by due time (cards
+answered before ahead of never-answered ones), and the ones due within the
+learn-ahead limit are shown when nothing else is left. Both count in the
+learning count, and when every count is zero the queue looks again for
+learning cards that became due, as in the other orders.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", after the FSRS-7 review
+(`reviews/algo-2026-09-24/fsrs7.md`, section 3) found that the R orders
+turned learn-ahead off: a relearning card due within the learn-ahead limit
+was neither shown nor counted, so the user got the congratulations screen
+while FSRS-7's short Again intervals (36 s to 4 min with the default
+parameters) were about to come due, and descending retrievability is the
+default order of a new preset. A due learning card also joined the ranked
+list, so in ascending order a card failed seconds ago waited behind every
+due review.
+
+**Pinned by:** `fsrs_retrievability_order_keeps_learn_ahead`,
+`fsrs_retrievability_order_shows_due_intraday_learning_by_due_time`,
+`fsrs_retrievability_order_interleaves_due_non_new_queues`,
+`fsrs_descending_retrievability_order_interleaves_due_non_new_queues`,
+`rwkv_curve_retrievability_order_keeps_learn_ahead` (RWKV-Curve, which
+shares the queue) (`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.filtered-deck-one-algorithm
 
 Given a filtered deck whose search term is ordered by "Retrievability
@@ -1351,6 +1382,28 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_interday_delta_uses_fractional_elapsed_time`,
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
+
+## sched.elapsed-time-fallback
+
+Given a card with an FSRS-7 memory state but no stored last review time,
+every FSRS-7 retrievability read outside answering (the Browser's
+Retrievability column and sort, `prop:r` searches and sorts, the FSRS-7
+retrievability graph, the study queue's retrievability orders and the
+filtered-deck retrievability orders) takes its elapsed time from the same
+rule: a card due in days was last reviewed its interval in days before its
+due day; a card due in seconds (intraday learning) counts from its due time.
+The elapsed time is never below zero.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", after the FSRS-7 review
+(`reviews/algo-2026-09-24/fsrs7.md`, section 6) found three different
+fallbacks: the Browser used the due time of a learning card, while the
+searches and the queue took the interval, a number of days, off a due time
+in seconds, and a card due in days whose interval reached back before the
+collection's first day got an elapsed time of zero.
+
+**Pinned by:** `elapsed_time_fallback_is_the_same_rule_for_every_card`,
+`exact_retrievability_clamps_future_last_review_time`
+(`rslib/src/search/mod.rs`).
 
 ## sched.no-dynamic-desired-retention
 
