@@ -422,12 +422,12 @@ impl Collection {
             )
         };
         let key = self.fsrs_review_prediction_job_key(&config)?;
-        let newest_review = self
-            .storage
-            .db
-            .query_row("select coalesce(max(id), 0) from revlog", [], |row| {
-                row.get(0)
-            })?;
+        let newest_review =
+            self.storage
+                .db
+                .query_row("select coalesce(max(id), 0) from revlog", [], |row| {
+                    row.get(0)
+                })?;
         Ok(Some(FsrsReviewPredictionRead {
             coverage: FsrsPredictionCoverageJob {
                 key: key.clone(),
@@ -1009,14 +1009,17 @@ mod test {
             .decks_with_uncovered_fsrs_review_predictions_part(i64::MIN, None)?;
         assert!(uncovered.iter().any(|(deck, _)| *deck == DeckId(1)));
         assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
-        assert!(presets_with_stale_fsrs_review_predictions_in_parts(3, &mut |step| {
-            step(&mut col)
-        })?
-        .is_empty());
+        assert!(
+            presets_with_stale_fsrs_review_predictions_in_parts(3, &mut |step| { step(&mut col) })?
+                .is_empty()
+        );
 
         // a new review makes its preset stale again, and only its preset
         rated_card(&mut col, 0);
-        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        assert_eq!(
+            col.presets_with_stale_fsrs_review_predictions()?,
+            vec![preset]
+        );
         refresh(&mut col, preset)?;
         assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
 
@@ -1034,7 +1037,10 @@ mod test {
         // and new parameters, whose save drops the preset's rows
         bump_params(&mut col, preset)?;
         col.clear_fsrs_review_predictions_of_presets(&[preset])?;
-        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        assert_eq!(
+            col.presets_with_stale_fsrs_review_predictions()?,
+            vec![preset]
+        );
         Ok(())
     }
 
@@ -1057,7 +1063,10 @@ mod test {
         // answered after the read, before the record
         rated_card(&mut col, 0);
         col.record_fsrs_prediction_coverage(&coverage)?;
-        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        assert_eq!(
+            col.presets_with_stale_fsrs_review_predictions()?,
+            vec![preset]
+        );
         Ok(())
     }
 
@@ -1071,10 +1080,9 @@ mod test {
         let cards: Vec<CardId> = (0..8)
             .map(|card| card_with_reviews_days_later(&mut col, DeckId(1), (card % 2) * 20))
             .collect();
-        col.storage.db.execute(
-            "update cards set queue = -1 where id = ?",
-            [cards[1].0],
-        )?;
+        col.storage
+            .db
+            .execute("update cards set queue = -1 where id = ?", [cards[1].0])?;
         let preset = DeckConfigId(1);
         let mut config = col.storage.get_deck_config(preset)?.unwrap();
         // after the older cards' last review (30 days ago), before the newer
@@ -1162,7 +1170,9 @@ mod test {
         let card_of = |review: RevlogId| -> CardId {
             col.storage
                 .db
-                .query_row("select cid from revlog where id = ?", [review.0], |row| row.get(0))
+                .query_row("select cid from revlog where id = ?", [review.0], |row| {
+                    row.get(0)
+                })
                 .unwrap()
         };
         for row in &rows {

@@ -2465,4 +2465,3 @@ mod tests {
             .all(|c| (c.desired_retention - 0.7).abs() < 1e-6));
     }
 }
-

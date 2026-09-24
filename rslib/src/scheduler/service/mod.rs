@@ -1506,7 +1506,11 @@ mod tests {
         let response = SchedulerService::compute_fsrs_params_batch(
             &mut col,
             anki_proto::scheduler::ComputeFsrsParamsBatchRequest {
-                items: vec![item("good", "deck:*"), item("bad", "("), item("also good", "")],
+                items: vec![
+                    item("good", "deck:*"),
+                    item("bad", "("),
+                    item("also good", ""),
+                ],
             },
         )?;
         let answered: Vec<(&str, u32, usize)> = response

@@ -365,12 +365,7 @@ fn fsrs_leaves_untrained(items: &[FSRSItem]) -> bool {
 /// than the current ones. Trained parameters are never replaced by values
 /// fsrs-rs did not train (a tiny training set), whatever their log loss on
 /// that set.
-fn params_to_keep(
-    current: &[f32],
-    new: Params,
-    items: &[FSRSItem],
-    card_ids: &[i64],
-) -> Params {
+fn params_to_keep(current: &[f32], new: Params, items: &[FSRSItem], card_ids: &[i64]) -> Params {
     let current = effective_fsrs7_params(current);
     if new == current || items.is_empty() {
         return current.to_vec();
