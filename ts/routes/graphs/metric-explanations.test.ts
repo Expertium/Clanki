@@ -19,7 +19,6 @@ test("UM+ keeps its verdict under the graph and its explanation in the tooltip",
             tr.statisticsUmPlusDescriptionScore(),
             tr.statisticsUmPlusDescriptionOracle(),
             tr.statisticsModelMetricsDescriptionReviews(),
-            tr.statisticsModelMetricsDescriptionFirstReviews(),
         ]
     ) {
         expect(tooltip).toContain(part);
@@ -32,6 +31,5 @@ test("AUC-ROC keeps its verdict under the graph and its explanation in the toolt
     expect(tooltip).toContain(tr.statisticsRocDescriptionCurve());
     expect(tooltip).toContain(tr.statisticsRocDescriptionAuc());
     expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionReviews());
-    expect(tooltip).toContain(tr.statisticsModelMetricsDescriptionFirstReviews());
     expect(tooltip).not.toContain(rocVerdict());
 });

@@ -211,7 +211,6 @@ statistics-model-metrics-scored = Scored on { $reviews } reviews.
 # Shown under the graph instead when two or more algorithms are drawn: all of them are scored on the same reviews.
 statistics-model-metrics-scored-shared = Scored on { $reviews } reviews that every algorithm predicted.
 # In the tooltips of the model-quality graphs.
-statistics-model-metrics-description-first-reviews = The first review of each card is not counted: no algorithm knows anything about a card before it.
 # Shown under the graph when some ratings have no prediction at all.
 statistics-model-metrics-none = { $reviews } reviews have no prediction from any algorithm.
 # Shown under the graph; $role is a stored sample role, such as "validation_fold".
