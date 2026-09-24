@@ -50,6 +50,7 @@ pub struct CollectionBuilder {
     tr: Option<I18n>,
     check_integrity: bool,
     progress_handler: Option<Arc<Mutex<ProgressState>>>,
+    as_package: bool,
 }
 
 impl CollectionBuilder {
@@ -83,7 +84,7 @@ impl CollectionBuilder {
                 ..Default::default()
             },
         };
-        if !server {
+        if !server && !self.as_package {
             col.migrate_learning_queues_switch()?;
             // one algorithm for every preset (spec sched.one-global-algorithm);
             // a failure must not stop the collection from opening
@@ -136,6 +137,15 @@ impl CollectionBuilder {
 
     pub fn set_tr(&mut self, tr: I18n) -> &mut Self {
         self.tr = Some(tr);
+        self
+    }
+
+    /// Opens the collection of an .apkg package, which is only read: the
+    /// open-time migrations do not run on it, so its cards come as the
+    /// package holds them, and the importing collection repairs and
+    /// migrates what it imports (spec sched.apkg-import-reads-the-package).
+    pub(crate) fn set_as_package(&mut self) -> &mut Self {
+        self.as_package = true;
         self
     }
 

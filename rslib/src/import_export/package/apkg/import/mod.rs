@@ -19,6 +19,7 @@ use tempfile::NamedTempFile;
 use zip::ZipArchive;
 
 use super::super::meta::MetaExt;
+use crate::card::CardType;
 use crate::collection::CollectionBuilder;
 use crate::config::ConfigKey;
 use crate::import_export::gather::ExchangeData;
@@ -146,7 +147,11 @@ impl ExchangeData {
         with_deck_configs: bool,
     ) -> Result<Self> {
         let tempfile = collection_to_tempfile(meta, archive)?;
-        let mut col = CollectionBuilder::new(tempfile.path()).build()?;
+        // the package as written: its own presets must not compute its
+        // cards' memory states (spec sched.apkg-import-reads-the-package)
+        let mut col = CollectionBuilder::new(tempfile.path())
+            .set_as_package()
+            .build()?;
         col.maybe_fix_invalid_ids()?;
         col.maybe_upgrade_scheduler()?;
 
@@ -158,6 +163,14 @@ impl ExchangeData {
                 .storage
                 .card_ids_with_foreign_fsrs_state()?
                 .into_iter()
+                .chain(
+                    data.cards
+                        .iter()
+                        .filter(|card| {
+                            card.memory_state.is_none() && card.ctype != CardType::New
+                        })
+                        .map(|card| card.id),
+                )
                 .collect();
         }
 

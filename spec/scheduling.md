@@ -1770,6 +1770,34 @@ collection that already runs FSRS in Anki keeps FSRS-7.
 `only_sm2_collections_with_cards_change`
 (`rslib/src/deckconfig/algorithm.rs`).
 
+## sched.apkg-import-reads-the-package
+
+Given an `.apkg` import, the package's own collection is read as the
+package holds it: the open-time passes (`sched.one-global-algorithm`,
+`sched.no-sm2`, `sched.fsrs7-only` and
+`sync.fsrs7-state-of-foreign-cards`) do not run on it, so its presets
+compute no memory state. With scheduling imported, the importing
+collection then gives its FSRS-7 memory state, with its own home preset
+(`sync.fsrs7-state-of-foreign-cards`), to two kinds of imported card: a
+card whose row another client wrote (a memory state without `s_int`), and
+a card that is not new and has no memory state (from its review log; a
+card without a usable review stays without one). Every other imported
+card keeps the memory state the package holds, an RWKV-Curve S90
+included. Due dates and the review log do not change.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the import opened the package like a
+collection, so the package's FSRS-off switch made `sched.no-sm2` and then
+the FSRS-7 migration compute every packaged card's memory state twice with
+the package's default parameters. That replaced an imported RWKV-Curve
+card's S90, and it gave every card an internal stability, so the repair
+with the importing collection's preset never found a card to repair.
+
+**Pinned by:** `an_imported_card_gets_its_memory_state_from_the_importing_preset`,
+`an_imported_rwkv_curve_card_keeps_its_s90`,
+`imported_foreign_fsrs_state_becomes_an_fsrs7_state`
+(`rslib/src/import_export/package/apkg/tests.rs`).
+
 ## sched.algorithm-change-prompt
 
 Given the user saves deck options after changing the Algorithm to FSRS-7 or

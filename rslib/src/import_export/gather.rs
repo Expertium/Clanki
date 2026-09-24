@@ -29,9 +29,11 @@ pub(super) struct ExchangeData {
     pub(super) media_filenames: HashSet<String>,
     pub(super) days_elapsed: u32,
     pub(super) creation_utc_offset: Option<i32>,
-    /// Imported cards whose row another client wrote (spec
-    /// sync.fsrs7-state-of-foreign-cards). Found in the package's own
-    /// rows: once a card is written back through `Card`, it carries an
+    /// Imported cards that get their FSRS-7 memory state in the importing
+    /// collection (spec sched.apkg-import-reads-the-package): the ones whose
+    /// row another client wrote (spec sync.fsrs7-state-of-foreign-cards),
+    /// and the studied ones without a memory state. Found in the package's
+    /// own rows: once a card is written back through `Card`, it carries an
     /// internal stability and no longer looks foreign.
     pub(super) foreign_fsrs_card_ids: HashSet<CardId>,
 }
