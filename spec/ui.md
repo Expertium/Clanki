@@ -1645,10 +1645,13 @@ recorded", so a series covering days cannot look like one covering years;
 after a full replay records the history, that line is gone. A row counts
 only when nothing that produced it was fitted on that very review:
 
-| Algorithm | Rows that count                                                                 |
-| --------- | ------------------------------------------------------------------------------- |
-| FSRS-7    | a validation fold first, else a run after the optimization; never the final fit |
-| RWKV      | any role, because the weights are frozen and were trained on other collections  |
+| Algorithm | Rows that count                                                                     |
+| --------- | ----------------------------------------------------------------------------------- |
+| FSRS-7    | a validation fold first, else a run after the optimization; never the final fit     |
+| RWKV      | any role, because the weights are frozen and were trained on other collections (\*) |
+
+(\*) A collection that is itself in the training data (users 5000-10000 of
+`anki-revlogs-10k`) is the exception; Clanki cannot tell which one it is.
 
 FSRS-7 uses one role only, the first role of its list that has any row,
 because that list is in order of honesty, and the graph names it. RWKV's

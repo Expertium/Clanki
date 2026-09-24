@@ -176,8 +176,9 @@ same-day state outside Anki's learning queues, Qt places the corresponding raw
 kind on `CardAnswer`; the Rust answer transaction validates and writes that kind
 to the revlog, so undo and redo keep the card update and review type atomic.
 Histories without a Learning answer, such as cards introduced through Grade
-Now, begin with their actual recorded Review, Relearning, Filtered, Manual, or
-Rescheduled state; replay does not synthesize state `0`.
+Now, begin at their first rated row after their last Forget (or at their first
+rated row), and that start row gets state `0` and the elapsed sentinel like any
+other start row (spec `sched.rwkv-replay-start-row`).
 
 Synthetic scheduling that does not use Anki's learning queues must still track
 the equivalent state transition explicitly:
