@@ -1422,7 +1422,8 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();
     m.add_wrapped(wrap_pyfunction!(syncserver)).unwrap();
-    m.add_wrapped(wrap_pyfunction!(stored_curve_recalls)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(stored_curve_recalls))
+        .unwrap();
 
     Ok(())
 }

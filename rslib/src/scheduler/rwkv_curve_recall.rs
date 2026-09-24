@@ -133,7 +133,13 @@ mod test {
         let values = stored_curve_recalls(
             &ids,
             &bytes,
-            &[(1, Some(0)), (1, None), (2, Some(5)), (3, Some(5)), (4, Some(5))],
+            &[
+                (1, Some(0)),
+                (1, None),
+                (2, Some(5)),
+                (3, Some(5)),
+                (4, Some(5)),
+            ],
             &rates,
         )
         .unwrap();
