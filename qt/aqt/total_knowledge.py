@@ -309,11 +309,12 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
 
 
 def _digest_days(mw: Any, cache_key: str, today: int) -> list[int]:
-    """The days whose digest a run reads: yesterday, through which it keeps
-    its sums, and the last day of the sums an earlier run kept."""
+    """The days whose digest a run reads, each once: yesterday, through which
+    it keeps its sums, and the last day of the sums an earlier run kept (the
+    same day when Stats opens again on the day it last ran)."""
     entry = _read_day_sums_cache(mw).get(cache_key)
     last_day = entry.get("last_day") if isinstance(entry, dict) else None
-    return [today - 1] + ([last_day] if isinstance(last_day, int) else [])
+    return sorted({today - 1} | ({last_day} if isinstance(last_day, int) else set()))
 
 
 def _backend_replay(
