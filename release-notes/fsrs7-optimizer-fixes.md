@@ -8,3 +8,5 @@
 - One preset that cannot be optimized (for example an invalid search filter)
   no longer stops the automatic optimization, the Stats predictions or
   "Optimize All Presets" for the other presets.
+- The daily FSRS-7 prediction pass no longer fits every preset again each day:
+  a preset with no new review and no changed setting is left as it is.

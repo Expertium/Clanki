@@ -26,6 +26,7 @@ use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::search::writer::preset_search;
 use crate::search::SortMode;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
+use crate::storage::UncoveredReviews;
 
 /// What the pass stores its rows under. The same string names them again
 /// when a batch has to be taken back.
@@ -113,7 +114,7 @@ pub(crate) fn presets_with_stale_fsrs_review_predictions_in_parts(
     hold: &mut RwkvCollectionHold,
 ) -> Result<Vec<DeckConfigId>> {
     for _ in 0..STALE_PRESETS_READ_ATTEMPTS {
-        let mut uncovered: HashMap<DeckId, u32> = HashMap::new();
+        let mut uncovered: HashMap<DeckId, UncoveredReviews> = HashMap::new();
         let mut stamp = None;
         let mut after = Some(i64::MIN);
         let mut unchanged = true;
@@ -126,7 +127,7 @@ pub(crate) fn presets_with_stale_fsrs_review_predictions_in_parts(
                         .storage
                         .decks_with_uncovered_fsrs_review_predictions_part(from, Some(part_rows))?;
                     for (deck, reviews) in part {
-                        *uncovered.entry(deck).or_default() += reviews;
+                        uncovered.entry(deck).or_default().add(reviews);
                     }
                     after = next;
                 }
@@ -156,6 +157,74 @@ pub(crate) fn presets_with_stale_fsrs_review_predictions_in_parts(
     stale.or_invalid("stale presets never read")
 }
 
+/// Recomputes ONE preset's rows, holding the collection through `hold` only
+/// to read its reviews, to write one batch of rows, and to record what the
+/// pass left uncovered (spec ui.stats-fsrs-predictions-ready). Returns how
+/// many rows were written.
+pub(crate) fn refresh_fsrs_review_predictions_of_preset(
+    preset: DeckConfigId,
+    batch_rows: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<u32> {
+    let mut read = None;
+    hold(&mut |col| {
+        read = col.fsrs_review_prediction_read(preset)?;
+        Ok(())
+    })?;
+    let Some(read) = read else {
+        return Ok(0);
+    };
+    let coverage = read.coverage.clone();
+    let written = match read.job() {
+        Some(job) => {
+            let rows = job.rows()?;
+            store_fsrs_review_predictions_in_batches(
+                &job,
+                &rows,
+                batch_rows,
+                |job, batch, already_written| {
+                    let mut outcome = None;
+                    hold(&mut |col| {
+                        outcome = Some(col.store_fsrs_review_prediction_batch(
+                            job,
+                            batch,
+                            already_written,
+                        )?);
+                        Ok(())
+                    })?;
+                    outcome.or_invalid("batch never written")
+                },
+            )?
+        }
+        None => 0,
+    };
+    hold(&mut |col| col.record_fsrs_prediction_coverage(&coverage))?;
+    Ok(written)
+}
+
+/// What a pass records once it has written a preset: the reviews it left
+/// uncovered, which no later pass can cover either until the preset or its
+/// reviews change.
+#[derive(Clone)]
+pub(crate) struct FsrsPredictionCoverageJob {
+    key: FsrsReviewPredictionJobKey,
+    /// The preset's selection of reviews (`coverage_selection`).
+    selection: String,
+    /// The newest review of the collection when the pass read the preset:
+    /// a review after it was not read, so it stays uncovered and unrecorded.
+    newest_review: i64,
+}
+
+/// The settings that decide which of a preset's reviews its folds can
+/// cover: its search filter and its "Ignore reviews before" date.
+fn coverage_selection(config: &DeckConfig) -> String {
+    format!(
+        "{}\u{1f}{}",
+        config.inner.param_search.trim(),
+        config.inner.ignore_revlogs_before_date
+    )
+}
+
 /// One preset's recompute, split so that only reading its reviews and
 /// writing its rows need the collection; the fold fits in [`Self::rows`] run
 /// without it.
@@ -170,7 +239,7 @@ pub(crate) struct FsrsReviewPredictionJob {
 /// (its parameters, and anything else a save changes) and the decks that
 /// use it. If either differs at write time the rows are dropped, since a
 /// parameter change deletes the old rows and must not see them come back.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 struct FsrsReviewPredictionJobKey {
     preset: DeckConfigId,
     preset_mtime: TimestampSecs,
@@ -184,6 +253,7 @@ struct FsrsReviewPredictionJobKey {
 /// without the collection.
 pub(crate) struct FsrsReviewPredictionRead {
     key: FsrsReviewPredictionJobKey,
+    coverage: FsrsPredictionCoverageJob,
     params: Vec<f32>,
     revlogs: Vec<RevlogEntry>,
     /// The preset's own reviews among `revlogs`; None when all are.
@@ -245,9 +315,14 @@ impl Collection {
 
     /// The presets of the decks that hold uncovered reviews, given with how
     /// many each holds.
+    ///
+    /// A deck is not stale when its uncovered reviews are exactly those the
+    /// last pass of its preset left uncovered, for the same selection of
+    /// reviews: the pass could not cover them, and running it again would
+    /// not either.
     fn presets_of_uncovered_decks(
         &mut self,
-        uncovered: Vec<(DeckId, u32)>,
+        uncovered: Vec<(DeckId, UncoveredReviews)>,
     ) -> Result<Vec<DeckConfigId>> {
         if uncovered.is_empty() {
             return Ok(vec![]);
@@ -261,10 +336,25 @@ impl Collection {
                 Some((deck.id, config_id))
             })
             .collect();
+        let selections: HashMap<DeckConfigId, String> = self
+            .storage
+            .all_deck_config()?
+            .iter()
+            .map(|config| (config.id, coverage_selection(config)))
+            .collect();
+        let recorded = self.storage.fsrs_prediction_coverage()?;
         let mut stale: Vec<DeckConfigId> = uncovered
             .into_iter()
-            .filter(|(_, reviews)| *reviews > 0)
-            .filter_map(|(deck_id, _)| config_of_deck.get(&deck_id).copied())
+            .filter(|(_, reviews)| reviews.count > 0)
+            .filter_map(|(deck_id, reviews)| {
+                let config_id = *config_of_deck.get(&deck_id)?;
+                let unchanged = recorded.get(&deck_id).is_some_and(|record| {
+                    record.preset == config_id
+                        && Some(&record.selection) == selections.get(&config_id)
+                        && record.uncovered == reviews
+                });
+                (!unchanged).then_some(config_id)
+            })
             .collect();
         stale.sort_unstable();
         stale.dedup();
@@ -331,8 +421,20 @@ impl Collection {
                     .collect(),
             )
         };
+        let key = self.fsrs_review_prediction_job_key(&config)?;
+        let newest_review = self
+            .storage
+            .db
+            .query_row("select coalesce(max(id), 0) from revlog", [], |row| {
+                row.get(0)
+            })?;
         Ok(Some(FsrsReviewPredictionRead {
-            key: self.fsrs_review_prediction_job_key(&config)?,
+            coverage: FsrsPredictionCoverageJob {
+                key: key.clone(),
+                selection: coverage_selection(&config),
+                newest_review,
+            },
+            key,
             params: config.fsrs_params().to_vec(),
             revlogs,
             own_reviews,
@@ -370,6 +472,31 @@ impl Collection {
             .storage
             .set_fsrs_review_retrievability_predictions(batch, FSRS_PREDICTION_PASS_SOURCE)?;
         Ok(PredictionBatchOutcome::Stored(stored as u32))
+    }
+
+    /// Records the reviews a pass left uncovered in the preset's decks,
+    /// unless the preset was saved or its decks changed since the pass read
+    /// it: the preset is then stale for the next pass anyway.
+    pub(crate) fn record_fsrs_prediction_coverage(
+        &mut self,
+        coverage: &FsrsPredictionCoverageJob,
+    ) -> Result<()> {
+        let Some(config) = self.storage.get_deck_config(coverage.key.preset)? else {
+            return Ok(());
+        };
+        if self.fsrs_review_prediction_job_key(&config)? != coverage.key {
+            return Ok(());
+        }
+        let decks = &coverage.key.decks;
+        let uncovered = self
+            .storage
+            .uncovered_fsrs_review_predictions_of_decks(decks, coverage.newest_review)?;
+        self.storage.set_fsrs_prediction_coverage(
+            decks,
+            coverage.key.preset,
+            &coverage.selection,
+            &uncovered,
+        )
     }
 
     fn fsrs_review_prediction_job_key(
@@ -848,6 +975,92 @@ mod test {
         Ok(())
     }
 
+    fn refresh(col: &mut Collection, preset: DeckConfigId) -> Result<u32> {
+        refresh_fsrs_review_predictions_of_preset(preset, 2, &mut |step| step(col))
+    }
+
+    /// A pass leaves some reviews uncovered for good: each card's first
+    /// rating, the reviews before the first fold, a preset too small for any
+    /// fold. The preset is then covered until it or its reviews change,
+    /// instead of being fitted again every day.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_preset_is_covered_after_its_pass_until_it_changes() -> Result<()> {
+        let mut col = Collection::new();
+        let small = DeckAdder::new("small")
+            .with_config(|config| config.name = "Small".to_string())
+            .add(&mut col);
+        let small_preset = small.config_id().unwrap();
+        for _ in 0..8 {
+            card_with_reviews(&mut col);
+        }
+        // one rating only: no item, so no fold at all
+        rated_card_in(&mut col, small.id, 5);
+        let preset = DeckConfigId(1);
+        let mut both = vec![preset, small_preset];
+        both.sort_unstable();
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, both);
+
+        assert!(refresh(&mut col, preset)? > 0);
+        assert_eq!(refresh(&mut col, small_preset)?, 0);
+        // some reviews are still uncovered, and no pass can cover them
+        let (uncovered, _) = col
+            .storage
+            .decks_with_uncovered_fsrs_review_predictions_part(i64::MIN, None)?;
+        assert!(uncovered.iter().any(|(deck, _)| *deck == DeckId(1)));
+        assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
+        assert!(presets_with_stale_fsrs_review_predictions_in_parts(3, &mut |step| {
+            step(&mut col)
+        })?
+        .is_empty());
+
+        // a new review makes its preset stale again, and only its preset
+        rated_card(&mut col, 0);
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        refresh(&mut col, preset)?;
+        assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
+
+        // so does a new selection of reviews
+        let mut config = col.storage.get_deck_config(small_preset)?.unwrap();
+        config.inner.param_search = "deck:small".to_string();
+        col.storage.update_deck_conf(&config)?;
+        assert_eq!(
+            col.presets_with_stale_fsrs_review_predictions()?,
+            vec![small_preset]
+        );
+        refresh(&mut col, small_preset)?;
+        assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
+
+        // and new parameters, whose save drops the preset's rows
+        bump_params(&mut col, preset)?;
+        col.clear_fsrs_review_predictions_of_presets(&[preset])?;
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        Ok(())
+    }
+
+    /// A pass that reads a preset while the user answers a card records
+    /// nothing about the new review: the preset stays stale for it.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_review_after_the_read_is_not_recorded_as_uncoverable() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..8 {
+            card_with_reviews(&mut col);
+        }
+        let preset = DeckConfigId(1);
+        let read = col.fsrs_review_prediction_read(preset)?.expect("a read");
+        let coverage = read.coverage.clone();
+        let job = read.job().expect("a job");
+        let rows = job.rows()?;
+        let mut sizes = vec![];
+        store_in_batches(&mut col, &job, &rows, rows.len(), &mut sizes)?;
+        // answered after the read, before the record
+        rated_card(&mut col, 0);
+        col.record_fsrs_prediction_coverage(&coverage)?;
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, vec![preset]);
+        Ok(())
+    }
+
     /// The folds train on the reviews the optimizer trains the preset on:
     /// no suspended card, and nothing before "Ignore reviews before".
     // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
@@ -979,11 +1192,11 @@ mod test {
         // the query before this change, led by the cards
         let old_query = |col: &mut Collection| -> Result<_> {
             let at = Instant::now();
-            let uncovered: Vec<(DeckId, u32)> = col
+            let uncovered: Vec<(DeckId, UncoveredReviews)> = col
                 .storage
                 .db
                 .prepare(
-                    "select c.did, count(*) from revlog r
+                    "select c.did, count(*), max(r.id) from revlog r
                      join cards c on c.id = r.cid
                      where r.ease > 0
                        and not exists (
@@ -992,7 +1205,15 @@ mod test {
                        )
                      group by c.did",
                 )?
-                .query_and_then((), |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_and_then((), |row| {
+                    Ok((
+                        row.get(0)?,
+                        UncoveredReviews {
+                            count: row.get(1)?,
+                            newest: row.get(2)?,
+                        },
+                    ))
+                })?
                 .collect::<Result<_>>()?;
             let stale = col.presets_of_uncovered_decks(uncovered)?;
             Ok((stale, ms(at.elapsed())))

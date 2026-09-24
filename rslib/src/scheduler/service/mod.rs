@@ -71,8 +71,7 @@ use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::predictions::presets_with_stale_fsrs_review_predictions_in_parts;
-use crate::scheduler::fsrs::predictions::store_fsrs_review_predictions_in_batches;
-use crate::scheduler::fsrs::predictions::FsrsReviewPredictionRead;
+use crate::scheduler::fsrs::predictions::refresh_fsrs_review_predictions_of_preset;
 use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
 use crate::scheduler::fsrs::predictions::STALE_PRESETS_PART_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
@@ -1328,25 +1327,12 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         input: scheduler::RefreshFsrsReviewPredictionsRequest,
     ) -> Result<generic::UInt32> {
-        let preset = DeckConfigId(input.deck_config_id);
-        let Some(job) = self
-            .with_col(|col| col.fsrs_review_prediction_read(preset))?
-            .and_then(FsrsReviewPredictionRead::job)
-        else {
-            return Ok(0u32.into());
-        };
-        let rows = job.rows()?;
-        let written = store_fsrs_review_predictions_in_batches(
-            &job,
-            &rows,
+        Ok(refresh_fsrs_review_predictions_of_preset(
+            DeckConfigId(input.deck_config_id),
             PREDICTION_WRITE_BATCH_ROWS,
-            |job, batch, already_written| {
-                self.with_col(|col| {
-                    col.store_fsrs_review_prediction_batch(job, batch, already_written)
-                })
-            },
-        )?;
-        Ok(written.into())
+            &mut |step| self.with_col(|col| step(col)),
+        )?
+        .into())
     }
 
     fn auto_optimize_fsrs_preset(
