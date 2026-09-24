@@ -90,3 +90,41 @@ database out of exclusive locking once it is in WAL mode, so the sidecar has
 to be left out of the lock when the collection opens, not freed later.
 **Pinned by:** `the_collection_is_locked_and_the_sidecar_is_not`
 (`rslib/src/storage/sqlite.rs`)
+
+## database.dbproxy-read-only
+
+Given a statement that Python code or AnkiDroid runs through the backend's
+DB proxy (`col.db.execute`, `scalar`, `all`, `first`, `list`,
+`executemany`), the proxy classifies it by what SQLite reports for the
+prepared statement, never by its text. A statement is a read when SQLite
+reports that it changes nothing in the database (`sqlite3_stmt_readonly`)
+**and** it returns rows. A read keeps the Undo step the user has (for
+example "Undo Answer Card"), keeps the study queues, and does not mark the
+collection modified. Every other statement is a write: it drops the Undo
+step and the study queues, and the next commit sets the collection's
+modification time, as upstream Anki does for every write. So `WITH ...
+SELECT`, `PRAGMA table_info(...)` and `VALUES (...)` are reads, and
+`WITH ... DELETE`, `WITH ... UPDATE`, `WITH ... INSERT` and
+`INSERT ... RETURNING` are writes. `SAVEPOINT`, `RELEASE`, `BEGIN`, `COMMIT`,
+`ROLLBACK`, `ATTACH` and `DETACH` return no rows, so they are writes too,
+although SQLite calls them read-only: they change what the connection sees.
+A statement that SQLite cannot prepare returns its error and changes
+nothing.
+**Why:** 2026-09-25 speed hunt: the proxy called every statement that did
+not start with SELECT a write. The RWKV history read (`with eligible as
+...`), which runs when a new card gets its first answer under RWKV, at
+Grade Now, and 65 times in a post-sync refresh, deleted "Undo Answer Card"
+and "Undo Grade Now", and made the next screen build the study queue again.
+A text rule cannot tell `WITH ... SELECT` from `WITH ... DELETE`; SQLite can.
+The classification adds no second prepare: the statement goes into the
+connection's statement cache, and the query that follows takes it from there.
+**Pinned by:** `a_read_keeps_the_undo_step_whatever_its_first_word`,
+`a_write_drops_the_undo_step_whatever_its_first_word`,
+`execute_many_of_a_with_write_drops_the_undo_step`,
+`a_history_read_after_an_answer_keeps_undo_answer_card`,
+`a_statement_that_fails_to_prepare_returns_the_error`
+(`rslib/src/backend/dbproxy.rs`);
+`grade_now_rebuilds_the_queue_and_a_history_read_keeps_its_undo`
+(`rslib/src/scheduler/reviews.rs`);
+`test_the_rwkv_history_read_keeps_undo_answer_card`
+(`qt/tests/test_rwkv_scheduler.py`).

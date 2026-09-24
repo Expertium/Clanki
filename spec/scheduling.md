@@ -231,6 +231,25 @@ none for a card, and its counts fell back to FSRS-7's.
 `test_remaining_review_count_is_pending_without_rwkv_instant_scores`
 (`qt/tests/test_reviewer.py`).
 
+## sched.rwkv-instant-order-after-sync-refresh
+
+Given a collection that runs RWKV-Instant, when a sync brings new reviews and
+the RWKV state is refreshed from the merged history, the next card comes in
+the order of the new state's scores. The refresh empties RWKV-Instant's
+score map when it starts, which builds the study queue again; a queue built
+while the state replays holds no review cards (`sched.rwkv-instant-waits`);
+and installing the new state's scores builds the queue again. The history
+reads of the replay do not touch the queue (`database.dbproxy-read-only`).
+
+**Why:** the queue order of RWKV-Instant is its scores, and a refresh changes
+the state they come from. Until 2026-09-25 the replay's history reads also
+dropped the queue, as a side effect of a DB-proxy bug; the two rebuilds above
+are the ones the order depends on.
+
+**Pinned by:**
+`rwkv_instant_order_follows_the_scores_installed_after_a_sync_refresh`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
+
 ## sched.study-queue-kept-after-answer
 
 Given a studied deck, when a card is answered, the study queue is updated in

@@ -762,6 +762,55 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-instant-order-after-sync-refresh:
+    // the calls the post-sync RWKV refresh makes, in its order. It empties
+    // the score map first, reads the review history through the DB proxy
+    // while it replays (`WITH ...` reads, which keep the queue), and the
+    // scores of the new state are installed afterwards. The next card
+    // follows the new scores, although a queue was built in between.
+    #[test]
+    fn rwkv_instant_order_follows_the_scores_installed_after_a_sync_refresh() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_current_deck(deck.id)?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let today = col.timing_today()?.days_elapsed as i32;
+        let [first, second] = [(); 2].map(|_| {
+            add_memory_state_card(
+                &mut col,
+                deck.id,
+                CardQueue::Review,
+                CardType::Review,
+                today,
+                2 * 86_400,
+                30.0,
+            )
+            .unwrap()
+        });
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.10), (second, 0.20)]))?;
+        assert_eq!(col.queued_card_ids(1)?, vec![first]);
+
+        // the refresh starts: the old state's scores go
+        col.set_rwkv_review_queue_score_entries(deck.id, HashMap::new())?;
+        assert!(col.state.card_queues.is_none());
+        // a queue built while the state replays has no reviews to take
+        assert_eq!(col.queued_card_ids(1)?, Vec::<CardId>::new());
+        // the replay's history reads are reads: the queue stays
+        let read = serde_json::json!({
+            "kind": "query",
+            "sql": "with eligible as (select id, cid from revlog) select count() from eligible",
+            "args": [],
+            "first_row_only": true,
+        });
+        crate::backend::dbproxy::db_command_bytes(&mut col, read.to_string().as_bytes())?;
+        assert!(col.state.card_queues.is_some());
+
+        // the new state's scores reverse the order
+        col.set_rwkv_review_queue_scores(deck.id, HashMap::from([(first, 0.20), (second, 0.10)]))?;
+        assert_eq!(col.queued_card_ids(1)?, vec![second]);
+        Ok(())
+    }
+
     #[test]
     fn queued_cards_can_skip_scheduling_states() {
         let mut col = Collection::new();

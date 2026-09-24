@@ -127,7 +127,7 @@ pub(super) fn db_command_bytes_inner(col: &mut Collection, input: &[u8]) -> Resu
             args,
             first_row_only,
         } => {
-            update_state_after_modification(col, &sql);
+            update_state_after_modification(col, &sql)?;
             if first_row_only {
                 db_query_row(&col.storage, &sql, &args)?
             } else {
@@ -152,29 +152,34 @@ pub(super) fn db_command_bytes_inner(col: &mut Collection, input: &[u8]) -> Resu
             DbResult::None
         }
         DbRequest::ExecuteMany { sql, args } => {
-            update_state_after_modification(col, &sql);
+            update_state_after_modification(col, &sql)?;
             db_execute_many(&col.storage, &sql, &args)?
         }
     };
     Ok(resp)
 }
 
-fn update_state_after_modification(col: &mut Collection, sql: &str) {
-    if !is_dql(sql) {
+fn update_state_after_modification(col: &mut Collection, sql: &str) -> Result<()> {
+    if !is_read_only(&col.storage, sql)? {
         // println!("clearing undo+study due to {}", sql);
         col.update_state_after_dbproxy_modification();
     }
+    Ok(())
 }
 
-/// Anything other than a select statement is false.
-fn is_dql(sql: &str) -> bool {
-    let head: String = sql
-        .trim_start()
-        .chars()
-        .take(10)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    head.starts_with("select")
+/// True if the statement only reads: SQLite reports that it changes nothing
+/// in the database (`sqlite3_stmt_readonly`), and it returns rows. The second
+/// half keeps the statements SQLite also calls read-only but that change what
+/// the collection holds or sees (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE,
+/// ATTACH, DETACH): none of them returns rows. The text of the statement is
+/// not looked at, so `WITH ... SELECT` is a read and `WITH ... DELETE` is a
+/// write (spec database.dbproxy-read-only).
+///
+/// The statement goes into the connection's statement cache, where the query
+/// that follows finds it, so this adds no second prepare.
+fn is_read_only(storage: &SqliteStorage, sql: &str) -> Result<bool> {
+    let stmt = storage.db.prepare_cached(sql)?;
+    Ok(stmt.readonly() && stmt.column_count() > 0)
 }
 
 pub(crate) fn db_command_proto(col: &mut Collection, input: &[u8]) -> Result<DbResponse> {
@@ -241,4 +246,133 @@ pub(super) fn db_execute_many(
     }
 
     Ok(DbResult::None)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::collection::CollectionBuilder;
+
+    /// A collection with one undoable step (Add Note) and a built study queue.
+    fn collection_with_undo_step_and_queue() -> Result<Collection> {
+        let mut col = CollectionBuilder::default().build()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "front")?;
+        col.add_note(&mut note, DeckId(1))?;
+        col.get_queued_cards(1, false, true)?;
+        assert_eq!(col.undo_status().undo, Some(Op::AddNote));
+        assert!(col.state.card_queues.is_some());
+        Ok(col)
+    }
+
+    fn run_query(col: &mut Collection, sql: &str) -> Result<()> {
+        let request = serde_json::json!({
+            "kind": "query",
+            "sql": sql,
+            "args": [],
+            "first_row_only": false,
+        });
+        db_command_bytes(col, request.to_string().as_bytes())?;
+        Ok(())
+    }
+
+    /// True if the statement left the undo step, the study queue and the
+    /// collection's modified flag as they were.
+    fn kept_as_a_read(sql: &str) -> Result<bool> {
+        let mut col = collection_with_undo_step_and_queue()?;
+        run_query(&mut col, sql)?;
+        let undo_kept = col.undo_status().undo == Some(Op::AddNote);
+        let queue_kept = col.state.card_queues.is_some();
+        let unmodified = !col.state.modified_by_dbproxy;
+        assert_eq!(undo_kept, queue_kept, "{sql}");
+        assert_eq!(undo_kept, unmodified, "{sql}");
+        Ok(undo_kept)
+    }
+
+    // Pins spec/database.md#database.dbproxy-read-only.
+    #[test]
+    fn a_read_keeps_the_undo_step_whatever_its_first_word() -> Result<()> {
+        for sql in [
+            "select count() from cards",
+            "  SELECT id FROM notes",
+            "with x as (select id from cards) select count() from x",
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) \
+             SELECT i FROM n",
+            "pragma table_info(cards)",
+            "values (1), (2)",
+        ] {
+            assert!(kept_as_a_read(sql)?, "{sql}");
+        }
+        Ok(())
+    }
+
+    // Pins spec/database.md#database.dbproxy-read-only.
+    #[test]
+    fn a_write_drops_the_undo_step_whatever_its_first_word() -> Result<()> {
+        for sql in [
+            "update cards set mod = mod",
+            "delete from graves where 0",
+            "insert into graves (oid, type, usn) select 0, 0, 0 where 0",
+            "with x as (select id from cards) delete from cards where id in x and 0",
+            "with x as (select 1) update col set mod = mod",
+            "WITH x AS (SELECT 0 AS v) INSERT INTO graves (oid, type, usn) \
+             SELECT v, v, v FROM x WHERE 0",
+            "insert into graves (oid, type, usn) values (0, 0, 0) returning oid",
+            // read-only to SQLite, but changes what the connection sees
+            "savepoint dbproxy_test",
+        ] {
+            assert!(!kept_as_a_read(sql)?, "{sql}");
+        }
+        Ok(())
+    }
+
+    // Pins spec/database.md#database.dbproxy-read-only: `executemany` is
+    // classified the same way (it cannot run a statement that returns rows).
+    #[test]
+    fn execute_many_of_a_with_write_drops_the_undo_step() -> Result<()> {
+        let mut col = collection_with_undo_step_and_queue()?;
+        let request = serde_json::json!({
+            "kind": "executemany",
+            "sql": "with x as (select ? as v) delete from graves where oid in x and 0",
+            "args": [[1], [2]],
+        });
+        db_command_bytes(&mut col, request.to_string().as_bytes())?;
+        assert_eq!(col.undo_status().undo, None);
+        assert!(col.state.card_queues.is_none());
+        Ok(())
+    }
+
+    // Pins spec/database.md#database.dbproxy-read-only: after an answer, the
+    // RWKV history read of the answered card (`with eligible as ...`) leaves
+    // "Undo Answer Card" and the queue the answer updated in place.
+    #[test]
+    fn a_history_read_after_an_answer_keeps_undo_answer_card() -> Result<()> {
+        let mut col = CollectionBuilder::default().build()?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        for front in ["one", "two"] {
+            let mut note = nt.new_note();
+            note.set_field(0, front)?;
+            col.add_note(&mut note, DeckId(1))?;
+        }
+        col.answer_good();
+        assert!(col.state.card_queues.is_some());
+        run_query(
+            &mut col,
+            "with eligible as (select id, cid from revlog) select id, cid from eligible",
+        )?;
+        assert_eq!(col.undo_status().undo, Some(Op::AnswerCard));
+        assert!(col.state.card_queues.is_some());
+        Ok(())
+    }
+
+    // A statement that cannot be prepared changes nothing and returns the
+    // error; the undo step stays.
+    #[test]
+    fn a_statement_that_fails_to_prepare_returns_the_error() -> Result<()> {
+        let mut col = collection_with_undo_step_and_queue()?;
+        assert!(run_query(&mut col, "selec nothing").is_err());
+        assert_eq!(col.undo_status().undo, Some(Op::AddNote));
+        Ok(())
+    }
 }
