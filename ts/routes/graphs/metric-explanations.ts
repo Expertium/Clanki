@@ -26,7 +26,6 @@ export function umPlusExplanation(): string {
         tr.statisticsUmPlusDescriptionScore(),
         tr.statisticsUmPlusDescriptionOracle(),
         tr.statisticsModelMetricsDescriptionReviews(),
-        tr.statisticsModelMetricsDescriptionFirstReviews(),
     ].join(PARAGRAPH);
 }
 
@@ -41,6 +40,5 @@ export function rocExplanation(): string {
         tr.statisticsRocDescriptionCurve(),
         tr.statisticsRocDescriptionAuc(),
         tr.statisticsModelMetricsDescriptionReviews(),
-        tr.statisticsModelMetricsDescriptionFirstReviews(),
     ].join(PARAGRAPH);
 }

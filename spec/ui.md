@@ -1600,9 +1600,12 @@ recording that runs again therefore replaces what the earlier one left,
 instead of the two of them deciding the graph by chance.
 
 The first rating of each card is never scored, for any algorithm and in
-every graph: no algorithm knows anything about a card before its first
-answer, and srs-benchmark leaves that rating out too. "First" is over the
-card's whole history, whatever the period.
+every graph, and srs-benchmark leaves that rating out too. "First" is over
+the card's whole history, whatever the period. Before its first answer, RWKV
+knows only a card's deck, preset and creation date: it was not trained to
+predict recall for first reviews, and without the card's content those three
+cannot tell apart the cards of one deck. The tooltips do not explain this
+exclusion (Andrew, 2026-09-24).
 
 When two or more algorithms have usable rows for the search and period,
 every graph scores all of them on the same ratings: the ones every such
