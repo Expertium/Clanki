@@ -619,6 +619,7 @@ impl QueueBuilder {
             cards,
             self.context.timing,
             self.context.sort_options.review_order,
+            self.context.sort_options.rwkv_review_enabled,
         )?;
         let mut with_key: Vec<_> = due_cards
             .into_iter()

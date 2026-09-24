@@ -156,6 +156,7 @@ pub struct CollectionState {
     pub(crate) scheduler_info: Option<SchedulerInfo>,
     pub(crate) card_queues: Option<CardQueues>,
     pub(crate) rwkv_retrievability_scores: Option<RwkvRetrievabilityScores>,
+    pub(crate) rwkv_queue_curves: Option<crate::scheduler::rwkv::RwkvQueueCurves>,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the

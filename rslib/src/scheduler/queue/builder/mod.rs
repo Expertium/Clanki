@@ -1211,10 +1211,41 @@ mod test {
         .unwrap();
     }
 
-    // Pins spec/scheduling.md#sched.rwkv-review-order: RWKV-Curve's curve
-    // retrievability over the target retention ranks a scored card; an
-    // unscored card uses the exponential curve through its RWKV interval; the
-    // FSRS memory state plays no part.
+    /// A stored RWKV-Curve curve that is one basis curve of the mixture: a
+    /// higher `basis` decays more slowly.
+    fn basis_curve(card_id: CardId, basis: usize) -> (CardId, crate::rwkv::StoredCurve) {
+        let mut weights = vec![0.0f32; basis + 1];
+        weights[basis] = 1.0;
+        let mut bytes = (weights.len() as u32).to_le_bytes().to_vec();
+        for weight in weights {
+            bytes.extend_from_slice(&weight.to_le_bytes());
+        }
+        let (_, curve) = crate::rwkv::unpack_stored_curves(&[card_id.0], &bytes)
+            .unwrap()
+            .remove(0);
+        (card_id, curve)
+    }
+
+    /// Hands the queue the stored curves of `deck_id`'s due cards, as the
+    /// reviewer does: a basis index per card, or none for a card RWKV stored
+    /// no curve for.
+    fn hold_rwkv_queue_curves(
+        col: &mut Collection,
+        deck_id: DeckId,
+        curves: &[(CardId, Option<usize>)],
+    ) {
+        let cards = col.rwkv_review_queue_curve_cards(deck_id, 1).unwrap();
+        let stored = curves
+            .iter()
+            .filter_map(|&(card_id, basis)| basis.map(|basis| basis_curve(card_id, basis)))
+            .collect();
+        col.set_rwkv_review_queue_curves(1, cards, stored);
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-review-order: RWKV-Curve's stored
+    // curve now over the target retention ranks the cards; a card RWKV
+    // stored no curve for goes last, and no FSRS memory state or curve
+    // through the interval stands in for it.
     #[test]
     fn rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs() -> Result<()> {
         let mut col = Collection::new();
@@ -1222,23 +1253,27 @@ mod test {
             &mut col,
             ReviewCardOrder::RelativeOverdueness,
             &[
-                // unscored, twice its interval: 0.9^(2 - 1) = 0.9
-                (10, 20, 100.0),
-                // scored 0.5: 0.5 / 0.9 = 0.56
-                (10, 11, 100.0),
-                // unscored, due exactly: 0.9^0 = 1; its tiny FSRS stability
-                // would put it first under FSRS
-                (10, 10, 0.01),
+                // no stored curve; twice its interval, and a tiny FSRS
+                // stability, would put it first otherwise
+                (10, 20, 0.01),
+                // the slower curve: higher R
+                (10, 10, 100.0),
+                (10, 10, 100.0),
             ],
         )?;
-        set_rwkv_curve_score(&mut col, ids[1], 0.5);
-        assert_eq!(col.queue_as_ids(deck_id), vec![ids[1], ids[0], ids[2]]);
+        hold_rwkv_queue_curves(
+            &mut col,
+            deck_id,
+            &[(ids[0], None), (ids[1], Some(100)), (ids[2], Some(80))],
+        );
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[2], ids[1], ids[0]]);
         Ok(())
     }
 
-    // Pins spec/scheduling.md#sched.rwkv-review-order: with no RWKV scores at
-    // all, the order is the time since the last review over the RWKV
-    // interval, most overdue first.
+    // Pins spec/scheduling.md#sched.rwkv-review-order: before the reviewer
+    // handed over any curve (RWKV not ready), the order is the time since
+    // the last review over the RWKV interval, most overdue first, for every
+    // card.
     #[test]
     fn rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval() -> Result<()> {
         let mut col = Collection::new();
@@ -1256,26 +1291,72 @@ mod test {
     }
 
     // Pins spec/scheduling.md#sched.rwkv-review-order: retrievability orders
-    // in an RWKV-Curve deck rank by RWKV-Curve's retrievability (an unscored
-    // card: 0.9^(elapsed / interval)), not by due day and not by FSRS.
+    // in an RWKV-Curve deck rank by the stored curve now, not by due day, not
+    // by FSRS, and not by a score a Browser search or the Stats page kept.
     #[test]
     fn rwkv_curve_retrievability_orders_use_rwkv() -> Result<()> {
-        // (interval, elapsed): unscored 0.9^2 = 0.81; scored 0.7; unscored
-        // 0.9^1 = 0.9 with an FSRS stability that FSRS would rank lowest
-        let cards = [(10, 20, 100.0), (10, 5, 100.0), (10, 10, 0.01)];
+        // the same elapsed time: the slower basis curve has the higher R;
+        // FSRS would rank the last card lowest
+        let cards = [(10, 10, 100.0), (10, 10, 100.0), (10, 10, 0.01)];
         for (order, expected) in [
-            (ReviewCardOrder::RetrievabilityAscending, [1, 0, 2]),
-            (ReviewCardOrder::RetrievabilityDescending, [2, 0, 1]),
+            (ReviewCardOrder::RetrievabilityAscending, [1, 2, 0]),
+            (ReviewCardOrder::RetrievabilityDescending, [0, 2, 1]),
         ] {
             let mut col = Collection::new();
             let (deck_id, ids) = rwkv_curve_deck(&mut col, order, &cards)?;
-            set_rwkv_curve_score(&mut col, ids[1], 0.7);
+            // a kept Browser score that would reverse the first two
+            set_rwkv_curve_score(&mut col, ids[0], 0.1);
+            set_rwkv_curve_score(&mut col, ids[1], 0.99);
+            hold_rwkv_queue_curves(
+                &mut col,
+                deck_id,
+                &[(ids[0], Some(110)), (ids[1], Some(70)), (ids[2], Some(90))],
+            );
             assert_eq!(
                 col.queue_as_ids(deck_id),
                 expected.map(|index| ids[index]).to_vec(),
                 "{order:?}"
             );
         }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-review-order: the queue computes R
+    // from the curve when it is built, at the time since the card's last
+    // review; a held curve counts only for the review it came with.
+    #[test]
+    fn rwkv_curve_retrievability_order_computes_r_when_the_queue_is_built() -> Result<()> {
+        let mut col = Collection::new();
+        let (deck_id, ids) = rwkv_curve_deck(
+            &mut col,
+            ReviewCardOrder::RetrievabilityAscending,
+            // the same curve; the first card's review is older
+            &[(10, 30, 1.0), (10, 3, 1.0)],
+        )?;
+        hold_rwkv_queue_curves(
+            &mut col,
+            deck_id,
+            &[(ids[0], Some(90)), (ids[1], Some(90))],
+        );
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[0], ids[1]]);
+        // the queue holds no R: nothing is handed over again, and a later
+        // review of the second card makes its curve unknown, so it goes last
+        let mut card = col.storage.get_card(ids[0])?.unwrap();
+        card.last_review_time = Some(TimestampSecs::now().adding_secs(-86_400));
+        col.storage.update_card(&card)?;
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[1], ids[0]]);
+        // once handed over again, its new last review counts
+        assert_eq!(
+            col.rwkv_review_queue_curve_cards(deck_id, 1)?
+                .into_iter()
+                .map(|(card_id, _)| card_id)
+                .collect::<Vec<_>>(),
+            vec![ids[0]]
+        );
+        hold_rwkv_queue_curves(&mut col, deck_id, &[(ids[0], Some(90))]);
+        assert_eq!(col.queue_as_ids(deck_id), vec![ids[1], ids[0]]);
+        // a new RWKV state drops every held curve
+        assert_eq!(col.rwkv_review_queue_curve_cards(deck_id, 2)?.len(), 2);
         Ok(())
     }
 

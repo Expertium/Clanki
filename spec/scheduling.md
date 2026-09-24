@@ -1076,17 +1076,34 @@ overdueness", when the study queue gathers due review cards and interday
 learning cards that it does not rank by RWKV-Instant queue scores (under
 RWKV-Instant only interday learning cards: its review cards come only from
 its scores, `sched.rwkv-instant-waits`), it ranks
-them by RWKV's own measure and applies the daily limits in that order. A
-card's retrievability is its RWKV-Curve retrievability score for today; a
-card without a score gets the value of the exponential forgetting curve
-through the interval RWKV scheduled for it, target ^ (days since the last
-review / interval), where the target is the card's desired retention, else
-the preset's. Retrievability ascending puts the lowest first, descending
-the highest first. Relative overdueness puts the lowest retrievability /
-target first — the key RWKV-Instant ranks its scores by; it is 1 when the
-card is due exactly and less the more it is overdue. Ties go by a hash of
-card id and modification time, then card id. The FSRS memory state plays no
-part.
+them by RWKV's own measure and applies the daily limits in that order.
+
+Under RWKV-Curve a card's retrievability is its stored curve now
+(`ui.rwkv-curve-r-stored-curve`), computed when the queue is built: the
+curve RWKV stored at the card's last review, at the time since that review.
+Before the queue is built (the overview's counts, the reviewer's next card,
+a refresh after an operation), the reviewer hands the collection the stored
+curves of the tree's due review and interday learning cards whose curve the
+collection does not hold for their last review; it never waits for RWKV and
+never starts a warm-up for this. The collection keeps curves, not R values:
+a curve counts only for the review it came with (a later answer or an undo
+makes it unknown), a new RWKV state (a rebuild, a restore, a new model)
+drops them all, and a hand-over that brings a curve builds the queue again.
+No score that the Stats page, a Browser search or card info kept takes part.
+A card RWKV stored no curve for, or whose curve is not held, goes after every
+card with a value. Only when the collection holds no curve for any of the
+due cards (RWKV not ready yet, or no reviewer handed any over) does every
+card get the value of the exponential forgetting curve through the interval
+RWKV scheduled for it, target ^ (days since the last review / interval),
+where the target is the card's desired retention, else the preset's; one
+sort never compares the two measures. Under RWKV-Instant the interday
+learning cards get that exponential value.
+
+Retrievability ascending puts the lowest first, descending the highest
+first. Relative overdueness puts the lowest retrievability / target first —
+the key RWKV-Instant ranks its scores by; it is 1 when the card is due
+exactly and less the more it is overdue. Ties go by a hash of card id and
+modification time, then card id. The FSRS memory state plays no part.
 
 **Why:** Andrew, 2026-09-15: only one algorithm at a time. Asked which
 measure relative overdueness should use, he chose "RWKV curve scores"
@@ -1094,12 +1111,23 @@ measure relative overdueness should use, he chose "RWKV curve scores"
 the retrievability orders. Before this entry, relative overdueness came from
 an SQL function that applied a one-component FSRS forgetting curve to the
 card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's —
-and the retrievability orders gathered the cards in due-day order.
+and the retrievability orders gathered the cards in due-day order. Andrew,
+2026-09-24 ("fix the bugs on our side"), on the RWKV-Curve review
+(`reviews/algo-2026-09-24/rwkv-curve.md`, section 3): the queue read the
+newest score map any Browser search or the Stats page had kept, checked only
+by day, so a deck's order changed with the last search, a value scored in
+the morning was used at night (`sched.rwkv-r-freshness`: RWKV-Curve keeps no
+R of its own), and scored and unscored cards were compared on two measures.
 
 **Pinned by:** `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
-`rwkv_curve_retrievability_orders_use_rwkv`
-(`rslib/src/scheduler/queue/builder/mod.rs`).
+`rwkv_curve_retrievability_orders_use_rwkv`,
+`rwkv_curve_retrievability_order_computes_r_when_the_queue_is_built`
+(`rslib/src/scheduler/queue/builder/mod.rs`);
+`test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names`,
+`test_rwkv_curve_queue_curves_only_for_its_retrievability_orders`,
+`test_rwkv_curve_queue_ranks_by_the_curves_handed_over`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.fsrs7-review-order
 

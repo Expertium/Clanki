@@ -133,6 +133,19 @@ _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
 _REVIEW_ORDER_RELATIVE_OVERDUENESS = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RELATIVE_OVERDUENESS
 )
+# The review orders RWKV-Curve's study queue ranks by the stored curves now
+# (spec sched.rwkv-review-order); a stored difficulty order gathers as
+# descending retrievability under RWKV (spec
+# deck-options.no-difficulty-order-under-rwkv).
+_RWKV_CURVE_QUEUE_CURVE_ORDERS = frozenset(
+    {
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING,
+        _REVIEW_ORDER_RETRIEVABILITY_DESCENDING,
+        _REVIEW_ORDER_RELATIVE_OVERDUENESS,
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_EASE_ASCENDING,
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_EASE_DESCENDING,
+    }
+)
 _NEW_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY = getattr(
     deck_config_pb2.DeckConfig.Config,
     "NEW_CARD_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY",
@@ -5715,6 +5728,8 @@ def _prepare_current_deck_review_queue_scores(
         return
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if isinstance(deck_config, dict) and _rwkv_curve_queue_uses_curves(deck_config):
+        prepare_rwkv_curve_queue_curves(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
         and _rwkv_review_instant_order_enabled(deck_config)
@@ -5728,6 +5743,77 @@ def _prepare_current_deck_review_queue_scores(
         deck_config=deck_config,
         reason=reason,
     )
+
+
+def _rwkv_curve_queue_uses_curves(deck_config: dict[str, object]) -> bool:
+    """True for an RWKV-Curve preset whose review order ranks by the
+    stored curves (spec sched.rwkv-review-order)."""
+    review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
+    return (
+        _rwkv_review_config_enabled(deck_config)
+        and review_order in _RWKV_CURVE_QUEUE_CURVE_ORDERS
+    )
+
+
+def _rwkv_queue_curve_state(token: _ReviewerBackendPredictionStateToken) -> int:
+    """Names the RWKV state the study queue's curves come from: the
+    backend and the build of its resident state. A live answer keeps it (the
+    card's new review time tells the queue its curve changed); a rebuild, a
+    restore or a new model changes it."""
+    return hash(
+        (
+            id(token.backend),
+            token.backend_assignment_generation,
+            token.resident_state_key,
+            token.resident_state_generation,
+        )
+    ) & ((1 << 63) - 1)
+
+
+def prepare_rwkv_curve_queue_curves(reviewer: object, deck_id: int) -> None:
+    """Hands the study queue the curves RWKV-Curve stored for the due cards
+    of `deck_id`'s tree, so that the retrievability orders compute R from
+    them when the queue is built (spec sched.rwkv-review-order). Only the
+    cards whose curve the queue does not hold for their last review are
+    read. It never waits and never starts a warm-up: while RWKV is not ready
+    or busy nothing is handed over, and the queue ranks every card by the
+    curve through its RWKV interval."""
+
+    collection_backend = getattr(_collection(reviewer), "_backend", None)
+    cards_without_curve = getattr(
+        collection_backend, "rwkv_review_queue_curve_cards", None
+    )
+    set_curves = getattr(collection_backend, "set_rwkv_review_queue_curves", None)
+    if not callable(cards_without_curve) or not callable(set_curves):
+        return
+    token = _capture_reviewer_backend_prediction_state_token(reviewer)
+    if token is None:
+        return
+    state = _rwkv_queue_curve_state(token)
+    try:
+        wanted = cards_without_curve(deck_id=deck_id, state=state)
+        card_ids = [int(card_id) for card_id in wanted.card_ids]
+        if not card_ids:
+            return
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=token
+        ) as backend:
+            card_curve_weights = getattr(backend, "card_curve_weights", None)
+            if not callable(card_curve_weights):
+                return
+            result = card_curve_weights(card_ids)
+        if result is None:
+            return
+        curve_card_ids, curves = result
+        set_curves(
+            state=state,
+            card_ids=card_ids,
+            last_review_secs=list(wanted.last_review_secs),
+            curve_card_ids=[int(card_id) for card_id in curve_card_ids],
+            curves=bytes(curves),
+        )
+    except Exception:
+        logger.exception("failed to hand RWKV-Curve curves to the study queue")
 
 
 def prepare_current_deck_review_queue_scores(

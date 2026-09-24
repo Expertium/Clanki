@@ -22238,3 +22238,163 @@ def test_live_learning_start_starts_the_card_fresh() -> None:
         base_metadata={"staleSinceForget": True},
     )
     assert "staleSinceForget" not in metadata
+
+
+# Pins spec/scheduling.md#sched.rwkv-review-order: before the study queue
+# is built, the reviewer hands it the stored RWKV-Curve curves of the cards
+# the queue names (those without a held curve for their last review), with
+# the review times the queue named; never an R value.
+def test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class CollectionBackend:
+        def rwkv_review_queue_curve_cards(self, **kwargs: object) -> object:
+            calls.append(("cards", kwargs))
+            return SimpleNamespace(card_ids=[11, 12], last_review_secs=[100, 200])
+
+        def set_rwkv_review_queue_curves(self, **kwargs: object) -> None:
+            calls.append(("set", kwargs))
+
+    class RwkvBackend:
+        def card_curve_weights(self, card_ids: list[int]) -> tuple[list[int], bytes]:
+            calls.append(("read", {"card_ids": card_ids}))
+            # card 12 has no stored curve
+            return [11], b"curve-11"
+
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(_backend=CollectionBackend()))
+    )
+    token = SimpleNamespace(
+        backend=object(),
+        backend_assignment_generation=3,
+        resident_state_key=(1, 2),
+        resident_state_generation=4,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_capture_reviewer_backend_prediction_state_token",
+        lambda _reviewer: token,
+    )
+
+    @contextmanager
+    def access(**_kwargs: object) -> Iterator[object]:
+        yield RwkvBackend()
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_try_reviewer_backend_prediction_access", access
+    )
+
+    rwkv_scheduler.prepare_rwkv_curve_queue_curves(reviewer, 5)
+
+    state = rwkv_scheduler._rwkv_queue_curve_state(cast(Any, token))
+    assert calls == [
+        ("cards", {"deck_id": 5, "state": state}),
+        ("read", {"card_ids": [11, 12]}),
+        (
+            "set",
+            {
+                "state": state,
+                "card_ids": [11, 12],
+                "last_review_secs": [100, 200],
+                "curve_card_ids": [11],
+                "curves": b"curve-11",
+            },
+        ),
+    ]
+
+    # RWKV not ready: nothing is asked or handed over
+    calls.clear()
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_capture_reviewer_backend_prediction_state_token",
+        lambda _reviewer: None,
+    )
+    rwkv_scheduler.prepare_rwkv_curve_queue_curves(reviewer, 5)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("rwkv_curve", "order", "expected"),
+    [
+        (True, "REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING", True),
+        (True, "REVIEW_CARD_ORDER_RELATIVE_OVERDUENESS", True),
+        # read as descending retrievability under RWKV
+        (True, "REVIEW_CARD_ORDER_EASE_ASCENDING", True),
+        (True, "REVIEW_CARD_ORDER_DAY", False),
+        (False, "REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING", False),
+    ],
+)
+def test_rwkv_curve_queue_curves_only_for_its_retrievability_orders(
+    rwkv_curve: bool, order: str, expected: bool
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-review-order: only an RWKV-Curve
+    preset whose order ranks by retrievability reads the curves."""
+    config: dict[str, object] = {
+        "rwkvReviewEnabled": rwkv_curve,
+        "reviewOrder": getattr(deck_config_pb2.DeckConfig.Config, order),
+    }
+    assert rwkv_scheduler._rwkv_curve_queue_uses_curves(config) is expected
+
+
+# Pins spec/scheduling.md#sched.rwkv-review-order through the backend: the
+# collection names the due cards without a held curve, takes their curves,
+# and the queue's retrievability order follows the curves now.
+def test_rwkv_curve_queue_ranks_by_the_curves_handed_over(tmp_path: Path) -> None:
+    from anki.collection import Collection as AnkiCollection
+
+    col = AnkiCollection(str(tmp_path / "collection.anki2"))
+    try:
+        deck_id = col.decks.id("RWKV")
+        conf = col.decks.config_dict_for_deck_id(deck_id)
+        conf["rwkvReviewEnabled"] = True
+        conf["reviewOrder"] = (
+            deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING
+        )
+        col.decks.update_config(conf)
+        col.decks.select(deck_id)
+        today = col.sched.today
+        card_ids = []
+        for _ in range(3):
+            note = col.newNote()
+            note["Front"] = "front"
+            col.add_note(note, deck_id)
+            card = note.cards()[0]
+            card.type = card.queue = 2
+            card.due = today
+            card.ivl = 10
+            card.last_review_time = int(time.time()) - 10 * 86_400
+            col.update_card(card, skip_undo_entry=True)
+            card_ids.append(card.id)
+        backend = col._backend
+
+        wanted = backend.rwkv_review_queue_curve_cards(deck_id=deck_id, state=7)
+        assert sorted(wanted.card_ids) == sorted(card_ids)
+
+        def basis_curve(basis: int) -> bytes:
+            weights = [0.0] * basis + [1.0]
+            return struct.pack(f"<I{len(weights)}f", len(weights), *weights)
+
+        # the first card has no stored curve; the third decays fastest
+        backend.set_rwkv_review_queue_curves(
+            state=7,
+            card_ids=list(wanted.card_ids),
+            last_review_secs=list(wanted.last_review_secs),
+            curve_card_ids=[card_ids[1], card_ids[2]],
+            curves=basis_curve(100) + basis_curve(70),
+        )
+        assert not backend.rwkv_review_queue_curve_cards(
+            deck_id=deck_id, state=7
+        ).card_ids
+
+        queued = col.sched.get_queued_cards(fetch_limit=3)
+        assert [entry.card.id for entry in queued.cards] == [
+            card_ids[2],
+            card_ids[1],
+            card_ids[0],
+        ]
+    finally:
+        col.close()

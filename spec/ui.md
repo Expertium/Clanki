@@ -1116,8 +1116,8 @@ it in seconds. This one value is what these places read:
   with it; the Browser's Retrievability column and its sort
   (`ui.browser-memory-columns`);
 - filtered decks whose searches use `prop:rwkv-curve:r…`;
-- the RWKV-Curve review order by retrievability (`sched.rwkv-review-order`)
-  for the cards those places scored.
+- the RWKV-Curve review orders by retrievability (`sched.rwkv-review-order`),
+  which compute it from the stored curves when the queue is built.
 
 The same stored curve decides `is:rwkv-curve:due` (the Browser, AnkiConnect,
 filtered decks): a review card matches when the whole days since its last
