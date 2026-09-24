@@ -1019,6 +1019,147 @@ def test_live_learning_restart_requires_canonical_recovery() -> None:
     )
 
 
+def _rows_with_the_cache_ignored_review_dropped(
+    sql: str, ignored_review_id: int, rows: list[tuple[object, ...]]
+) -> list[tuple[object, ...]]:
+    """What the replay query gives with the cache's ignored review dropped
+    before the start row is found; `rows` hold both histories, marked by
+    their last value (1 kept, 2 with the ignored review, 3 without it)."""
+    dropped = f"and r.id not in ({ignored_review_id})" in sql
+    return [
+        row[:-1] for row in rows if row[-1] == 1 or row[-1] == (3 if dropped else 2)
+    ]
+
+
+# Pins spec sched.rwkv-replay-start-row: a live answer checks the card's
+# rows as the state cache holds them, with the cache's ignored reviews
+# dropped before the start row is found. Here the ignored review sits
+# between two Learning runs, so the new Learning answer is no start: the
+# card starts at the earlier run, and the resident state cannot simply
+# append the answer as a learning start.
+def test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ignored_review_id = 1_000
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_metadata",
+        lambda _reviewer: {"ignoredReviewIds": [ignored_review_id]},
+    )
+    sqls: list[str] = []
+
+    class DB:
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            sqls.append(sql)
+            assert "r.cid in (1)" in sql
+            return _rows_with_the_cache_ignored_review_dropped(
+                sql,
+                ignored_review_id,
+                [
+                    (500, 1, 10, 100, 3, 100, 0, 1, 2500, 1, 3),
+                    (2_000, 1, 10, 100, 3, 100, 0, 1, 2500, 0, 3),
+                    (2_000, 1, 10, 100, 3, 100, 0, 1, 2500, 1, 2),
+                ],
+            )
+
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_config = lambda _key: {}
+    review_input = replace(
+        _rwkv_review_input(card_id=1, note_id=10),
+        is_query=False,
+        ease=3,
+        card_type=int(RwkvReviewState.LEARN_START),
+    )
+    setattr(
+        reviewer,
+        rwkv_scheduler._REVIEWER_PENDING_ANSWER_STATE_ATTR,
+        rwkv_scheduler._RwkvPendingAnswerState(
+            1,
+            3,
+            int(RwkvReviewState.LEARN_START),
+            int(RwkvReviewState.LEARN_START),
+            2_000,
+            review_input,
+        ),
+    )
+
+    assert (
+        rwkv_scheduler._rwkv_live_answer_canonical_recovery_reason(
+            reviewer,
+            _rwkv_card(card_id=1, note_id=10, duration_millis=0),
+            3,
+        )
+        == "review answer replaced retained learning history"
+    )
+    assert len(sqls) == 1
+
+
+# Pins spec sched.rwkv-replay-start-row: Grade Now continues the resident
+# state from the card's rows as the state cache holds them. The cache's
+# ignored review sat between two Learning runs; without it the Grade Now
+# Learning answer follows a Learning row, so it is no learning start and
+# the answer is appended, as the cache's own history would replay it.
+def test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    learning_review_id = (40 * 86_400 + 100) * 1000
+    ignored_review_id = (41 * 86_400 + 100) * 1000
+    grade_now_review_id = (42 * 86_400 + 100) * 1000
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_metadata",
+        lambda _reviewer: {"ignoredReviewIds": [ignored_review_id]},
+    )
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> int:
+            assert sql == "select max(id) from revlog"
+            return ignored_review_id
+
+        def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
+            if args:
+                return [(grade_now_review_id, 1, 10, 100, 3, 0, 0, -60, 2500)]
+            return _rows_with_the_cache_ignored_review_dropped(
+                sql,
+                ignored_review_id,
+                [
+                    (learning_review_id, 1, 10, 100, 3, 500, 0, 0, 2500, 1, 1),
+                    (ignored_review_id, 1, 10, 100, 3, 500, 1, 4, 2500, 0, 2),
+                ],
+            )
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = DB()
+    reviewer.mw.col.get_card = lambda card_id: _rwkv_card(
+        card_id=card_id,
+        note_id=10,
+        duration_millis=0,
+    )
+    runtime = _CacheRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(
+            last_review_id=ignored_review_id,
+            review_count=1,
+        )
+    )
+
+    reconciliation = rwkv_scheduler.prepare_grade_now_reconciliation(reviewer, [1])
+
+    assert reconciliation is not None
+    assert reconciliation.histories_by_card_id[1].last_review_id == (learning_review_id)
+    assert rwkv_scheduler.record_grade_now_answers(reconciliation) is True
+    assert len(runtime.answered_inputs) == 1
+    assert runtime.answered_inputs[0].card_type != int(RwkvReviewState.LEARN_START)
+    # elapsed from the card's last review the cache replayed
+    assert runtime.answered_inputs[0].current_elapsed_days == 2
+
+
 def test_live_answer_rechecks_dynamic_preset_routing() -> None:
     reviewer = _rwkv_reviewer()
     reviewer.mw.col.get_config = lambda _key: {"rules": [{}]}

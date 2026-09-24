@@ -808,7 +808,10 @@ sync brings), every read drops them from the rated history **before** it finds
 each card's start row: the backend fingerprint, the backend's replay inputs
 and replay rows, and the Python query (whole, in parts and after a review id).
 The start-up restore that reads only the reviews after the saved state passes
-the saved state's ignored reviews to that read too.
+the saved state's ignored reviews to that read too. Grade Now and a live answer
+read one card's rows with the state cache's active ignored reviews, through the
+same query, so they continue the resident state from the card's history as the
+cache holds it.
 For this rule an ignored review is not rated: it is never a learning start, and
 it does not separate two Learning runs. An ignored Forget row still cuts the
 history. The ignored reviews a history reports as active, which the state
@@ -828,9 +831,12 @@ again.
 `test_ignored_reviews_leave_the_history_before_its_start_rows`
 (`qt/tests/test_rwkv_replay_inputs_backend.py`),
 `test_every_replay_read_drops_the_ignored_reviews_before_the_start_rows`,
-`test_an_incremental_read_with_ignored_reviews_matches_the_whole_read`
+`test_an_incremental_read_with_ignored_reviews_matches_the_whole_read`,
+`test_a_single_card_read_is_the_cache_history_of_the_card`
 (`qt/tests/test_rwkv_replay_sql_drift.py`) and
-`test_the_restore_reads_only_the_reviews_after_a_saved_prefix`
+`test_the_restore_reads_only_the_reviews_after_a_saved_prefix`,
+`test_live_learning_answer_checks_the_rows_without_the_cache_ignored_reviews`,
+`test_grade_now_continues_the_card_history_without_the_cache_ignored_reviews`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 **The rule has one implementation: the SQL.** The backend query

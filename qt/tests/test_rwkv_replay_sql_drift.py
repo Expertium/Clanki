@@ -640,3 +640,74 @@ def test_an_incremental_read_with_ignored_reviews_matches_the_whole_read(
         assert_same(incremental(after, more_ignored), with_it_ignored, 0)
     finally:
         col.close()
+
+
+def test_a_single_card_read_is_the_cache_history_of_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins spec sched.rwkv-replay-start-row: Grade Now and a live answer read
+    one card's rows with the state cache's active ignored reviews, through
+    the query every history build uses, so they continue the resident state
+    from the card's history as the cache holds it. An ignored Learning start
+    is no start there either; an ignored review that is no start leaves the
+    card's rows as they were before the ignored reviews left first."""
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_backend_historical_rwkv_review_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    col = Collection(str(tmp_path / "rwkv-replay-ignored-card.anki2"))
+    try:
+        ignored = _build_ignored_review_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        cache = rwkv_scheduler._historical_rwkv_review_inputs(
+            reviewer, ignored_review_ids=ignored
+        )
+        # the cache stores its active ignored reviews in its metadata
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_read_rwkv_state_cache_metadata",
+            lambda _reviewer: {"ignoredReviewIds": list(cache.ignored_review_ids)},
+        )
+        whole = rwkv_scheduler._historical_rwkv_review_rows(
+            reviewer, ignored_review_ids=ignored
+        )
+        for card_id in (IGNORED_START_CARD, IGNORED_PLAIN_CARD):
+            rows = rwkv_scheduler._rwkv_card_history_rows(reviewer, [card_id])
+            assert [tuple(row) for row in rows] == [
+                tuple(row) for row in whole if int(row[1]) == card_id
+            ]
+            assert [int(row[0]) for row in rows] == [
+                review_id
+                for review_id, review in zip(
+                    cache.review_ids, cache.reviews, strict=True
+                )
+                if review.identity.card_id == card_id
+            ]
+            history = rwkv_scheduler._rwkv_grade_now_card_histories(rows)[card_id]
+            assert history.last_review_id == cache.previous_review_id_by_card[card_id]
+            assert history.review_count == cache.review_count_by_card[card_id]
+
+        # the ignored Learning start: the card starts at its first rated row
+        first, _learning, last = IGNORED_START_REVIEWS
+        assert _rows_of(
+            rwkv_scheduler._rwkv_card_history_rows(reviewer, [IGNORED_START_CARD]),
+            IGNORED_START_CARD,
+        ) == [(first, True), (last, False)]
+
+        # the ignored review that is no start: the rows of the old order
+        before = [
+            tuple(row)
+            for row in rwkv_scheduler._historical_rwkv_review_rows(
+                reviewer, card_ids=[IGNORED_PLAIN_CARD]
+            )
+            if int(row[0]) not in ignored
+        ]
+        assert [
+            tuple(row)
+            for row in rwkv_scheduler._rwkv_card_history_rows(
+                reviewer, [IGNORED_PLAIN_CARD]
+            )
+        ] == before
+    finally:
+        col.close()

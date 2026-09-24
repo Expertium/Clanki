@@ -5011,10 +5011,7 @@ def prepare_grade_now_reconciliation(
             return None
 
         histories_by_card_id = _rwkv_grade_now_card_histories(
-            _historical_rwkv_review_rows(
-                reviewer,
-                card_ids=valid_card_ids,
-            )
+            _rwkv_card_history_rows(reviewer, valid_card_ids)
         )
         identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
         for card_id in valid_card_ids:
@@ -5626,7 +5623,7 @@ def _rwkv_live_answer_canonical_recovery_reason(
         db = getattr(_collection(reviewer), "db", None)
         if not callable(getattr(db, "all", None)):
             return "review answer history cannot be verified"
-        rows = _historical_rwkv_review_rows(reviewer, card_ids=[card_id])
+        rows = _rwkv_card_history_rows(reviewer, [card_id])
         if len(rows) > 1:
             return "review answer replaced retained learning history"
 
@@ -19347,6 +19344,25 @@ def _historical_preset_id_for_review(
         return rule.preset_id
 
     return None
+
+
+def _rwkv_card_history_rows(
+    reviewer: object, card_ids: Sequence[int]
+) -> list[Sequence[object]]:
+    """The replay rows of these cards as the state cache holds them: the
+    cache's active ignored reviews leave the rows before each card's start
+    row is found, by the query every history build uses (spec
+    sched.rwkv-replay-start-row). Grade Now and a live answer continue the
+    resident state from these rows, so they must be the cache's."""
+    return _historical_rwkv_review_rows(
+        reviewer,
+        card_ids=card_ids,
+        ignored_review_ids=frozenset(
+            _rwkv_state_cache_ignored_review_ids(
+                _read_rwkv_state_cache_metadata(reviewer)
+            )
+        ),
+    )
 
 
 def _historical_rwkv_review_rows(
