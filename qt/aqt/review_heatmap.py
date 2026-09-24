@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
@@ -341,6 +342,97 @@ class _OlderReviewsByDeck:
 
 # where ReviewHeatmap's older-reviews cache keeps the per-deck counts
 _BY_DECK = "by deck"
+
+# The two older-review counts that cost a pass over the whole review log, the
+# per-deck counts and the whole collection's, are kept beside the collection
+# for the next session (spec ui.review-heatmap-kept-counts). They are used only
+# when their key still matches, exactly as within a session.
+_KEPT_SUFFIX = ".heatmap-cache.json"
+_KEPT_VERSION = 1
+# The reviews after a kept count's cut-off are counted on every draw, so a
+# kept count older than this is made again instead.
+_KEPT_MAX_AGE_MS = 7 * 86400 * 1000
+_KEPT_SCOPES = {"by deck": _BY_DECK, "all": None}
+
+
+def _kept_path(collection_path: str) -> str:
+    return os.path.splitext(collection_path)[0] + _KEPT_SUFFIX
+
+
+def _tuples(value: Any) -> Any:
+    """A key read back from JSON, with its lists made tuples again."""
+    if isinstance(value, list):
+        return tuple(_tuples(item) for item in value)
+    return value
+
+
+def _kept_to_json(entry: Any) -> dict[str, Any]:
+    kept: dict[str, Any] = {"key": entry.key, "cutoff": entry.cutoff}
+    if isinstance(entry, _OlderReviewsByDeck):
+        kept["cards"] = {str(did): list(sums) for did, sums in entry.cards.items()}
+        kept["days"] = {
+            str(did): {str(day): n for day, n in days.items()}
+            for did, days in entry.days.items()
+        }
+    else:
+        kept["days"] = {str(day): n for day, n in entry.days.items()}
+    return kept
+
+
+def _kept_from_json(kept: dict[str, Any], by_deck: bool) -> Any:
+    key, cutoff = _tuples(kept["key"]), int(kept["cutoff"])
+    if by_deck:
+        return _OlderReviewsByDeck(
+            key,
+            cutoff,
+            {int(did): (sums[0], sums[1]) for did, sums in kept["cards"].items()},
+            {
+                int(did): {int(day): n for day, n in days.items()}
+                for did, days in kept["days"].items()
+            },
+        )
+    return _OlderReviews(key, cutoff, {int(day): n for day, n in kept["days"].items()})
+
+
+def read_kept_counts(collection_path: str) -> dict[Any, Any]:
+    """The kept older-review counts of a collection, by the scope they are
+    kept under in ReviewHeatmap's cache; none if the file is missing,
+    unreadable, of another version, or too old."""
+    try:
+        with open(_kept_path(collection_path), encoding="utf-8") as file:
+            data = json.load(file)
+        if data.get("version") != _KEPT_VERSION:
+            return {}
+        oldest = int(time.time() * 1000) - _KEPT_MAX_AGE_MS
+        counts: dict[Any, Any] = {}
+        for name, scope in _KEPT_SCOPES.items():
+            if (kept := data["counts"].get(name)) is not None:
+                entry = _kept_from_json(kept, scope == _BY_DECK)
+                if entry.cutoff >= oldest:
+                    counts[scope] = entry
+        return counts
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
+        logger.debug("the kept heatmap counts were not read", exc_info=True)
+        return {}
+
+
+def write_kept_counts(collection_path: str, older_reviews: Mapping[Any, Any]) -> None:
+    """Keep the counts that cost a pass over the whole review log."""
+    counts = {
+        name: _kept_to_json(older_reviews[scope])
+        for name, scope in _KEPT_SCOPES.items()
+        if scope in older_reviews
+    }
+    path = _kept_path(collection_path)
+    try:
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as file:
+            json.dump({"version": _KEPT_VERSION, "counts": counts}, file)
+        os.replace(temporary, path)
+    except OSError:
+        logger.debug("the heatmap counts were not kept", exc_info=True)
+
+
 # the reviews of existing cards, with their card
 _REVIEWED_CARDS = "revlog JOIN cards ON cards.id = revlog.cid"
 
@@ -1040,6 +1132,8 @@ class ReviewHeatmap:
         # going between the deck list and a deck draws neither again
         self._cache: dict[tuple[Any, ...], _RenderCache] = {}
         self._older_reviews: dict[Any, Any] = {}
+        # the collection whose kept counts _older_reviews was loaded with
+        self._kept_for: str | None = None
         self._contents = _Contents()
         # the places whose heatmap a background step is computing right now
         self._filling: set[tuple[HeatmapView, bool]] = set()
@@ -1070,13 +1164,16 @@ class ReviewHeatmap:
         settings = self.settings()
         if not settings.shows(view) and not settings.streak_stats_always:
             return ""
-        reporter = ActivityReporter(col, settings, self._older_reviews, self._contents)
+        reporter = self._reporter(col, settings)
         place = (view, current_deck_only, history_days, forecast_days)
         key = (settings, reporter.input_fingerprint(current_deck_only))
         cached = self._cache.get(place)
         if cached is not None and cached.key == key:
             return cached.html
+        kept = self._kept_counts()
         report = reporter.get_report(current_deck_only, history_days, forecast_days)
+        if self._kept_counts() != kept:
+            write_kept_counts(col.path, self._older_reviews)
         html = render_report(report, view, current_deck_only, settings)
         self._cache[place] = _RenderCache(html, key)
         return html
@@ -1097,9 +1194,22 @@ class ReviewHeatmap:
             # no fingerprint is read here: it costs a scan of the cards, and
             # there is nothing for it to validate
             return None
-        reporter = ActivityReporter(col, settings, self._older_reviews, self._contents)
+        reporter = self._reporter(col, settings)
         key = (settings, reporter.input_fingerprint(current_deck_only))
         return cached.html if cached.key == key else None
+
+    def _reporter(self, col: Collection, settings: HeatmapSettings) -> ActivityReporter:
+        if self._kept_for != col.path:
+            # another collection's counts can never match: they go
+            self._older_reviews.clear()
+            self._older_reviews.update(read_kept_counts(col.path))
+            self._kept_for = col.path
+        return ActivityReporter(col, settings, self._older_reviews, self._contents)
+
+    def _kept_counts(self) -> list[int]:
+        """Which counts are in the cache now, to see whether a report made
+        new ones."""
+        return [id(self._older_reviews.get(scope)) for scope in _KEPT_SCOPES.values()]
 
     def render_when_ready(self, view: HeatmapView, current_deck_only: bool) -> str:
         """The place's HTML if it is ready, and otherwise nothing now and a

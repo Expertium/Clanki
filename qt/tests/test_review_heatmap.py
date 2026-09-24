@@ -979,3 +979,150 @@ def test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s() -> None:
     with patch("aqt.operations.QueryOp", MagicMock()):
         heatmap.on_deck_browser_will_render_content(cast(Any, None), cast(Any, content))
     assert shots == []
+
+
+# Pins spec/ui.md#ui.review-heatmap-kept-counts
+
+
+def _collection_with_reviews(path: str) -> Any:
+    from anki.collection import Collection
+
+    col = Collection(path)
+    other = col.decks.id("Other")
+    assert other is not None
+    card_ids = []
+    for deck in (DeckId(1), other):
+        note = col.new_note(col.models.current())
+        note.fields[0] = f"front {len(card_ids)}"
+        col.add_note(note, deck)
+        card_ids += note.card_ids()
+    now = int(time.time() * 1000)
+    for card_id, days_ago in ((card_ids[0], 30), (card_ids[0], 3), (card_ids[1], 9)):
+        col.db.execute(
+            "INSERT INTO revlog VALUES (?, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            now - days_ago * DAY * 1000,
+            card_id,
+        )
+    col.decks.select(DeckId(1))
+    return col
+
+
+def _session(col: Any) -> ReviewHeatmap:
+    return ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+
+
+def test_the_next_session_draws_from_the_kept_counts(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    col = _collection_with_reviews(str(tmp_path / "collection.anki2"))
+    try:
+        first = _session(col)
+        deck_list = first.render(HeatmapView.deckbrowser, False)
+        overview = first.render(HeatmapView.overview, True)
+        assert (tmp_path / "collection.heatmap-cache.json").exists()
+
+        # a new session: the same heatmaps, with no pass over the older reviews
+        original = ActivityReporter._review_days
+        original_by_deck = ActivityReporter._review_days_by_deck
+        passes: list[str] = []
+
+        def review_days(self: Any, dids: Any, condition: str) -> Any:
+            passes.append(condition.split()[1])
+            return original(self, dids, condition)
+
+        def review_days_by_deck(self: Any, cutoff: int) -> Any:
+            passes.append("decks <")
+            return original_by_deck(self, cutoff)
+
+        monkeypatch.setattr(ActivityReporter, "_review_days", review_days)
+        monkeypatch.setattr(
+            ActivityReporter, "_review_days_by_deck", review_days_by_deck
+        )
+        second = _session(col)
+        assert second.render(HeatmapView.overview, True) == overview
+        assert second.render(HeatmapView.deckbrowser, False) == deck_list
+        assert "<" not in passes and "decks <" not in passes
+
+        # a review added since is counted with the newer ones; still no pass
+        col.db.execute(
+            "INSERT INTO revlog VALUES (?, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            int(time.time() * 1000),
+            col.db.scalar("SELECT min(id) FROM cards"),
+        )
+        passes.clear()
+        third = _session(col)
+        fresh = _session(col)
+        fresh._kept_for = col.path  # a session that has no kept counts
+        assert third.render(HeatmapView.overview, True) == fresh.render(
+            HeatmapView.overview, True
+        )
+        assert passes.count("decks <") == 1  # the fresh session's own pass
+    finally:
+        col.close(downgrade=False)
+
+
+def test_kept_counts_that_no_longer_fit_are_made_again(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    col = _collection_with_reviews(str(tmp_path / "collection.anki2"))
+    try:
+        _session(col).render(HeatmapView.overview, True)
+        path = str(tmp_path / "collection.anki2")
+        kept = review_heatmap.read_kept_counts(path)
+        assert set(kept) == {"by deck"}
+
+        # a review imported from the past changes the older reviews
+        col.db.execute(
+            "INSERT INTO revlog VALUES (?, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            int(time.time() * 1000) - 50 * DAY * 1000,
+            col.db.scalar("SELECT min(id) FROM cards"),
+        )
+        session = _session(col)
+        before = kept["by deck"]
+        html = session.render(HeatmapView.overview, True)
+        after = session._older_reviews["by deck"]
+        assert after.cutoff > before.cutoff
+        # the new counts are kept in place of the old ones
+        assert review_heatmap.read_kept_counts(path)["by deck"].cutoff == after.cutoff
+        fresh = _session(col)
+        fresh._kept_for = col.path
+        assert html == fresh.render(HeatmapView.overview, True)
+
+        # counts kept more than a week ago are not used
+        monkeypatch.setattr(
+            review_heatmap.time,
+            "time",
+            lambda: after.cutoff / 1000 + 8 * DAY,
+        )
+        assert review_heatmap.read_kept_counts(path) == {}
+    finally:
+        col.close(downgrade=False)
+
+
+def test_a_damaged_or_foreign_kept_file_is_ignored(tmp_path: Any) -> None:
+    path = str(tmp_path / "collection.anki2")
+    kept = tmp_path / "collection.heatmap-cache.json"
+    for text in ("{not json", '{"version": 99, "counts": {}}', '{"version": 1}', "[]"):
+        kept.write_text(text, encoding="utf-8")
+        assert review_heatmap.read_kept_counts(path) == {}
+
+
+def test_kept_counts_read_back_as_they_were(tmp_path: Any) -> None:
+    from aqt.review_heatmap import _OlderReviews, _OlderReviewsByDeck
+
+    key = ("C:/x/collection.anki2", 4, 10800, False, True, (12, 1700000000000))
+    counts = {
+        "by deck": _OlderReviewsByDeck(
+            key, int(time.time() * 1000), {1: (3, 4.5e12)}, {1: {19000: 2, 19001: 1}}
+        ),
+        None: _OlderReviews(
+            (*key, (3, 4.5e12)), int(time.time() * 1000), {19000: 2, 19001: 1}
+        ),
+        (1, 2): _OlderReviews(key, 1, {}),  # a set of decks is not kept
+    }
+    path = str(tmp_path / "collection.anki2")
+    review_heatmap.write_kept_counts(path, counts)
+    assert review_heatmap.read_kept_counts(path) == {
+        "by deck": counts["by deck"],
+        None: counts[None],
+    }
