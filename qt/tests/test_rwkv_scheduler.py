@@ -22358,9 +22358,10 @@ def test_rwkv_curve_queue_ranks_by_the_curves_handed_over(tmp_path: Path) -> Non
         col.decks.select(deck_id)
         today = col.sched.today
         card_ids = []
+        notetype = col.models.all()[0]
         for _ in range(3):
-            note = col.newNote()
-            note["Front"] = "front"
+            note = col.new_note(notetype)
+            note.fields[0] = "front"
             col.add_note(note, deck_id)
             card = note.cards()[0]
             card.type = card.queue = 2
