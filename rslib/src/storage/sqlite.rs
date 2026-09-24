@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use bitflags::bitflags;
@@ -101,6 +102,7 @@ fn open_or_create_collection_db(
     add_extract_fsrs_variable(&db)?;
     add_extract_fsrs_retrievability(&db)?;
     add_extract_fsrs_relative_retrievability(&db)?;
+    add_card_and_review_changes_function(&db)?;
 
     db.create_collation("unicase", unicase_compare)?;
 
@@ -197,6 +199,30 @@ impl SqliteStorage {
         Ok(Some(Self { db }))
     }
 }
+/// Adds sql function card_and_review_changes(): how many rows of the
+/// collection's cards and revlog tables this connection has inserted, updated
+/// or deleted since it opened, counted by an update hook. Unlike
+/// total_changes(), writes to any other table (config, decks) or to an
+/// attached database (the retrievability cache) do not count, so a reader can
+/// tell that neither table changed without scanning them. One exception: a
+/// DELETE without a WHERE clause empties a table without calling the hook, so
+/// a reader that must see that too compares the tables' largest ids as well.
+fn add_card_and_review_changes_function(db: &Connection) -> rusqlite::Result<()> {
+    let changes = Arc::new(AtomicU64::new(0));
+    let counter = changes.clone();
+    db.update_hook(Some(move |_action, db_name: &str, table: &str, _rowid| {
+        if db_name == "main" && (table == "cards" || table == "revlog") {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
+    db.create_scalar_function(
+        "card_and_review_changes",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        move |_ctx| Ok(changes.load(std::sync::atomic::Ordering::Relaxed) as i64),
+    )
+}
+
 /// Adds sql function field_at_index(flds, index)
 /// to split provided fields and return field at zero-based index.
 /// If out of range, returns empty string.
@@ -964,5 +990,55 @@ mod collection_lock_test {
     fn a_collection_in_memory_has_no_second_reader() {
         let col = crate::collection::Collection::new();
         assert!(col.storage.open_retrievability_cache_reader().is_none());
+    }
+}
+
+#[cfg(test)]
+mod card_and_review_changes_test {
+    use crate::collection::Collection;
+    use crate::config::BoolKey;
+    use crate::error::Result;
+    use crate::prelude::RevlogId;
+
+    fn changes(col: &Collection) -> Result<i64> {
+        col.storage.db_scalar("select card_and_review_changes()")
+    }
+
+    /// The count moves with every row of cards and revlog written, and with
+    /// nothing else: not config, decks or notes, and not the attached
+    /// retrievability cache.
+    #[test]
+    fn only_card_and_review_rows_are_counted() -> Result<()> {
+        let mut col = Collection::new();
+        let start = changes(&col)?;
+
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.storage
+            .set_rwkv_review_retrievability_prediction(RevlogId(1), 0.25, "test")?;
+        col.storage.db.execute("update col set mod = mod + 1", [])?;
+        assert_eq!(changes(&col)?, start, "a write elsewhere was counted");
+
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, crate::prelude::DeckId(1))?;
+        let after_add = changes(&col)?;
+        assert!(after_add > start, "adding a card was not counted");
+
+        col.storage
+            .db
+            .execute("update cards set due = due + 1", [])?;
+        let after_update = changes(&col)?;
+        assert_eq!(after_update, after_add + 1, "one card row updated");
+
+        col.storage.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) \
+             values (1, 1, -1, 3, 1, 0, 2500, 1000, 1)",
+            [],
+        )?;
+        col.storage
+            .db
+            .execute("delete from revlog where id = 1", [])?;
+        assert_eq!(changes(&col)?, after_update + 2, "a review row in and out");
+        Ok(())
     }
 }
