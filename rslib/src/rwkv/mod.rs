@@ -9364,6 +9364,115 @@ order by e.id, e.cid
         }
     }
 
+    /// The drift of a whole-history replay on the AVX2/FMA kernels against
+    /// the scalar reference, on a copied collection. The kernel tests above
+    /// bound one call each; this bounds what a replay accumulates over every
+    /// review, for both heads (RWKV-Instant and RWKV-Curve). Fails when the
+    /// largest |dp| of either head exceeds 1e-3.
+    ///
+    /// Run it with a release build, as it replays the full history twice:
+    /// `ANKI_RWKV_SIMD_DRIFT_COLLECTION=<copy>/collection.anki2 cargo test
+    /// --release -p anki --lib rwkv_full_replay_simd_drift -- --ignored
+    /// --nocapture`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore]
+    fn rwkv_full_replay_simd_drift_on_collection() {
+        let Ok(collection_path) = std::env::var("ANKI_RWKV_SIMD_DRIFT_COLLECTION") else {
+            eprintln!(
+                "set ANKI_RWKV_SIMD_DRIFT_COLLECTION to a copied collection.anki2 path to run this test"
+            );
+            return;
+        };
+        let weights_path = std::env::var("ANKI_RWKV_SIMD_DRIFT_MODEL").map_or_else(
+            |_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin")
+            },
+            std::path::PathBuf::from,
+        );
+        let reviews =
+            collection_reviews_for_scan_bench(std::path::Path::new(&collection_path), 0, None)
+                .expect("collection review load failed");
+        assert!(
+            !reviews.is_empty(),
+            "collection review load returned no rows"
+        );
+        let replay = || {
+            RwkvInference::load(weights_path.clone(), 0.9, 36_500)
+                .expect("RWKV load failed")
+                .warm_up_reviews(reviews.clone(), true)
+                .expect("RWKV replay failed")
+        };
+        let scalar_started = std::time::Instant::now();
+        let scalar = replay();
+        let scalar_ms = scalar_started.elapsed().as_secs_f64() * 1000.0;
+        let simd_started = std::time::Instant::now();
+        let Some(simd) = x86_simd_test_switch::with_simd(0, replay) else {
+            eprintln!("skipping: AVX2/FMA not available");
+            return;
+        };
+        let simd_ms = simd_started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(scalar.len(), simd.len(), "prediction counts differ");
+
+        #[derive(Default)]
+        struct Drift {
+            rows: usize,
+            changed: usize,
+            sum: f64,
+            max: f64,
+            max_index: usize,
+        }
+        impl Drift {
+            fn add(&mut self, index: usize, scalar: f32, simd: f32) {
+                let diff = (f64::from(simd) - f64::from(scalar)).abs();
+                self.rows += 1;
+                self.changed += usize::from(scalar.to_bits() != simd.to_bits());
+                self.sum += diff;
+                if diff > self.max {
+                    self.max = diff;
+                    self.max_index = index;
+                }
+            }
+            fn report(&self, head: &str) {
+                println!("{head}_rows={}", self.rows);
+                println!("{head}_rows_not_bit_exact={}", self.changed);
+                println!(
+                    "{head}_mean_abs_dp={:.3e}",
+                    self.sum / self.rows.max(1) as f64
+                );
+                println!("{head}_max_abs_dp={:.3e}", self.max);
+                println!("{head}_max_abs_dp_review_index={}", self.max_index);
+            }
+        }
+        let mut instant = Drift::default();
+        let mut curve = Drift::default();
+        for (scalar, simd) in scalar.iter().zip(&simd) {
+            assert_eq!(scalar.index, simd.index, "prediction order differs");
+            instant.add(scalar.index, scalar.retrievability, simd.retrievability);
+            match (scalar.curve_retrievability, simd.curve_retrievability) {
+                (Some(scalar_curve), Some(simd_curve)) => {
+                    curve.add(scalar.index, scalar_curve, simd_curve)
+                }
+                (None, None) => {}
+                _ => panic!("curve presence differs at review {}", scalar.index),
+            }
+        }
+        println!("collection={collection_path}");
+        println!("weights={}", weights_path.display());
+        println!("collection_reviews={}", reviews.len());
+        println!("scalar_replay_ms={scalar_ms:.0}");
+        println!("simd_replay_ms={simd_ms:.0}");
+        instant.report("instant");
+        curve.report("curve");
+        assert!(
+            instant.max <= 1e-3 && curve.max <= 1e-3,
+            "AVX2/FMA replay drifts past 1e-3: instant max {:.3e}, curve max {:.3e}",
+            instant.max,
+            curve.max
+        );
+    }
+
     #[test]
     #[ignore]
     fn rwkv_scan_collection_benchmark() {
