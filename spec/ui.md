@@ -724,6 +724,36 @@ after it.
 `test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s`
 (`qt/tests/test_review_heatmap.py`).
 
+## ui.review-heatmap-kept-counts
+
+Given a collection whose heatmap was drawn in an earlier session, the next
+session draws the first deck list and the first deck overview from counts
+kept on disk, without a pass over the whole review log. The heatmap keeps
+the two counts that need such a pass, the reviews per day and deck and the
+reviews per day of the whole collection, both of the reviews before a
+cut-off time, in the file `collection.heatmap-cache.json` beside the
+collection. A kept count is used only when it still fits, by the same check
+as within a session (`ui.review-heatmap`): the number of reviews before its
+cut-off and the newest of them, the rollover hour, the time zone, the
+heatmap's settings, and each deck's cards made before the cut-off. The
+reviews after the cut-off are counted on every draw, as before. A kept count
+whose cut-off is more than 7 days old is not used, so that part stays small;
+a count made again replaces the kept one. A missing, damaged or other-version
+file is ignored. The heatmap drawn is the same as with no kept counts.
+
+**Why:** Andrew, 2026-09-24 (H5, PR #85): the per-deck counts made the first
+deck of a session slower, "accept it, though I would appreciate if you
+looked for a way to reduce the delay on the first deck". On a copy of his
+collection (1.32M reviews, 103 decks) the per-deck counts took 883-915 ms and
+the whole collection's 685-729 ms, at every start; reading them back takes
+20-34 ms.
+
+**Pinned by:** `test_the_next_session_draws_from_the_kept_counts`,
+`test_kept_counts_that_no_longer_fit_are_made_again`,
+`test_a_damaged_or_foreign_kept_file_is_ignored`,
+`test_kept_counts_read_back_as_they_were`
+(`qt/tests/test_review_heatmap.py`).
+
 ## ui.periodic-backup-waits
 
 Given the periodic backup check (every 5 minutes while a profile is open),
