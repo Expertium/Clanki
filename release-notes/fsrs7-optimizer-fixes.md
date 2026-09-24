@@ -10,3 +10,5 @@
   "Optimize All Presets" for the other presets.
 - The daily FSRS-7 prediction pass no longer fits every preset again each day:
   a preset with no new review and no changed setting is left as it is.
+- The FSRS simulator starts each existing card from its real FSRS-7 memory
+  state, so the first simulated interval of a card is its real one.

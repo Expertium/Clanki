@@ -347,16 +347,27 @@ simulate with their FSRS parameters. The "R*f(S)" graph weights each card by
 its S90 (the time its simulated forgetting curve takes to reach 90% recall),
 not by the simulator's internal stability: weight = 1 − e^(−8·S90/365), with
 the S90 interpolated between exact grid values (weights within 0.00005).
+fsrs-rs simulates one FSRS-7 trace per card (difficulty 5 and a fast
+stability equal to the stability, in the curve), so an existing card starts
+the simulation with the single-trace stability whose S90 equals the S90 of
+its whole FSRS-7 state (stability, fast stability and difficulty), within
+0.01%; its first simulated interval at 90% is then its real one. Its
+difficulty is its own.
 
 **Why:** plan item 6 — RWKV uses many more input features and processes all
 cards together instead of independently, so a correct RWKV simulator is out of
 scope. Andrew, 2026-09-15: every graph that uses a stability uses the S90.
+Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that day: the
+simulator passed the internal stability, so a card with state (10, 3, 8)
+started with an S90 of 12.88 days instead of its real 4.11, and (30, 5, 3)
+with 55.70 instead of 94.38.
 
 **Pinned by:** `test_post_handler_list_has_no_rwkv_workload_handlers`
 (`qt/tests/test_mediasrv.py`); "simulate request carries no RWKV fields"
 (`ts/routes/deck-options/simulate-fsrs-request.test.ts`);
 `weighted_memorized_for_cards_uses_retrievability_times_stability_weight`,
-`simulated_s90_weights_match_the_exact_s90_weights`
+`simulated_s90_weights_match_the_exact_s90_weights`,
+`an_existing_card_starts_the_simulation_with_its_own_s90`
 (`rslib/src/scheduler/fsrs/simulator.rs`).
 
 ## deck-options.reschedule-choice-remembered

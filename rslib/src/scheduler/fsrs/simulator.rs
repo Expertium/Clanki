@@ -432,6 +432,7 @@ impl Collection {
             + req.deck_size as usize;
         let filled_params = normalized_fsrs_parameters(&req.params)?;
         let shared_parameters = Arc::new(filled_params);
+        let mut single_trace = SingleTraceStability::default();
         let mut converted_cards = cards
             .into_iter()
             .filter(is_included_card)
@@ -468,6 +469,7 @@ impl Collection {
                     memory_state,
                     req.desired_retention,
                     &card_parameters,
+                    &mut single_trace,
                 )
             })
             .collect_vec();
@@ -1138,19 +1140,45 @@ impl S90Grid {
     }
 
     fn new(params: &[f32]) -> Option<Self> {
-        let fsrs = FSRS::new(params).ok()?;
+        Some(Self::with_model(&FSRS::new(params).ok()?))
+    }
+
+    fn with_model(fsrs: &FSRS) -> Self {
         let log_s90 = (0..Self::POINTS)
-            .map(|i| {
-                let stability = (Self::LOW.ln() + Self::step() * i as f32).exp();
-                let state = fsrs::MemoryState {
-                    stability,
-                    difficulty: 5.0,
-                    stability_fast: stability,
-                };
-                fsrs.interval_at_retrievability(state, 0.9).ln()
-            })
+            .map(|i| single_trace_s90(fsrs, Self::log_stability(i).exp()).ln())
             .collect();
-        Some(Self { log_s90 })
+        Self { log_s90 }
+    }
+
+    fn log_stability(index: usize) -> f32 {
+        Self::LOW.ln() + Self::step() * index as f32
+    }
+
+    /// The single-trace stability whose S90 is `s90`, to f32 precision:
+    /// interpolated in log space between the two grid points around it,
+    /// then corrected with the exact S90 along the slope between them (the
+    /// log S90 is nearly linear there, so each step cuts the error about a
+    /// hundredfold). Clamped to the grid's ends.
+    fn stability_for_s90(&self, fsrs: &FSRS, s90: f32) -> f32 {
+        let target = s90.ln();
+        let upper = self.log_s90.partition_point(|&log_s90| log_s90 < target);
+        if upper == 0 {
+            return Self::LOW;
+        }
+        if upper == Self::POINTS {
+            return Self::HIGH;
+        }
+        let (low, high) = (self.log_s90[upper - 1], self.log_s90[upper]);
+        let slope = (high - low) / Self::step();
+        let mut log_stability = Self::log_stability(upper - 1) + (target - low) / slope;
+        for _ in 0..4 {
+            let error = single_trace_s90(fsrs, log_stability.exp()).ln() - target;
+            if error.abs() < 1e-6 {
+                break;
+            }
+            log_stability -= error / slope;
+        }
+        log_stability.exp()
     }
 
     fn s90(&self, stability: f32) -> f32 {
@@ -1159,6 +1187,52 @@ impl S90Grid {
         let index = (position.floor() as usize).min(Self::POINTS - 2);
         let fraction = position - index as f32;
         (self.log_s90[index] + (self.log_s90[index + 1] - self.log_s90[index]) * fraction).exp()
+    }
+}
+
+/// The S90 of the one trace fsrs-rs simulates: difficulty 5 and a fast
+/// stability equal to the stability, in the curve (`SimulatedFsrs7`).
+fn single_trace_s90(fsrs: &FSRS, stability: f32) -> f32 {
+    fsrs.interval_at_retrievability(
+        fsrs::MemoryState {
+            stability,
+            difficulty: 5.0,
+            stability_fast: stability,
+        },
+        0.9,
+    )
+}
+
+/// The stability an existing card starts a simulation with (spec
+/// deck-options.simulator-fsrs-only). fsrs-rs simulates one trace, so a card
+/// starts with the single-trace stability whose S90 equals the S90 of its
+/// whole FSRS-7 state (stability, fast stability, difficulty); passing its
+/// internal stability gave another S90 and so another first interval. One
+/// model and one grid per parameter set.
+#[derive(Default)]
+pub(crate) struct SingleTraceStability {
+    models: HashMap<*const Vec<f32>, Option<(FSRS, S90Grid)>>,
+}
+
+impl SingleTraceStability {
+    fn of(&mut self, parameters: &Arc<Vec<f32>>, memory_state: FsrsMemoryState) -> f32 {
+        let Some((fsrs, grid)) = self
+            .models
+            .entry(Arc::as_ptr(parameters))
+            .or_insert_with(|| {
+                let fsrs = FSRS::new(parameters).ok()?;
+                let grid = S90Grid::with_model(&fsrs);
+                Some((fsrs, grid))
+            })
+            .as_ref()
+        else {
+            return memory_state.stability_internal;
+        };
+        let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+        if !(s90.is_finite() && s90 > 0.0) {
+            return memory_state.stability_internal;
+        }
+        grid.stability_for_s90(fsrs, s90)
     }
 }
 
@@ -1182,6 +1256,7 @@ impl Card {
         memory_state: FsrsMemoryState,
         desired_retention: f32,
         parameters: Arc<Vec<f32>>,
+        single_trace: &mut SingleTraceStability,
     ) -> Option<fsrs::Card> {
         Self::convert_with_options(
             card,
@@ -1189,6 +1264,7 @@ impl Card {
             memory_state,
             desired_retention,
             &parameters,
+            single_trace,
         )
     }
 
@@ -1198,7 +1274,15 @@ impl Card {
         memory_state: FsrsMemoryState,
         default_desired_retention: f32,
         parameters: &Arc<Vec<f32>>,
+        single_trace: &mut SingleTraceStability,
     ) -> Option<fsrs::Card> {
+        if matches!(
+            card.queue,
+            CardQueue::New | CardQueue::PreviewRepeat | CardQueue::Suspended
+        ) {
+            return None;
+        }
+        let stability = single_trace.of(parameters, memory_state);
         match card.queue {
             CardQueue::DayLearn | CardQueue::Review => {
                 let due = card.original_or_current_due();
@@ -1207,7 +1291,7 @@ impl Card {
                 Some(fsrs::Card {
                     id: card.id.0,
                     difficulty: memory_state.difficulty,
-                    stability: memory_state.stability_internal,
+                    stability,
                     last_date,
                     due: relative_due as f32,
                     interval: card.interval as f32,
@@ -1221,7 +1305,7 @@ impl Card {
             CardQueue::Learn | CardQueue::SchedBuried | CardQueue::UserBuried => Some(fsrs::Card {
                 id: card.id.0,
                 difficulty: memory_state.difficulty,
-                stability: memory_state.stability_internal,
+                stability,
                 last_date: 0.0,
                 due: 0.0,
                 interval: card.interval as f32,
@@ -1376,6 +1460,81 @@ mod tests {
         assert!((weighted_memorized - expected).abs() < 1e-4 * expected);
         assert!(super::stability_weight(365.0) > 0.99);
         assert!(super::stability_weight(1.0) < 0.03);
+    }
+
+    // Pins spec/deck-options.md#deck-options.simulator-fsrs-only: fsrs-rs
+    // simulates one trace, so an existing card starts with the single-trace
+    // stability whose S90 is the S90 of its whole state, and its first
+    // simulated interval at 90% is its real one.
+    #[test]
+    fn an_existing_card_starts_the_simulation_with_its_own_s90() {
+        use crate::card::CardQueue;
+        use crate::card::FsrsMemoryState;
+
+        let parameters = Arc::new(DEFAULT_PARAMETERS.to_vec());
+        let fsrs = fsrs::FSRS::new(&parameters).unwrap();
+        let mut single_trace = super::SingleTraceStability::default();
+        // (stability, fast stability, difficulty) from the FSRS-7 review
+        for (stability, fast, difficulty, real_s90) in
+            [(10.0, 3.0, 8.0, 4.11), (30.0, 5.0, 3.0, 94.38)]
+        {
+            let state = fsrs::MemoryState {
+                stability,
+                difficulty,
+                stability_fast: fast,
+            };
+            let s90 = fsrs.interval_at_retrievability(state, 0.9);
+            assert!((s90 - real_s90).abs() < 0.01, "{s90}");
+            let memory_state = FsrsMemoryState {
+                stability: s90,
+                stability_internal: stability,
+                stability_fast: Some(fast),
+                difficulty,
+            };
+            for queue in [CardQueue::Review, CardQueue::Learn] {
+                let card = Card {
+                    queue,
+                    interval: 5,
+                    ..Default::default()
+                };
+                let simulated = Card::convert_with_options(
+                    card,
+                    100,
+                    memory_state,
+                    0.9,
+                    &parameters,
+                    &mut single_trace,
+                )
+                .unwrap();
+                let simulated_s90 = super::single_trace_s90(&fsrs, simulated.stability);
+                assert!(
+                    (simulated_s90 / s90 - 1.0).abs() < 1e-5,
+                    "{queue:?}: {simulated_s90} against {s90}"
+                );
+                assert_eq!(simulated.difficulty, difficulty);
+            }
+        }
+        // and over the whole range of states a card can hold
+        for i in 0..400 {
+            let stability = 0.01 * 1.04f32.powi(i);
+            for (fast_ratio, difficulty) in [(0.1, 1.0), (0.5, 5.0), (1.0, 10.0)] {
+                let memory_state = FsrsMemoryState {
+                    stability: 0.0,
+                    stability_internal: stability,
+                    stability_fast: Some(stability * fast_ratio),
+                    difficulty,
+                };
+                let s90 = fsrs.interval_at_retrievability(memory_state.into(), 0.9);
+                let simulated = single_trace.of(&parameters, memory_state);
+                let simulated_s90 = super::single_trace_s90(&fsrs, simulated);
+                if s90 > 0.01 && s90 < 30_000.0 {
+                    assert!(
+                        (simulated_s90 / s90 - 1.0).abs() < 1e-4,
+                        "{stability} {fast_ratio} {difficulty}: {simulated_s90} against {s90}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2306,3 +2465,4 @@ mod tests {
             .all(|c| (c.desired_retention - 0.7).abs() < 1e-6));
     }
 }
+
