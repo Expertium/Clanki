@@ -1130,6 +1130,41 @@ whole-collection scoring took 5.0 s with the query and takes 1.5 s now.
 `test_stats_curve_due_keeps_the_full_prediction_path`
 (`qt/tests/test_rwkv_scheduler.py`)
 
+## ui.rwkv-no-prediction-never-rated
+
+Given a collection that runs RWKV-Instant and a review card that was never
+rated (its history has no answered review, for example after Set Due Date on a
+new card, or a card imported without its reviews), RWKV has no prediction for
+the card:
+
+- card info's Retrievability row reads "No prediction", and card info does not
+  query RWKV for the card;
+- every reader of a search gets no value for it: the Browser's Retrievability
+  cell stays blank, the Stats Retrievability graph leaves it out, `prop:rwkv:r…`
+  and `is:rwkv:due` searches (the Browser, AnkiConnect, filtered decks) do not
+  match it, and a filtered deck ordered by retrievability puts it with the cards
+  that have no value (`sched.filtered-deck-one-algorithm`).
+
+The study queue of a normal deck and its review count still score the card with
+a query of RWKV-Instant, as before: a review card without a score is never
+gathered (`sched.rwkv-instant-waits`), so no score there would keep the card out
+of study until it is rated somewhere else.
+
+Under RWKV-Curve such a card has no stored curve, so it has no value already
+(`ui.rwkv-curve-r-stored-curve`).
+
+**Why:** Andrew, 2026-09-24: "Yep, fix them", with the RWKV session's rule that
+a never-rated review card shows "no prediction" instead of a frozen R. Before,
+RWKV fed such a card the "no previous review" sentinel as its elapsed time and
+no card state, so its R did not change with time, and training has no query row
+like it. The study queue is left as it was until Andrew decides what it should
+do with such a card.
+
+**Pinned by:** `never_rated_review_cards_get_no_row_for_a_search`
+(`rslib/src/scheduler/rwkv.rs`);
+`test_card_info_says_no_prediction_for_a_never_rated_review_card`
+(`qt/tests/test_rwkv_scheduler.py`)
+
 ## ui.stats-rwkv-scores-kept
 
 Given the Stats page asks for the Retrievability graph again while nothing

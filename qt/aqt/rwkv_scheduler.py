@@ -8301,13 +8301,23 @@ def rwkv_card_info_rows(
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
 
+    candidate = _card_info_review_candidate(reviewer, card)
+    if _rwkv_never_rated_review_card(candidate.reviewer, candidate.card):
+        # no history to predict from: no value, and no query of RWKV (spec
+        # ui.rwkv-no-prediction-never-rated)
+        if card_id is not None:
+            _set_rwkv_card_info_score(reviewer, card_id, None)
+        from aqt.utils import tr
+
+        return [(RWKV_CARD_INFO_R_LABEL, tr.qt_misc_rwkv_no_prediction())]
+
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
     diagnostics = _queried_card_info_diagnostics(
         reviewer,
         card,
         fallback_source=fallback_source,
-        _candidate=_card_info_review_candidate(reviewer, card),
+        _candidate=candidate,
     )
     retrievability = diagnostics.retrievability if diagnostics else None
     if diagnostics is None and card_id is not None:
@@ -8323,6 +8333,16 @@ def rwkv_card_info_rows(
     else:
         value = "Calculating…"
     return [(RWKV_CARD_INFO_R_LABEL, value)]
+
+
+def _rwkv_never_rated_review_card(reviewer: object, card: object) -> bool:
+    """A review card with no answered review (Set Due Date on a new card, a
+    card imported without its history): RWKV has nothing to predict from."""
+
+    if _int_attr(card, "type") != CARD_TYPE_REV:
+        return False
+    elapsed_days, elapsed_seconds = _elapsed_since_card_last_review(reviewer, card)
+    return elapsed_days is None and elapsed_seconds is None
 
 
 def rwkv_card_info_after_review_row(

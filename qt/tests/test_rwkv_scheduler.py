@@ -9822,7 +9822,9 @@ def test_reviewer_rwkv_undo_marks_queue_scores_stale_without_dropping_patch_base
     assert cached.session_answered_ids == ()
     rows = rwkv_card_info_rows(
         reviewer=reviewer,
-        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        card=_rwkv_card(
+            card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+        ),
         fallback_source="FSRS",
     )
     assert dict(rows)["RWKV computed R"] == "45%"
@@ -10057,7 +10059,9 @@ def test_rwkv_instant_card_info_says_the_model_is_missing(
     reviewer = _rwkv_reviewer(
         rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
     )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card = _rwkv_card(
+        card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+    )
 
     rows = rwkv_card_info_rows(reviewer=reviewer, card=card, fallback_source="FSRS")
 
@@ -15216,7 +15220,9 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
     reviewer = _rwkv_reviewer(
         rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
     )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card = _rwkv_card(
+        card_id=1, note_id=10, duration_millis=1234, last_review_time=36 * 86_400
+    )
     scheduler = reviewer.mw.col.sched
     original_get_scheduling_states = scheduler.get_scheduling_states
     scheduling_state_calls: list[int] = []
@@ -15233,11 +15239,34 @@ def test_card_info_queries_rwkv_without_cached_reviewer_prediction() -> None:
         fallback_source="FSRS",
     ) == [("RWKV computed R", "45%")]
     assert runtime.query_inputs[0].current_normal_state_kind == "review"
-    assert runtime.query_inputs[0].current_elapsed_days is None
+    assert runtime.query_inputs[0].current_elapsed_days == 7
     assert scheduling_state_calls == [1]
     assert rpc.card_info_calls == [
         {"card_id": 1, "retrievability": pytest.approx(0.45)}
     ]
+
+
+def test_card_info_says_no_prediction_for_a_never_rated_review_card() -> None:
+    """Pins spec/ui.md#ui.rwkv-no-prediction-never-rated: a review card with
+    no answered review (Set Due Date on a new card) gets "No prediction" in
+    card info, and RWKV is not queried for it."""
+
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_reviewer(
+        rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    assert rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source="FSRS",
+    ) == [("RWKV computed R", "No prediction")]
+    assert runtime.query_inputs == []
+    assert rpc.card_info_calls == [{"card_id": 1, "retrievability": None}]
 
 
 def test_card_info_does_not_reinstall_score_after_answer_race(
@@ -15250,7 +15279,9 @@ def test_card_info_does_not_reinstall_score_after_answer_race(
     reviewer = _rwkv_reviewer(
         rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
     )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card = _rwkv_card(
+        card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+    )
     original = rwkv_scheduler._queried_card_info_diagnostics
 
     def query_then_answer(
@@ -15501,7 +15532,9 @@ def test_card_info_refreshes_after_global_rwkv_state_changes() -> None:
     reviewer = _rwkv_reviewer(
         rpc=rpc, rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
     )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card = _rwkv_card(
+        card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+    )
 
     first_rows = rwkv_card_info_rows(
         reviewer=reviewer,
@@ -15511,7 +15544,9 @@ def test_card_info_refreshes_after_global_rwkv_state_changes() -> None:
 
     backend.review_answered(
         reviewer=reviewer,
-        card=_rwkv_card(card_id=2, note_id=20, duration_millis=1234),
+        card=_rwkv_card(
+            card_id=2, note_id=20, duration_millis=1234, last_review_time=_RATED_AT
+        ),
         ease=1,
     )
     second_rows = rwkv_card_info_rows(
@@ -15618,7 +15653,9 @@ def test_card_info_restores_local_state_cache_before_query(
 
     assert rwkv_card_info_rows(
         reviewer=reviewer,
-        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        card=_rwkv_card(
+            card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+        ),
         fallback_source="FSRS",
     ) == [("RWKV computed R", "45%")]
     assert restored_runtime.restored_cache_states == [b"runtime-cache"]
@@ -15634,7 +15671,9 @@ def test_card_info_skips_rwkv_query_until_background_warmup_finishes() -> None:
         rwkv_review_enabled=False,
         rwkv_review_instant_order_enabled=True,
     )
-    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card = _rwkv_card(
+        card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+    )
 
     assert rwkv_card_info_rows(
         reviewer=reviewer,
@@ -15695,7 +15734,9 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
         reviewer=_rwkv_reviewer(
             rwkv_review_enabled=False, rwkv_review_instant_order_enabled=True
         ),
-        card=_rwkv_card(card_id=1, note_id=10, duration_millis=1234),
+        card=_rwkv_card(
+            card_id=1, note_id=10, duration_millis=1234, last_review_time=_RATED_AT
+        ),
         fallback_source="FSRS",
     ) == [("RWKV computed R", "66%")]
     assert created == [
@@ -17865,6 +17906,11 @@ def _attach_progress_taskman(
 def _expected_preset_hash(preset_id: str) -> int:
     digest = hashlib.blake2b(preset_id.encode("utf8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") & ((1 << 63) - 1)
+
+
+# a last answered review for a card fixture: a review card without one is
+# never rated and gets no RWKV prediction (spec ui.rwkv-no-prediction-never-rated)
+_RATED_AT = 36 * 86_400
 
 
 def _rwkv_card(

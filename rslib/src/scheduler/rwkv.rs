@@ -342,6 +342,12 @@ impl Collection {
             input.include_suspended_review,
             input.include_disabled_decks,
         )?;
+        // A review card that was never rated has no history for RWKV to
+        // predict from, so the readers of a search (the Browser, Stats,
+        // prop:rwkv searches, filtered decks, AnkiConnect) get no value for
+        // it (spec ui.rwkv-no-prediction-never-rated). The study queue reads
+        // its own rows and still scores it.
+        response.rows.retain(|row| !never_rated_review_row(row));
         response.searched_cards = searched_cards;
         Ok(response)
     }
@@ -589,6 +595,14 @@ impl Collection {
 
         Ok(())
     }
+}
+
+/// A review card with no answered review: Set Due Date on a new card, or a
+/// card imported without its history. Its row carries no elapsed time.
+fn never_rated_review_row(row: &scheduler::rwkv_review_input_rows_for_cards_response::Row) -> bool {
+    row.card_type == CardType::Review as i32
+        && row.current_elapsed_days.is_none()
+        && row.current_elapsed_seconds.is_none()
 }
 
 /// Broaden RWKV-dependent conditions so RWKV can score every potential match.
@@ -2267,6 +2281,65 @@ mod test {
         assert_eq!(included.rows[0].current_normal_state_kind, "new");
         assert!(included.rows[0].current_elapsed_days.is_some());
         assert!(included.rows[0].current_elapsed_seconds.is_some());
+        Ok(())
+    }
+
+    /// Pins ui.rwkv-no-prediction-never-rated: a review card that was never
+    /// rated (Set Due Date on a new card) gets no row for a search, so no
+    /// RWKV value, while the study queue's rows keep it.
+    #[test]
+    fn never_rated_review_cards_get_no_row_for_a_search() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = false;
+            config.rwkv_review_instant_order_enabled = true;
+            config.rwkv_review_batch_size = 1024;
+        });
+        let timing = col.timing_today()?;
+        let mut rated = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        rated.ctype = CardType::Review;
+        rated.queue = CardQueue::Review;
+        rated.interval = 4;
+        rated.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+        col.add_card(&mut rated)?;
+        let mut never_rated = Card::new(NoteId(20), 0, DeckId(1), timing.days_elapsed as i32);
+        col.add_card(&mut never_rated)?;
+        col.set_due_date(&[never_rated.id], "0", None)?;
+        let never_rated = col.storage.get_card(never_rated.id)?.unwrap();
+        assert_eq!(never_rated.ctype, CardType::Review);
+        assert_eq!(never_rated.last_review_time, None);
+
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{},{}", rated.id.0, never_rated.id.0),
+                include_suspended_review: true,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+        assert_eq!(
+            response
+                .rows
+                .iter()
+                .map(|row| row.card_id)
+                .collect::<Vec<_>>(),
+            vec![rated.id.0]
+        );
+
+        let response = col.rwkv_review_input_rows_for_deck_review_queue(
+            RwkvReviewInputRowsForDeckReviewQueueRequest {
+                deck_id: 1,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            },
+        )?;
+        let mut queue_card_ids = response
+            .rows
+            .iter()
+            .map(|row| row.card_id)
+            .collect::<Vec<_>>();
+        queue_card_ids.sort_unstable();
+        assert_eq!(queue_card_ids, vec![rated.id.0, never_rated.id.0]);
+
         Ok(())
     }
 
