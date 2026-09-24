@@ -1644,7 +1644,7 @@ order, from a fixed seed, so opening the page twice does not move the error
 bars. The ratings of
 each bin are drawn as blue bars behind the line (`#3f84cc` at opacity 0.45),
 on their own axis at the right. The y axis is "Actual retention" and the x
-axis "Predicted retrievability". Three tiles above the graph give the average
+axis "Predicted retention". Three tiles above the graph give the average
 predicted probability, the actual retention, and the number of ratings.
 
 The UM+ comparison draws a PAIR of algorithms, picked from a menu of the
@@ -1683,8 +1683,9 @@ under the graph for AUC-ROC. Andrew, 2026-09-23: "Reading is for nerds, lol.
 Let's not have too much text unless the user asks for it", and "Just keep
 some simple 'lower=better' or 'closer to 0=better' stuff outside of the
 tooltip"; 2026-09-24: move the long text under the UM+ and calibration graphs
-into the tooltip, rename "Actual recall" to "Actual retention", and make the
-blue bins less transparent and more saturated.
+into the tooltip, rename "Actual recall" to "Actual retention" and "Predicted
+retrievability" to "Predicted retention" (the graph keeps its name), and make
+the blue bins less transparent and more saturated.
 
 The AUC-ROC graph draws one curve per algorithm, all at once, with no
 chooser. A curve plots the true positive rate against the false positive
