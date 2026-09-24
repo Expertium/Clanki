@@ -627,18 +627,27 @@ impl Collection {
 
         // calculate and apply params to each preset
         let mut jobs = Vec::with_capacity(req.configs.len());
+        // presets that could not be optimized: skipped, logged, and not
+        // recorded as optimized (spec deck-options.fsrs-optimize-skips-bad-presets)
+        let mut failed = HashSet::new();
         for (idx, config) in req.configs.iter().enumerate() {
-            let search = fsrs_optimizer_search(config)?;
-            let ignore_revlogs_before_ms = ignore_revlogs_before_ms_from_config(config)?;
-            let num_of_relearning_steps = config.inner.relearn_steps.len();
-            let current_params = config.fsrs_params().to_vec();
-            let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
-                search: &search,
-                ignore_revlogs_before: ignore_revlogs_before_ms,
-                current_params: &current_params,
-                num_of_relearning_steps,
-                enable_scheduling_penalties: fsrs7_enable_scheduling_penalties(config),
-            })?;
+            let prepared = fsrs_optimizer_search(config).and_then(|search| {
+                self.prepare_compute_params(PrepareComputeParamsInput {
+                    search: &search,
+                    ignore_revlogs_before: ignore_revlogs_before_ms_from_config(config)?,
+                    current_params: config.fsrs_params(),
+                    num_of_relearning_steps: config.inner.relearn_steps.len(),
+                    enable_scheduling_penalties: fsrs7_enable_scheduling_penalties(config),
+                })
+            });
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(err) => {
+                    warn!(preset = config.name, error = %err, "skipping FSRS preset that cannot be optimized");
+                    failed.insert(idx);
+                    continue;
+                }
+            };
             if prepared.target_counts.total_targets == 0 {
                 debug!(preset = config.name, "skipping FSRS preset with no reviews");
             }
@@ -664,6 +673,7 @@ impl Collection {
                 Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
                 Err(err) => {
                     warn!(preset = output.name, error = %err, "failed to optimize FSRS preset");
+                    failed.insert(output.index);
                 }
             }
         }
@@ -671,8 +681,10 @@ impl Collection {
         self.set_config_i32_inner(I32ConfigKey::LastFsrsOptimize, today)?;
         // a preset optimized by hand is not due again for its full N days
         // (spec deck-options.fsrs-auto-optimize)
-        for config in &mut req.configs {
-            config.inner.fsrs_last_optimized_day = Some(today as u32);
+        for (idx, config) in req.configs.iter_mut().enumerate() {
+            if !failed.contains(&idx) {
+                config.inner.fsrs_last_optimized_day = Some(today as u32);
+            }
         }
         Ok(())
     }
@@ -1278,6 +1290,37 @@ mod test {
             fsrs: true,
             review_fuzz_config: Default::default(),
         })
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-optimize-skips-bad-presets
+    #[test]
+    fn optimize_all_skips_a_preset_that_cannot_be_optimized() -> Result<()> {
+        let mut col = Collection::new();
+        settle_fsrs_on(&mut col)?;
+        DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        card_with_stored_prediction(&mut col, DeckId(1), 10)?;
+
+        let mut input = save_request(&mut col)?;
+        input.mode = UpdateDeckConfigsMode::ComputeAllParams;
+        let other = input
+            .configs
+            .iter_mut()
+            .find(|config| config.name == "Other")
+            .unwrap();
+        // not a search: this preset's reviews cannot be read
+        other.inner.param_search = "(".to_string();
+        let other = other.id;
+        col.update_deck_configs(input)?;
+
+        // the good preset is optimized; the bad one is not recorded as such
+        let today = col.timing_today()?.days_elapsed;
+        let default = col.storage.get_deck_config(DeckConfigId(1))?.unwrap();
+        assert_eq!(default.inner.fsrs_last_optimized_day, Some(today));
+        let other = col.storage.get_deck_config(other)?.unwrap();
+        assert_eq!(other.inner.fsrs_last_optimized_day, None);
+        Ok(())
     }
 
     // Pins spec/ui.md#ui.stats-fsrs-predictions-ready

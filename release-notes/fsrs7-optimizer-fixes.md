@@ -5,3 +5,6 @@
 - The FSRS-7 series in the Stats model-quality graphs is fitted on the same
   reviews as the preset's parameters: suspended cards, the preset's search
   filter and "Ignore reviews before" now count there too.
+- One preset that cannot be optimized (for example an invalid search filter)
+  no longer stops the automatic optimization, the Stats predictions or
+  "Optimize All Presets" for the other presets.

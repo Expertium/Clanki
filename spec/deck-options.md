@@ -237,6 +237,36 @@ removed that check.
 `a_tiny_training_set_never_replaces_trained_params`
 (`rslib/src/scheduler/fsrs/params.rs`).
 
+## deck-options.fsrs-optimize-skips-bad-presets
+
+Given several presets to optimize or to refresh, one preset that fails (its
+search filter is not a valid search, its "Ignore reviews before" date does
+not parse, or its training fails) does not stop the others:
+
+| Path                                               | The failing preset                                                              | The others                  |
+| -------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------- |
+| The daily pass (`ui.stats-fsrs-predictions-ready`) | logged and skipped, in the automatic optimization and in the prediction refresh | optimized and refreshed     |
+| "Optimize All Presets"                             | logged, keeps its parameters, and its day is not recorded as optimized          | optimized and saved         |
+| `ComputeFsrsParamsBatch`                           | logged, answered with the parameters it came with and 0 items                   | answered with their results |
+
+After a daily pass with a failed preset, Clanki warns once in that session
+(`ui.stats-fsrs-predictions-ready`) and does not count the day as done, so
+the next pass tries the failed preset again. A cancelled optimization still
+stops the whole run.
+
+**Why:** Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that
+day: the daily pass had no per-preset error handling and recorded the day
+only on success, so one bad search or date stopped every preset after it,
+and every Stats prediction, every day. "Optimize All Presets" and the batch
+RPC failed as a whole for the same cause.
+
+**Pinned by:** `test_one_bad_preset_does_not_stop_the_others`
+(`qt/tests/test_fsrs_predictions.py`);
+`optimize_all_skips_a_preset_that_cannot_be_optimized`
+(`rslib/src/deckconfig/update.rs`);
+`the_batch_rpc_answers_every_item_when_one_cannot_be_optimized`
+(`rslib/src/scheduler/service/mod.rs`).
+
 ## deck-options.desired-retention-note
 
 Given the deck-options screen under FSRS-7 or RWKV-Curve, a note box sits
