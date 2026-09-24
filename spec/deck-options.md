@@ -252,20 +252,26 @@ not parse, or its training fails) does not stop the others:
 After a daily pass with a failed preset, Clanki warns once in that session
 (`ui.stats-fsrs-predictions-ready`) and does not count the day as done, so
 the next pass tries the failed preset again. A cancelled optimization still
-stops the whole run.
+stops the whole run. A preset whose training panics in "Optimize All Presets"
+or the batch RPC fails like any other failing preset, and the progress
+report of the run stops when the run ends.
 
 **Why:** Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that
 day: the daily pass had no per-preset error handling and recorded the day
 only on success, so one bad search or date stopped every preset after it,
 and every Stats prediction, every day. "Optimize All Presets" and the batch
-RPC failed as a whole for the same cause.
+RPC failed as a whole for the same cause, and a panic in one of their jobs
+left the progress thread running, since it stops only when every job says it
+is done.
 
 **Pinned by:** `test_one_bad_preset_does_not_stop_the_others`
 (`qt/tests/test_fsrs_predictions.py`);
 `optimize_all_skips_a_preset_that_cannot_be_optimized`
 (`rslib/src/deckconfig/update.rs`);
 `the_batch_rpc_answers_every_item_when_one_cannot_be_optimized`
-(`rslib/src/scheduler/service/mod.rs`).
+(`rslib/src/scheduler/service/mod.rs`);
+`a_panicking_job_fails_its_preset_and_stops_the_progress_thread`
+(`rslib/src/scheduler/fsrs/batch.rs`).
 
 ## deck-options.desired-retention-note
 
