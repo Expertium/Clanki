@@ -524,14 +524,14 @@ audio automatically".
 Given the deck-options screen, every setting on it belongs to one preset
 (or, for the limit tabs, to the current deck), except the Algorithm, which
 applies to the whole collection and is marked "(global)"
-(`deck-options.scheduler-choice`). The three other settings that apply to
-the whole collection live in Preferences > Review, in the Scheduler group
-and a "Custom scheduling" group, and nowhere else: Limits start from
-top (`applyAllParentLimits`), Reschedule cards when desired retention
-changes (`fsrsReschedule`; `deck-options.reschedule-choice-remembered`),
-and Custom scheduling (`cardStateCustomizer`). They are read and written
-through the `Preferences.Scheduling` message; the matching fields of the
-deck-options save request are ignored, so a deck-options save never
+(`deck-options.scheduler-choice`). The two other settings that apply to
+the whole collection live in Preferences > Review, in the Scheduler group,
+and nowhere else: Limits start from top (`applyAllParentLimits`) and
+Reschedule cards when desired retention changes (`fsrsReschedule`;
+`deck-options.reschedule-choice-remembered`). Custom scheduling
+(`cardStateCustomizer`) is shown nowhere (`sched.no-custom-scheduling`).
+They are read and written through the `Preferences.Scheduling` message;
+the matching fields of the deck-options save request are ignored, so a deck-options save never
 overwrites a Preferences change. The deck-options page still reads one of
 them: the reschedule choice, for the Easy Days warning.
 

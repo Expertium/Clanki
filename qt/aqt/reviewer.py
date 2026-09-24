@@ -258,7 +258,6 @@ class Reviewer:
         self.mw.setStateShortcuts(self._shortcutKeys())  # type: ignore
         self.web.set_bridge_command(self._linkHandler, self)
         self.bottom.web.set_bridge_command(self._linkHandler, ReviewerBottomBar(self))
-        self._state_mutation_js = self.mw.col.get_config("cardStateCustomizer")
         aqt.rwkv_scheduler.configure_reviewer_backend_from_environment()
         self._reps = None
         self._refresh_needed = RefreshNeeded.QUEUES

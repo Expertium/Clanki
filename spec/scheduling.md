@@ -1229,13 +1229,13 @@ the S90.
 ## sched.next-state-s90
 
 Given a card answered with FSRS-7, the memory state of each answer's next
-state (the scheduling states the reviewer gets, `get_scheduling_states`, the
-custom-scheduling JavaScript's `states.*.memoryState`, and add-ons) carries
+state (the scheduling states the reviewer gets, `get_scheduling_states`, and
+add-ons) carries
 the S90 of that state as its `stability`: the time until FSRS-7's forgetting
 curve for that state reaches 90% recall, as a stored card's stability does.
 FSRS-7's internal and fast stabilities are in their own fields
 (`stability_internal`, `stability_fast`). Answering stores the S90 computed
-from the internal and fast stabilities and the difficulty, so a script that
+from the internal and fast stabilities and the difficulty, so an add-on that
 changes only `stability` does not change the stored state. The "young leech"
 check (`leech_only_if_young`) compares Again's S90 with 21 days.
 
@@ -1262,8 +1262,8 @@ used. The day rollover plays no part in it. The elapsed time runs up to the
 answer (the review log's timestamp), not up to the moment the card was
 shown: the memory state stored with an answer is FSRS-7's next state for the
 chosen button at that elapsed time, and the interval stays the one the
-button showed. With a custom scheduling script set, the memory state the
-answer carries is stored as it is (the script may have set it).
+button showed. A stored custom scheduling script does not change this
+(`sched.no-custom-scheduling`).
 
 **Why:** Andrew, 2026-09-15: FSRS-7 must use fractional, not integer,
 interval lengths as inputs, both in training and in deployment. Before this
@@ -1278,8 +1278,8 @@ the answer time: a new card answered Good 20 seconds after being shown got a
 **Pinned by:** `fsrs7_gets_fractional_elapsed_time_like_training`,
 `fsrs7_review_answer_uses_the_exact_elapsed_time`,
 `fsrs7_answer_stores_the_memory_state_at_the_answer_time`,
-`rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability` (the custom
-script case) (`rslib/src/scheduler/answering/mod.rs`);
+`rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability` (a stored
+script) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_interday_delta_uses_fractional_elapsed_time`,
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
@@ -1307,6 +1307,48 @@ Retention from Clanki (Andrew, 2026-09-14).
 (`rslib/src/deckconfig/schema11.rs`),
 `legacy_dynamic_desired_retention_preset_schedules_with_fixed_desired_retention`
 (`rslib/src/scheduler/answering/mod.rs`).
+
+## sched.no-custom-scheduling
+
+Given any collection, Clanki has no custom scheduling: Preferences does not
+show the "Custom scheduling" box, and the reviewer never runs a custom
+scheduling script, so a script stored by Anki or an earlier build
+(`cardStateCustomizer`) has no effect. The stored script is kept as it is:
+Preferences saves it back unchanged, and a sync carries it. Answering stores
+FSRS-7's memory state at the answer time for every card
+(`sched.fsrs7-fractional-elapsed-time`), whatever the stored script is. The
+JavaScript the reviewer page gives add-ons (`anki.mutateNextCardStates`) and
+the card's own custom data are unchanged.
+
+**Why:** Andrew, 2026-09-24 (B-026): "Let's hide the custom scheduling part
+entirely". RWKV-Curve rebuilds the answer states, so a script's changes to
+them were lost on RWKV-Curve cards; a script that runs with no box to see or
+remove it would be worse than no script.
+
+**Pinned by:** `rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability`
+(`rslib/src/scheduler/answering/mod.rs`);
+`test_update_collection_writes_the_collection_wide_scheduling_settings`
+(`qt/tests/test_preferences.py`);
+`test_show_does_not_load_a_stored_custom_scheduling_script`
+(`qt/tests/test_reviewer.py`).
+
+## sched.rwkv-curve-keeps-custom-data
+
+Given an RWKV-Curve card whose answer states the backend rebuilds with
+RWKV-Curve's intervals (`sched.rwkv-curve-fuzz`), the custom data the
+reviewer gave the states before the rebuild comes back: the current state
+keeps the card's custom data, and each button keeps the custom data it had.
+A state that had none still has none. So answering an RWKV-Curve card keeps
+the card's custom data, as FSRS-7 and RWKV-Instant cards do, and the
+reviewer's check of the current state finds it unchanged.
+
+**Why:** Andrew, 2026-09-24 (B-026): "fix the warning in card logs". The
+rebuild dropped the card's custom data, so the log got a false
+"reviewer_will_update_scheduling_states changed current state" WARNING for
+almost every RWKV-Curve card with custom data.
+
+**Pinned by:** `test_rwkv_curve_states_keep_the_custom_data`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.fuzz-always-on
 

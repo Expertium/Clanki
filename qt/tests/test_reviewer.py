@@ -8,6 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -3038,3 +3039,32 @@ def test_answer_buttons_show_no_intervals_for_rwkv_instant(
         assert label in html
     for interval in ("10m", "2d", "3d", "7d"):
         assert (interval in html) is not hidden
+
+
+# Pins spec/scheduling.md#sched.no-custom-scheduling
+def test_show_does_not_load_a_stored_custom_scheduling_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer._state_mutation_js = None
+    reviewer.mw = MagicMock()
+    reviewer.mw.col.sched_ver.return_value = 2
+    reviewer.mw.col.v3_scheduler.return_value = True
+    reviewer.mw.col.get_config.return_value = (
+        "states.good.normal.review.scheduledDays = 1;"
+    )
+    reviewer.web = MagicMock()
+    reviewer.bottom = MagicMock()
+    reviewer.set_review_actions_blocked = lambda blocked: None
+    reviewer._set_review_answer_actions_blocked = lambda blocked: None
+    reviewer._shortcutKeys = lambda: []
+    reviewer.refresh_if_needed = lambda: None
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "configure_reviewer_backend_from_environment",
+        lambda: None,
+    )
+
+    reviewer.show()
+
+    assert reviewer._state_mutation_js is None

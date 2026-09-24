@@ -147,7 +147,6 @@ class Preferences(QDialog):
         # (spec deck-options.collection-wide-in-preferences)
         form.applyAllParentLimits.setChecked(scheduling.apply_all_parent_limits)
         form.fsrsReschedule.setChecked(scheduling.fsrs_reschedule)
-        form.customScheduling.setPlainText(scheduling.card_state_customizer)
 
         reviewing = self.prefs.reviewing
         form.timeLimit.setValue(int(reviewing.time_limit_secs / 60.0))
@@ -203,7 +202,6 @@ class Preferences(QDialog):
         scheduling.rollover = form.dayOffset.value()
         scheduling.apply_all_parent_limits = form.applyAllParentLimits.isChecked()
         scheduling.fsrs_reschedule = form.fsrsReschedule.isChecked()
-        scheduling.card_state_customizer = form.customScheduling.toPlainText()
 
         reviewing = self.prefs.reviewing
         reviewing.show_remaining_due_counts = form.showProgress.isChecked()

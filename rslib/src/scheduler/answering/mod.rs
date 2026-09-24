@@ -28,7 +28,6 @@ use super::timing::SchedTimingToday;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::config::BoolKey;
-use crate::config::StringKey;
 use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::LeechAction;
@@ -446,24 +445,18 @@ impl Collection {
             answer.answered_at.as_secs(),
         )?;
         // the stored memory state follows the elapsed time up to the answer,
-        // as training and every rebuild from the review log see it; a custom
-        // scheduling script may have set its own (spec
-        // sched.fsrs7-fractional-elapsed-time)
-        if self
-            .get_config_string(StringKey::CardStateCustomizer)
-            .trim()
-            .is_empty()
-        {
-            updater.fsrs_answer_memory_state = updater.fsrs_next_states.as_ref().map(|states| {
-                match answer.rating {
-                    Rating::Again => &states.again,
-                    Rating::Hard => &states.hard,
-                    Rating::Good => &states.good,
-                    Rating::Easy => &states.easy,
-                }
-                .memory
-            });
-        }
+        // as training and every rebuild from the review log see it (spec
+        // sched.fsrs7-fractional-elapsed-time); a stored custom scheduling
+        // script no longer runs (spec sched.no-custom-scheduling)
+        updater.fsrs_answer_memory_state = updater.fsrs_next_states.as_ref().map(|states| {
+            match answer.rating {
+                Rating::Again => &states.again,
+                Rating::Hard => &states.hard,
+                Rating::Good => &states.good,
+                Rating::Easy => &states.easy,
+            }
+            .memory
+        });
         answer.cap_answer_secs(updater.config.inner.cap_answer_time_to_secs);
         let current_state = updater.current_card_state();
         // If the states aren't equal, it's probably because some time has passed.
@@ -1021,6 +1014,7 @@ pub(crate) mod test {
     use crate::card::CardType;
     use crate::card::FsrsMemoryState;
     use crate::config::BoolKey;
+    use crate::config::StringKey;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::LeechAction;
     use crate::deckconfig::ReviewCardOrder;
@@ -1125,9 +1119,10 @@ pub(crate) mod test {
         Ok(())
     }
 
-    // With a custom scheduling script the answer's own memory state is stored
-    // (spec sched.fsrs7-fractional-elapsed-time); RWKV's S90 then replaces
-    // only its stability.
+    // A stored custom scheduling script no longer runs, so it does not let the
+    // answer's own memory state through (spec sched.no-custom-scheduling):
+    // FSRS-7's state at the answer time is stored, and RWKV's S90 then
+    // replaces only its stability.
     #[test]
     fn rwkv_s90_answer_preserves_undo_and_internal_fsrs_stability() -> Result<()> {
         let mut col = Collection::new();
@@ -1146,6 +1141,10 @@ pub(crate) mod test {
         )?;
 
         let states = col.get_scheduling_states(cid)?;
+        let CardState::Normal(NormalState::Review(review)) = &states.good else {
+            panic!("expected Good to be a review state");
+        };
+        let fsrs_good = review.memory_state.unwrap();
         let mut new_state = states.good;
         let CardState::Normal(NormalState::Review(review)) = &mut new_state else {
             panic!("expected Good to be a review state");
@@ -1175,7 +1174,13 @@ pub(crate) mod test {
         let card = col.storage.get_card(cid)?.unwrap();
         let memory_state = card.memory_state.unwrap();
         assert_eq!(memory_state.stability, 20.0);
-        assert_eq!(memory_state.stability_internal, 7.0);
+        assert_ne!(memory_state.stability_internal, 7.0);
+        assert!(
+            (memory_state.stability_internal - fsrs_good.stability_internal).abs() < 1e-3,
+            "{} vs {}",
+            memory_state.stability_internal,
+            fsrs_good.stability_internal
+        );
         let cached_retrievability: f32 = col.storage.db.query_row(
             "select prediction from search_stats_rwkv_review_retrievability",
             [],
