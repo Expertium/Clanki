@@ -1,8 +1,13 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use ninja_gen::action::BuildAction;
+use ninja_gen::archives::download_and_extract;
+use ninja_gen::archives::ExtractArchive;
+use ninja_gen::archives::OnlineArchive;
 use ninja_gen::archives::Platform;
 use ninja_gen::build::FilesHandle;
 use ninja_gen::glob;
@@ -85,7 +90,62 @@ pub fn setup_venv(build: &mut Build) -> Result<()> {
         build.add_action("qt:app_exe", BuildAppExe {})?;
     }
 
+    if build.host_platform == Platform::WindowsX64 {
+        add_mingw_mpv(build)?;
+    }
+
     Ok(())
+}
+
+/// The MinGW build of mpv v0.41.0. anki-audio's mpv is the MSVC build of the
+/// same release, which deadlocks at start-up when the machine is busy (spec
+/// ui.audio-mingw-mpv). The release zip holds a second zip with the files.
+fn mingw_mpv_archive() -> OnlineArchive {
+    OnlineArchive {
+        url: "https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-x86_64-w64-mingw32.zip",
+        sha256: "a49811c0752c108b8260636f9c6f6fcb97406641c98b30f1e7b500dfb20177de",
+    }
+}
+
+const MINGW_MPV_INNER_ZIP: &str = "mpv-git-2025-12-21-41f6a64-x86_64.zip";
+
+/// Download and unpack the MinGW mpv (`:extract:mpv_mingw:exe`), then copy it
+/// over anki-audio's mpv in the pyenv (`qt:mpv_mingw`).
+fn add_mingw_mpv(build: &mut Build) -> Result<()> {
+    download_and_extract(
+        build,
+        "mpv_mingw_zip",
+        mingw_mpv_archive(),
+        HashMap::from([("inner", [MINGW_MPV_INNER_ZIP])]),
+    )?;
+    build.add_action(
+        "extract:mpv_mingw",
+        ExtractArchive {
+            archive_path: inputs![":extract:mpv_mingw_zip:inner"],
+            extraction_folder_name: "mpv_mingw",
+            file_manifest: HashMap::from([("exe", ["mpv.exe"])]),
+        },
+    )?;
+    build.add_action("qt:mpv_mingw", InstallMingwMpv {})?;
+    Ok(())
+}
+
+struct InstallMingwMpv {}
+
+impl BuildAction for InstallMingwMpv {
+    fn command(&self) -> &str {
+        "$pyenv_bin $script $mpv_exe $out"
+    }
+
+    fn files(&mut self, build: &mut impl FilesHandle) {
+        build.add_inputs("pyenv_bin", inputs![":pyenv:bin"]);
+        // the pyenv stamp is rewritten at every sync, which may reinstall
+        // anki-audio and so put its MSVC mpv back
+        build.add_inputs("", inputs![":pyenv"]);
+        build.add_inputs("script", inputs!["qt/tools/install_mingw_mpv.py"]);
+        build.add_inputs("mpv_exe", inputs![":extract:mpv_mingw:exe"]);
+        build.add_outputs("out", vec!["pyenv/mpv_mingw.stamp"]);
+    }
 }
 
 struct BuildAppExe {}

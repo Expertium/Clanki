@@ -768,6 +768,35 @@ no heavy work before the window.
 `test_a_stopped_sound_does_not_play_when_mpv_is_ready`,
 `test_mpv_that_is_ready_after_shutdown_is_closed` (`qt/tests/test_sound.py`).
 
+## ui.audio-mingw-mpv
+
+Given a Windows x64 build of Clanki (the source build's `out/pyenv` and the
+installer), the sound player is the MinGW build of mpv v0.41.0, from mpv's own
+release (`mpv-v0.41.0-x86_64-w64-mingw32.zip`, pinned by its SHA-256), not the
+MSVC build that anki-audio 0.2.3 ships. The build copies its `mpv.exe` and the
+DLLs it needs into `anki_audio/mingw/`, and Clanki starts mpv from there when
+that folder has one. anki-audio's own files are never written, because uv
+hard-links them to its cache and so to every other environment that has
+anki-audio. Both builds are the same mpv release (commit 41f6a6450), so what
+mpv does with a sound does not change. Windows ARM, macOS and Linux keep the
+mpv they had, and so does an environment built before this entry.
+
+**Why:** B-017. The MSVC build deadlocks during start-up when the machine is
+busy, and a hung start costs the user their sound until Clanki restarts.
+Measured 2026-09-24 with 14 cores busy, 40 tries each: v0.41.0 MSVC hung in
+31, v0.41.0 MinGW in 0, the 2026-09-23 nightly MSVC in 23, the nightly MinGW
+in 0. On an idle machine the MSVC build hung in 3 of 30 and the MinGW build in
+none. A newer mpv alone does not help; the MinGW build does. Andrew,
+2026-09-24: "Use MinGW".
+
+**Pinned by:** `test_the_mingw_mpv_goes_beside_anki_audios_files`,
+`test_files_already_in_place_are_not_copied_again`
+(`qt/tests/test_install_mingw_mpv.py`),
+`test_install_mingw_mpv_into_bundle_adds_the_mingw_mpv`
+(`qt/tests/test_installer.py`), `test_packaged_mpv_prefers_the_mingw_build`
+and, on Windows x64, `test_the_built_environment_has_the_mingw_mpv`
+(`qt/tests/test_sound.py`).
+
 ## ui.card-info-rwkv-curve
 
 Given a card whose preset runs RWKV-Curve, card info's forgetting-curve chart

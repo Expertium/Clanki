@@ -30,6 +30,7 @@ from tools.build_installer import (
     get_signing_args,
     get_support_hash_args,
     get_uv_binary,
+    install_mingw_mpv_into_bundle,
     installer_dir,
     main,
     normalize_wheel_path,
@@ -383,6 +384,24 @@ def test_repair_macos_anki_audio_layout_renames_lib_to_libs(
 
     assert (audio_dir / "libs" / "libass.9.dylib").exists()
     assert not lib_dir.exists()
+
+
+# Pins spec/ui.md#ui.audio-mingw-mpv
+def test_install_mingw_mpv_into_bundle_adds_the_mingw_mpv(tmp_path: Path) -> None:
+    mingw = tmp_path / "mpv_mingw"
+    mingw.mkdir()
+    (mingw / "mpv.exe").write_text("mingw", encoding="utf-8")
+    (mingw / "libstdc++-6.dll").touch()
+    out_dir = tmp_path / "out"
+    audio_dir = get_briefcase_sources_path(out_dir) / "app_packages" / "anki_audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "mpv.exe").write_text("msvc", encoding="utf-8")
+
+    install_mingw_mpv_into_bundle(out_dir, mingw)
+
+    assert (audio_dir / "mingw" / "mpv.exe").read_text(encoding="utf-8") == "mingw"
+    assert (audio_dir / "mingw" / "libstdc++-6.dll").exists()
+    assert (audio_dir / "mpv.exe").read_text(encoding="utf-8") == "msvc"
 
 
 @pytest.mark.parametrize(

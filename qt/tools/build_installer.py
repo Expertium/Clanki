@@ -296,6 +296,23 @@ def repair_macos_anki_audio_layout(out_dir: Path, portable: bool = False) -> Non
         lib_dir.rename(libs_dir)
 
 
+def install_mingw_mpv_into_bundle(
+    out_dir: Path, mpv_dir: Path, portable: bool = False
+) -> None:
+    """Replace anki-audio's MSVC mpv in the bundle with the MinGW build (spec
+    ui.audio-mingw-mpv)."""
+    # qt/, so the import below resolves when this file runs as a script too
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from tools.install_mingw_mpv import install_mingw_mpv
+
+    audio_dir = (
+        get_briefcase_sources_path(out_dir, portable=portable)
+        / "app_packages"
+        / "anki_audio"
+    )
+    install_mingw_mpv(mpv_dir, audio_dir)
+
+
 def build(args: argparse.Namespace) -> None:
     version = args.version
     output_dir = get_output_dir(args)
@@ -324,6 +341,8 @@ def build(args: argparse.Namespace) -> None:
     )
     prune_webengine_locales(output_dir)
     repair_macos_anki_audio_layout(output_dir, portable=args.portable)
+    if mpv_dir := getattr(args, "mpv_dir", None):
+        install_mingw_mpv_into_bundle(output_dir, Path(mpv_dir), portable=args.portable)
     if args.portable:
         resources = get_briefcase_sources_path(output_dir, portable=True)
         (resources / PORTABLE_MARKER).touch()
@@ -497,6 +516,9 @@ def main(args: Sequence[str] | None = None) -> argparse.Namespace:
     build_parser = subparsers.add_parser("build", help="Compile/build app")
     build_parser.add_argument("--aqt_wheel", help="Path to the aqt wheel file")
     build_parser.add_argument("--anki_wheel", help="Path to the anki wheel file")
+    build_parser.add_argument(
+        "--mpv_dir", help="Folder of the MinGW mpv build to bundle (Windows x64)"
+    )
     build_parser.add_argument(
         "--skip_fcitx", help="Skip bundling fcitx", action="store_true"
     )

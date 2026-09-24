@@ -287,7 +287,12 @@ def _packagedCmd(cmd: list[str]) -> tuple[Any, dict[str, str]]:
 
             audio_pkg_path = Path(anki_audio.__file__).parent
             if is_win:
-                packaged_path = audio_pkg_path / (cmd[0] + ".exe")
+                # the MinGW mpv that Windows x64 builds add, when present; the
+                # MSVC mpv beside it deadlocks at start-up on a busy machine
+                # (spec ui.audio-mingw-mpv, qt/tools/install_mingw_mpv.py)
+                packaged_path = audio_pkg_path / "mingw" / (cmd[0] + ".exe")
+                if not packaged_path.exists():
+                    packaged_path = audio_pkg_path / (cmd[0] + ".exe")
             else:  # is_mac
                 packaged_path = audio_pkg_path / cmd[0]
 

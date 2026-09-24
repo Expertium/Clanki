@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import platform
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -165,9 +167,12 @@ def test_mpv_can_play_generated_wav(generated_wav: Path):
         ]
     )
 
-    # The bundled mpv deadlocks during start-up now and then, and the busier
-    # the machine, the more often. Measured on 2026-09-22 on this Windows PC:
-    # the same command 150 times on an idle machine always finished, median
+    # anki-audio's mpv (the MSVC build) deadlocks during start-up now and
+    # then, and the busier the machine, the more often. Windows x64 builds now
+    # use the MinGW build instead (spec ui.audio-mingw-mpv), which did not
+    # hang once in 40 tries with 14 cores busy; the tries stay for the other
+    # platforms and for a pyenv built before that change. Measured on
+    # 2026-09-22 on this Windows PC, with the MSVC build: the same command 150 times on an idle machine always finished, median
     # 251 ms; inside the full qt suite it hung in 4 to 6 runs of 40; and these
     # tests alone, which never hung idle in 30 runs, hung in 12 of 40 with 14
     # cores kept busy. A hung mpv uses 78 ms of CPU, waits on its own
@@ -355,3 +360,44 @@ def test_mpv_that_is_ready_after_shutdown_is_closed(monkeypatch) -> None:
     starting.thread.join(10)
     assert mpv.shut_down
     assert aqt.sound.av_player.players == []
+
+
+# Pins spec/ui.md#ui.audio-mingw-mpv: the built environment's mpv is the
+# MinGW build, which brings its own C++ runtime; the MSVC build is one file.
+@pytest.mark.skipif(
+    sys.platform != "win32" or platform.machine() != "AMD64",
+    reason="the build adds the MinGW mpv on Windows x64 only",
+)
+def test_the_built_environment_has_the_mingw_mpv() -> None:
+    anki_audio = pytest.importorskip("anki_audio")
+    mingw = Path(anki_audio.__file__).parent / "mingw"
+
+    assert (mingw / "libstdc++-6.dll").exists()
+    assert (mingw / "libwinpthread-1.dll").exists()
+    assert _packagedCmd(["mpv"])[0][0] == str(mingw / "mpv.exe")
+
+
+# Pins spec/ui.md#ui.audio-mingw-mpv
+@pytest.mark.parametrize("with_mingw", [True, False])
+def test_packaged_mpv_prefers_the_mingw_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_mingw: bool
+) -> None:
+    audio_dir = tmp_path / "anki_audio"
+    audio_dir.mkdir()
+    (audio_dir / "mpv.exe").touch()
+    (audio_dir / "lame.exe").touch()
+    if with_mingw:
+        (audio_dir / "mingw").mkdir()
+        (audio_dir / "mingw" / "mpv.exe").touch()
+    fake = MagicMock(__file__=str(audio_dir / "__init__.py"))
+    monkeypatch.setitem(sys.modules, "anki_audio", fake)
+    monkeypatch.setattr(aqt.sound, "is_win", True)
+    monkeypatch.setattr(aqt.sound, "is_mac", False)
+
+    mpv = _packagedCmd(["mpv", "--idle"])[0]
+    lame = _packagedCmd(["lame"])[0]
+
+    mpv_path = audio_dir / "mingw" / "mpv.exe" if with_mingw else audio_dir / "mpv.exe"
+    assert mpv == [str(mpv_path), "--idle"]
+    # lame has no MinGW copy and stays anki-audio's
+    assert lame == [str(audio_dir / "lame.exe")]

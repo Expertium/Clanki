@@ -18,7 +18,7 @@ struct BuildCommand {
 
 impl BuildAction for BuildCommand {
     fn command(&self) -> &str {
-        "$pyenv_bin $script --version $version $portable_arg build --aqt_wheel $aqt_wheel --anki_wheel $anki_wheel"
+        "$pyenv_bin $script --version $version $portable_arg build --aqt_wheel $aqt_wheel --anki_wheel $anki_wheel $mpv_arg"
     }
 
     fn files(&mut self, build: &mut impl FilesHandle) {
@@ -31,6 +31,14 @@ impl BuildAction for BuildCommand {
         );
         build.add_inputs("aqt_wheel", inputs![":wheels:aqt"]);
         build.add_inputs("anki_wheel", inputs![":wheels:anki"]);
+        // the MinGW mpv replaces anki-audio's in the bundle (spec
+        // ui.audio-mingw-mpv); the step exists on Windows x64 only
+        if cfg!(all(windows, target_arch = "x86_64")) {
+            build.add_inputs("", inputs![":extract:mpv_mingw:exe"]);
+            build.add_variable("mpv_arg", "--mpv_dir $builddir/extracted/mpv_mingw");
+        } else {
+            build.add_variable("mpv_arg", "");
+        }
         build.add_inputs("", inputs![":installer:template", glob!["qt/installer/**"]]);
         build.add_output_stamp(if self.portable {
             "portable/briefcase.build.stamp"
