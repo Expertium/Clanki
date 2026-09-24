@@ -13,6 +13,18 @@
 //!   the stream into the model's per-review input records, the records Python's
 //!   `_historical_rwkv_review_inputs` builds.
 //!
+//! What an encoder may read: the event at hand and its own state, which only
+//! earlier events built. It computes the event's features from that state
+//! first and advances the state with the event's answer after, so nothing
+//! that depends on an answer (a grade mean, a sibling's entry) reaches the
+//! features of the review it answers. The published model measures its
+//! intervals from answer times (the review ids); an encoder that must not
+//! see the answer measures them from `RwkvReviewEvent::show_millis`. A new
+//! input layout is a new encoder beside `published` over the same stream,
+//! and a new name for the state cache's layout tag (`_RWKV_FEATURE_LAYOUT`
+//! in `qt/aqt/rwkv_scheduler.py`), so that states replayed with one encoder
+//! are rebuilt rather than read by a model that expects another.
+//!
 //! This module reads the collection for both and runs them for the whole
 //! history (`rwkv_historical_review_inputs`). Its output is that of the
 //! Python build, value for value; where it cannot be (a collection Python

@@ -47,7 +47,8 @@ pub(crate) struct RwkvReviewEvent {
 
 impl RwkvReviewEvent {
     /// When the card was shown: the answer time less the time the answer
-    /// took. An encoder that must not look at the answer reads this.
+    /// took. An encoder that must not look at the answer reads this; the
+    /// published encoder measures from answer times, so none does yet.
     #[allow(dead_code)]
     pub(crate) fn show_millis(&self) -> i64 {
         self.review_id - self.duration_millis
