@@ -425,16 +425,35 @@ impl QueueSortOptions {
         self.rwkv_review_instant_order_enabled
     }
 
-    /// Retrievability and relative-overdueness orders in an RWKV preset rank
-    /// by RWKV's own measure (spec sched.rwkv-review-order), never FSRS's.
+    fn review_order_ranks_by_retrievability(&self) -> bool {
+        matches!(
+            self.review_order,
+            ReviewCardOrder::RetrievabilityAscending
+                | ReviewCardOrder::RetrievabilityDescending
+                | ReviewCardOrder::RelativeOverdueness
+        )
+    }
+
+    /// Retrievability and relative-overdueness orders in an RWKV-Curve preset
+    /// rank by RWKV-Curve's own measure (spec sched.rwkv-review-order), never
+    /// FSRS's.
     fn review_order_from_rwkv_keys(&self) -> bool {
-        (self.rwkv_review_enabled || self.rwkv_review_instant_order_enabled)
-            && matches!(
-                self.review_order,
-                ReviewCardOrder::RetrievabilityAscending
-                    | ReviewCardOrder::RetrievabilityDescending
-                    | ReviewCardOrder::RelativeOverdueness
-            )
+        self.rwkv_review_enabled && self.review_order_ranks_by_retrievability()
+    }
+
+    /// The order the due cards of `gather_due_cards` come in. RWKV-Instant
+    /// scores no learning card, and no other algorithm may rank its cards, so
+    /// under a retrievability order its interday learning cards come by due
+    /// day (spec sched.rwkv-review-order).
+    fn due_card_order(&self) -> ReviewCardOrder {
+        if self.rwkv_review_instant_order_enabled
+            && !self.rwkv_review_enabled
+            && self.review_order_ranks_by_retrievability()
+        {
+            ReviewCardOrder::Day
+        } else {
+            self.review_order
+        }
     }
 }
 
@@ -1171,6 +1190,63 @@ mod test {
             )]),
         )
         .unwrap();
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-review-order: under RWKV-Instant,
+    // interday learning cards (which it does not score) come by due day
+    // under the retrievability orders, not by RWKV-Curve's score, the
+    // fallback curve through FSRS-7's interval or FSRS-7's retrievability
+    #[test]
+    fn rwkv_instant_interday_learning_cards_come_by_due_day() -> Result<()> {
+        for order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+        ] {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, true)?;
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_rwkv_instant_order(&mut deck, order);
+            let today = col.timing_today()?.days_elapsed as i32;
+            // every other algorithm's value puts `later` first in this order
+            let descending = order == ReviewCardOrder::RetrievabilityDescending;
+            let (low, high) = ((0.1, 0.01), (0.95, 100.0));
+            let (earlier_r, later_r) = if descending { (low, high) } else { (high, low) };
+            let mut add = |due, elapsed_days: i64, (_, stability): (f32, f32)| {
+                add_memory_state_card(
+                    &mut col,
+                    deck.id,
+                    CardQueue::DayLearn,
+                    CardType::Relearn,
+                    due,
+                    elapsed_days * 86_400,
+                    stability,
+                )
+            };
+            let earlier = add(today - 2, 3, earlier_r)?;
+            let later = add(today, 1, later_r)?;
+            col.set_rwkv_stats_graph_score_entries(
+                String::new(),
+                [(earlier, earlier_r.0), (later, later_r.0)]
+                    .into_iter()
+                    .map(|(id, r)| {
+                        (
+                            id,
+                            crate::collection::RwkvStatsGraphScoreEntry {
+                                retrievability: Some(r),
+                                curve_retrievability: Some(r),
+                                intervening_reviews: None,
+                                target_retention: None,
+                                curve_due: true,
+                            },
+                        )
+                    })
+                    .collect(),
+            )?;
+
+            assert_eq!(col.queue_as_ids(deck.id), vec![earlier, later], "{order:?}");
+        }
+        Ok(())
     }
 
     // Pins spec/scheduling.md#sched.rwkv-review-order: RWKV-Curve's curve

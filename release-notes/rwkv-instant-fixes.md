@@ -11,3 +11,6 @@
   card's first rating after a Forget and after a new learning start, as they
   already did its first rating ever: no algorithm knows the card at that
   point, and RWKV-Instant was the only one scored on those ratings.
+- RWKV-Instant: interday learning cards (from another app's learning steps or
+  an algorithm switch) come by due date under the retrievability review
+  orders, instead of being ranked by RWKV-Curve's value or FSRS-7's interval.

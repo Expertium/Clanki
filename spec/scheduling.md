@@ -1058,14 +1058,22 @@ state tests; `test_rwkv_curve_states_*` and
 
 ## sched.rwkv-review-order
 
-Given a preset running RWKV-Curve or RWKV-Instant whose review sort order is
+Given a preset running RWKV-Curve whose review sort order is
 "Retrievability ascending", "Retrievability descending" or "Relative
 overdueness", when the study queue gathers due review cards and interday
-learning cards that it does not rank by RWKV-Instant queue scores (under
-RWKV-Instant only interday learning cards: its review cards come only from
-its scores, `sched.rwkv-instant-waits`), it ranks
-them by RWKV's own measure and applies the daily limits in that order. A
-card's retrievability is its RWKV-Curve retrievability score for today; a
+learning cards, it ranks them by RWKV-Curve's own measure and applies the
+daily limits in that order.
+
+Under RWKV-Instant with one of these orders, the review cards come only from
+RWKV-Instant's scores (`sched.rwkv-instant-waits`), ranked by them. Its
+interday learning cards (from another client's steps or an algorithm switch;
+RWKV-Instant itself puts no card in the learning queue,
+`sched.rwkv-instant-no-steps`) have no RWKV-Instant score, so they come by due
+day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
+interval and no FSRS-7 retrievability ranks them.
+
+Under RWKV-Curve, a card's retrievability is its RWKV-Curve retrievability
+score for today; a
 card without a score gets the value of the exponential forgetting curve
 through the interval RWKV scheduled for it, target ^ (days since the last
 review / interval), where the target is the card's desired retention, else
@@ -1082,9 +1090,16 @@ measure relative overdueness should use, he chose "RWKV curve scores"
 the retrievability orders. Before this entry, relative overdueness came from
 an SQL function that applied a one-component FSRS forgetting curve to the
 card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's —
-and the retrievability orders gathered the cards in due-day order.
+and the retrievability orders gathered the cards in due-day order. Andrew,
+2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
+(`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
+RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
+through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
+for them, so the due day, which every order without an algorithm uses, orders
+them.
 
-**Pinned by:** `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
+**Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
+`rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).

@@ -572,7 +572,7 @@ impl QueueBuilder {
         }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
-            self.context.sort_options.review_order,
+            self.context.sort_options.due_card_order(),
             kind,
             self.context.fsrs,
             |card| {
