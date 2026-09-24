@@ -763,6 +763,9 @@ def test_card_info_gets_rwkv_curves_own_curve_and_s90(
         return rwkv.RwkvCardCurveResult(curve=curve if has_curve else None)
 
     monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    monkeypatch.setattr(
+        rwkv, "rwkv_curve_last_replayed_review_id", lambda reviewer, card: 200_000
+    )
     monkeypatch.setattr(rwkv, "rwkv_card_info_curve_result", card_info_curve)
     monkeypatch.setattr("aqt.mediasrv.time.time", lambda: 200 + 2 * 86_400)
     response = _card_stats_with_two_reviews()
@@ -815,6 +818,9 @@ def test_card_info_sends_rwkv_curves_of_the_earlier_reviews(
     )
     monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
     monkeypatch.setattr(
+        rwkv, "rwkv_curve_last_replayed_review_id", lambda reviewer, card: 200_000
+    )
+    monkeypatch.setattr(
         rwkv,
         "rwkv_card_info_curve_result",
         lambda reviewer, card, *, elapsed_days=None: rwkv.RwkvCardCurveResult(
@@ -842,6 +848,9 @@ def test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready(
 
     monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
     monkeypatch.setattr(
+        rwkv, "rwkv_curve_last_replayed_review_id", lambda reviewer, card: 200_000
+    )
+    monkeypatch.setattr(
         rwkv,
         "rwkv_card_info_curve_result",
         lambda reviewer, card, *, elapsed_days=None: rwkv.RwkvCardCurveResult(
@@ -857,6 +866,50 @@ def test_card_info_marks_the_rwkv_curve_pending_until_rwkv_is_ready(
     assert not response.rwkv_curve.elapsed_days
     # still no FSRS-7 value while RWKV is not ready
     assert not response.revlog[1].HasField("memory_state")
+
+
+def test_card_info_measures_rwkv_curve_r_from_the_replayed_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-one-algorithm: a preview newer than the
+    last replayed review moves neither the curve's R nor the review that
+    shows its S90, and keeps no FSRS-7 memory state."""
+    import aqt.rwkv_scheduler as rwkv
+    from aqt.mediasrv import _add_rwkv_curve
+
+    curve = rwkv.RwkvCardCurve(
+        elapsed_days=(0.0, 1.0), recall=(1.0, 0.8), s90=0.4, current_recall=0.9
+    )
+    elapsed: list[float | None] = []
+
+    def card_info_curve(
+        reviewer: object, card: object, *, elapsed_days: float | None = None
+    ) -> object:
+        elapsed.append(elapsed_days)
+        return rwkv.RwkvCardCurveResult(curve=curve)
+
+    monkeypatch.setattr(rwkv, "rwkv_review_enabled", lambda reviewer, card: True)
+    # the review at time 200 is the replayed one
+    monkeypatch.setattr(
+        rwkv, "rwkv_curve_last_replayed_review_id", lambda reviewer, card: 200_000
+    )
+    monkeypatch.setattr(rwkv, "rwkv_card_info_curve_result", card_info_curve)
+    monkeypatch.setattr("aqt.mediasrv.time.time", lambda: 200 + 3 * 86_400)
+    from anki.stats_pb2 import CardStatsResponse
+
+    response = CardStatsResponse()
+    # newest first: a preview one day after the replayed review
+    for review_time in (200 + 86_400, 200, 100):
+        entry = response.revlog.add(time=review_time, button_chosen=3)
+        entry.memory_state.stability = 30.0
+
+    _add_rwkv_curve(response, object(), object())
+
+    # three days since the replayed review, not two since the preview
+    assert elapsed == [pytest.approx(3.0)]
+    assert not response.revlog[0].HasField("memory_state")
+    assert response.revlog[1].memory_state.stability == pytest.approx(0.4)
+    assert not response.revlog[2].HasField("memory_state")
 
 
 def test_card_info_has_no_rwkv_curve_for_other_algorithms(

@@ -9683,6 +9683,32 @@ def _rwkv_past_curves(
     )
 
 
+def rwkv_curve_last_replayed_review_id(reviewer: object, card: object) -> int | None:
+    """The id of the review whose curve RWKV-Curve stored for `card`: the
+    card's newest rated review that the replay reads, so neither a preview
+    (a Filtered row with no ease factor) nor one of the reviews the resident
+    state was built without (spec sched.rwkv-replay-start-row). Card info and
+    AnkiConnect measure the curve's R from it (spec ui.card-info-one-algorithm).
+    None when the card has no such review or the collection is not open."""
+
+    card_id = _card_id(card)
+    scalar = getattr(getattr(_collection(reviewer), "db", None), "scalar", None)
+    if card_id is None or not callable(scalar):
+        return None
+    ignored = sorted(
+        review_id
+        for review_id in _resident_ignored_review_ids(reviewer)
+        if isinstance(review_id, int) and not isinstance(review_id, bool)
+    )
+    ignored_clause = f" and id not in {ids2str(ignored)}" if ignored else ""
+    review_id = scalar(
+        "select max(id) from revlog where cid = ? and "
+        f"{_rwkv_historical_answer_sql_condition()}{ignored_clause}",
+        card_id,
+    )
+    return review_id if isinstance(review_id, int) and review_id > 0 else None
+
+
 def rwkv_card_info_curve(
     reviewer: object, card: object, *, elapsed_days: float | None = None
 ) -> RwkvCardCurve | None:

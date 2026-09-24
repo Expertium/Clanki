@@ -1023,7 +1023,13 @@ hover (`ui.retrievability-advanced-only`):
 instead, one algorithm at a time (`ui.card-info-rwkv-curve`).
 
 RWKV-Curve's recall now is its stored curve (`ui.card-info-rwkv-curve`) at
-the time since the card's latest answered review. While RWKV has no value
+the time since the review that stored it: the card's latest rated review
+that the replay reads, so not a newer preview (a Filtered row with no ease
+factor) and not a review the resident state was built without
+(`sched.rwkv-replay-start-row`). That review is also the one whose row shows
+the curve's S90; the other answered rows show no FSRS-7 memory state.
+AnkiConnect's `prop:r` and `prop:s` for an RWKV-Curve card read the same
+value. While RWKV has no value
 yet, the Retrievability row reads "Calculating…". Card info shows no other
 RWKV rows: no second retrievability, no answer-button probabilities, no
 next-S90 rows per button, no "R After Review" or "R After 10min", and no
@@ -1033,15 +1039,23 @@ stability, difficulty or retrievability at all, and no forgetting curve
 
 **Why:** Andrew, 2026-09-15: "It's too much clutter, just remove all of this
 and keep one R value"; "don't show DSR values in card info in Simple mode";
-never mix two algorithms in one display.
+never mix two algorithms in one display. Andrew, 2026-09-24 ("fix the bugs on
+our side"), on the RWKV-Curve review (`reviews/algo-2026-09-24/rwkv-curve.md`,
+section 6): card info and AnkiConnect counted from the newest answered row,
+so after a preview they showed R too high and disagreed with the Browser.
 
 **Pinned by:** `card_stats_report_the_algorithm_and_the_mode`
 (`rslib/src/stats/card.rs`);
 `test_card_info_queries_rwkv_without_cached_reviewer_prediction` (an
 RWKV-Instant card's one row), `test_reviewer_rwkv_prediction_uses_reviews_of_other_cards`
 (an RWKV-Curve card's none), `test_rwkv_card_info_curve_gives_the_recall_now`
-(`qt/tests/test_rwkv_scheduler.py`); `test_card_info_gets_rwkv_curves_own_curve_and_s90`
-(`qt/tests/test_mediasrv.py`); "FSRS-7 shows stability, difficulty and one
+(`qt/tests/test_rwkv_scheduler.py`); `test_card_info_gets_rwkv_curves_own_curve_and_s90`,
+`test_card_info_measures_rwkv_curve_r_from_the_replayed_review`
+(`qt/tests/test_mediasrv.py`);
+`test_rwkv_curve_last_replayed_review_skips_previews_and_ignored_reviews`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_rwkv_curve_prop_r_counts_from_the_replayed_review`
+(`qt/tests/test_ankiconnect.py`); "FSRS-7 shows stability, difficulty and one
 retrievability", "Simple mode shows no difficulty, stability or
 retrievability", "an RWKV-Curve card shows its curve's S90 and R, and no
 difficulty", "an RWKV-Instant card shows only RWKV's R, once, and no

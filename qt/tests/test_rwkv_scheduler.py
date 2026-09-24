@@ -22112,3 +22112,51 @@ def test_a_replay_key_that_cannot_be_read_discards_the_resident_state(
     rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
 
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+# Pins spec/ui.md#ui.card-info-one-algorithm: RWKV-Curve's R in card info and
+# AnkiConnect counts from the review whose curve RWKV stored, the card's
+# newest review that the replay reads: not a newer preview (a Filtered row
+# with no ease factor), not a review the resident state was built without,
+# and not a Rescheduled row.
+def test_rwkv_curve_last_replayed_review_skips_previews_and_ignored_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "create table revlog (id integer, cid integer, ease integer, "
+        "type integer, factor integer)"
+    )
+    db.executemany(
+        "insert into revlog values (?, ?, ?, ?, ?)",
+        [
+            (1_000, 7, 3, 1, 2500),  # the replayed review
+            (2_000, 7, 3, 3, 0),  # a preview
+            (3_000, 7, 3, 1, 2500),  # a review the resident state ignores
+            (4_000, 7, 0, 5, 0),  # Set Due Date
+            (5_000, 8, 3, 1, 2500),  # another card
+        ],
+    )
+
+    class DB:
+        def scalar(self, sql: str, *args: object) -> object:
+            row = db.execute(sql, args).fetchone()
+            return row[0] if row else None
+
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=DB())))
+    monkeypatch.setattr(
+        rwkv_scheduler, "_resident_ignored_review_ids", lambda _reviewer: (3_000,)
+    )
+    card = SimpleNamespace(id=7)
+
+    assert rwkv_scheduler.rwkv_curve_last_replayed_review_id(reviewer, card) == 1_000
+    monkeypatch.setattr(
+        rwkv_scheduler, "_resident_ignored_review_ids", lambda _reviewer: ()
+    )
+    assert rwkv_scheduler.rwkv_curve_last_replayed_review_id(reviewer, card) == 3_000
+    assert (
+        rwkv_scheduler.rwkv_curve_last_replayed_review_id(
+            reviewer, SimpleNamespace(id=9)
+        )
+        is None
+    )
