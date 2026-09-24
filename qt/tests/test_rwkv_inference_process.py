@@ -521,7 +521,8 @@ def _rwkv_curves_from_cache(cache: bytes) -> dict[int, tuple[list[float], list[f
     cursor = _RwkvCacheCursor(cache)
     cursor.expect_magic(b"ARWKVPROCSTATE4")
     _skip_rwkv_feature_state(cursor)
-    # the maximum interval the S90s were found at
+    # how the S90s were found: their kernel and the maximum interval
+    cursor.u32()
     cursor.u32()
     curves = {}
     for _ in range(cursor.u32()):

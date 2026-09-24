@@ -1107,7 +1107,12 @@ no `prop:s` search matches; under FSRS-7 both read FSRS-7's S90.
 Each curve's S90 is found once and kept with the curve: an answer finds it
 at once, and a curve a replay stored (or one read from a state saved before
 the S90s were kept) gets it the first time it is asked for, all such curves
-in parallel. The Stats page and a `prop:s` search ask RWKV for the S90s just
+in parallel. A curve that stays above 90% recall up to the maximum interval
+has the maximum interval as its S90, as card info always showed. A kept S90
+depends only on the curve and the maximum interval: a saved one found at
+another maximum interval, or by an older way of finding it, is found
+again, and a state cache of another model is not read at all (the model's
+SHA-256 keys it), so its curves and S90s are never used. The Stats page and a `prop:s` search ask RWKV for the S90s just
 before they read them; while RWKV is still loading its state the Stats page
 asks again every 2 seconds.
 
@@ -1120,12 +1125,16 @@ algorithms. Finding one S90 costs about 0.11 ms (measured 2026-09-25 on
 found once per curve rather than on every Stats open (a lookup of all
 42,610: under 1.1 ms).
 
-**Pinned by:** `a_stored_curve_keeps_its_s90` (`rslib/src/rwkv/mod.rs`),
+**Pinned by:** `a_stored_curve_keeps_its_s90`,
+`a_curve_above_ninety_percent_has_the_maximum_interval_as_its_s90`
+(`rslib/src/rwkv/mod.rs`),
 `rwkv_curve_stability_is_the_stored_curves_s90`
 (`rslib/src/stats/graphs/mod.rs`);
 `test_rsbridge_card_curve_s90s_are_the_stored_curves_s90`
 (`qt/tests/test_rwkv_inference_process.py`);
-`qt/tests/test_rwkv_curve_stored_s90.py`; `test_a_stability_search_prepares_rwkv_curves_s90s` (`qt/tests/test_browser.py`).
+`qt/tests/test_rwkv_curve_stored_s90.py`;
+`test_a_state_cache_of_another_model_is_not_read`
+(`qt/tests/test_rwkv_replay_inputs_backend.py`); `test_a_stability_search_prepares_rwkv_curves_s90s` (`qt/tests/test_browser.py`).
 
 ## ui.rwkv-curve-r-stored-curve
 

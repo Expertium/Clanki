@@ -1831,6 +1831,7 @@ insert into segments (
             + self.features.cache_state_len()
             + 4
             + 4
+            + 4
             + self
                 .curves
                 .values()
@@ -1838,12 +1839,13 @@ insert into segments (
                 .sum::<usize>()
     }
 
-    /// The runtime state: the features, then the maximum interval the
-    /// curves' S90s were found at, then each stored curve with its S90 (NaN
-    /// when it was not found yet).
+    /// The runtime state: the features, then how the curves' S90s were
+    /// found (`STORED_CURVE_S90_KERNEL`, the maximum interval), then each
+    /// stored curve with its S90 (NaN when it was not found yet).
     fn write_runtime_cache_state(&self, out: &mut impl io::Write) -> io::Result<()> {
         out.write_all(RUNTIME_CACHE_STATE_MAGIC)?;
         self.features.write_cache_state_to(out)?;
+        write_state_cache_u32(out, STORED_CURVE_S90_KERNEL as usize)?;
         write_state_cache_u32(out, self.max_interval_days as usize)?;
         write_state_cache_u32(out, self.curves.len())?;
         let mut curves: Vec<_> = self.curves.iter().collect();
@@ -2339,6 +2341,13 @@ const RUNTIME_CACHE_STATE_MAGIC: &[u8] = b"ARWKVPROCSTATE4";
 /// each S90 is then found when it is first asked for (spec
 /// ui.rwkv-curve-stored-s90).
 const RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90: &[u8] = b"ARWKVPROCSTATE2";
+/// The version of how a stored curve's S90 is found (`predict_curve` and
+/// `unrounded_interval_for_curve`). A saved S90 found another way is found
+/// again. The S90 depends on nothing else but the curve's own weights and
+/// the maximum interval: another model gives other curves, and the whole
+/// runtime state is then another model's (Python keys it on the model's
+/// SHA-256 and rebuilds it).
+const STORED_CURVE_S90_KERNEL: u32 = 1;
 
 /// Reads the magic of a runtime state: true when its curves carry their
 /// S90 (the current format), false for the format before it.
@@ -2362,6 +2371,7 @@ fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
     let features = FeatureState::read_cache_state(&mut cursor)?;
     if with_s90 {
         cursor.u32()?;
+        cursor.u32()?;
     }
     let curve_count = cursor.u32()? as usize;
     for _ in 0..curve_count {
@@ -2377,8 +2387,9 @@ fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
 }
 
 /// The features and the stored curves of a runtime state. A curve keeps the
-/// S90 the state holds for it only when that S90 was found at
-/// `max_interval_days`; otherwise the S90 is found again when asked for.
+/// S90 the state holds for it only when that S90 was found the current way
+/// (`STORED_CURVE_S90_KERNEL`) at `max_interval_days`; otherwise the S90 is
+/// found again when asked for.
 fn read_runtime_cache_state(
     bytes: &[u8],
     max_interval_days: u32,
@@ -2386,15 +2397,19 @@ fn read_runtime_cache_state(
     let mut cursor = Cursor::new(bytes);
     let with_s90 = read_runtime_cache_state_magic(&mut cursor)?;
     let features = FeatureState::read_cache_state(&mut cursor)?;
-    let s90_max_interval_days = if with_s90 { Some(cursor.u32()?) } else { None };
+    let s90_found_as = if with_s90 {
+        Some((cursor.u32()?, cursor.u32()?))
+    } else {
+        None
+    };
     let curve_count = cursor.u32()? as usize;
     let mut curves = HashMap::with_capacity(curve_count);
     for _ in 0..curve_count {
         let card_id = cursor.i64()?;
         let curve = ReviewCurve::read_cache_state(&mut cursor)?;
-        if let Some(s90_max_interval_days) = s90_max_interval_days {
+        if let Some(found_as) = s90_found_as {
             let s90 = cursor.f32()?;
-            if s90_max_interval_days == max_interval_days && !s90.is_nan() {
+            if found_as == (STORED_CURVE_S90_KERNEL, max_interval_days) && !s90.is_nan() {
                 let _ = curve.s90.set(Some(s90));
             }
         }
@@ -11908,6 +11923,41 @@ create table segment_state_chunks (
             .values()
             .all(|curve| curve.s90.get().is_none()));
         assert_eq!(restored.card_curve_s90s(&card_ids), s90s);
+    }
+
+    // Pins spec/ui.md#ui.rwkv-curve-stored-s90: a curve that stays above 90%
+    // recall up to the maximum interval has the maximum interval as its S90,
+    // as card info gave it before the S90s were kept, and keeps it through
+    // the runtime state (not NaN); S90s found another way are found again.
+    #[test]
+    fn a_curve_above_ninety_percent_has_the_maximum_interval_as_its_s90() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        for max_interval_days in [36_500, 3_650] {
+            let mut inference =
+                RwkvInference::load(weights.clone(), 0.9, max_interval_days).unwrap();
+            let curve = basis_curve(NUM_CURVES - 1);
+            assert!(predict_curve(&curve, max_interval_days as f32 * SECONDS_PER_DAY as f32) > 0.9);
+            let (_, before) = curve_points_and_s90(&curve, &[], max_interval_days).unwrap();
+            assert_eq!(before, max_interval_days as f32);
+            inference.curves.insert(7, curve);
+            assert_eq!(inference.card_curve_s90s(&[7]), vec![Some(before)]);
+            assert_eq!(inference.card_curve(7, &[]).unwrap().1, before);
+
+            let state = inference.cache_state();
+            let (_, curves) = read_runtime_cache_state(&state, max_interval_days).unwrap();
+            assert_eq!(curves[&7].s90.get().copied(), Some(Some(before)));
+
+            // a state whose S90s were found another way
+            let kernel_at = RUNTIME_CACHE_STATE_MAGIC.len() + inference.features.cache_state_len();
+            let mut other_kernel = state.clone();
+            other_kernel[kernel_at..kernel_at + 4]
+                .copy_from_slice(&(STORED_CURVE_S90_KERNEL + 1).to_le_bytes());
+            let (_, curves) = read_runtime_cache_state(&other_kernel, max_interval_days).unwrap();
+            assert!(curves[&7].s90.get().is_none());
+        }
     }
 
     // Pins spec/scheduling.md#sched.advance-postpone-algorithm: Advance and
