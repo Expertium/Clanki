@@ -80,6 +80,7 @@ use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::new::NewCardDueOrder;
 use crate::scheduler::rwkv::rwkv_historical_review_fingerprint_in_parts;
 use crate::scheduler::rwkv::rwkv_historical_review_rows_in_parts;
+use crate::scheduler::rwkv::rwkv_sorted_review_ids;
 use crate::scheduler::rwkv::RwkvReviewRescheduleItem;
 use crate::scheduler::rwkv::RWKV_FINGERPRINT_PART_ROWS;
 use crate::scheduler::rwkv_inputs::rwkv_historical_review_inputs;
@@ -1240,10 +1241,15 @@ impl crate::services::BackendSchedulerService for Backend {
         )
     }
 
-    fn rwkv_historical_review_rows(&self) -> Result<scheduler::RwkvHistoricalReviewRowsResponse> {
-        let rows = rwkv_historical_review_rows_in_parts(RWKV_FINGERPRINT_PART_ROWS, &mut |step| {
-            self.with_col(|col| step(col))
-        })?;
+    fn rwkv_historical_review_rows(
+        &self,
+        input: scheduler::RwkvHistoricalReviewRowsRequest,
+    ) -> Result<scheduler::RwkvHistoricalReviewRowsResponse> {
+        let rows = rwkv_historical_review_rows_in_parts(
+            &rwkv_sorted_review_ids(&input.ignored_review_ids),
+            RWKV_FINGERPRINT_PART_ROWS,
+            &mut |step| self.with_col(|col| step(col)),
+        )?;
         let wide = rows.len() * 8;
         let mut out = scheduler::RwkvHistoricalReviewRowsResponse {
             review_ids: Vec::with_capacity(wide),

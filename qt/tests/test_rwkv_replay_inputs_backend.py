@@ -190,9 +190,14 @@ def test_every_way_of_asking_gets_the_python_inputs(
         assert backend.prepared_checkpoint_histories
 
 
-def test_ignored_reviews_leave_the_history_after_its_start_rows(
+def test_ignored_reviews_leave_the_history_before_its_start_rows(
     col: Collection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Pins spec sched.rwkv-replay-start-row: the ignored reviews leave the
+    rows before each card's start row is found, in the backend's build and in
+    Python's, as the fingerprint drops them. An ignored start row is no
+    start, so its card starts at another row, and the fingerprint accepts
+    the history both builds give."""
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
     whole = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
     starts = [
@@ -205,7 +210,30 @@ def test_ignored_reviews_leave_the_history_after_its_start_rows(
     backend, python = _both(col, monkeypatch, ignored_review_ids=ignored)
     _assert_same(backend, python)
     assert backend.ignored_review_ids == tuple(sorted(ignored - {12345}))
-    assert backend.review_count == whole.review_count - 3
+    assert not ignored & set(backend.review_ids)
+    # the card of the ignored start row starts at another row now
+    card_id = next(
+        review.identity.card_id
+        for review_id, review in zip(whole.review_ids, whole.reviews, strict=True)
+        if review_id == starts[1]
+    )
+    card_starts = [
+        review_id
+        for review_id, review in zip(backend.review_ids, backend.reviews, strict=True)
+        if review.identity.card_id == card_id and review.card_type == 0
+    ]
+    assert len(card_starts) == 1 and card_starts[0] != starts[1]
+    fingerprint = rwkv_scheduler._rwkv_historical_review_fingerprint(
+        reviewer,
+        ignored_review_ids=backend.ignored_review_ids,
+        expected_identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+            last_review_id=backend.last_review_id,
+            review_count=backend.review_count,
+            history_hash=backend.history_hash,
+        ),
+    )
+    assert fingerprint is not None and fingerprint.history_is_valid
+    assert fingerprint.active_ignored_review_ids == backend.ignored_review_ids
 
 
 def test_an_add_on_preset_rule_moves_cards_the_same_way(

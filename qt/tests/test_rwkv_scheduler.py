@@ -7470,8 +7470,11 @@ def test_the_restore_reads_only_the_reviews_after_a_saved_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With `pending_history` None the restore reads the reviews after the
-    saved state's last one, handing over the saved per-card state; it never
-    asks for the whole history."""
+    saved state's last one, handing over the saved per-card state and the
+    reviews it ignored; it never asks for the whole history. Without the
+    ignored reviews the new rows could start where no whole read with them
+    starts them (spec sched.rwkv-replay-start-row), and the saved metadata
+    would lose them."""
     saved_history = rwkv_scheduler.RwkvHistoricalReviewInputs(
         reviews=[],
         review_ids=[],
@@ -7482,6 +7485,7 @@ def test_the_restore_reads_only_the_reviews_after_a_saved_prefix(
         review_count=2,
         history_hash="a" * 64,
         replay_key="replay-key",
+        ignored_review_ids=(1_500,),
     )
     stored = rwkv_scheduler.RwkvStoredStateCache(
         metadata={},
@@ -7518,6 +7522,7 @@ def test_the_restore_reads_only_the_reviews_after_a_saved_prefix(
     assert reads[0]["previous_interval_days_by_card"] == {10: 3}
     assert reads[0]["review_count_by_card"] == {10: 2}
     assert reads[0]["previous_history_hash"] == "a" * 64
+    assert reads[0]["ignored_review_ids"] == frozenset({1_500})
 
 
 def test_reviewer_rwkv_cache_adds_collection_marker_after_full_validation(
@@ -7677,7 +7682,7 @@ def test_historical_rwkv_review_inputs_keeps_collection_scope_for_count(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_historical_rwkv_review_rows",
-        lambda reviewer, *, after_review_id=None, deck_id=None, between_parts=None: (
+        lambda reviewer, *, after_review_id=None, deck_id=None, between_parts=None, **_kwargs: (
             rows
         ),
     )
@@ -17984,11 +17989,32 @@ def _rwkv_cache_reviewer(
                 return sorted(counts.items())
             assert "from revlog r" in sql
             assert "join cards c" in sql
+            active = re.search(r"and r\.id in \(([^)]*)\)", sql)
+            if active is not None:
+                # which ignored reviews are rated reviews of the history
+                requested = {int(value) for value in active[1].split(",")}
+                return [
+                    (row[0],)
+                    for row in rows
+                    if row[0] in requested
+                    and 1 <= row[4] <= 4
+                    and 0 <= row[6] <= 5
+                    and not (row[6] == 3 and row[8] == 0)
+                ]
+            ignored = re.search(r"and r\.id not in \(([^)]*)\)", sql)
+            ignored_ids = (
+                {int(value) for value in ignored[1].split(",")} if ignored else set()
+            )
             # Normalize here too, not only at fixture time: a test may append a
             # raw row after the reviewer is built, and the query it stands in
-            # for always returns the `is_learning_start` column.
+            # for always returns the `is_learning_start` column. The ignored
+            # reviews leave first, as the query drops them before it finds the
+            # start rows.
             query_rows = cast(
-                list[tuple[int, ...]], _benchmark_valid_historical_rows(rows)
+                list[tuple[int, ...]],
+                _benchmark_valid_historical_rows(
+                    [row for row in rows if row[0] not in ignored_ids]
+                ),
             )
             card_range = re.search(r"and r\.cid between (\d+) and (\d+)", sql)
             if card_range is not None:

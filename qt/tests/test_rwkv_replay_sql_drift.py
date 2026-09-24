@@ -25,6 +25,7 @@ import pytest
 from anki.collection import Collection
 from anki.decks import DeckId
 from aqt import rwkv_scheduler
+from aqt.rwkv_scheduler import RwkvHistoricalReviewInputs
 
 # (ease, review kind, ease factor)
 RATED_REVIEW = (3, 1, 2500)
@@ -178,7 +179,9 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
 ) -> None:
     # the query itself, not the backend's rows
     monkeypatch.setattr(
-        rwkv_scheduler, "_backend_historical_rwkv_review_rows", lambda col: None
+        rwkv_scheduler,
+        "_backend_historical_rwkv_review_rows",
+        lambda col, **_kwargs: None,
     )
     col = Collection(str(tmp_path / "rwkv-replay-parts.anki2"))
     try:
@@ -387,5 +390,253 @@ def test_an_incremental_read_matches_a_whole_read_of_the_enlarged_history(
             == after_whole.previous_review_id_by_card
         )
         assert incremental.review_count_by_card == after_whole.review_count_by_card
+    finally:
+        col.close()
+
+
+LEARNING = (3, 0, 2500)
+# a card whose only Learning row is ignored: training never sees the row, so
+# the card has no learning start and starts at its first rated row
+IGNORED_START_CARD = 1_700_000_900_001
+IGNORED_START_REVIEWS = (1_650_000_000_001, 1_650_000_000_011, 1_650_000_000_021)
+# a card whose ignored review decides no start row: after its learning start,
+# with no Learning row after it
+IGNORED_PLAIN_CARD = 1_700_000_900_002
+IGNORED_PLAIN_REVIEWS = (
+    1_650_000_000_002,
+    1_650_000_000_012,
+    1_650_000_000_022,
+    1_650_000_000_032,
+)
+
+
+def _add_card_with_reviews(
+    col: Collection, card_id: int, reviews: list[tuple[int, tuple[int, int, int]]]
+) -> None:
+    _add_card_with_history(col, card_id, [])
+    for review_id, (ease, kind, factor) in reviews:
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, "
+            "type) values (?, ?, -1, ?, 10, 5, ?, 1000, ?)",
+            review_id,
+            card_id,
+            ease,
+            factor,
+            kind,
+        )
+
+
+def _build_ignored_review_collection(col: Collection) -> frozenset[int]:
+    """The replay collection, plus a card whose ignored review is its
+    Learning start and a card whose ignored review is no start. Returns the
+    ignored reviews, with one that is in no review log."""
+    _build_replay_collection(col)
+    _add_card_with_reviews(
+        col,
+        IGNORED_START_CARD,
+        list(zip(IGNORED_START_REVIEWS, (RATED_REVIEW, LEARNING, RATED_REVIEW))),
+    )
+    _add_card_with_reviews(
+        col,
+        IGNORED_PLAIN_CARD,
+        list(
+            zip(
+                IGNORED_PLAIN_REVIEWS,
+                (LEARNING, RATED_REVIEW, RATED_REVIEW, RATED_RELEARNING),
+            )
+        ),
+    )
+    return frozenset({IGNORED_START_REVIEWS[1], IGNORED_PLAIN_REVIEWS[2], 12345})
+
+
+def _rows_of(rows: list[Any], card_id: int) -> list[tuple[int, bool]]:
+    """`(review id, is the start row)` of each of the card's rows."""
+    return [(int(row[0]), bool(row[9])) for row in rows if int(row[1]) == card_id]
+
+
+def test_every_replay_read_drops_the_ignored_reviews_before_the_start_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins spec sched.rwkv-replay-start-row: every read of the replay rows
+    drops the ignored reviews before it finds a card's start row, as the
+    backend fingerprint does: the query in one piece and in parts, the
+    backend's rows, and a read after a review id. The fingerprint accepts
+    the history the Python build makes of them."""
+    col = Collection(str(tmp_path / "rwkv-replay-ignored.anki2"))
+    try:
+        ignored = _build_ignored_review_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        query = rwkv_scheduler._historical_rwkv_review_rows(
+            reviewer, ignored_review_ids=ignored
+        )
+        backend = rwkv_scheduler._backend_historical_rwkv_review_rows(
+            col, ignored_review_ids=ignored
+        )
+        assert backend is not None, "the backend did not answer"
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                rwkv_scheduler,
+                "_backend_historical_rwkv_review_rows",
+                lambda col, **_kwargs: None,
+            )
+            parts = rwkv_scheduler._historical_rwkv_review_rows(
+                reviewer, between_parts=lambda: None, ignored_review_ids=ignored
+            )
+        assert len(query) > 50
+        assert [tuple(row) for row in backend] == [tuple(row) for row in query]
+        assert [tuple(row) for row in parts] == [tuple(row) for row in query]
+
+        # the ignored Learning start is no start: the card starts at its
+        # first rated row, as the fingerprint starts it
+        first, _learning, last = IGNORED_START_REVIEWS
+        assert _rows_of(query, IGNORED_START_CARD) == [(first, True), (last, False)]
+
+        # every other card's history is the one it had when the ignored
+        # reviews left the rows after the start rows were found
+        unfiltered = rwkv_scheduler._historical_rwkv_review_rows(reviewer)
+        dropped_after = [row for row in unfiltered if int(row[0]) not in ignored]
+        assert [tuple(row) for row in query if int(row[1]) != IGNORED_START_CARD] == [
+            tuple(row) for row in dropped_after if int(row[1]) != IGNORED_START_CARD
+        ]
+        assert _rows_of(query, IGNORED_PLAIN_CARD) == [
+            (IGNORED_PLAIN_REVIEWS[0], True),
+            (IGNORED_PLAIN_REVIEWS[1], False),
+            (IGNORED_PLAIN_REVIEWS[3], False),
+        ]
+        # the old order read one review of the card, the fingerprint two
+        assert _rows_of(dropped_after, IGNORED_START_CARD) == [(last, False)]
+
+        # a read after a review id gives the whole read's rows after it
+        review_ids = sorted(int(row[0]) for row in query)
+        for cutoff in (first - 1, review_ids[len(review_ids) // 2], review_ids[-2]):
+            for between_parts in (None, lambda: None):
+                after = rwkv_scheduler._historical_rwkv_review_rows(
+                    reviewer,
+                    after_review_id=cutoff,
+                    between_parts=between_parts,
+                    ignored_review_ids=ignored,
+                )
+                assert [tuple(row) for row in after] == [
+                    tuple(row) for row in query if int(row[0]) > cutoff
+                ]
+
+        # the Python build of the history, whose hash the fingerprint accepts
+        # with the active ignored reviews the state cache stores
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_backend_historical_rwkv_review_inputs",
+            lambda *_args, **_kwargs: None,
+        )
+        history = rwkv_scheduler._historical_rwkv_review_inputs(
+            reviewer, ignored_review_ids=ignored
+        )
+        assert history.ignored_review_ids == tuple(sorted(ignored - {12345}))
+        assert (
+            rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer, ignored_review_ids=ignored, between_steps=lambda: None
+            )
+            == history
+        )
+        fingerprint = rwkv_scheduler._rwkv_historical_review_fingerprint(
+            reviewer,
+            ignored_review_ids=history.ignored_review_ids,
+            expected_identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+                last_review_id=history.last_review_id,
+                review_count=history.review_count,
+                history_hash=history.history_hash,
+            ),
+        )
+        assert fingerprint is not None and fingerprint.history_is_valid
+        assert fingerprint.active_ignored_review_ids == history.ignored_review_ids
+    finally:
+        col.close()
+
+
+def test_an_incremental_read_with_ignored_reviews_matches_the_whole_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An incremental read with ignored reviews gives the whole read's result
+    with the same ignored reviews: the rows after the cutoff, the counts, the
+    identity and the active ignored reviews, also when the only new review
+    is itself ignored."""
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_backend_historical_rwkv_review_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    col = Collection(str(tmp_path / "rwkv-replay-ignored-incremental.anki2"))
+    try:
+        ignored = _build_ignored_review_collection(col)
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+
+        def whole(ignored: frozenset[int]) -> RwkvHistoricalReviewInputs:
+            return rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer, ignored_review_ids=ignored
+            )
+
+        def incremental(
+            before: RwkvHistoricalReviewInputs, ignored: frozenset[int]
+        ) -> RwkvHistoricalReviewInputs:
+            return rwkv_scheduler._historical_rwkv_review_inputs(
+                reviewer,
+                after_review_id=before.last_review_id,
+                previous_review_id_by_card=dict(before.previous_review_id_by_card),
+                previous_interval_days_by_card=dict(
+                    before.previous_interval_days_by_card
+                ),
+                review_count_by_card=dict(before.review_count_by_card),
+                previous_history_hash=before.history_hash,
+                previous_replay_key=before.replay_key,
+                ignored_review_ids=ignored,
+            )
+
+        def assert_same(
+            incremental: RwkvHistoricalReviewInputs,
+            whole: RwkvHistoricalReviewInputs,
+            new_review_count: int,
+        ) -> None:
+            assert len(incremental.reviews) == new_review_count
+            assert (
+                incremental.reviews
+                == whole.reviews[len(whole.reviews) - new_review_count :]
+            )
+            assert incremental.review_count == whole.review_count
+            assert incremental.last_review_id == whole.last_review_id
+            assert incremental.history_hash == whole.history_hash
+            assert incremental.review_count_by_card == whole.review_count_by_card
+            assert incremental.ignored_review_ids == whole.ignored_review_ids
+
+        before = whole(ignored)
+        # new reviews of the card whose Learning start is ignored, and of
+        # another card
+        day = 86_400 * 1000
+        for n, card_id in enumerate((IGNORED_START_CARD, 1_700_000_000_000)):
+            col.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, "
+                "time, type) values (?, ?, -1, 3, 12, 10, 2500, 1000, 1)",
+                before.last_review_id + (n + 1) * day,
+                card_id,
+            )
+        after = whole(ignored)
+        assert after.review_count == before.review_count + 2
+        assert_same(incremental(before, ignored), after, 2)
+
+        # nothing new: the saved state stands, with the same ignored reviews
+        assert_same(incremental(after, ignored), after, 0)
+
+        # the only new review is ignored as well
+        only_ignored = after.last_review_id + day
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, "
+            "time, type) values (?, ?, -1, 3, 12, 10, 2500, 1000, 1)",
+            only_ignored,
+            IGNORED_PLAIN_CARD,
+        )
+        more_ignored = ignored | {only_ignored}
+        with_it_ignored = whole(more_ignored)
+        assert with_it_ignored.history_hash == after.history_hash
+        assert only_ignored in with_it_ignored.ignored_review_ids
+        assert_same(incremental(after, more_ignored), with_it_ignored, 0)
     finally:
         col.close()

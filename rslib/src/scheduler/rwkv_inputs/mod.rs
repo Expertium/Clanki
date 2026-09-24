@@ -55,14 +55,19 @@ use crate::decks::DeckId;
 use crate::prelude::*;
 use crate::scheduler::fsrs::preset::FsrsPresetId;
 use crate::scheduler::rwkv::rwkv_historical_rows_in_parts;
+use crate::scheduler::rwkv::rwkv_sorted_review_ids;
 use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::RwkvHistoricalReviewRow;
 
 /// Everything the replay inputs read from the collection: the rows of the
-/// whole history (no review ignored) and what they need besides.
+/// whole history, read without the ignored reviews as the fingerprint reads
+/// them, and what they need besides.
 pub(crate) struct RwkvReplayInputsJob {
     rows: Vec<RwkvHistoricalReviewRow>,
+    /// The ignored reviews that still belong to the rated history, as the
+    /// reader gives them (`rwkv_active_ignored_review_ids`).
+    active_ignored_review_ids: Vec<i64>,
     timing: SchedTimingToday,
     /// Each card's preset, as the stable id and as the backend's preset id,
     /// where an add-on rule can move cards; else every card's preset is its
@@ -74,7 +79,6 @@ pub(crate) struct RwkvReplayInputsJob {
 
 /// How the replay inputs are encoded; the fields of the request.
 pub(crate) struct RwkvReplayInputsSettings<'a> {
-    pub(crate) ignored_review_ids: &'a [i64],
     pub(crate) first_review_elapsed_source: FirstReviewElapsedSource,
     pub(crate) first_review_uses_creation_by_config_id: &'a HashMap<i64, bool>,
     pub(crate) hash_history: bool,
@@ -104,11 +108,14 @@ pub(crate) struct RwkvReplayInputs {
 }
 
 impl Collection {
-    /// What the replay inputs read besides the review log. `stable_preset_ids`
-    /// holds the stable ids Python gave the add-on presets.
+    /// What the replay inputs read besides the review log. `rows` and
+    /// `active_ignored_review_ids` are what the reader gave.
+    /// `stable_preset_ids` holds the stable ids Python gave the add-on
+    /// presets.
     pub(crate) fn rwkv_replay_inputs_job(
         &mut self,
         rows: Vec<RwkvHistoricalReviewRow>,
+        active_ignored_review_ids: Vec<i64>,
         stable_preset_ids: &HashMap<String, i64>,
     ) -> Result<RwkvReplayInputsJob> {
         let timing = self.timing_today()?;
@@ -143,6 +150,7 @@ impl Collection {
         };
         Ok(RwkvReplayInputsJob {
             rows,
+            active_ignored_review_ids,
             timing,
             presets_by_card,
             decks_by_id: self.storage.get_decks_map()?,
@@ -163,28 +171,13 @@ impl RwkvReplayInputsJob {
     /// config id, an add-on preset Python gave no stable id).
     pub(crate) fn encode(self, settings: &RwkvReplayInputsSettings) -> Result<RwkvReplayInputs> {
         let Self {
-            mut rows,
+            rows,
+            active_ignored_review_ids,
             timing,
             presets_by_card,
             decks_by_id,
             configs_by_id,
         } = self;
-
-        // The ignored reviews leave the rows after the start rows are found,
-        // as in Python, and only those still in the rows count as active.
-        let ignored: HashSet<i64> = settings.ignored_review_ids.iter().copied().collect();
-        let mut active_ignored_review_ids = Vec::new();
-        if !ignored.is_empty() {
-            rows.retain(|row| {
-                let keep = !ignored.contains(&row.review_id);
-                if !keep {
-                    active_ignored_review_ids.push(row.review_id);
-                }
-                keep
-            });
-            active_ignored_review_ids.sort_unstable();
-            active_ignored_review_ids.dedup();
-        }
 
         let mut checked_decks = HashSet::new();
         for row in &rows {
@@ -310,25 +303,38 @@ fn python_stable_preset_id(
 /// held for one part of the review log at a time
 /// (`rwkv_historical_rows_in_parts`), and `extra`, read in the same hold as
 /// the job. A collection that keeps changing is read in one piece.
+///
+/// The reader drops the ignored reviews before it finds each card's start
+/// row, exactly as the fingerprint's read does (spec
+/// sched.rwkv-replay-start-row), so the inputs and the fingerprint replay the
+/// same history.
 pub(crate) fn rwkv_replay_inputs_job_in_parts<T>(
+    ignored_review_ids: &[RevlogId],
     stable_preset_ids: &HashMap<String, i64>,
     part_rows: usize,
     hold: &mut RwkvCollectionHold,
     mut extra: impl FnMut(&mut Collection) -> Result<T>,
 ) -> Result<(RwkvReplayInputsJob, T)> {
-    if let Some((job, _)) = rwkv_historical_rows_in_parts(&[], part_rows, hold, |col, rows, _| {
-        Ok((
-            col.rwkv_replay_inputs_job(rows, stable_preset_ids)?,
-            extra(col)?,
-        ))
-    })? {
+    if let Some((job, _)) = rwkv_historical_rows_in_parts(
+        ignored_review_ids,
+        part_rows,
+        hold,
+        |col, rows, active_ignored_review_ids| {
+            Ok((
+                col.rwkv_replay_inputs_job(rows, active_ignored_review_ids, stable_preset_ids)?,
+                extra(col)?,
+            ))
+        },
+    )? {
         return Ok(job);
     }
     let mut job = None;
     hold(&mut |col| {
-        let rows = col.storage.rwkv_historical_review_rows(&[])?.0;
+        let (rows, active_ignored_review_ids) = col
+            .storage
+            .rwkv_historical_review_rows(ignored_review_ids)?;
         job = Some((
-            col.rwkv_replay_inputs_job(rows, stable_preset_ids)?,
+            col.rwkv_replay_inputs_job(rows, active_ignored_review_ids, stable_preset_ids)?,
             extra(col)?,
         ));
         Ok(())
@@ -343,10 +349,14 @@ pub(crate) fn rwkv_historical_review_inputs(
     hold: &mut RwkvCollectionHold,
 ) -> Result<RwkvHistoricalReviewInputsResponse> {
     let started = std::time::Instant::now();
-    let (job, ()) =
-        rwkv_replay_inputs_job_in_parts(&input.stable_preset_ids, part_rows, hold, |_| Ok(()))?;
+    let (job, ()) = rwkv_replay_inputs_job_in_parts(
+        &rwkv_sorted_review_ids(&input.ignored_review_ids),
+        &input.stable_preset_ids,
+        part_rows,
+        hold,
+        |_| Ok(()),
+    )?;
     let inputs = job.encode(&RwkvReplayInputsSettings {
-        ignored_review_ids: &input.ignored_review_ids,
         first_review_elapsed_source: input.first_review_elapsed_source(),
         first_review_uses_creation_by_config_id: &input.first_review_uses_creation_by_config_id,
         hash_history: input.hash_history,
@@ -435,6 +445,7 @@ mod test {
     use crate::notes::NoteId;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::rwkv::rwkv_historical_review_rows_in_parts;
 
     fn add_review(
         col: &mut Collection,
@@ -459,19 +470,25 @@ mod test {
         Ok(())
     }
 
+    /// The inputs, read in parts of two rows as the RPC reads them.
     fn inputs(
         col: &mut Collection,
+        ignored_review_ids: &[i64],
         settings: &RwkvReplayInputsSettings,
     ) -> Result<RwkvReplayInputs> {
-        let rows = col.storage.rwkv_historical_review_rows(&[])?.0;
-        col.rwkv_replay_inputs_job(rows, &HashMap::new())?
-            .encode(settings)
+        let (job, ()) = rwkv_replay_inputs_job_in_parts(
+            &rwkv_sorted_review_ids(ignored_review_ids),
+            &HashMap::new(),
+            2,
+            &mut |step| step(col),
+            |_| Ok(()),
+        )?;
+        job.encode(settings)
     }
 
-    fn settings(ignored_review_ids: &[i64]) -> RwkvReplayInputsSettings<'_> {
+    fn settings() -> RwkvReplayInputsSettings<'static> {
         static REQUESTED: std::sync::OnceLock<HashMap<i64, bool>> = std::sync::OnceLock::new();
         RwkvReplayInputsSettings {
-            ignored_review_ids,
             first_review_elapsed_source: FirstReviewElapsedSource::DeckConfig,
             first_review_uses_creation_by_config_id: REQUESTED.get_or_init(HashMap::new),
             hash_history: true,
@@ -502,7 +519,7 @@ mod test {
                 kind,
             )?;
         }
-        let inputs = inputs(&mut col, &settings(&[]))?;
+        let inputs = inputs(&mut col, &[], &settings())?;
         let fingerprint = col.rwkv_historical_review_fingerprint(Default::default())?;
         assert_eq!(inputs.reviews.len(), 4);
         assert_eq!(
@@ -515,11 +532,65 @@ mod test {
         Ok(())
     }
 
-    /// An ignored review leaves the rows after the start rows are found, as
-    /// in Python: an ignored Learning start still starts the history, so the
-    /// rows before it stay out.
+    /// The RPC's inputs of the whole history, read in parts of `part_rows`.
+    fn inputs_from_the_rpc(
+        col: &mut Collection,
+        ignored_review_ids: &[i64],
+        part_rows: usize,
+    ) -> Result<RwkvHistoricalReviewInputsResponse> {
+        rwkv_historical_review_inputs(
+            RwkvHistoricalReviewInputsRequest {
+                ignored_review_ids: ignored_review_ids.to_vec(),
+                hash_history: true,
+                ..Default::default()
+            },
+            part_rows,
+            &mut |step| step(col),
+        )
+    }
+
+    fn i64_values(column: &[u8]) -> Vec<i64> {
+        column
+            .chunks_exact(8)
+            .map(|bytes| i64::from_le_bytes(bytes.try_into().unwrap()))
+            .collect()
+    }
+
+    /// The fingerprint accepts the inputs' history, asked as the state cache
+    /// asks it: with the active ignored reviews the inputs gave, which the
+    /// cache stores. It replays the same rows, from the same start rows.
+    fn assert_the_fingerprint_accepts(
+        col: &mut Collection,
+        inputs: &RwkvHistoricalReviewInputsResponse,
+    ) -> Result<()> {
+        let fingerprint = col.rwkv_historical_review_fingerprint(
+            anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest {
+                ignored_review_ids: inputs.active_ignored_review_ids.clone(),
+                expected_identity: Some(anki_proto::scheduler::RwkvHistoricalReviewIdentity {
+                    last_review_id: inputs.last_review_id,
+                    review_count: inputs.review_count,
+                    history_hash: inputs.history_hash.clone(),
+                }),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(fingerprint.history_hash, inputs.history_hash);
+        assert_eq!(fingerprint.review_count, inputs.review_count);
+        assert_eq!(
+            fingerprint.active_ignored_review_ids,
+            inputs.active_ignored_review_ids
+        );
+        assert!(fingerprint.history_is_valid);
+        Ok(())
+    }
+
+    /// Pins spec sched.rwkv-replay-start-row: the ignored reviews leave the
+    /// rows BEFORE the start rows are found, as the fingerprint drops them.
+    /// An ignored Learning start is no start: the card with no other Learning
+    /// row starts at its first rated row, as training would start it, and the
+    /// fingerprint replays the same rows from the same start.
     #[test]
-    fn ignored_reviews_leave_after_the_start_rows_are_found() -> Result<()> {
+    fn an_ignored_learning_start_is_dropped_before_the_start_row_is_found() -> Result<()> {
         let mut col = Collection::new();
         let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
         col.add_card(&mut card)?;
@@ -527,14 +598,173 @@ mod test {
         add_review(&mut col, &card, first, RevlogReviewKind::Review)?;
         add_review(&mut col, &card, first + 1_000, RevlogReviewKind::Learning)?;
         add_review(&mut col, &card, first + 2_000, RevlogReviewKind::Review)?;
-        let inputs = inputs(&mut col, &settings(&[first + 1_000, 5]))?;
+        let ignored = [first + 1_000, 5];
+
+        let inputs = inputs(&mut col, &ignored, &settings())?;
         assert_eq!(inputs.active_ignored_review_ids, [first + 1_000]);
         let review_ids: Vec<i64> = inputs
             .reviews
             .iter()
             .map(|review| review.review_id)
             .collect();
-        assert_eq!(review_ids, [first + 2_000]);
+        assert_eq!(review_ids, [first, first + 2_000]);
+        // the first rated row is the start row: the learn-start state code
+        assert_eq!(inputs.reviews[0].card_type, 0);
+        assert_ne!(inputs.reviews[1].card_type, 0);
+
+        for part_rows in [1, 2, 1_000] {
+            let rpc = inputs_from_the_rpc(&mut col, &ignored, part_rows)?;
+            assert_eq!(i64_values(&rpc.review_ids), [first, first + 2_000]);
+            assert_eq!(Some(&rpc.history_hash), inputs.history_hash.as_ref());
+            assert_eq!(rpc.active_ignored_review_ids, [first + 1_000]);
+            assert_the_fingerprint_accepts(&mut col, &rpc)?;
+        }
+
+        // the rows the backend hands Python for its own build, whole and in
+        // parts, start at the same row
+        for part_rows in [1, 3, 1_000] {
+            let rows = rwkv_historical_review_rows_in_parts(
+                &rwkv_sorted_review_ids(&ignored),
+                part_rows,
+                &mut |step| step(&mut col),
+            )?;
+            let starts: Vec<(i64, bool)> = rows
+                .iter()
+                .map(|row| (row.review_id, row.is_learning_start))
+                .collect();
+            assert_eq!(starts, [(first, true), (first + 2_000, false)]);
+        }
+        Ok(())
+    }
+
+    /// An ignored review between two Learning runs joins them into one: the
+    /// later run is no start any more, so the card starts at the earlier
+    /// one, as the fingerprint starts it.
+    #[test]
+    fn an_ignored_review_between_two_learning_runs_joins_them() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        let first = card.id.0 + 10_000;
+        add_review(&mut col, &card, first, RevlogReviewKind::Learning)?;
+        add_review(&mut col, &card, first + 1_000, RevlogReviewKind::Review)?;
+        add_review(&mut col, &card, first + 2_000, RevlogReviewKind::Learning)?;
+        add_review(&mut col, &card, first + 3_000, RevlogReviewKind::Review)?;
+        let ignored = [first + 1_000];
+        let rpc = inputs_from_the_rpc(&mut col, &ignored, 2)?;
+        assert_eq!(
+            i64_values(&rpc.review_ids),
+            [first, first + 2_000, first + 3_000]
+        );
+        assert_the_fingerprint_accepts(&mut col, &rpc)?;
+        Ok(())
+    }
+
+    /// The inputs as they were built before the ignored reviews left the
+    /// rows before the start rows: the start rows found on every rated row,
+    /// and the ignored reviews dropped after.
+    fn inputs_with_the_ignored_reviews_dropped_after_the_start_rows(
+        col: &mut Collection,
+        ignored_review_ids: &[i64],
+    ) -> Result<RwkvReplayInputs> {
+        let mut rows = col.storage.rwkv_historical_review_rows(&[])?.0;
+        let mut active_ignored_review_ids = Vec::new();
+        rows.retain(|row| {
+            let keep = !ignored_review_ids.contains(&row.review_id);
+            if !keep {
+                active_ignored_review_ids.push(row.review_id);
+            }
+            keep
+        });
+        col.rwkv_replay_inputs_job(rows, active_ignored_review_ids, &HashMap::new())?
+            .encode(&settings())
+    }
+
+    /// Where no ignored review decides a start row, the history is the one
+    /// the inputs gave before the ignored reviews left the rows first: an
+    /// ignored review after the start row with no Learning row after it, an
+    /// ignored review before a Learning start, and a review id that is in no
+    /// review log.
+    #[test]
+    fn an_ignored_review_that_decides_no_start_row_leaves_the_history_unchanged() -> Result<()> {
+        let mut col = Collection::new();
+        let mut first_card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        let mut second_card = Card::new(NoteId(11), 0, DeckId(1), 0);
+        col.add_card(&mut first_card)?;
+        col.add_card(&mut second_card)?;
+        let first = first_card.id.0.max(second_card.id.0) + 10_000;
+        // Learning start, Review, Review (ignored), Relearning
+        add_review(&mut col, &first_card, first, RevlogReviewKind::Learning)?;
+        add_review(
+            &mut col,
+            &first_card,
+            first + 1_000,
+            RevlogReviewKind::Review,
+        )?;
+        add_review(
+            &mut col,
+            &first_card,
+            first + 2_000,
+            RevlogReviewKind::Review,
+        )?;
+        add_review(
+            &mut col,
+            &first_card,
+            first + 3_000,
+            RevlogReviewKind::Relearning,
+        )?;
+        // Review (ignored), Learning start, Review
+        add_review(
+            &mut col,
+            &second_card,
+            first + 500,
+            RevlogReviewKind::Review,
+        )?;
+        add_review(
+            &mut col,
+            &second_card,
+            first + 1_500,
+            RevlogReviewKind::Learning,
+        )?;
+        add_review(
+            &mut col,
+            &second_card,
+            first + 2_500,
+            RevlogReviewKind::Review,
+        )?;
+        let ignored = [first + 500, first + 2_000, 7];
+
+        let before =
+            inputs_with_the_ignored_reviews_dropped_after_the_start_rows(&mut col, &ignored)?;
+        let after = inputs(&mut col, &ignored, &settings())?;
+        assert_eq!(after.reviews, before.reviews);
+        assert_eq!(after.cards, before.cards);
+        assert_eq!(after.history_hash, before.history_hash);
+        let review_ids: Vec<i64> = after
+            .reviews
+            .iter()
+            .map(|review| review.review_id)
+            .collect();
+        assert_eq!(
+            review_ids,
+            [
+                first,
+                first + 1_000,
+                first + 1_500,
+                first + 2_500,
+                first + 3_000
+            ]
+        );
+        // the ignored review before the second card's start row is in no
+        // history, but it is still a rated review of the card, so it is
+        // active, as the fingerprint counts it
+        assert_eq!(before.active_ignored_review_ids, [first + 2_000]);
+        assert_eq!(
+            after.active_ignored_review_ids,
+            [first + 500, first + 2_000]
+        );
+        let rpc = inputs_from_the_rpc(&mut col, &ignored, 3)?;
+        assert_the_fingerprint_accepts(&mut col, &rpc)?;
         Ok(())
     }
 
@@ -551,18 +781,18 @@ mod test {
             card.id.0 + 10_000,
             RevlogReviewKind::Review,
         )?;
-        assert!(inputs(&mut col, &settings(&[])).is_ok());
+        assert!(inputs(&mut col, &[], &settings()).is_ok());
 
         // a review id below 0: Python floors its division, Rust truncates
         add_review(&mut col, &card, -1_500, RevlogReviewKind::Review)?;
-        assert!(inputs(&mut col, &settings(&[])).is_err());
-        assert!(inputs(&mut col, &settings(&[-1_500])).is_ok());
+        assert!(inputs(&mut col, &[], &settings()).is_err());
+        assert!(inputs(&mut col, &[-1_500], &settings()).is_ok());
 
         // a home deck that is gone: Python gives it no deck preset
         col.storage
             .db
             .execute("update cards set did = 987654321", [])?;
-        assert!(inputs(&mut col, &settings(&[-1_500])).is_err());
+        assert!(inputs(&mut col, &[-1_500], &settings()).is_err());
         Ok(())
     }
 
@@ -586,9 +816,10 @@ mod test {
         )?;
         let inputs = inputs(
             &mut col,
+            &[],
             &RwkvReplayInputsSettings {
                 recovery_checkpoint_max_age_millis: 8 * day,
-                ..settings(&[])
+                ..settings()
             },
         )?;
         let checkpoint = inputs.checkpoint.expect("a checkpoint");
