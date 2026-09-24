@@ -17830,18 +17830,33 @@ def _skip_state_map(reader: _RwkvBinaryReader) -> None:
         reader.skip(reader.u32())
 
 
+# Entries per struct call of an int map: a map of every card (160k
+# entries) is then about 20 calls instead of 320k, and no one call holds the
+# GIL for long while the main thread waits for it.
+_INT_MAP_CHUNK = 8192
+
+
 def _write_int_map(out: _RwkvBinaryOutput, values: dict[int, int]) -> None:
+    """The count, then each (key, value) as two little-endian i64, in key
+    order: the bytes of `_write_u32` and pairs of `_write_i64`."""
     _write_u32(out, len(values))
-    for key, value in sorted(values.items()):
-        _write_i64(out, key)
-        _write_i64(out, value)
+    items = sorted(values.items())
+    for start in range(0, len(items), _INT_MAP_CHUNK):
+        chunk = items[start : start + _INT_MAP_CHUNK]
+        _write_raw(
+            out,
+            struct.pack(f"<{2 * len(chunk)}q", *itertools.chain.from_iterable(chunk)),
+        )
 
 
 def _read_int_map_binary(reader: _RwkvBinaryReader) -> dict[int, int]:
+    count = reader.u32()
+    data = reader.bytes(count * 16)
     values: dict[int, int] = {}
-    for _ in range(reader.u32()):
-        key = reader.i64()
-        values[key] = reader.i64()
+    for start in range(0, count, _INT_MAP_CHUNK):
+        size = min(_INT_MAP_CHUNK, count - start)
+        flat = struct.unpack_from(f"<{2 * size}q", data, start * 16)
+        values.update(zip(flat[::2], flat[1::2]))
     return values
 
 
