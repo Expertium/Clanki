@@ -450,7 +450,8 @@ impl QueueSortOptions {
 /// first" and "Difficult cards first" sort by FSRS-7 difficulty, which RWKV
 /// has no counterpart of, so under RWKV-Curve and RWKV-Instant a preset that
 /// still stores one gathers as the deck-options screen shows it, by
-/// descending retrievability (spec deck-options.no-difficulty-order-under-rwkv).
+/// descending retrievability (spec
+/// deck-options.no-difficulty-order-under-rwkv).
 fn review_order_for_algorithm(config: &DeckConfig) -> ReviewCardOrder {
     let order = config.inner.review_order();
     let rwkv = config.inner.rwkv_review_enabled || config.inner.rwkv_review_instant_order_enabled;
@@ -1333,11 +1334,7 @@ mod test {
             // the same curve; the first card's review is older
             &[(10, 30, 1.0), (10, 3, 1.0)],
         )?;
-        hold_rwkv_queue_curves(
-            &mut col,
-            deck_id,
-            &[(ids[0], Some(90)), (ids[1], Some(90))],
-        );
+        hold_rwkv_queue_curves(&mut col, deck_id, &[(ids[0], Some(90)), (ids[1], Some(90))]);
         assert_eq!(col.queue_as_ids(deck_id), vec![ids[0], ids[1]]);
         // the queue holds no R: nothing is handed over again, and a later
         // review of the second card makes its curve unknown, so it goes last
@@ -1373,7 +1370,10 @@ mod test {
     fn rwkv_curve_difficulty_orders_gather_by_descending_retrievability() -> Result<()> {
         // (interval, elapsed): 0.9^2 = 0.81, 0.9^1 = 0.9, 0.9^3 = 0.73
         let cards = [(10, 20, 1.0), (10, 10, 1.0), (10, 30, 1.0)];
-        for order in [ReviewCardOrder::EaseAscending, ReviewCardOrder::EaseDescending] {
+        for order in [
+            ReviewCardOrder::EaseAscending,
+            ReviewCardOrder::EaseDescending,
+        ] {
             let mut col = Collection::new();
             let (deck_id, ids) = rwkv_curve_deck(&mut col, order, &cards)?;
             // FSRS-7 difficulty would give [0, 2, 1] or [1, 2, 0]
@@ -1394,7 +1394,10 @@ mod test {
     // RWKV-Instant's scores, highest first, never by FSRS-7 difficulty.
     #[test]
     fn rwkv_instant_difficulty_orders_gather_by_descending_retrievability() -> Result<()> {
-        for order in [ReviewCardOrder::EaseAscending, ReviewCardOrder::EaseDescending] {
+        for order in [
+            ReviewCardOrder::EaseAscending,
+            ReviewCardOrder::EaseDescending,
+        ] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, true)?;
             let mut deck = col.get_or_create_normal_deck("Default")?;

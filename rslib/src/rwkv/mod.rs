@@ -12423,9 +12423,9 @@ create table segment_state_chunks (
         assert_eq!(&restored_next_values[24..64], &expected_next_values[24..64]);
     }
 
-    // Pins spec/scheduling.md#sched.rwkv-live-learning-start-fresh: a forgotten card
-    // gets the features of a card the state never saw, apart from its own id
-    // code; the counters of the whole stream stay.
+    // Pins spec/scheduling.md#sched.rwkv-live-learning-start-fresh: a forgotten
+    // card gets the features of a card the state never saw, apart from its own
+    // id code; the counters of the whole stream stay.
     #[test]
     fn a_forgotten_card_has_the_features_of_an_unseen_card() {
         let input = |card_id, day_offset, elapsed_days: i64, card_type| ReviewInput {
@@ -12459,10 +12459,11 @@ create table segment_state_chunks (
         let never_seen = unseen.features_for(&input(777, 50, -1, 0));
         // the elapsed, rating, count and state features, then (after the
         // card, note, deck and preset codes) the day features
-        let ids_end = 24 + [IdKind::Card, IdKind::Note, IdKind::Deck, IdKind::Preset]
-            .map(id_encoding_dim)
-            .iter()
-            .sum::<usize>();
+        let ids_end = 24
+            + [IdKind::Card, IdKind::Note, IdKind::Deck, IdKind::Preset]
+                .map(id_encoding_dim)
+                .iter()
+                .sum::<usize>();
         assert_eq!(forgotten[..24], never_seen[..24]);
         assert_eq!(forgotten[ids_end..], never_seen[ids_end..]);
     }
