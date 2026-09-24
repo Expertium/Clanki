@@ -219,7 +219,7 @@ statistics-calibration-title = Calibration
 statistics-calibration-subtitle = How close an algorithm's predicted retrievability is to what really happened.
 # Label of the menu that picks the one algorithm the graph draws.
 statistics-calibration-algorithm = Algorithm
-statistics-calibration-predicted = Predicted retrievability
+statistics-calibration-predicted = Predicted retention
 statistics-calibration-actual = Actual retention
 # The tiles above the graph.
 statistics-calibration-average-predicted = Average predicted

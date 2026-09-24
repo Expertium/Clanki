@@ -170,7 +170,7 @@ test("both axes step by 0.1, and the count bars are blue", () => {
     expect(COUNT_BAR_OPACITY).toBe(0.45);
 });
 
-test("the X axis names the predicted retrievability", () => {
+test("the X axis names the predicted retention", () => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     renderCalibration(svg, calibrationBounds(), null);
     const texts = Array.from(svg.querySelectorAll("text")).map((t) => t.textContent);
