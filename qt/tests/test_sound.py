@@ -172,8 +172,9 @@ def test_mpv_can_play_generated_wav(generated_wav: Path):
     # use the MinGW build instead (spec ui.audio-mingw-mpv), which did not
     # hang once in 40 tries with 14 cores busy; the tries stay for the other
     # platforms and for a pyenv built before that change. Measured on
-    # 2026-09-22 on this Windows PC, with the MSVC build: the same command 150 times on an idle machine always finished, median
-    # 251 ms; inside the full qt suite it hung in 4 to 6 runs of 40; and these
+    # 2026-09-22 on this Windows PC, with the MSVC build: the same command
+    # 150 times on an idle machine always finished, median 251 ms; inside
+    # the full qt suite it hung in 4 to 6 runs of 40; and these
     # tests alone, which never hung idle in 30 runs, hung in 12 of 40 with 14
     # cores kept busy. A hung mpv uses 78 ms of CPU, waits on its own
     # synchronisation objects with every thread (no LpcReply or LpcReceive, so
@@ -401,3 +402,36 @@ def test_packaged_mpv_prefers_the_mingw_build(
     assert mpv == [str(mpv_path), "--idle"]
     # lame has no MinGW copy and stays anki-audio's
     assert lame == [str(audio_dir / "lame.exe")]
+
+
+# Pins spec/ui.md#ui.audio-starts-off-main-thread: mpv started on a thread of
+# its own sets itself up there, and asks the task manager (which takes work
+# from the main thread only, and writes to stderr otherwise) for nothing.
+@pytest.mark.skipif(is_lin, reason="mpv is not bundled for Linux")
+def test_mpv_started_off_the_main_thread_sets_itself_up_there(
+    monkeypatch, tmp_path: Path
+) -> None:
+    asked: list[str] = []
+    mock_mw = MagicMock()
+    mock_mw.taskman.run_in_background.side_effect = (
+        lambda task, on_done=None, **kwargs: asked.append(
+            threading.current_thread().name
+        )
+    )
+    monkeypatch.setattr(aqt, "mw", mock_mw)
+    made: list[MpvManager] = []
+    thread = threading.Thread(
+        target=lambda: made.append(MpvManager(str(tmp_path), str(tmp_path))),
+        name="mpv-start",
+    )
+    thread.start()
+    thread.join(30)
+    [manager] = made
+    try:
+        assert asked == []
+        # on_init ran before the constructor returned: a sound that waited
+        # for mpv can be played at once
+        assert manager.mpv_version is not None
+        assert manager._callbacks_initialized
+    finally:
+        manager.close()
