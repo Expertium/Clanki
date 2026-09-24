@@ -633,6 +633,14 @@ def setupGL(pm: aqt.profiles.ProfileManager) -> None:
 
 PROFILE_CODE = os.environ.get("ANKI_PROFILE_CODE")
 
+# How long a thread may run Python before another thread that wants the GIL
+# gets it (CPython's default is 5 ms). The main thread enters Python several
+# times per event it handles, and while a background thread runs Python
+# (Total Knowledge's history build, the RWKV passes) it waits up to this long
+# at each entry: at 5 ms the window stuttered in 20-50 ms steps for as long as
+# such a job ran. A shorter interval costs the background thread ~1-2%.
+GIL_SWITCH_INTERVAL_SECS = 0.001
+
 
 def write_profile_results() -> None:
     assert profiler is not None
@@ -667,6 +675,8 @@ def _run(argv: list[str] | None = None, exec: bool = True) -> AnkiApp | None:
     """
     global mw
     global profiler
+
+    sys.setswitchinterval(GIL_SWITCH_INTERVAL_SECS)
 
     if argv is None:
         argv = sys.argv
