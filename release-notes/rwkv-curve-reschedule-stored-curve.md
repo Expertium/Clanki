@@ -4,3 +4,6 @@
   Stats show. Before, it used a curve that the model was never trained to give,
   so a rescheduled card could get a date that no other RWKV-Curve screen agreed
   with.
+- The `is:rwkv-curve:due` search (the Browser, AnkiConnect, filtered decks)
+  reads the same stored curve: a card matches when the days since its last
+  review reach the interval the RWKV-Curve reschedule gives it.

@@ -21114,7 +21114,6 @@ def _rwkv_stats_graph_scores_for_search(
         return None
     scores: list[tuple[int, float]] = []
     curve_scores: list[tuple[int, float]] = []
-    fully_predicted_card_ids: set[int] = set()
     curve_due_card_ids: set[int] = set()
     score_start = time.monotonic()
 
@@ -21145,8 +21144,10 @@ def _rwkv_stats_graph_scores_for_search(
                     return None
                 curve_scores.extend(stored_curve_scores)
     if prepare_curve_due and curve_input_build is not None:
-        # the curve-due flags need the current-interval crossing search, so
-        # that request keeps the full prediction path
+        # a card is RWKV-Curve due once its elapsed days reach the current
+        # interval of the curve stored at its last answered review, the same
+        # interval the RWKV-Curve reschedule gives it (spec
+        # sched.rwkv-curve-reschedule); never the curve of a query row
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
@@ -21156,27 +21157,24 @@ def _rwkv_stats_graph_scores_for_search(
                 # Stats request stops here and frees it
                 # (spec ui.stats-scoring-cancelled)
                 _raise_if_stats_scoring_cancelled(cancel_generation)
-                predictions = _rwkv_review_predictions_for_inputs(
+                predictions = _rwkv_review_current_interval_predictions_for_inputs(
                     batch,
-                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
                     state_token=state_token,
                 )
                 if predictions is None:
                     return None
+                if isinstance(predictions, _ResidentIntervalsUnavailable):
+                    # no stored-curve intervals: no card is curve due
+                    break
                 for (card_id, review_input), prediction in zip(
                     batch,
                     predictions,
                     strict=True,
                 ):
-                    retrievability = (
-                        prediction.retrievability if prediction is not None else None
-                    )
-                    if not _valid_probability(retrievability):
-                        continue
-                    scores.append((card_id, retrievability))
-                    fully_predicted_card_ids.add(card_id)
                     elapsed_days = review_input.current_elapsed_days
-                    current_interval = prediction.current_interval
+                    current_interval = (
+                        prediction.current_interval if prediction is not None else None
+                    )
                     if (
                         review_input.card_type == CARD_TYPE_REV
                         and review_input.card_queue == QUEUE_TYPE_REV
@@ -21192,11 +21190,6 @@ def _rwkv_stats_graph_scores_for_search(
         else ()
     )
     for batch_size, inputs_by_card_id in rating_head_inputs:
-        inputs_by_card_id = [
-            item
-            for item in inputs_by_card_id
-            if item[0] not in fully_predicted_card_ids
-        ]
         # every card is scored now, not taken from the study queue's scores,
         # which may be older than RWKV's R may be (spec sched.rwkv-r-freshness)
         if not inputs_by_card_id:

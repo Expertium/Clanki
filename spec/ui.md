@@ -1105,6 +1105,12 @@ it in seconds. This one value is what these places read:
 - the RWKV-Curve review order by retrievability (`sched.rwkv-review-order`)
   for the cards those places scored.
 
+The same stored curve decides `is:rwkv-curve:due` (the Browser, AnkiConnect,
+filtered decks): a review card matches when the whole days since its last
+review reach the curve's current interval at the card's target retention, the
+interval the RWKV-Curve reschedule gives it (`sched.rwkv-curve-reschedule`). A
+card with no stored curve does not match.
+
 The value does not change when RWKV's shared states (deck, preset, global)
 change after the card's last answer, for example when other cards of the
 deck are answered; only an answer of the card itself stores a new curve. A
@@ -1122,13 +1128,20 @@ the current shared states: on a copy of his collection (38,523 cards) that
 value differed from the stored curve by 0.03 in the median card, 0.21 at the
 99th percentile and up to 0.44, and card info and the graph disagreed. The
 whole-collection scoring took 5.0 s with the query and takes 1.5 s now.
+Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule that an
+interval comes from the curve of the card's last real review: before,
+`is:rwkv-curve:due` compared the elapsed days with the interval of a new query
+of RWKV, a curve training never gives a loss, so the search and the reschedule
+could disagree about the same card on the same day.
 
 **Pinned by:** `test_rwkv_curve_r_is_the_stored_curve_now`,
 `test_rwkv_curve_r_request_runs_the_rating_head_only_for_its_readers`,
 `test_prepare_stats_scores_asks_for_the_rating_head_only_when_read`,
 `test_rwkv_curve_r_publishes_cards_without_the_rating_head`,
-`test_stats_curve_due_keeps_the_full_prediction_path`
-(`qt/tests/test_rwkv_scheduler.py`)
+`test_stats_curve_due_reads_the_stored_curve_interval`,
+`test_filtered_deck_curve_due_uses_current_curve_interval`
+(`qt/tests/test_rwkv_scheduler.py`);
+`reschedule_intervals_come_from_the_stored_curve` (`rslib/src/rwkv/mod.rs`)
 
 ## ui.rwkv-no-prediction-never-rated
 

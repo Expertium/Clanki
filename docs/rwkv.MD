@@ -483,8 +483,9 @@ meaning of `is:due`:
   filtered reviews count toward the source deck's floor as described above.
 - `is:rwkv-curve:due` matches review cards whose source deck has
   `rwkv_review_enabled` when the scheduler-day elapsed time since the last
-  review has reached the current/query RWKV-Curve interval at the resolved
-  target retention.
+  review has reached the current interval of the RWKV-Curve curve stored at
+  the card's last answered review, at the resolved target retention (the
+  interval the RWKV-Curve reschedule uses; a query row's curve is never read).
 
 Desktop filtered-deck creation and rebuilding detect these predicates, warm the
 RWKV backend, and prepare fresh scores before the final search. Cards without a

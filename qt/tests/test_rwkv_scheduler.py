@@ -13479,20 +13479,21 @@ def test_filtered_deck_curve_due_uses_current_curve_interval(
         "_rwkv_curve_enabled_input_build",
         lambda _reviewer, build: build,
     )
+    # the current interval is the stored curve's (spec
+    # sched.rwkv-curve-reschedule); the Instant score is the rating head's
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_rwkv_review_predictions_for_inputs",
-        lambda *_args, **_kwargs: [
-            RwkvReviewPrediction(
-                retrievability=0.7,
-                curve_retrievability=0.6,
-                current_interval=5,
-            ),
-            RwkvReviewPrediction(
-                retrievability=0.9,
-                curve_retrievability=0.8,
-                current_interval=5,
-            ),
+        "_rwkv_review_current_interval_predictions_for_inputs",
+        lambda inputs, **_kwargs: [
+            RwkvReviewPrediction(curve_retrievability=0.6, current_interval=5)
+            for _ in inputs
+        ],
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_review_scores_for_inputs",
+        lambda inputs, **_kwargs: [
+            (card_id, {1: 0.7, 2: 0.9}[card_id]) for card_id, _ in inputs
         ],
     )
     monkeypatch.setattr(
@@ -19681,26 +19682,32 @@ def test_prepare_stats_scores_asks_for_the_rating_head_only_when_read(
     assert seen == [False, False, True, True]
 
 
-def test_stats_curve_due_keeps_the_full_prediction_path(
+def test_stats_curve_due_reads_the_stored_curve_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The curve-due flags need the current interval, so that request keeps
-    the full path; the curve value still comes from the stored curve."""
+    """Pins spec/ui.md#ui.rwkv-curve-r-stored-curve: `is:rwkv-curve:due` takes
+    the current interval of the curve stored at the card's last answered
+    review, the reschedule's interval; it never runs a query pass. Without
+    stored-curve intervals no card is curve due."""
 
     _patch_stats_search_scaffold(monkeypatch, _stats_curve_input_build(1))
     _patch_stored_curve_route(
         monkeypatch, curve_retrievabilities=lambda count: [0.55] * count
     )
+
+    def query_pass(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the curve-due flags must not read a query curve")
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_predictions_for_inputs", query_pass
+    )
+    stored_intervals: list[object] = [
+        [RwkvReviewPrediction(curve_retrievability=0.55, current_interval=5)]
+    ]
     monkeypatch.setattr(
         rwkv_scheduler,
-        "_rwkv_review_predictions_for_inputs",
-        lambda *_args, **_kwargs: [
-            RwkvReviewPrediction(
-                retrievability=0.7,
-                curve_retrievability=0.6,
-                current_interval=5,
-            )
-        ],
+        "_rwkv_review_current_interval_predictions_for_inputs",
+        lambda _inputs, **_kwargs: stored_intervals[0],
     )
 
     backend = SimpleNamespace(cached_review_input_predictions=lambda _inputs: None)
@@ -19712,12 +19719,21 @@ def test_stats_curve_due_keeps_the_full_prediction_path(
             prepare_curve_due=True,
             prepare_curve_retrievability=True,
         )
+        stored_intervals[0] = rwkv_scheduler._RESIDENT_INTERVALS_UNAVAILABLE
+        unavailable = rwkv_scheduler._rwkv_stats_graph_scores_for_search(
+            reviewer=SimpleNamespace(),
+            search="is:rwkv-curve:due",
+            prepare_curve_due=True,
+            prepare_curve_retrievability=True,
+        )
     finally:
         set_reviewer_backend(previous_backend)
 
     assert result is not None
     assert result.curve_due_card_ids == frozenset({1})
     assert result.curve_scores == [(1, 0.55)]
+    assert unavailable is not None
+    assert unavailable.curve_due_card_ids == frozenset()
 
 
 def test_backend_resident_curve_retrievability_requires_runtime_support() -> None:

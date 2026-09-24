@@ -9894,7 +9894,8 @@ order by e.id, e.cid
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
     }
 
-    /// Pins sched.rwkv-curve-reschedule: "Reschedule cards with RWKV-Curve"
+    /// Pins sched.rwkv-curve-reschedule and the `is:rwkv-curve:due` interval
+    /// (ui.rwkv-curve-r-stored-curve): "Reschedule cards with RWKV-Curve"
     /// takes the current interval and S90 from the curve RWKV stored at the
     /// card's last answered review, not from the curve of a query row (a head
     /// output that training never supervises). A card without a stored curve
@@ -9988,6 +9989,21 @@ order by e.id, e.cid
         assert!(
             differs_from_query_curve > 0,
             "the query row's curve must differ somewhere, or this pin cannot fail"
+        );
+        // the whole days `is:rwkv-curve:due` compares with the elapsed days
+        // (ui.rwkv-curve-r-stored-curve) must differ somewhere too
+        assert!(
+            queries
+                .iter()
+                .zip(&actual)
+                .zip(&query_heads)
+                .any(|((input, actual), query_heads)| {
+                    let target = input.target_retentions[2].unwrap_or(0.9);
+                    actual.current_interval
+                        != unrounded_interval_for_curve(&query_heads.curve, target, 36_500)
+                            .map(|days| clamped_interval_days(days, 36_500))
+                }),
+            "the query row's whole-day interval must differ somewhere"
         );
 
         let unseen = actual.last().unwrap();
