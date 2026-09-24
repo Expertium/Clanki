@@ -893,7 +893,9 @@ later prediction a state training never produced.
 `missing_ids_encode_as_the_model_versions_placeholders`,
 `reviews_without_ids_stream_through_the_model_versions_placeholders`
 (`rslib/src/rwkv/mod.rs`),
-`test_reference_runner_missing_note_follows_the_id_pipeline`
+`test_reference_runner_missing_note_follows_the_id_pipeline`,
+`test_reference_runner_gives_the_deleted_card_row_by_its_id_pipeline`,
+`test_rsbridge_deleted_card_reviews_stream_through_the_shared_placeholders`
 (`qt/tests/test_rwkv_inference_process.py`),
 `test_a_deleted_cards_reviews_are_replayed_without_ids`
 (`qt/tests/test_rwkv_replay_inputs_backend.py`) and

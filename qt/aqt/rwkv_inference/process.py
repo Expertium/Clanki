@@ -40,9 +40,11 @@ class RwkvInferenceProcess:
     entity's code from a generator seeded by its id (spec
     sched.rwkv-id-codes), and `id_pipeline="int32"` streams every missing
     note through one shared placeholder, as the shipped model was trained
-    (spec sched.rwkv-replay-deleted-cards). To reproduce srs-benchmark's own
-    runner, pass `id_codes="in_order"` (codes drawn from the global torch
-    stream in the order ids first appear) and `id_pipeline="int64"` (a
+    (spec sched.rwkv-replay-deleted-cards). To reproduce srs-benchmark, pass
+    `id_codes="in_order"` (codes drawn from the global torch stream in the
+    order ids first appear) and keep `id_pipeline="int32"`: srs-benchmark
+    cast ids to int32, so its missing ids share one placeholder too.
+    `id_pipeline="int64"` is for a model trained on the int64 pipeline (a
     placeholder note per card)."""
 
     def __init__(
