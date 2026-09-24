@@ -348,3 +348,59 @@ def test_a_state_cache_of_another_feature_layout_is_not_read(col: Collection) ->
     untagged = {key: value for key, value in metadata.items() if key != "featureLayout"}
     assert compatible(untagged)
     assert not compatible({**metadata, "featureLayout": "another-layout"})
+
+
+def test_the_backend_build_keeps_the_card_presets_python_keeps(
+    col: Collection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Python build leaves every history card's preset in
+    `_resolved_preset_id_cache`, which the preset-routing check of a changed
+    card reads; the backend build leaves the same."""
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    kept = []
+    for backend in (True, False):
+        rwkv_scheduler._resolved_preset_id_cache.pop(key, None)
+        with monkeypatch.context() as patch:
+            if not backend:
+                patch.setattr(
+                    rwkv_scheduler,
+                    "_backend_historical_rwkv_review_inputs",
+                    lambda *_args, **_kwargs: None,
+                )
+            rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        kept.append(dict(rwkv_scheduler._resolved_preset_id_cache[key]))
+    assert len(kept[0]) > 30
+    assert kept[0] == kept[1]
+
+
+def test_a_card_preset_kept_from_before_is_built_in_python(
+    col: Collection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python builds with the presets it kept; where one differs from the
+    collection's, the backend's inputs would differ, so Python builds them."""
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    key = rwkv_scheduler._preset_id_cache_key(reviewer)
+    card_id = min(col.db.list("select id from cards"))
+    rwkv_scheduler._resolved_preset_id_cache[key] = {card_id: "424242"}
+    try:
+        built = rwkv_scheduler._backend_historical_rwkv_review_inputs(
+            reviewer,
+            replay_key="",
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+            ignored_review_ids=frozenset(),
+            hash_history=True,
+            prepare_recovery_checkpoint=False,
+            steps=rwkv_scheduler._RwkvPreparationSteps(None),
+            progress=None,
+        )
+        assert built is None
+        assert rwkv_scheduler._resolved_preset_id_cache[key] == {card_id: "424242"}
+        history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+        assert {
+            review.identity.preset_id
+            for review in history.reviews
+            if review.identity.card_id == card_id
+        } == {424242}
+    finally:
+        rwkv_scheduler._resolved_preset_id_cache.pop(key, None)

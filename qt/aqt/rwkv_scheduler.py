@@ -19529,6 +19529,8 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
     except Exception:
         logger.debug("the backend did not build the RWKV replay inputs", exc_info=True)
         return None
+    if not _remember_backend_preset_ids(reviewer, cards, response.card_fsrs_preset_ids):
+        return None
     steps.step()
 
     total = len(columns[0])
@@ -19602,6 +19604,26 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
         ignored_review_ids=active_ignored_review_ids,
         prepared_checkpoint_histories=prepared_checkpoint_histories,
     )
+
+
+def _remember_backend_preset_ids(
+    reviewer: object,
+    card_ids: Sequence[int],
+    preset_ids: Sequence[str],
+) -> bool:
+    """Keep the cards' presets the backend read in `_resolved_preset_id_cache`,
+    as the Python build of the inputs does through `_resolved_fsrs_preset_ids`
+    (the preset-routing check of a changed card reads them). False, keeping
+    nothing, when the cache holds another preset for one of the cards: the
+    Python build would have used that one, so the caller builds the inputs
+    itself."""
+    cache = _resolved_preset_id_cache.setdefault(_preset_id_cache_key(reviewer), {})
+    pairs = list(zip(card_ids, preset_ids, strict=True))
+    if any(cache.get(card_id, preset_id) != preset_id for card_id, preset_id in pairs):
+        return False
+    for card_id, preset_id in pairs:
+        cache.setdefault(card_id, preset_id)
+    return True
 
 
 def _review_inputs_from_backend_columns(

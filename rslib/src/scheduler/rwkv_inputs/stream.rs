@@ -125,6 +125,13 @@ impl<'a> RwkvReviewStream<'a> {
         }
     }
 
+    /// The card's own stable preset id, once the stream has seen the card.
+    pub(crate) fn card_preset_id(&self, card_id: i64) -> Option<i64> {
+        self.cards
+            .get(&CardId(card_id))
+            .and_then(|card| card.preset_id)
+    }
+
     /// The event of the next row. Its preset is the first route that
     /// matches the card's reviews before this one, else the card's own.
     pub(crate) fn event(&mut self, row: RwkvHistoricalReviewRow) -> Result<RwkvReviewEvent> {

@@ -132,10 +132,16 @@ def _run(
 def test_the_backends_replay_runs_the_day_loop_as_pythons_does(
     col: Collection, monkeypatch: pytest.MonkeyPatch, curve: bool
 ) -> None:
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    key = aqt.rwkv_scheduler._preset_id_cache_key(reviewer)
+    aqt.rwkv_scheduler._resolved_preset_id_cache.pop(key, None)
     job, runtime, cache = _run(col, monkeypatch, curve, backend=True)
+    presets = aqt.rwkv_scheduler._resolved_preset_id_cache.pop(key)
     python_job, python_runtime, python_cache = _run(
         col, monkeypatch, curve, backend=False
     )
+    # the presets the history's cards are kept under, as Python keeps them
+    assert presets == aqt.rwkv_scheduler._resolved_preset_id_cache[key]
 
     assert len(job.sum_r) > 100
     assert job.first_day == python_job.first_day

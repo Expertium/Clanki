@@ -218,6 +218,10 @@ message TotalKnowledgeRwkvReplayResponse {
   bytes change_until_days = 8;
   // One per digest day, hex.
   repeated string digests = 9;
+  // Each card of the replay (int64 column) with its own preset, as in
+  // scheduler.RwkvHistoricalReviewInputsResponse.
+  bytes preset_card_ids = 10;
+  repeated string card_fsrs_preset_ids = 11;
 }
 
 message TotalKnowledgeRwkvJob {

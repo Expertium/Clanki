@@ -317,6 +317,10 @@ message RwkvHistoricalReviewInputsResponse {
   bytes checkpoint_card_previous_review_ids = 26;
   bytes checkpoint_card_previous_interval_days = 27;
   bytes checkpoint_card_review_counts = 28;
+  // Each card's own preset (per card, like `cards`), as
+  // GetFsrsPresetIdsForCards gives it: Python keeps these, as its own build
+  // of the inputs does.
+  repeated string card_fsrs_preset_ids = 29;
 }
 
 message SchedulingState {

@@ -52,7 +52,10 @@ use crate::storage::RwkvHistoricalReviewRow;
 pub(crate) struct RwkvReplayInputsJob {
     rows: Vec<RwkvHistoricalReviewRow>,
     timing: SchedTimingToday,
-    presets_by_card: Option<HashMap<CardId, i64>>,
+    /// Each card's preset, as the stable id and as the backend's preset id,
+    /// where an add-on rule can move cards; else every card's preset is its
+    /// home deck's.
+    presets_by_card: Option<HashMap<CardId, (i64, String)>>,
     decks_by_id: HashMap<DeckId, Deck>,
     configs_by_id: HashMap<DeckConfigId, DeckConfig>,
 }
@@ -81,6 +84,8 @@ pub(crate) struct RwkvReplayInputs {
     pub(crate) reviews: Vec<PublishedReviewInput>,
     /// Every card of the replay, in the order it first reaches them.
     pub(crate) cards: Vec<PublishedCardState>,
+    /// Each card's own preset, as `GetFsrsPresetIdsForCards` gives it.
+    pub(crate) card_fsrs_preset_ids: Vec<String>,
     pub(crate) active_ignored_review_ids: Vec<i64>,
     pub(crate) history_hash: Option<String>,
     pub(crate) checkpoint: Option<RwkvReplayCheckpoint>,
@@ -113,7 +118,10 @@ impl Collection {
                     .map(|(card_id, preset)| {
                         Ok((
                             card_id,
-                            python_stable_preset_id(&preset.id, stable_preset_ids)?,
+                            (
+                                python_stable_preset_id(&preset.id, stable_preset_ids)?,
+                                fsrs_preset_id_string(&preset.id),
+                            ),
                         ))
                     })
                     .collect::<Result<HashMap<_, _>>>()?,
@@ -185,8 +193,13 @@ impl RwkvReplayInputsJob {
             .map(|row| row.review_id - settings.recovery_checkpoint_max_age_millis);
         let routes = Vec::new();
         let mut stream = RwkvReviewStream::new(
-            match presets_by_card {
-                Some(by_card) => RwkvStreamPresets::ByCard(by_card),
+            match &presets_by_card {
+                Some(by_card) => RwkvStreamPresets::ByCard(
+                    by_card
+                        .iter()
+                        .map(|(card_id, (stable_id, _))| (*card_id, *stable_id))
+                        .collect(),
+                ),
                 None => RwkvStreamPresets::HomeDeck {
                     decks_by_id: &decks_by_id,
                     configs_by_id: &configs_by_id,
@@ -230,13 +243,35 @@ impl RwkvReplayInputsJob {
             }
             reviews.push(review);
         }
+        let cards = encoder.cards().to_vec();
+        let card_fsrs_preset_ids = cards
+            .iter()
+            .map(|card| match &presets_by_card {
+                Some(by_card) => by_card
+                    .get(&CardId(card.card_id))
+                    .map(|(_, preset_id)| preset_id.clone()),
+                None => stream
+                    .card_preset_id(card.card_id)
+                    .map(|preset_id| preset_id.to_string()),
+            })
+            .collect::<Option<Vec<_>>>()
+            .or_invalid("a replay card without a preset")?;
         Ok(RwkvReplayInputs {
             reviews,
-            cards: encoder.cards().to_vec(),
+            cards,
+            card_fsrs_preset_ids,
             active_ignored_review_ids,
             history_hash: history_hash.as_ref().map(RwkvHistoryHashChain::hex),
             checkpoint,
         })
+    }
+}
+
+/// `GetFsrsPresetIdsForCards`' preset id.
+fn fsrs_preset_id_string(preset_id: &FsrsPresetId) -> String {
+    match preset_id {
+        FsrsPresetId::DeckConfig(id) => id.0.to_string(),
+        FsrsPresetId::Addon(id) => id.clone(),
     }
 }
 
@@ -318,6 +353,7 @@ fn inputs_response(inputs: RwkvReplayInputs) -> RwkvHistoricalReviewInputsRespon
     let RwkvReplayInputs {
         reviews,
         cards,
+        card_fsrs_preset_ids,
         active_ignored_review_ids,
         history_hash,
         checkpoint,
@@ -346,6 +382,7 @@ fn inputs_response(inputs: RwkvReplayInputs) -> RwkvHistoricalReviewInputsRespon
         card_previous_review_ids: card_column(&cards, |card| card.previous_review_id),
         card_previous_interval_days: card_column(&cards, |card| card.previous_interval_days),
         card_review_counts: card_column(&cards, |card| card.review_count),
+        card_fsrs_preset_ids,
         last_review_id: reviews
             .iter()
             .map(|review| review.review_id)

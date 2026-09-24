@@ -48,22 +48,23 @@ pub(crate) fn total_knowledge_rwkv_replay(
         rwkv_replay_inputs_job_in_parts(&input.stable_preset_ids, part_rows, hold, |col| {
             col.storage.rwkv_reset_review_ids_and_cards()
         })?;
-    let reviews = job
-        .encode(&RwkvReplayInputsSettings {
-            ignored_review_ids: &[],
-            first_review_elapsed_source: FirstReviewElapsedSource::DeckConfig,
-            first_review_uses_creation_by_config_id: &input.first_review_uses_creation_by_config_id,
-            hash_history: false,
-            recovery_checkpoint_max_age_millis: 0,
-        })?
-        .reviews;
+    let inputs = job.encode(&RwkvReplayInputsSettings {
+        ignored_review_ids: &[],
+        first_review_elapsed_source: FirstReviewElapsedSource::DeckConfig,
+        first_review_uses_creation_by_config_id: &input.first_review_uses_creation_by_config_id,
+        hash_history: false,
+        recovery_checkpoint_max_age_millis: 0,
+    })?;
+    let reviews = inputs.reviews;
     let searched: HashSet<i64> = input
         .card_ids
         .chunks_exact(8)
         .map(|bytes| i64::from_le_bytes(bytes.try_into().unwrap()))
         .collect();
     let events = card_events(&reviews, &resets, &searched, input.today, input.next_day_at);
-    let response = replay_response(&reviews, &events, input.today, &input.digest_days);
+    let mut response = replay_response(&reviews, &events, input.today, &input.digest_days);
+    response.preset_card_ids = i64_column(inputs.cards.iter().map(|card| card.card_id));
+    response.card_fsrs_preset_ids = inputs.card_fsrs_preset_ids;
     tracing::debug!(
         reviews = reviews.len(),
         cards = events.len(),
@@ -193,6 +194,7 @@ fn replay_response(
             .iter()
             .map(|&day| history_digest(reviews, events, day))
             .collect(),
+        ..Default::default()
     }
 }
 

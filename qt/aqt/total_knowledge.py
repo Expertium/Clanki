@@ -270,8 +270,10 @@ def _compute(mw: Any, job: _Job, card_ids: frozenset[int]) -> None:
         review_start = review_end
 
         changes = replay.changes(day)
-        for card_id, _rating, _until in changes:
-            last_rating.remove(card_id)
+        # the curve head keeps no rows
+        if not job.curve:
+            for card_id, _rating, _until in changes:
+                last_rating.remove(card_id)
         total = 0.0
         if not job.curve and last_rating and day > cached_through:
             predictions = rwkv._predict_rwkv_memorised_day_from_rows(
@@ -354,6 +356,12 @@ def _backend_replay(
             "the backend did not build the Total Knowledge replay", exc_info=True
         )
         return None
+    if not rwkv._remember_backend_preset_ids(
+        reviewer,
+        memoryview(response.preset_card_ids).cast("q").tolist(),
+        response.card_fsrs_preset_ids,
+    ):
+        return None
 
     rows = response.packed_rows
     width = _PACKED_PREDICTION_REQUEST_ROW.size
@@ -369,11 +377,7 @@ def _backend_replay(
         start = change_ends[index - 1] if index else 0
         end = change_ends[index]
         return [
-            (
-                card_id,
-                None if review < 0 else rows[review * width : (review + 1) * width],
-                until,
-            )
+            (card_id, None if review < 0 else review, until)
             for card_id, review, until in zip(
                 change_cards[start:end].tolist(),
                 change_reviews[start:end].tolist(),
@@ -390,7 +394,9 @@ def _backend_replay(
             rows[start * width : end * width], end - start
         ),
         changes=changes,
-        set_rating=lambda last_rating, card_id, row: last_rating.set_row(card_id, row),
+        set_rating=lambda last_rating, card_id, review: last_rating.set_row(
+            card_id, rows[review * width : (review + 1) * width]
+        ),
         digest=digests.get,
     )
 
