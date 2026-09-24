@@ -45,7 +45,7 @@ from typing import (
 
 from typing_extensions import NotRequired
 
-from anki import collection_pb2, deck_config_pb2, scheduler_pb2
+from anki import _rsbridge, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.consts import (
     CARD_TYPE_LRN,
     CARD_TYPE_NEW,
@@ -22230,28 +22230,13 @@ def _rwkv_review_current_interval_predictions_for_inputs(
 # RWKV-Curve's forgetting curve is a mix of 128 exponential decays (rslib
 # `predict_curve`): each weight multiplies 0.9 ** (elapsed_seconds / s), with
 # the scales s spread from 0.1 s upwards by `linspace_exp(index, 128, 18.5)`.
-# The decay rates below are ln(0.9) / s, so each term is exp(elapsed * rate).
+# The decay rates below are ln(0.9) / s, so each term is exp(elapsed * rate);
+# `_rsbridge.stored_curve_recalls` evaluates the stored curves with them, in
+# doubles (rslib `scheduler::rwkv_curve_recall`).
 _RWKV_CURVE_DECAY_RATES = tuple(
     math.log(0.9) / (0.1 + (math.exp(18.5 * index / 127) - 1.0) * math.exp(22.0 - 18.5))
     for index in range(128)
 )
-
-
-def _rwkv_stored_curve_recall(
-    weights: Sequence[float], elapsed_seconds: int
-) -> float | None:
-    """The recall of a stored RWKV-Curve curve `elapsed_seconds` after the
-    review that stored it: rslib's `predict_curve`, with its minimum of one
-    second. None for a curve of an unknown shape."""
-
-    if not weights or len(weights) > len(_RWKV_CURVE_DECAY_RATES):
-        return None
-    elapsed = max(float(elapsed_seconds), 1.0)
-    raw_probability = sum(
-        weight * math.exp(elapsed * rate)
-        for weight, rate in zip(weights, _RWKV_CURVE_DECAY_RATES)
-    )
-    return 1e-5 + (1.0 - 2e-5) * raw_probability
 
 
 def _rwkv_review_input_elapsed_seconds(review_input: RwkvReviewInput) -> int | None:
@@ -22266,32 +22251,6 @@ def _rwkv_review_input_elapsed_seconds(review_input: RwkvReviewInput) -> int | N
     if isinstance(days, int) and days >= 0:
         return days * 86_400
     return None
-
-
-def _unpack_rwkv_stored_curves(
-    card_ids: Sequence[int], packed: bytes
-) -> dict[int, array] | None:
-    """The curves `card_curve_weights` packed (rslib `pack_stored_curves`):
-    per card id, a little-endian u32 weight count and that many f32 weights.
-    None when the bytes do not hold exactly one curve per id."""
-
-    curves: dict[int, array] = {}
-    offset = 0
-    for card_id in card_ids:
-        if offset + 4 > len(packed):
-            return None
-        (count,) = struct.unpack_from("<I", packed, offset)
-        offset += 4
-        end = offset + 4 * count
-        if end > len(packed):
-            return None
-        weights = array("f")
-        weights.frombytes(packed[offset:end])
-        if sys.byteorder != "little":
-            weights.byteswap()
-        curves[int(card_id)] = weights
-        offset = end
-    return curves if offset == len(packed) else None
 
 
 def _rwkv_stored_curve_retrievabilities_for_inputs(
@@ -22331,20 +22290,26 @@ def _rwkv_stored_curve_retrievabilities_for_inputs(
     if result is None:
         return []
     ids, packed = result
-    curves = _unpack_rwkv_stored_curves(ids, bytes(packed))
-    if curves is None:
+    # the curves `card_curve_weights` packed (rslib `pack_stored_curves`),
+    # evaluated in Rust: one value per input, NaN for a card without one
+    values = _rsbridge.stored_curve_recalls(
+        ids,
+        bytes(packed),
+        [card_id for card_id, _ in inputs_by_card_id],
+        [
+            _rwkv_review_input_elapsed_seconds(review_input)
+            for _, review_input in inputs_by_card_id
+        ],
+        _RWKV_CURVE_DECAY_RATES,
+    )
+    if values is None:
         logger.warning("RWKV stored curves arrived malformed; no curve values")
         return []
-    retrievabilities: list[tuple[int, float]] = []
-    for card_id, review_input in inputs_by_card_id:
-        weights = curves.get(card_id)
-        elapsed_seconds = _rwkv_review_input_elapsed_seconds(review_input)
-        if weights is None or elapsed_seconds is None:
-            continue
-        retrievability = _rwkv_stored_curve_recall(weights, elapsed_seconds)
-        if _valid_probability(retrievability):
-            retrievabilities.append((card_id, retrievability))
-    return retrievabilities
+    return [
+        (card_id, retrievability)
+        for (card_id, _), retrievability in zip(inputs_by_card_id, values, strict=True)
+        if _valid_probability(retrievability)
+    ]
 
 
 def _rwkv_review_predictions_for_inputs(

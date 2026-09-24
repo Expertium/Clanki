@@ -107,6 +107,34 @@ fn syncserver() -> PyResult<()> {
     Err(PyException::new_err(err.to_string()))
 }
 
+/// RWKV-Curve's R of the Stats graph from the stored curves
+/// `RwkvInference::card_curve_weights` returned, one value per (card id,
+/// elapsed seconds) query, NaN where there is none; None for malformed bytes
+/// (`anki::scheduler::rwkv_curve_recall`).
+#[pyfunction]
+fn stored_curve_recalls(
+    py: Python<'_>,
+    ids: Vec<i64>,
+    packed: &Bound<'_, PyBytes>,
+    card_ids: Vec<i64>,
+    elapsed_seconds: Vec<Option<i64>>,
+    decay_rates: Vec<f64>,
+) -> PyResult<Option<Vec<f64>>> {
+    if card_ids.len() != elapsed_seconds.len() {
+        return Err(PyException::new_err("one elapsed time per card id"));
+    }
+    let packed = packed.as_bytes();
+    let queries: Vec<(i64, Option<i64>)> = card_ids.into_iter().zip(elapsed_seconds).collect();
+    Ok(py.detach(|| {
+        anki::scheduler::rwkv_curve_recall::stored_curve_recalls(
+            &ids,
+            packed,
+            &queries,
+            &decay_rates,
+        )
+    }))
+}
+
 #[pyfunction]
 fn open_backend(init_msg: &Bound<'_, PyBytes>) -> PyResult<Backend> {
     match init_backend(init_msg.as_bytes()) {
@@ -1394,6 +1422,7 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();
     m.add_wrapped(wrap_pyfunction!(syncserver)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(stored_curve_recalls)).unwrap();
 
     Ok(())
 }
