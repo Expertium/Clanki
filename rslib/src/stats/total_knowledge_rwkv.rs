@@ -45,11 +45,10 @@ pub(crate) fn total_knowledge_rwkv_replay(
 ) -> Result<TotalKnowledgeRwkvReplayResponse> {
     let started = std::time::Instant::now();
     let (job, resets) =
-        rwkv_replay_inputs_job_in_parts(&input.stable_preset_ids, part_rows, hold, |col| {
+        rwkv_replay_inputs_job_in_parts(&[], &input.stable_preset_ids, part_rows, hold, |col| {
             col.storage.rwkv_reset_review_ids_and_cards()
         })?;
     let inputs = job.encode(&RwkvReplayInputsSettings {
-        ignored_review_ids: &[],
         first_review_elapsed_source: FirstReviewElapsedSource::DeckConfig,
         first_review_uses_creation_by_config_id: &input.first_review_uses_creation_by_config_id,
         hash_history: false,

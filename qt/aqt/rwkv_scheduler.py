@@ -5011,10 +5011,7 @@ def prepare_grade_now_reconciliation(
             return None
 
         histories_by_card_id = _rwkv_grade_now_card_histories(
-            _historical_rwkv_review_rows(
-                reviewer,
-                card_ids=valid_card_ids,
-            )
+            _rwkv_card_history_rows(reviewer, valid_card_ids)
         )
         identities_by_card_id: dict[int, RwkvReviewIdentity] = {}
         for card_id in valid_card_ids:
@@ -5626,7 +5623,7 @@ def _rwkv_live_answer_canonical_recovery_reason(
         db = getattr(_collection(reviewer), "db", None)
         if not callable(getattr(db, "all", None)):
             return "review answer history cannot be verified"
-        rows = _historical_rwkv_review_rows(reviewer, card_ids=[card_id])
+        rows = _rwkv_card_history_rows(reviewer, [card_id])
         if len(rows) > 1:
             return "review answer replaced retained learning history"
 
@@ -15048,6 +15045,10 @@ def _restore_reviewer_backend_cache(
                 review_count_by_card=stored_history.review_count_by_card,
                 previous_history_hash=stored_history.history_hash,
                 previous_replay_key=stored_history.replay_key,
+                # the reviews the saved state ignored: the new rows start
+                # where a whole read with them would start them, and the
+                # saved ignored reviews stay in the cache's metadata
+                ignored_review_ids=frozenset(stored_history.ignored_review_ids),
                 between_steps=_split_whole_history_query,
             )
         _require_reviewer_backend_warmup_current(is_current)
@@ -18650,21 +18651,38 @@ def _recovery_cutoff_review_id(
 
 
 def _active_ignored_review_ids(
-    raw_rows: Sequence[Sequence[object]],
+    reviewer: object,
     ignored_review_ids: AbstractSet[int],
-    steps: _RwkvPreparationSteps,
 ) -> tuple[int, ...]:
-    """Which of the reviews the state cache ignores are in `raw_rows`."""
+    """Which of the reviews the state cache ignores still belong to the rated
+    history, in id order: a rated review of a card that exists, wherever its
+    card's start row is. The backend fingerprint's
+    `rwkv_active_ignored_review_ids` (`rslib/src/storage/revlog/mod.rs`),
+    clause for clause, because the state cache stores these ids and the
+    fingerprint compares them with its own."""
+    valid_ids = sorted(
+        {
+            review_id
+            for review_id in ignored_review_ids
+            if isinstance(review_id, int) and not isinstance(review_id, bool)
+        }
+    )
+    if not valid_ids:
+        return ()
+    all_rows = getattr(getattr(_collection(reviewer), "db", None), "all", None)
+    if not callable(all_rows):
+        return ()
     return tuple(
-        sorted(
-            {
-                review_id
-                for block in steps.blocks(raw_rows)
-                for row in block
-                if row
-                and isinstance((review_id := row[0]), int)
-                and review_id in ignored_review_ids
-            }
+        row[0]
+        for row in all_rows(
+            f"""
+select r.id
+from revlog r
+join cards c on c.id = r.cid
+where {_rwkv_historical_answer_sql_condition("r")}
+  and r.id in {ids2str(valid_ids)}
+order by r.id
+"""
         )
     )
 
@@ -18736,6 +18754,7 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             after_review_id=after_review_id,
             deck_id=deck_id,
             limit=1,
+            ignored_review_ids=ignored_review_ids,
         )
         if not incremental_rows:
             review_count = sum(review_counts.values())
@@ -18758,6 +18777,9 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
                 deck_id=deck_id,
                 history_hash=history_hash,
                 replay_key=replay_key,
+                ignored_review_ids=_active_ignored_review_ids(
+                    reviewer, ignored_review_ids
+                ),
             )
 
     timing = _timing_today(reviewer)
@@ -18810,6 +18832,9 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     # Without that previous state the counts have to be derived, and only the
     # whole history can derive them, so the whole history is read.
     incremental = after_review_id is not None and have_previous_state
+    # The ignored reviews leave the rows before each card's start row is
+    # found, as the backend fingerprint drops them (spec
+    # sched.rwkv-replay-start-row): an ignored Learning start is no start.
     # a copy of its own: the loop below empties the rows as it goes, and the
     # query may hand back a list something else still holds
     raw_rows = list(
@@ -18818,22 +18843,10 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             after_review_id=after_review_id if incremental else None,
             deck_id=deck_id,
             between_parts=between_steps,
+            ignored_review_ids=ignored_review_ids,
         )
     )
-    active_ignored_review_ids = _active_ignored_review_ids(
-        raw_rows, ignored_review_ids, steps
-    )
-    if active_ignored_review_ids:
-        active_ignored_review_id_set = set(active_ignored_review_ids)
-        raw_rows = [
-            row
-            for row in raw_rows
-            if not (
-                row
-                and isinstance(row[0], int)
-                and row[0] in active_ignored_review_id_set
-            )
-        ]
+    active_ignored_review_ids = _active_ignored_review_ids(reviewer, ignored_review_ids)
     recovery_cutoff_review_id = (
         _recovery_cutoff_review_id(raw_rows, after_review_id)
         if prepare_recovery_checkpoint
@@ -19333,6 +19346,25 @@ def _historical_preset_id_for_review(
     return None
 
 
+def _rwkv_card_history_rows(
+    reviewer: object, card_ids: Sequence[int]
+) -> list[Sequence[object]]:
+    """The replay rows of these cards as the state cache holds them: the
+    cache's active ignored reviews leave the rows before each card's start
+    row is found, by the query every history build uses (spec
+    sched.rwkv-replay-start-row). Grade Now and a live answer continue the
+    resident state from these rows, so they must be the cache's."""
+    return _historical_rwkv_review_rows(
+        reviewer,
+        card_ids=card_ids,
+        ignored_review_ids=frozenset(
+            _rwkv_state_cache_ignored_review_ids(
+                _read_rwkv_state_cache_metadata(reviewer)
+            )
+        ),
+    )
+
+
 def _historical_rwkv_review_rows(
     reviewer: object,
     *,
@@ -19341,8 +19373,13 @@ def _historical_rwkv_review_rows(
     card_ids: Sequence[int] | None = None,
     limit: int | None = None,
     between_parts: Callable[[], None] | None = None,
+    ignored_review_ids: AbstractSet[int] = frozenset(),
 ) -> list[Sequence[object]]:
-    """`between_parts`, when given, runs the whole-history query in
+    """`ignored_review_ids` leave the rows before each card's start row is
+    found, as the backend fingerprint drops them (spec
+    sched.rwkv-replay-start-row).
+
+    `between_parts`, when given, runs the whole-history query in
     HISTORY_QUERY_PARTS card-id ranges and is called between two of them,
     so that a caller can stop it (by raising) after one part instead of the
     whole 3-4 s query. Merging the parts calls it again every
@@ -19360,7 +19397,9 @@ def _historical_rwkv_review_rows(
         if after_review_id is None and deck_id is None:
             # a caller that has already stopped does not start the read
             steps.step()
-            whole = _backend_historical_rwkv_review_rows(col)
+            whole = _backend_historical_rwkv_review_rows(
+                col, ignored_review_ids=ignored_review_ids
+            )
             if whole is not None:
                 steps.step()
                 return whole
@@ -19376,6 +19415,7 @@ def _historical_rwkv_review_rows(
                     None,
                     None,
                     (low, high),
+                    ignored_review_ids,
                 )
             )
         merged = heapq.merge(*parts, key=lambda row: (row[0], row[1]))
@@ -19387,7 +19427,14 @@ def _historical_rwkv_review_rows(
             steps.step()
         return rows
     return _historical_rwkv_review_rows_query(
-        reviewer, all_rows, after_review_id, deck_id, card_ids, limit, None
+        reviewer,
+        all_rows,
+        after_review_id,
+        deck_id,
+        card_ids,
+        limit,
+        None,
+        ignored_review_ids,
     )
 
 
@@ -19412,7 +19459,9 @@ _BACKEND_INT64_COLUMNS = (
 )
 
 
-def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | None:
+def _backend_historical_rwkv_review_rows(
+    col: Any, *, ignored_review_ids: AbstractSet[int] = frozenset()
+) -> list[Sequence[object]] | None:
     """The whole-history rows from the backend, which reads them in parts of
     the review log and holds the collection for one part at a time (about
     25 ms). The same rows as `_historical_rwkv_review_rows_query` without a
@@ -19425,7 +19474,7 @@ def _backend_historical_rwkv_review_rows(col: Any) -> list[Sequence[object]] | N
     if not callable(read) or sys.byteorder != "little":
         return None
     try:
-        rows = read()
+        rows = read(ignored_review_ids=sorted(ignored_review_ids))
         columns = [
             memoryview(getattr(rows, name)).cast("q") for name in _BACKEND_INT64_COLUMNS
         ]
@@ -19726,8 +19775,21 @@ def _historical_rwkv_review_rows_query(
     card_ids: Sequence[int] | None,
     limit: int | None,
     card_range: tuple[int, int] | None,
+    ignored_review_ids: AbstractSet[int] = frozenset(),
 ) -> list[Sequence[object]]:
     after_clause = "and e.id > ?" if after_review_id is not None else ""
+    # the ignored reviews leave `eligible`, so the start rows and the
+    # previous row kinds are found without them, as the backend finds them
+    valid_ignored_ids = sorted(
+        {
+            review_id
+            for review_id in ignored_review_ids
+            if isinstance(review_id, int) and not isinstance(review_id, bool)
+        }
+    )
+    ignored_clause = (
+        f"and r.id not in {ids2str(valid_ignored_ids)}" if valid_ignored_ids else ""
+    )
     # A read after a review id returns rows of that id or later, and only a
     # card with a review that late can have one. Restricting the scan to those
     # cards leaves every returned row the same and stops the query reading
@@ -19792,6 +19854,7 @@ with eligible as (
   from revlog r
   join cards c on c.id = r.cid
   where {_rwkv_historical_answer_sql_condition("r")}
+    {ignored_clause}
     {deck_clause}
     {card_clause}
     {recent_cards_clause}

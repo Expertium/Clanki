@@ -1137,22 +1137,27 @@ pub(crate) fn rwkv_historical_review_fingerprint_in_parts(
     fingerprint.or_invalid("fingerprint not read")
 }
 
-/// The replay rows of the whole history (`rwkv_historical_review_rows`, no
-/// review ignored), read with the collection held for one part of the
-/// review log at a time. The same rows as one read; a collection that keeps
-/// changing is read in one piece.
+/// The replay rows of the whole history (`rwkv_historical_review_rows`, the
+/// ignored reviews dropped before the start rows are found), read with the
+/// collection held for one part of the review log at a time. The same rows
+/// as one read; a collection that keeps changing is read in one piece.
 pub(crate) fn rwkv_historical_review_rows_in_parts(
+    ignored_review_ids: &[RevlogId],
     part_rows: usize,
     hold: &mut RwkvCollectionHold,
 ) -> Result<Vec<RwkvHistoricalReviewRow>> {
     if let Some((rows, _)) =
-        rwkv_historical_rows_in_parts(&[], part_rows, hold, |_, rows, _| Ok(rows))?
+        rwkv_historical_rows_in_parts(ignored_review_ids, part_rows, hold, |_, rows, _| Ok(rows))?
     {
         return Ok(rows);
     }
     let mut rows = None;
     hold(&mut |col| {
-        rows = Some(col.storage.rwkv_historical_review_rows(&[])?.0);
+        rows = Some(
+            col.storage
+                .rwkv_historical_review_rows(ignored_review_ids)?
+                .0,
+        );
         Ok(())
     })?;
     rows.or_invalid("replay rows not read")
@@ -1652,7 +1657,7 @@ mod test {
         assert!(!whole.is_empty());
         for part_rows in [1, 2, 3, 5, 1_000] {
             let mut holds = 0;
-            let rows = rwkv_historical_review_rows_in_parts(part_rows, &mut |step| {
+            let rows = rwkv_historical_review_rows_in_parts(&[], part_rows, &mut |step| {
                 holds += 1;
                 step(&mut col)
             })?;
@@ -1669,7 +1674,7 @@ mod test {
             .db
             .query_row("select max(id) from revlog", [], |row| row.get::<_, i64>(0))?;
         let mut holds = 0;
-        let rows = rwkv_historical_review_rows_in_parts(4, &mut |step| {
+        let rows = rwkv_historical_review_rows_in_parts(&[], 4, &mut |step| {
             holds += 1;
             if holds == 3 {
                 add_review(&mut col, &card, last_review_id + 1_000, 5)?;

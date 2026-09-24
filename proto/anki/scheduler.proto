@@ -226,7 +226,7 @@ service BackendSchedulerService {
   // limit (spec sched.rwkv-replay-start-row). Holds the collection only to
   // read, in parts of the review log; a write between two parts makes it
   // read again.
-  rpc RwkvHistoricalReviewRows(generic.Empty)
+  rpc RwkvHistoricalReviewRows(RwkvHistoricalReviewRowsRequest)
       returns (RwkvHistoricalReviewRowsResponse);
   // The whole history's replay inputs: what Python's
   // `_historical_rwkv_review_inputs` builds without a cutoff or a deck,
@@ -244,6 +244,12 @@ service BackendSchedulerService {
 // through memoryview.cast: packed varints took 80 ms to parse and 300 ms to
 // turn into rows, each in one call that held the GIL, and the UI froze for
 // that time as Stats opened.
+message RwkvHistoricalReviewRowsRequest {
+  // Left out of the rows before each card's start row is found, as the
+  // fingerprint leaves them out.
+  repeated int64 ignored_review_ids = 1;
+}
+
 message RwkvHistoricalReviewRowsResponse {
   reserved 1 to 10;
   bytes review_ids = 11;
@@ -265,8 +271,9 @@ message RwkvHistoricalReviewInputsRequest {
     CARD_CREATION = 1;
     MISSING = 2;
   }
-  // Left out of the replay. They leave the rows after each card's start
-  // row is found, as in Python.
+  // Left out of the replay. They leave the rows before each card's start
+  // row is found, as the fingerprint leaves them out; the response's
+  // active_ignored_review_ids are the fingerprint's too.
   repeated int64 ignored_review_ids = 1;
   // The stable ids Python gives the add-on presets (`_stable_preset_id`).
   map<string, int64> stable_preset_ids = 2;
