@@ -14039,7 +14039,9 @@ def publish_rwkv_curve_s90s(mw: object) -> RwkvStatsPreparationStatus:
     return RwkvStatsPreparationStatus.READY
 
 
-_STABILITY_SEARCH_PATTERN = re.compile(r"(?<![A-Za-z0-9_:-])prop:s(?=[<>=!])", re.IGNORECASE)
+_STABILITY_SEARCH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_:-])prop:s(?=[<>=!])", re.IGNORECASE
+)
 
 
 def search_uses_stability(search: str) -> bool:

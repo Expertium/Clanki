@@ -133,7 +133,9 @@ def test_without_a_model_no_card_has_a_curve_s90(
         ("fsrs7", "prop:rwkv-curve:r<0.9", True),
     ],
 )
-def test_searches_that_need_rwkv_values(algorithm: str, search: str, needs: bool) -> None:
+def test_searches_that_need_rwkv_values(
+    algorithm: str, search: str, needs: bool
+) -> None:
     col = SimpleNamespace(get_config=lambda key, default=None: algorithm)
     assert rwkv_scheduler.search_needs_rwkv_values(col, search) is needs
 
