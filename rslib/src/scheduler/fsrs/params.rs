@@ -112,15 +112,23 @@ pub(crate) struct FsrsReviewRetrievabilityProgress {
 }
 
 /// r: retention
+///
+/// Fitted for FSRS-7 with same-day reviews included in `r` and `c`
+/// (spec `sched.health-check-fsrs7-fit`):
+/// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>
 fn log_loss_adjustment(r: f32) -> f32 {
-    0.623 * (4. * r * (1. - r)).powf(0.738)
+    0.5988 * (4. * r * (1. - r)).powf(0.7303)
 }
 
 /// r: retention
 ///
 /// c: review count
+///
+/// Fitted for FSRS-7 with same-day reviews included in `r` and `c`
+/// (spec `sched.health-check-fsrs7-fit`):
+/// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>
 fn rmse_adjustment(r: f32, c: u32) -> f32 {
-    0.0135 / (r.powf(0.504) - 1.14) + 0.176 / ((c as f32 / 1000.).powf(0.825) + 2.22) + 0.101
+    0.0072 / (r.powf(0.9034) - 1.1) + 0.1578 / ((c as f32 / 1000.).powf(0.6513) + 1.6275) + 0.0711
 }
 
 #[derive(Clone)]
@@ -267,7 +275,9 @@ fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSR
         / fsrs_items as f32;
     let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
     let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
-    adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+    // Thresholds fitted alongside the coefficients above (spec
+    // `sched.health-check-fsrs7-fit`): ~5% of users are warned.
+    adjusted_log_loss <= 1.08 || adjusted_rmse <= 1.34
 }
 
 fn time_series_split_items(
@@ -1932,6 +1942,44 @@ pub(crate) mod tests {
             eval,
             &long_term_only
         ));
+    }
+
+    /// spec `sched.health-check-fsrs7-fit`. Values from
+    /// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>.
+    #[test]
+    fn health_check_fsrs7_fit_adjustments_and_thresholds() {
+        // log_loss_adjustment(0.9) and rmse_adjustment(0.9, 1000).
+        assert!((log_loss_adjustment(0.9) - 0.283_955).abs() < 1e-5);
+        assert!((rmse_adjustment(0.9, 1000) - 0.093_420).abs() < 1e-5);
+
+        // r = 0.85 (850 of 1000 items pass their last review), c = 1000.
+        // log_loss 0.4 / rmse_bins 0.15 passed under the old FSRS-6 fit
+        // (adjusted log loss 1.055 <= 1.11) but fails under the FSRS-7 fit
+        // (adjusted log loss 1.092 > 1.08, adjusted RMSE 1.489 > 1.34): this
+        // is the same-day-reviews-included recalibration the refit exists
+        // for, so the pinning test fails on the old coefficients/thresholds
+        // and passes on the new ones.
+        let mut items: Vec<FSRSItem> = (0..850)
+            .map(|_| FSRSItem {
+                reviews: vec![review(0), review(2)],
+            })
+            .collect();
+        items.extend((0..150).map(|_| FSRSItem {
+            reviews: vec![
+                review(0),
+                FSRSReview {
+                    rating: 1,
+                    delta_t: 2.0,
+                },
+            ],
+        }));
+        assert_eq!(items.len(), 1000);
+
+        let eval = ModelEvaluation {
+            log_loss: 0.4,
+            rmse_bins: 0.15,
+        };
+        assert!(!health_check_passed_for_evaluated_targets(eval, &items));
     }
 
     #[test]

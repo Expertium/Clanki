@@ -1261,6 +1261,42 @@ in `rslib/src/scheduler/fsrs/params.rs`;
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
+## sched.health-check-fsrs7-fit
+
+Given a Check Health evaluation, the pass rate `r` and review count `c` used
+to normalize its log loss and RMSE are read from the training items the
+evaluation was run on — same-day reviews included, since FSRS-7 training
+always includes them (`sched.fsrs7-only`), and only each card's first review
+excluded. The normalization uses coefficients fitted to FSRS-7 with same-day
+reviews, not the 2025 FSRS-6 fit:
+
+```
+log_loss_adjustment(r) = 0.5988 * (4 * r * (1 - r)) ^ 0.7303
+rmse_adjustment(r, c)  = 0.0072 / (r ^ 0.9034 - 1.1)
+                       + 0.1578 / ((c / 1000) ^ 0.6513 + 1.6275)
+                       + 0.0711
+```
+
+The check passes unless the adjusted log loss is at least 1.08 **and** the
+adjusted RMSE is at least 1.34 (`adjusted_log_loss <= 1.08 || adjusted_rmse
+<= 1.34`); about 5% of users are warned at these thresholds, against 2.2% at
+the old 1.11/1.53 pair.
+
+**Why:** Andrew, 2026-09-24, asked for a refit of the health-check
+normalization for FSRS-7. The 2025 coefficients and 1.11/1.53 thresholds
+were fitted to FSRS-6 evaluations that excluded same-day reviews from `r`
+and `c`; FSRS-7's log loss and RMSE include same-day reviews, so the old fit
+undercounted both and no longer matched its own median-1.00 calibration.
+Fitted the same way as the 2025 pair (least squares on
+log(actual / predicted), rescaled to a median normalized value of 1.00 on
+each metric, thresholds at the percentile pair that warns ~5% of users) on
+`FSRS-7-sched_penalties-short-secs-recency.jsonl` from srs-benchmark (10,000
+users). Full method and checks:
+<https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>.
+
+**Pinned by:** `health_check_fsrs7_fit_adjustments_and_thresholds` in
+`rslib/src/scheduler/fsrs/params.rs`.
+
 ## sched.fsrs-rs-latest
 
 Given any FSRS-7 computation (memory states, next states, retrievability,
