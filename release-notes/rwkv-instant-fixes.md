@@ -7,3 +7,7 @@
   retrievability" are gone (a preset that used one gathers by deck), and new
   cards get no RWKV-Instant value in the Stats retrievability graph, `is:new`
   searches, filtered decks, card info or AnkiConnect.
+- The Stats model-quality graphs (AUC-ROC, calibration, UM+) leave out a
+  card's first rating after a Forget and after a new learning start, as they
+  already did its first rating ever: no algorithm knows the card at that
+  point, and RWKV-Instant was the only one scored on those ratings.

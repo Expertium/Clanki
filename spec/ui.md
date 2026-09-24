@@ -1537,9 +1537,15 @@ They all use the same data: for every rating of the search's cards in the
 page's period, the probability of recall an algorithm predicted before that
 answer, and the answer itself (Hard, Good or Easy = remembered; Again =
 forgotten). A rating counts only when it follows an earlier rating of the
-same card in the same learning sequence, so a card's first rating, and its
-first rating after a reset, are left out: no algorithm has a memory state
-before them. Manual reschedules, resets and cram answers are not ratings.
+same card in the same learning sequence, so every rating that starts a
+sequence is left out: a card's first rating, its first rating after a Forget
+(a manual row with a zero ease factor; Set Due Date is no reset), and a rated
+Learning row whose previous rating is not a Learning row (a learning start,
+as when an old client relearned a card from scratch). No algorithm has a
+memory state before them: FSRS-7 and the RWKV replay both start the card
+again there, and RWKV-Instant's value for such a rating knows only the deck,
+the preset and the creation date. Each rule looks at the card's whole
+history, not only at the page's period. Manual reschedules, resets and cram answers are not ratings.
 The period selects the ratings; the algorithms still read the whole history
 before each of them, because that is where the memory state comes from. A
 card whose review log holds no learning step has no FSRS-7 prediction at
@@ -1730,7 +1736,11 @@ scores over two different sets of reviews cannot be compared. Andrew,
 not having higher AUC than Curve is sus"): score them on the shared
 ratings, leave each card's first rating out, and read RWKV's newest row of
 each rating; the RWKV session agreed, and on the benchmark Instant beats
-Curve for 99.5% of users. Reading the
+Curve for 99.5% of users. Andrew, 2026-09-24 ("fix the bugs on our side"):
+the RWKV-Instant review (`reviews/algo-2026-09-24/rwkv-instant.md`, section
+2) found that a relearn after a Forget was scored as a normal rating, which
+this entry already excluded; RWKV-Instant alone was scored on those rows,
+with a value for a first review. Reading the
 stored rows rather than replaying is what the Search Stats Extended fork
 does, and it is why a panel of hundreds of thousands of reviews opens at
 once; a replay of the whole history costs minutes and now belongs to the
@@ -1748,6 +1758,7 @@ notes about the data follow the explanation in the tooltip"
 `one_algorithm_alone_keeps_all_of_its_ratings`,
 `rwkv_takes_the_newest_row_of_each_rating_across_its_roles`,
 `a_cards_first_rating_is_never_scored`,
+`ratings_after_a_reset_or_a_learning_start_are_never_scored`,
 `the_period_selects_the_ratings`,
 `newer_ratings_than_the_stored_predictions_are_reported`,
 `calibration_bins_and_their_intervals`,

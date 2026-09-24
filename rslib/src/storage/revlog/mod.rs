@@ -1491,19 +1491,51 @@ impl SqliteStorage {
         Ok(ratings)
     }
 
-    /// The first rating of each searched card over its whole history, the
-    /// period aside: a rating as `searched_ratings_that_affect_scheduling`
-    /// counts one (spec ui.stats-model-metrics).
-    pub(crate) fn first_ratings_of_searched_cards(&self) -> Result<Vec<RevlogId>> {
-        self.db
-            .prepare_cached(
-                "select min(id) from revlog
-                 where cid in (select cid from search_cids)
-                   and ease > 0 and not (type = 3 and factor = 0)
-                 group by cid",
-            )?
-            .query_and_then([], |row| -> Result<RevlogId> { Ok(row.get(0)?) })?
-            .collect()
+    /// The ratings of the searched cards that start a learning sequence,
+    /// over their whole history, the period aside (spec
+    /// ui.stats-model-metrics): a card's first rating, its first rating
+    /// after a Forget, and a rated Learning row whose previous rating is not
+    /// a Learning row (a learning start, where the replays start the card
+    /// again). A rating is counted as `searched_ratings_that_affect_scheduling`
+    /// counts one. Sorted by id.
+    pub(crate) fn sequence_start_ratings_of_searched_cards(&self) -> Result<Vec<RevlogId>> {
+        let mut statement = self.db.prepare_cached(
+            "select id, cid, ease, factor, type from revlog
+             where cid in (select cid from search_cids)
+             order by cid, id",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut starts = vec![];
+        let mut card = None;
+        // the kind of the card's previous rating; None at a sequence start
+        let mut previous: Option<RevlogReviewKind> = None;
+        while let Some(row) = rows.next()? {
+            let entry = RevlogEntry {
+                id: row.get(0)?,
+                cid: row.get(1)?,
+                button_chosen: row.get(2)?,
+                ease_factor: row.get(3)?,
+                review_kind: row.get(4).unwrap_or_default(),
+                ..Default::default()
+            };
+            if card != Some(entry.cid) {
+                card = Some(entry.cid);
+                previous = None;
+            }
+            if entry.is_reset() {
+                previous = None;
+            } else if entry.has_rating_and_affects_scheduling() {
+                let learning = entry.review_kind == RevlogReviewKind::Learning;
+                let learning_start =
+                    learning && previous.is_some_and(|kind| kind != RevlogReviewKind::Learning);
+                if previous.is_none() || learning_start {
+                    starts.push(entry.id);
+                }
+                previous = Some(entry.review_kind);
+            }
+        }
+        starts.sort_unstable();
+        Ok(starts)
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards(&self) -> Result<Vec<RevlogEntry>> {
