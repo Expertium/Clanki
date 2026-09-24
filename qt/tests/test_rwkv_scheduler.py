@@ -22317,6 +22317,39 @@ def test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names(
     assert calls == []
 
 
+# Pins spec/scheduling.md#sched.rwkv-review-order: the RWKV state the
+# queue's curves belong to changes with a build of the whole state, not with
+# an answer, so the queue is not built again after every answer.
+def test_rwkv_queue_curve_state_changes_with_a_build_not_an_answer() -> None:
+    class Runtime:
+        def review(self, **kwargs: object) -> RwkvReviewTransition:
+            return RwkvReviewTransition(card_state=b"card")
+
+    backend = RwkvStatefulReviewerBackend(cast(Any, Runtime()))
+
+    def state() -> int:
+        token = SimpleNamespace(
+            backend=backend,
+            backend_assignment_generation=1,
+            resident_state_key=(1, 2),
+            resident_state_generation=0,
+        )
+        return rwkv_scheduler._rwkv_queue_curve_state(cast(Any, token))
+
+    before = state()
+    backend.review_input_answered(
+        replace(
+            _rwkv_review_input(card_id=1, note_id=10),
+            is_query=False,
+            ease=3,
+            card_type=int(RwkvReviewState.REVIEW),
+        )
+    )
+    assert state() == before
+    backend.reset_cache_snapshot()
+    assert state() != before
+
+
 @pytest.mark.parametrize(
     ("rwkv_curve", "order", "expected"),
     [

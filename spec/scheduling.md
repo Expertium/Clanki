@@ -1087,8 +1087,10 @@ curves of the tree's due review and interday learning cards whose curve the
 collection does not hold for their last review; it never waits for RWKV and
 never starts a warm-up for this. The collection keeps curves, not R values:
 a curve counts only for the review it came with (a later answer or an undo
-makes it unknown), a new RWKV state (a rebuild, a restore, a new model)
-drops them all, and a hand-over that brings a curve builds the queue again.
+makes it unknown), a new RWKV state (a rebuild, a restore, a new model, but
+not an answer) drops them all, and a hand-over that brings a curve builds the
+queue again. After an answer nothing is handed over, so the queue is kept
+(`sched.study-queue-kept-after-answer`).
 No score that the Stats page, a Browser search or card info kept takes part.
 A card RWKV stored no curve for, or whose curve is not held, goes after every
 card with a value. Only when the collection holds no curve for any of the
@@ -1126,7 +1128,8 @@ R of its own), and scored and unscored cards were compared on two measures.
 (`rslib/src/scheduler/queue/builder/mod.rs`);
 `test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names`,
 `test_rwkv_curve_queue_curves_only_for_its_retrievability_orders`,
-`test_rwkv_curve_queue_ranks_by_the_curves_handed_over`
+`test_rwkv_curve_queue_ranks_by_the_curves_handed_over`,
+`test_rwkv_queue_curve_state_changes_with_a_build_not_an_answer`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.fsrs7-review-order

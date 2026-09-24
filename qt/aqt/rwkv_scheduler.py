@@ -1095,6 +1095,10 @@ class RwkvStatefulReviewerBackend:
         # from nothing clears it; the state cache keeps it across restarts.
         self._stale_since_forget = False
         self._state_generation = 0
+        # counts the builds of the whole state (a replay from nothing, a
+        # restore, a release), never an answer: the study queue drops the
+        # curves it holds when it changes (spec sched.rwkv-review-order)
+        self._build_generation = 0
         self._undo_frames: list[RwkvReviewRollbackEntry] = []
         self._redo_frames: list[RwkvReviewRollbackEntry] = []
         self._prediction_cache: OrderedDict[
@@ -1249,6 +1253,7 @@ class RwkvStatefulReviewerBackend:
         if not self.supports_delta_state_store() or not callable(restore):
             raise TypeError("RWKV resident runtime state-store reader is unavailable")
         restore(path, store_generation, segment_id)
+        self._build_generation += 1
         self._clear_python_state_cache()
         self._resident_state_populated = True
         self._advance_state_generation()
@@ -1258,6 +1263,7 @@ class RwkvStatefulReviewerBackend:
 
     def restore_cache_snapshot(self, snapshot: RwkvBackendCacheSnapshot) -> None:
         _restore_runtime_warm_up_snapshot(self._runtime, snapshot)
+        self._build_generation += 1
         if self._runtime_owns_warm_up_state():
             self._clear_python_state_cache()
             self._resident_state_populated = bool(
@@ -1294,10 +1300,16 @@ class RwkvStatefulReviewerBackend:
         """Sets `stale_since_forget`, for a state restored from the cache."""
         self._stale_since_forget = stale
 
+    def build_generation(self) -> int:
+        """Changes with every build of the whole state, never with an
+        answer."""
+        return self._build_generation
+
     def reset_cache_snapshot(self) -> None:
         self._clear_python_state_cache()
         self._resident_state_populated = False
         self._stale_since_forget = False
+        self._build_generation += 1
         self._advance_state_generation()
         self._undo_frames.clear()
         self._redo_frames.clear()
@@ -1321,6 +1333,7 @@ class RwkvStatefulReviewerBackend:
         """
         self._clear_python_state_cache()
         self._resident_state_populated = False
+        self._build_generation += 1
         self._undo_frames.clear()
         self._redo_frames.clear()
         self._clear_prediction_cache("runtime released")
@@ -5757,15 +5770,16 @@ def _rwkv_curve_queue_uses_curves(deck_config: dict[str, object]) -> bool:
 
 def _rwkv_queue_curve_state(token: _ReviewerBackendPredictionStateToken) -> int:
     """Names the RWKV state the study queue's curves come from: the
-    backend and the build of its resident state. A live answer keeps it (the
-    card's new review time tells the queue its curve changed); a rebuild, a
-    restore or a new model changes it."""
+    backend and the build of its whole state. A live answer or an undo keeps
+    it (the card's review time tells the queue its curve changed), so the
+    queue is not built again after every answer; a rebuild, a restore or a
+    new model changes it."""
+    build_generation = getattr(token.backend, "build_generation", None)
     return hash(
         (
             id(token.backend),
             token.backend_assignment_generation,
-            token.resident_state_key,
-            token.resident_state_generation,
+            build_generation() if callable(build_generation) else 0,
         )
     ) & ((1 << 63) - 1)
 
