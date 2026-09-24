@@ -1,1 +1,2 @@
 - A preset with an invalid "Ignore reviews before" date no longer stops the collection from opening, and no longer breaks Card Info or answering its cards.
+- A card whose home deck or preset is missing no longer breaks `prop:r`/`prop:s` searches, the FSRS-7 Stats graphs, the retrievability review orders or its Browser row: FSRS-7 reads it with the Default preset.

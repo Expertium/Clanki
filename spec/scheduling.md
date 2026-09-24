@@ -1352,6 +1352,26 @@ the answer of a card that had no memory state.
 `a_bad_ignore_before_date_does_not_stop_answering`
 (`rslib/src/scheduler/answering/mod.rs`).
 
+## sched.fsrs7-preset-fallback
+
+Given a card that no add-on overlay rule moves, and whose home deck is
+missing, is a filtered deck, or uses a preset that is missing, FSRS-7 gives
+the card the Default preset (preset id 1, else the built-in defaults), with
+the home deck's desired retention when the deck exists, and logs it.
+`prop:r` and `prop:s` searches, the FSRS-7 Stats graphs, the retrievability
+review orders and the card's Browser row then work, and read the card with
+the Default preset's parameters. Check Database still repairs
+such a card.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: the preset lookup returned an error for such a card, so one
+damaged card failed every `prop:r` and `prop:s` search (the search reads the
+preset of every card), the FSRS-7 Retrievability graph, the R-ordered queue
+of its deck and its Browser row.
+
+**Pinned by:** `a_card_with_a_damaged_home_deck_takes_the_default_preset`
+(`rslib/src/scheduler/fsrs/preset.rs`).
+
 ## sched.no-dynamic-desired-retention
 
 Given a deck preset (or an add-on FSRS preset overlay) that stored dynamic

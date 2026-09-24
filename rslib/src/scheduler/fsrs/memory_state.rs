@@ -256,8 +256,7 @@ impl FsrsCardCurves {
         if let Some(&preset) = self.deck_presets.get(&deck_id) {
             return Ok(preset);
         }
-        let deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        let preset = col.fsrs_preset_for_deck(&deck)?;
+        let preset = col.fsrs_preset_for_home_deck(deck_id)?;
         let preset = (self.model(&preset.params), preset.desired_retention);
         self.deck_presets.insert(deck_id, preset);
         Ok(preset)

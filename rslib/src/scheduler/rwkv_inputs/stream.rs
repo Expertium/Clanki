@@ -186,9 +186,10 @@ impl<'a> RwkvReviewStream<'a> {
 }
 
 /// The stable preset id of a card whose preset is its home deck's, which is
-/// every card unless an add-on overlay rule moves it. The lookups match the
-/// ones `fsrs_presets_for_cards` makes, so a collection that fails one fails
-/// it the same way.
+/// every card unless an add-on overlay rule moves it. A home deck that is
+/// missing or filtered, or whose preset is missing, is an error here, while
+/// `fsrs_presets_for_cards` gives FSRS-7 the Default preset for it (spec
+/// sched.fsrs7-preset-fallback).
 pub(crate) fn rwkv_home_deck_preset_id(
     deck_id: DeckId,
     decks_by_id: &HashMap<DeckId, Deck>,
