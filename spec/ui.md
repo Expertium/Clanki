@@ -783,8 +783,12 @@ Given a profile that opens, Clanki starts its sound player (mpv) on a thread
 of its own, and the main window does not wait for it. Until mpv is ready, a
 stand-in player takes its place: a sound that a card asks for in that time
 waits and plays as soon as mpv is ready, and a sound that is stopped before
-then does not play. When mpv cannot start (missing, too old, or no answer
-within 10 s), the mplayer fallback takes over, the same as before.
+then does not play. mpv finishes its own setup on that thread (its event
+callbacks, its version) before it takes over, so a waiting sound plays on a
+player that is ready, and starting mpv writes nothing to the error output,
+which Clanki would show as an error. When mpv cannot start (missing, too
+old, or no answer within 10 s), the mplayer fallback takes over, the same as
+before.
 
 **Why:** starting mpv waits for its pipe: at least one 100 ms poll, and up to
 10 s when the bundled mpv hangs at start on a busy machine (B-017: 12 hangs in
@@ -796,7 +800,9 @@ no heavy work before the window.
 `test_a_sound_asked_for_while_mpv_starts_plays_when_it_is_ready`,
 `test_mpv_that_cannot_start_falls_back_to_mplayer`,
 `test_a_stopped_sound_does_not_play_when_mpv_is_ready`,
-`test_mpv_that_is_ready_after_shutdown_is_closed` (`qt/tests/test_sound.py`).
+`test_mpv_that_is_ready_after_shutdown_is_closed`,
+`test_mpv_started_off_the_main_thread_sets_itself_up_there`
+(`qt/tests/test_sound.py`).
 
 ## ui.audio-mingw-mpv
 

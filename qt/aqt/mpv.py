@@ -474,7 +474,15 @@ class MPV(MPVBase):
 
         super().__init__(*args, **kwargs)
 
-        aqt.mw.taskman.run_in_background(self._register_callbacks, None)
+        if threading.current_thread() is threading.main_thread():
+            aqt.mw.taskman.run_in_background(self._register_callbacks, None)
+        else:
+            # Started on a thread of its own (aqt.sound.StartingMpvPlayer,
+            # spec ui.audio-starts-off-main-thread). The task manager takes
+            # work from the main thread only, and complains on stderr, which
+            # the error handler shows as an error. This thread does the setup
+            # itself, so on_init has run before the player is handed over.
+            self._register_callbacks()
 
     def _register_callbacks(self):
         self._callbacks = {}
