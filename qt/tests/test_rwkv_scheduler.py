@@ -3116,6 +3116,42 @@ def test_rwkv_curve_states_come_from_the_backend_with_unrounded_intervals() -> N
     assert original.good.normal.review.scheduled_days == 3
 
 
+def test_rwkv_curve_states_keep_the_custom_data() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-keeps-custom-data."""
+
+    rebuilt = SchedulingStates()
+    rebuilt.current.CopyFrom(_normal_review_state(interval=3, fuzz_delta=0))
+    rebuilt.again.CopyFrom(_relearning_state())
+    rebuilt.hard.CopyFrom(_normal_review_state(interval=2, fuzz_delta=0))
+    rebuilt.good.CopyFrom(_normal_review_state(interval=9, fuzz_delta=-1))
+    rebuilt.easy.CopyFrom(_normal_review_state(interval=20, fuzz_delta=2))
+    reviewer = _states_backend([], rebuilt)
+    card = _rwkv_card(card_id=7, note_id=70, duration_millis=100)
+    original = SchedulingStates()
+    original.current.CopyFrom(_normal_review_state(interval=3, fuzz_delta=0))
+    original.current.custom_data = '{"c":1}'
+    original.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+    original.good.custom_data = '{"c":2}'
+    original.easy.CopyFrom(_normal_review_state(interval=6, fuzz_delta=0))
+
+    updated = rwkv_curve_scheduling_states(
+        reviewer,
+        card,
+        original,
+        RwkvIntervalOverride(again=0.2, hard=1.5, good=9.4, easy=18.0),
+        RwkvIntervalOverride(again=1, hard=2, good=10, easy=19),
+    )
+
+    # the reviewer's check of the current state finds it unchanged
+    assert updated.current == original.current
+    assert updated.good.custom_data == '{"c":2}'
+    # a state without custom data stays without it
+    assert not updated.easy.HasField("custom_data")
+    assert not updated.again.HasField("custom_data")
+    # the intervals are still RWKV-Curve's
+    assert updated.good.normal.review.scheduled_days == 9
+
+
 def test_rwkv_curve_states_only_send_supplied_ratings() -> None:
     requests: list[scheduler_pb2.SchedulingStatesWithIntervalsRequest] = []
     reviewer = _states_backend(requests, SchedulingStates())

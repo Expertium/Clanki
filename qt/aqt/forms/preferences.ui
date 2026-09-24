@@ -540,28 +540,6 @@
         </layout>
        </item>
        <item>
-        <widget class="QGroupBox" name="customSchedulingGroup">
-         <property name="title">
-          <string>deck_config_custom_scheduling</string>
-         </property>
-         <layout class="QVBoxLayout" name="customSchedulingLayout">
-          <item>
-           <widget class="QPlainTextEdit" name="customScheduling">
-            <property name="toolTip">
-             <string>deck_config_custom_scheduling_tooltip</string>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>16777215</width>
-              <height>120</height>
-             </size>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
         <spacer name="verticalSpacer_12">
          <property name="orientation">
           <enum>Qt::Orientation::Vertical</enum>

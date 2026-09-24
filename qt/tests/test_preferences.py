@@ -47,9 +47,6 @@ def make_form(prefs: PreferencesProto) -> MagicMock:
         prefs.scheduling.apply_all_parent_limits
     )
     form.fsrsReschedule.isChecked.return_value = prefs.scheduling.fsrs_reschedule
-    form.customScheduling.toPlainText.return_value = (
-        prefs.scheduling.card_state_customizer
-    )
     form.showProgress.isChecked.return_value = prefs.reviewing.show_remaining_due_counts
     form.showEstimates.isChecked.return_value = (
         prefs.reviewing.show_intervals_on_buttons
@@ -153,7 +150,6 @@ def test_update_collection_writes_the_collection_wide_scheduling_settings(
     form = make_form(prefs)
     form.applyAllParentLimits.isChecked.return_value = False
     form.fsrsReschedule.isChecked.return_value = False
-    form.customScheduling.toPlainText.return_value = "// changed"
     dialog = make_dialog(prefs, form)
 
     dialog.update_collection(MagicMock())
@@ -161,7 +157,9 @@ def test_update_collection_writes_the_collection_wide_scheduling_settings(
     scheduling = dialog.prefs.scheduling
     assert scheduling.apply_all_parent_limits is False
     assert scheduling.fsrs_reschedule is False
-    assert scheduling.card_state_customizer == "// changed"
+    # Custom scheduling is not shown; a stored script is saved back unchanged
+    # (spec sched.no-custom-scheduling)
+    assert scheduling.card_state_customizer == "// custom"
     mock_set_preferences.assert_called_once_with(
         parent=dialog, preferences=dialog.prefs
     )

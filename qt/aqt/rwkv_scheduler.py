@@ -9134,6 +9134,13 @@ def rwkv_curve_scheduling_states(
                 setattr(request, f"{rating}_s90", _validated_unrounded_interval(s90))
     rebuilt = SchedulingStates()
     rebuilt.CopyFrom(build(request))
+    # the backend builds the states from the stored card, so the custom data
+    # the reviewer gave the states comes back (spec
+    # sched.rwkv-curve-keeps-custom-data)
+    for field in ("current", *_RWKV_RATING_FIELDS):
+        original = getattr(states, field)
+        if original.HasField("custom_data"):
+            getattr(rebuilt, field).custom_data = original.custom_data
     return apply_review_s90_overrides(rebuilt, overrides, s90_overrides)
 
 
