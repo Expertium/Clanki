@@ -2321,6 +2321,20 @@ fn read_runtime_cache_state(bytes: &[u8]) -> io::Result<(FeatureState, HashMap<i
     Ok((features, curves))
 }
 
+/// One answer-button probe of a query: the same row with `ease` pressed.
+///
+/// The probe keeps the query's `duration_millis`, which is `None` (the press
+/// has not happened yet), so `scaled_duration` gives it 0.0. For the shipped
+/// model that value is the training mean of the scaled duration (about
+/// 7.3 s): the model was trained with the real duration on every answered row,
+/// and the mean is the stand-in we keep for it.
+///
+/// A NEW model's encoder must give these probes, and the query row, the
+/// "no press yet" encoding instead: scaled duration 0.0 because the press has
+/// not happened, the same constant on the query row and on all four probes,
+/// which is what such a model is trained with. See the RWKV session's
+/// `optimization/DEPLOY_FUNCTIONS.md`, sections 4 and 6 (section 6 also gives
+/// the imputed value a model trained under `RWKV_PROBE_IMPUTE_K` expects).
 fn simulated_answer_input(input: &ReviewInput, ease: u8) -> ReviewInput {
     let mut input = input.clone();
     input.is_query = false;

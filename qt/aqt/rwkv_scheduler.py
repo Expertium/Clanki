@@ -25013,6 +25013,9 @@ def _clear_rwkv_review_queue_scores(
 
 
 def _duration_millis(card: object, ease: int | None) -> int | None:
+    # No ease: a query row, or the answer buttons before the press. RWKV then
+    # scales the duration to 0.0; see rslib `simulated_answer_input` for what
+    # that means for the shipped model and what a new model's encoder must do.
     if ease is None:
         return None
 
