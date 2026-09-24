@@ -863,6 +863,23 @@ impl RwkvInference {
         (ids, PyBytes::new(py, &curves).unbind())
     }
 
+    /// The S90 of each card's stored curve, for `card_ids` packed as
+    /// little-endian i64s: little-endian f32s in the same order, NaN for a
+    /// card without a stored curve (spec ui.rwkv-curve-stored-s90).
+    fn card_curve_s90s(&self, py: Python<'_>, card_ids: &Bound<'_, PyBytes>) -> Py<PyBytes> {
+        let card_ids: Vec<i64> = card_ids
+            .as_bytes()
+            .chunks_exact(8)
+            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        let s90s = py.detach(|| self.inner.card_curve_s90s(&card_ids));
+        let bytes: Vec<u8> = s90s
+            .into_iter()
+            .flat_map(|s90| s90.unwrap_or(f32::NAN).to_le_bytes())
+            .collect();
+        PyBytes::new(py, &bytes).unbind()
+    }
+
     fn restore_state(&mut self, state: &RwkvInferenceState) {
         self.inner.restore_state(&state.inner)
     }

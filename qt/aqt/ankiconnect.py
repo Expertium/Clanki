@@ -860,7 +860,7 @@ class AnkiConnect:
         Browser does, so the result is the Browser's."""
         from aqt import rwkv_scheduler
 
-        if rwkv_scheduler.search_uses_rwkv_retrievability(query):
+        if rwkv_scheduler.search_needs_rwkv_values(self.collection(), query):
             rwkv_scheduler.prepare_browser_retrievability_scores(self.window(), query)
 
     #

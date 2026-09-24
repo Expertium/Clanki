@@ -1531,6 +1531,11 @@ def _graphs_without_retrievability(request_proto: GraphsRequest) -> bytes:
     return request_proto.SerializeToString()
 
 
+def _graphs_request_wants_stability(request_proto: GraphsRequest) -> bool:
+    """A request names the graphs it wants; none named = every graph."""
+    return not request_proto.graphs or GraphsRequest.STABILITY in request_proto.graphs
+
+
 def _graph_data(request_proto: GraphsRequest) -> tuple[bytes, dict[str, str]]:
     """The graphs response for a request, and its extra headers."""
     headers: dict[str, str] = {}
@@ -1563,6 +1568,12 @@ def _graph_data(request_proto: GraphsRequest) -> tuple[bytes, dict[str, str]]:
         )
     else:
         prepare_status = aqt.rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    if _graphs_request_wants_stability(request_proto):
+        # RWKV-Curve's Stability graph draws the stored curves' S90s (spec
+        # ui.rwkv-curve-stored-s90); the page asks again while RWKV loads
+        s90_status = aqt.rwkv_scheduler.publish_rwkv_curve_s90s(aqt.mw)
+        if s90_status == aqt.rwkv_scheduler.RwkvStatsPreparationStatus.PENDING:
+            prepare_status = s90_status
     prepare_elapsed_ms = (time.monotonic() - prepare_start) * 1000
     backend_start = time.monotonic()
     backend_request = (

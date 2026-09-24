@@ -1379,6 +1379,12 @@ class _RustRwkvRuntime:
                 list(elapsed_days),
             )
 
+    def card_curve_s90s(self, card_ids: bytes) -> bytes:
+        """The S90 of each card's stored curve, packed as little-endian f32s
+        (NaN without a curve), for `card_ids` packed as little-endian i64s."""
+        with self._locked_process():
+            return bytes(self._process.card_curve_s90s(card_ids))
+
     def card_curve_weights(self, card_ids: Sequence[int]) -> tuple[list[int], bytes]:
         """The stored RWKV-Curve curves of `card_ids` that have one, packed."""
         with self._locked_process():

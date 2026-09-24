@@ -1052,11 +1052,11 @@ forgetting curve" (`ts/routes/card-info/lib.test.ts`).
 Given the Stats page, its graphs draw only the collection's algorithm
 (`sched.one-global-algorithm`):
 
-| Algorithm    | Retrievability graph    | Difficulty graph | Stability graph |
-| ------------ | ----------------------- | ---------------- | --------------- |
-| FSRS-7       | FSRS-7's R              | shown            | shown           |
-| RWKV-Curve   | the RWKV-Curve head's R | none             | shown (S90)     |
-| RWKV-Instant | RWKV-Instant's R        | none             | none            |
+| Algorithm    | Retrievability graph    | Difficulty graph | Stability graph                                     |
+| ------------ | ----------------------- | ---------------- | --------------------------------------------------- |
+| FSRS-7       | FSRS-7's R              | shown            | shown                                               |
+| RWKV-Curve   | the RWKV-Curve head's R | none             | the stored curve's S90 (`ui.rwkv-curve-stored-s90`) |
+| RWKV-Instant | RWKV-Instant's R        | none             | none                                                |
 
 Under RWKV there is no FSRS-7 series beside RWKV's and no FSRS-7 value for
 a card RWKV has not scored. While RWKV has not scored the page's search yet
@@ -1088,6 +1088,44 @@ Andrew's 159k cards), during which the Stats page showed only its spinner.
 `test_graphs_leave_rwkv_retrievability_for_later_when_asked`
 (`qt/tests/test_mediasrv.py`); "while RWKV calculates, the graph shows
 and says so, with no other values" (`ts/routes/graphs/retrievability.test.ts`).
+
+## ui.rwkv-curve-stored-s90
+
+Given a collection that runs RWKV-Curve, a card's RWKV-Curve stability is the
+S90 of the forgetting curve RWKV stored for the card at its last answered
+review: the day where that curve meets 90% recall, at most the maximum
+interval. This one value is what the Stats Stability graph, `prop:s`
+searches (in the Browser, AnkiConnect and the Stats click-through), the
+Browser's Stability column and card info's Stability row show. The FSRS-7
+S90 that the card's memory state also holds (after a "Keep due dates"
+switch, the post-sync reconcile or the repair of cards from other clients
+it is not the curve's) is never shown. A card without a stored curve has no
+stability: it is left out of the graph, and no `prop:s` search matches it.
+Under RWKV-Instant no card has a stability, so the graph is not drawn and
+no `prop:s` search matches; under FSRS-7 both read FSRS-7's S90.
+
+Each curve's S90 is found once and kept with the curve: an answer finds it
+at once, and a curve a replay stored (or one read from a state saved before
+the S90s were kept) gets it the first time it is asked for, all such curves
+in parallel. The Stats page and a `prop:s` search ask RWKV for the S90s just
+before they read them; while RWKV is still loading its state the Stats page
+asks again every 2 seconds.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: under RWKV-Curve the Stability graph and
+`prop:s` read the memory state's stability, which for many cards is FSRS-7's
+S90, while the Browser and card info show the curve's; never mix two
+algorithms. Finding one S90 costs about 0.11 ms (measured 2026-09-25 on
+42,610 stored curves: 4.7 s on one thread, 0.23-0.45 s on 32), so it is
+found once per curve rather than on every Stats open (a lookup of all
+42,610: under 1.1 ms).
+
+**Pinned by:** `a_stored_curve_keeps_its_s90` (`rslib/src/rwkv/mod.rs`),
+`rwkv_curve_stability_is_the_stored_curves_s90`
+(`rslib/src/stats/graphs/mod.rs`);
+`test_rsbridge_card_curve_s90s_are_the_stored_curves_s90`
+(`qt/tests/test_rwkv_inference_process.py`);
+`qt/tests/test_rwkv_curve_stored_s90.py`; `test_a_stability_search_prepares_rwkv_curves_s90s` (`qt/tests/test_browser.py`).
 
 ## ui.rwkv-curve-r-stored-curve
 

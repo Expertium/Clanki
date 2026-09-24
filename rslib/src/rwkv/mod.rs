@@ -803,6 +803,11 @@ impl RwkvInference {
         if !input.is_query {
             self.features.store_review(&input);
             self.curves.insert(input.card_id, heads.curve.clone());
+            // an answer finds its curve's S90 now, so the Stats and `prop:s`
+            // read it without a search (spec ui.rwkv-curve-stored-s90)
+            if let Some(curve) = self.curves.get(&input.card_id) {
+                self.stored_curve_s90(curve);
+            }
             if let Some(sources) = &mut self.curve_sources {
                 sources.indices.push(0);
                 encode_curve_source(&heads.prehead, &mut sources.bytes);
@@ -1611,7 +1616,7 @@ insert into segments (
             card: index.card,
             note: index.note,
         });
-        let (features, curves) = read_runtime_cache_state(&runtime_state)?;
+        let (features, curves) = read_runtime_cache_state(&runtime_state, self.max_interval_days)?;
 
         self.warm_up_states = warm_up_states;
         self.features = features;
@@ -1763,7 +1768,37 @@ insert into segments (
     /// None when the card has no stored curve.
     pub fn card_curve(&self, card_id: i64, elapsed_days: &[f32]) -> Option<(Vec<f32>, f32)> {
         let curve = self.curves.get(&card_id)?;
-        curve_points_and_s90(curve, elapsed_days, self.max_interval_days)
+        let s90 = self.stored_curve_s90(curve)?;
+        let recall = elapsed_days
+            .iter()
+            .map(|days| predict_curve(curve, days * SECONDS_PER_DAY as f32))
+            .collect();
+        Some((recall, s90))
+    }
+
+    /// The S90 of each card's stored curve, as `card_curve` gives it (spec
+    /// ui.rwkv-curve-stored-s90), None for a card without one. A curve's S90
+    /// is found once and kept with the curve, so this is a lookup; the
+    /// curves that do not have it yet (stored by a replay, or read from an
+    /// older state) get it here, in parallel.
+    pub fn card_curve_s90s(&self, card_ids: &[i64]) -> Vec<Option<f32>> {
+        card_ids
+            .par_iter()
+            .map(|card_id| {
+                self.curves
+                    .get(card_id)
+                    .and_then(|curve| self.stored_curve_s90(curve))
+            })
+            .collect()
+    }
+
+    /// The S90 of a stored curve at this instance's maximum interval
+    /// (`unrounded_interval_for_curve`), found on the first call and kept
+    /// with the curve.
+    fn stored_curve_s90(&self, curve: &ReviewCurve) -> Option<f32> {
+        *curve.s90.get_or_init(|| {
+            unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, self.max_interval_days)
+        })
     }
 
     /// The curves RWKV-Curve stored for `card_ids` at each card's last
@@ -1792,38 +1827,45 @@ insert into segments (
     }
 
     fn runtime_cache_state_len(&self) -> usize {
-        b"ARWKVPROCSTATE2".len()
+        RUNTIME_CACHE_STATE_MAGIC.len()
             + self.features.cache_state_len()
+            + 4
             + 4
             + self
                 .curves
                 .values()
-                .map(|curve| 8 + curve.cache_state_len())
+                .map(|curve| 8 + curve.cache_state_len() + 4)
                 .sum::<usize>()
     }
 
+    /// The runtime state: the features, then the maximum interval the
+    /// curves' S90s were found at, then each stored curve with its S90 (NaN
+    /// when it was not found yet).
     fn write_runtime_cache_state(&self, out: &mut impl io::Write) -> io::Result<()> {
-        out.write_all(b"ARWKVPROCSTATE2")?;
+        out.write_all(RUNTIME_CACHE_STATE_MAGIC)?;
         self.features.write_cache_state_to(out)?;
+        write_state_cache_u32(out, self.max_interval_days as usize)?;
         write_state_cache_u32(out, self.curves.len())?;
         let mut curves: Vec<_> = self.curves.iter().collect();
         curves.sort_by_key(|(card_id, _)| *card_id);
         for (card_id, curve) in curves {
             out.write_all(&card_id.to_le_bytes())?;
             curve.write_cache_state_to(out)?;
+            let s90 = curve.s90.get().copied().flatten().unwrap_or(f32::NAN);
+            out.write_all(&s90.to_le_bytes())?;
         }
         Ok(())
     }
 
     pub fn restore_cache_state(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (features, curves) = read_runtime_cache_state(bytes)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days)?;
         self.features = features;
         self.curves = curves;
         Ok(())
     }
 
     fn worker_from_cache_state(&self, bytes: &[u8]) -> io::Result<RwkvInference> {
-        let (features, curves) = read_runtime_cache_state(bytes)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days)?;
         Ok(self.workload_worker(features, curves))
     }
 
@@ -2291,29 +2333,71 @@ fn predict_retrievability_many_after_reviews_for_identity(
         .collect()
 }
 
+/// The magic of the runtime state `write_runtime_cache_state` writes.
+const RUNTIME_CACHE_STATE_MAGIC: &[u8] = b"ARWKVPROCSTATE4";
+/// The runtime state before the curves carried their S90. It is still read:
+/// each S90 is then found when it is first asked for (spec
+/// ui.rwkv-curve-stored-s90).
+const RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90: &[u8] = b"ARWKVPROCSTATE2";
+
+/// Reads the magic of a runtime state: true when its curves carry their
+/// S90 (the current format), false for the format before it.
+fn read_runtime_cache_state_magic(cursor: &mut Cursor<'_>) -> io::Result<bool> {
+    let found = cursor.bytes(RUNTIME_CACHE_STATE_MAGIC.len())?;
+    if found == RUNTIME_CACHE_STATE_MAGIC {
+        Ok(true)
+    } else if found == RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90 {
+        Ok(false)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected file magic",
+        ))
+    }
+}
+
 fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
     let mut cursor = Cursor::new(bytes);
-    cursor.expect_magic(b"ARWKVPROCSTATE2")?;
+    let with_s90 = read_runtime_cache_state_magic(&mut cursor)?;
     let features = FeatureState::read_cache_state(&mut cursor)?;
+    if with_s90 {
+        cursor.u32()?;
+    }
     let curve_count = cursor.u32()? as usize;
     for _ in 0..curve_count {
         cursor.i64()?;
         cursor.skip_f32_vec()?;
         cursor.skip_f32_vec()?;
+        if with_s90 {
+            cursor.f32()?;
+        }
     }
     cursor.expect_end()?;
     Ok(features)
 }
 
-fn read_runtime_cache_state(bytes: &[u8]) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
+/// The features and the stored curves of a runtime state. A curve keeps the
+/// S90 the state holds for it only when that S90 was found at
+/// `max_interval_days`; otherwise the S90 is found again when asked for.
+fn read_runtime_cache_state(
+    bytes: &[u8],
+    max_interval_days: u32,
+) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
     let mut cursor = Cursor::new(bytes);
-    cursor.expect_magic(b"ARWKVPROCSTATE2")?;
+    let with_s90 = read_runtime_cache_state_magic(&mut cursor)?;
     let features = FeatureState::read_cache_state(&mut cursor)?;
+    let s90_max_interval_days = if with_s90 { Some(cursor.u32()?) } else { None };
     let curve_count = cursor.u32()? as usize;
     let mut curves = HashMap::with_capacity(curve_count);
     for _ in 0..curve_count {
         let card_id = cursor.i64()?;
         let curve = ReviewCurve::read_cache_state(&mut cursor)?;
+        if let Some(s90_max_interval_days) = s90_max_interval_days {
+            let s90 = cursor.f32()?;
+            if s90_max_interval_days == max_interval_days && !s90.is_nan() {
+                let _ = curve.s90.set(Some(s90));
+            }
+        }
         curves.insert(card_id, curve);
     }
     cursor.expect_end()?;
@@ -3672,6 +3756,7 @@ impl SrsModel {
         ReviewCurve {
             ahead_logits,
             weights,
+            s90: Default::default(),
         }
     }
 
@@ -3814,10 +3899,15 @@ struct ReviewHeads {
     prehead: Vec<f32>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct ReviewCurve {
     ahead_logits: Vec<f32>,
     weights: Vec<f32>,
+    /// The curve's S90 at the instance's maximum interval, found once
+    /// (`RwkvInference::stored_curve_s90`); a new curve starts without it,
+    /// so a replaced curve never keeps the old one's (spec
+    /// ui.rwkv-curve-stored-s90).
+    s90: std::sync::OnceLock<Option<f32>>,
 }
 
 impl ReviewCurve {
@@ -3840,6 +3930,7 @@ impl ReviewCurve {
         Ok(Self {
             ahead_logits: cursor.f32_vec()?,
             weights: cursor.f32_vec()?,
+            s90: Default::default(),
         })
     }
 }
@@ -5496,6 +5587,7 @@ pub fn unpack_stored_curves(card_ids: &[i64], bytes: &[u8]) -> Option<Vec<(i64, 
                 curve: ReviewCurve {
                     ahead_logits: Vec::new(),
                     weights,
+                    s90: Default::default(),
                 },
             },
         ));
@@ -8402,6 +8494,93 @@ fn quantize_dequantize_symmetric(values: &mut [f32], bits: u8) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The share of an answer that finding its curve's S90 takes.
+    #[test]
+    #[ignore]
+    fn answer_s90_cost() {
+        let weights = embedded_weights_path().unwrap();
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews: Vec<ReviewInput> = bulk_parity_reviews(2_000)
+            .into_iter()
+            .filter(|review| review.ease.is_some())
+            .collect();
+        let mut answer = std::time::Duration::ZERO;
+        let mut s90 = std::time::Duration::ZERO;
+        for review in reviews.iter().cloned() {
+            let card_id = review.card_id;
+            let started = std::time::Instant::now();
+            inference
+                .review(
+                    review,
+                    ReviewState {
+                        card: None,
+                        deck: None,
+                        note: None,
+                        preset: None,
+                        global: None,
+                    },
+                )
+                .unwrap();
+            answer += started.elapsed();
+            let fresh = ReviewCurve {
+                s90: Default::default(),
+                ..inference.curves[&card_id].clone()
+            };
+            let started = std::time::Instant::now();
+            std::hint::black_box(inference.stored_curve_s90(&fresh));
+            s90 += started.elapsed();
+        }
+        let n = reviews.len() as f64;
+        println!(
+            "answers={} answer_ms={:.3} of_which_s90_ms={:.3}",
+            reviews.len(),
+            answer.as_secs_f64() * 1000.0 / n,
+            s90.as_secs_f64() * 1000.0 / n
+        );
+    }
+
+    /// Cost of finding the S90 of every stored curve of a real runtime
+    /// state (RWKV_S90_BENCH_STATE = a runtime_state blob).
+    #[test]
+    #[ignore]
+    fn stored_curve_s90_cost_on_a_real_state() {
+        let path = std::env::var("RWKV_S90_BENCH_STATE").unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let (_, curves) = read_runtime_cache_state(&bytes, 36500).unwrap();
+        let curves: Vec<&ReviewCurve> = curves.values().collect();
+        let started = std::time::Instant::now();
+        let serial: Vec<Option<f32>> = curves
+            .iter()
+            .map(|curve| unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, 36500))
+            .collect();
+        let serial_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = std::time::Instant::now();
+        let parallel: Vec<Option<f32>> = curves
+            .par_iter()
+            .map(|curve| {
+                *curve.s90.get_or_init(|| {
+                    unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, 36500)
+                })
+            })
+            .collect();
+        let parallel_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(serial, parallel);
+        let started = std::time::Instant::now();
+        let kept: Vec<Option<f32>> = curves
+            .par_iter()
+            .map(|curve| *curve.s90.get().unwrap())
+            .collect();
+        let lookup_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(serial, kept);
+        println!(
+            "curves={} weights={} serial_ms={serial_ms:.1} per_curve_us={:.2} parallel_ms={parallel_ms:.1} lookup_ms={lookup_ms:.2} threads={}",
+            curves.len(),
+            curves.first().map_or(0, |c| c.weights.len()),
+            serial_ms * 1000.0 / curves.len() as f64,
+            rayon::current_num_threads()
+        );
+    }
     use std::env;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -11245,6 +11424,7 @@ create table segment_state_chunks (
         let curve = ReviewCurve {
             ahead_logits: vec![20.0],
             weights: vec![1.0],
+            s90: Default::default(),
         };
 
         assert_eq!(interval_for_curve(&curve, 0.0, 365), Some(365));
@@ -11255,10 +11435,12 @@ create table segment_state_chunks (
         let curve = ReviewCurve {
             ahead_logits: vec![-20.0, 20.0, -20.0, 20.0],
             weights: vec![0.2, 0.3, 0.5],
+            s90: Default::default(),
         };
         let same_weights = ReviewCurve {
             ahead_logits: vec![20.0, -20.0, 20.0, -20.0],
             weights: curve.weights.clone(),
+            s90: Default::default(),
         };
         let elapsed_seconds = [1.0, 60.0, 3_600.0, 86_400.0, 2_592_000.0];
         let values = elapsed_seconds.map(|seconds| predict_curve(&curve, seconds));
@@ -11312,6 +11494,7 @@ create table segment_state_chunks (
         ReviewCurve {
             ahead_logits: vec![0.0],
             weights,
+            s90: Default::default(),
         }
     }
 
@@ -11346,6 +11529,7 @@ create table segment_state_chunks (
             ReviewCurve {
                 ahead_logits: vec![0.0],
                 weights,
+                s90: Default::default(),
             }
         };
         let curves = [
@@ -11639,6 +11823,93 @@ create table segment_state_chunks (
         }
     }
 
+    // Pins spec/ui.md#ui.rwkv-curve-stored-s90: an answer finds its stored
+    // curve's S90 at once; the batch read gives every stored curve's S90
+    // (finding the ones a replay left without it), the same value card info
+    // shows; the runtime state keeps them for the same maximum interval,
+    // and a state from before them is read with the S90s found again.
+    #[test]
+    fn a_stored_curve_keeps_its_s90() {
+        let Some(weights) = embedded_weights_path() else {
+            eprintln!("skipping: embedded RWKV weights not found");
+            return;
+        };
+        let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+        let reviews: Vec<ReviewInput> = bulk_parity_reviews(60)
+            .into_iter()
+            .filter(|review| review.ease.is_some())
+            .collect();
+        let (replayed, answered) = reviews.split_at(reviews.len() - 1);
+        inference
+            .warm_up_reviews_sequential(replayed.to_vec(), false)
+            .unwrap();
+        // a replay stores its curves without their S90
+        assert!(inference
+            .curves
+            .values()
+            .all(|curve| curve.s90.get().is_none()));
+
+        let answer = answered[0].clone();
+        let card_id = answer.card_id;
+        inference
+            .review(
+                answer,
+                ReviewState {
+                    card: None,
+                    deck: None,
+                    note: None,
+                    preset: None,
+                    global: None,
+                },
+            )
+            .unwrap();
+        let expected = |curve: &ReviewCurve| {
+            unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, 36_500).unwrap()
+        };
+        let answered_curve = &inference.curves[&card_id];
+        let kept = answered_curve.s90.get().copied().flatten().unwrap();
+        assert!((kept - expected(answered_curve)).abs() <= 1e-6);
+
+        let mut card_ids: Vec<i64> = inference.curves.keys().copied().collect();
+        card_ids.sort_unstable();
+        card_ids.push(-1);
+        let s90s = inference.card_curve_s90s(&card_ids);
+        assert_eq!(s90s.last(), Some(&None));
+        for (card_id, s90) in card_ids.iter().zip(&s90s).take(card_ids.len() - 1) {
+            let curve = &inference.curves[card_id];
+            let s90 = s90.unwrap();
+            assert!((s90 - expected(curve)).abs() <= 1e-6, "{card_id}: {s90}");
+            assert_eq!(inference.card_curve(*card_id, &[1.0]).unwrap().1, s90);
+        }
+
+        let state = inference.cache_state();
+        let (_, curves) = read_runtime_cache_state(&state, 36_500).unwrap();
+        for (card_id, s90) in card_ids.iter().zip(&s90s).take(card_ids.len() - 1) {
+            assert_eq!(curves[card_id].s90.get().copied().flatten(), *s90);
+        }
+        // found at another maximum interval: found again
+        let (_, curves) = read_runtime_cache_state(&state, 3_650).unwrap();
+        assert!(curves.values().all(|curve| curve.s90.get().is_none()));
+        // a state from before the S90s: read, and found again
+        let mut old = RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90.to_vec();
+        inference.features.write_cache_state_to(&mut old).unwrap();
+        write_state_cache_u32(&mut old, inference.curves.len()).unwrap();
+        for card_id in &card_ids[..card_ids.len() - 1] {
+            old.extend_from_slice(&card_id.to_le_bytes());
+            inference.curves[card_id]
+                .write_cache_state_to(&mut old)
+                .unwrap();
+        }
+        let mut restored =
+            RwkvInference::load(embedded_weights_path().unwrap(), 0.9, 36_500).unwrap();
+        restored.restore_cache_state(&old).unwrap();
+        assert!(restored
+            .curves
+            .values()
+            .all(|curve| curve.s90.get().is_none()));
+        assert_eq!(restored.card_curve_s90s(&card_ids), s90s);
+    }
+
     // Pins spec/scheduling.md#sched.advance-postpone-algorithm: Advance and
     // Postpone get each card's stored curve as it is (only the cards that
     // have one), and evaluate it as card info and the reschedule do.
@@ -11651,6 +11922,7 @@ create table segment_state_chunks (
                 ReviewCurve {
                     ahead_logits: vec![0.5],
                     weights: vec![0.2, 0.0, 0.3, 0.5],
+                    s90: Default::default(),
                 },
             ),
         ]);
@@ -11705,6 +11977,7 @@ create table segment_state_chunks (
             ReviewCurve {
                 ahead_logits: vec![0.0],
                 weights,
+                s90: Default::default(),
             }
         };
         let curves = [
@@ -11800,6 +12073,7 @@ create table segment_state_chunks (
         let curve = ReviewCurve {
             ahead_logits: vec![],
             weights: vec![0.2, 0.3, 0.5],
+            s90: Default::default(),
         };
 
         assert_eq!(

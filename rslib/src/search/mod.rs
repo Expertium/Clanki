@@ -277,6 +277,14 @@ impl Collection {
         let mut rows_to_insert = Vec::new();
         let mut rwkv_rows = 0;
         let mut rwkv_curve_rows = 0;
+        // `prop:s` reads the collection's own algorithm's stability (spec
+        // ui.rwkv-curve-stored-s90): FSRS-7's S90, the S90 of RWKV-Curve's
+        // stored curve, and none under RWKV-Instant
+        let algorithm = self.effective_scheduling_algorithm()?;
+        let curve_s90s = match algorithm {
+            SchedulingAlgorithm::RwkvCurve => self.rwkv_curve_s90s(),
+            _ => None,
+        };
         for card in cards {
             let rwkv_r = rwkv_retrievability_scores
                 .and_then(|scores| scores.get(&card.id))
@@ -285,10 +293,14 @@ impl Collection {
                 .as_ref()
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
+            let curve_s90 = curve_s90s
+                .as_ref()
+                .and_then(|s90s| s90s.get(&card.id))
+                .copied();
             let preset = presets_by_card
                 .get(card.id)
                 .or_invalid("missing FSRS preset for card")?;
-            if let Some((fsrs_r, s90)) =
+            if let Some((fsrs_r, fsrs_s90)) =
                 self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
             {
                 if rwkv_r.is_some() {
@@ -297,11 +309,16 @@ impl Collection {
                 if rwkv_curve_r.is_some() {
                     rwkv_curve_rows += 1;
                 }
-                rows_to_insert.push((card.id.0, Some(fsrs_r), rwkv_r, rwkv_curve_r, Some(s90)));
-            } else if rwkv_r.is_some() || rwkv_curve_r.is_some() {
+                let s90 = match algorithm {
+                    SchedulingAlgorithm::Fsrs7 => Some(fsrs_s90),
+                    SchedulingAlgorithm::RwkvCurve => curve_s90,
+                    SchedulingAlgorithm::RwkvInstant => None,
+                };
+                rows_to_insert.push((card.id.0, Some(fsrs_r), rwkv_r, rwkv_curve_r, s90));
+            } else if rwkv_r.is_some() || rwkv_curve_r.is_some() || curve_s90.is_some() {
                 rwkv_rows += usize::from(rwkv_r.is_some());
                 rwkv_curve_rows += usize::from(rwkv_curve_r.is_some());
-                rows_to_insert.push((card.id.0, None, rwkv_r, rwkv_curve_r, None));
+                rows_to_insert.push((card.id.0, None, rwkv_r, rwkv_curve_r, curve_s90));
             }
         }
         let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;

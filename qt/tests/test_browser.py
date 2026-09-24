@@ -237,6 +237,34 @@ def test_non_rwkv_browser_search_runs_without_preparation(monkeypatch: Any) -> N
     assert browser.table.searches == ["prop:r<0.95"]
 
 
+# Pins spec/ui.md#ui.rwkv-curve-stored-s90: under RWKV-Curve a `prop:s`
+# search gets the stored curves' S90s before it runs; under FSRS-7 it runs
+# at once.
+@pytest.mark.parametrize("algorithm, prepares", [("rwkvCurve", True), ("fsrs7", False)])
+def test_a_stability_search_prepares_rwkv_curves_s90s(
+    monkeypatch: Any, algorithm: str, prepares: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from aqt.browser import browser as browser_module
+
+    query = "prop:s>10"
+    browser = _scored_search_browser(query)
+    browser.col = SimpleNamespace(get_config=lambda key, default=None: algorithm)
+    prepared: list[str] = []
+    monkeypatch.setattr(browser_module, "QueryOp", ImmediateQueryOp)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_browser_retrievability_scores",
+        lambda _mw, search, **_kwargs: prepared.append(search),
+    )
+
+    browser.search()
+
+    assert prepared == ([query] if prepares else [])
+    assert browser.table.searches == [query]
+
+
 class SortedTableSearchRecorder(TableSearchRecorder):
     def sorts_by_retrievability(self) -> bool:
         return True

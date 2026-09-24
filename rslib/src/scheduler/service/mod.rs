@@ -33,6 +33,7 @@ use anki_proto::scheduler::FuzzDeltaResponse;
 use anki_proto::scheduler::GetOptimalRetentionParametersResponse;
 use anki_proto::scheduler::RwkvAnsweredCardQueueScorePatchRequest;
 use anki_proto::scheduler::RwkvCardInfoScoreRequest;
+use anki_proto::scheduler::RwkvCurveS90sRequest;
 use anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest;
 use anki_proto::scheduler::RwkvHistoricalReviewFingerprintResponse;
 use anki_proto::scheduler::RwkvRetrievabilityScoreResponse;
@@ -1001,6 +1002,27 @@ impl crate::services::SchedulerService for Collection {
             input.retrievability,
             input.curve_retrievability,
         )
+    }
+
+    fn set_rwkv_curve_s90s(&mut self, input: RwkvCurveS90sRequest) -> Result<()> {
+        require!(
+            input.card_ids.len() % 8 == 0
+                && input.s90s.len() % 4 == 0
+                && input.card_ids.len() / 8 == input.s90s.len() / 4,
+            "RWKV-Curve S90s do not match their card ids"
+        );
+        let s90s = input
+            .card_ids
+            .chunks_exact(8)
+            .zip(input.s90s.chunks_exact(4))
+            .filter_map(|(card_id, s90)| {
+                let card_id = CardId(i64::from_le_bytes(card_id.try_into().unwrap()));
+                let s90 = f32::from_le_bytes(s90.try_into().unwrap());
+                (s90.is_finite() && s90 > 0.0).then_some((card_id, s90))
+            })
+            .collect();
+        self.set_rwkv_curve_s90s(s90s);
+        Ok(())
     }
 
     fn get_rwkv_retrievability_score(

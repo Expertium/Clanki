@@ -43,6 +43,9 @@ struct GraphsContext {
     /// under RWKV, where `cards` is not read. None under FSRS-7 and when the
     /// graph is not wanted.
     rwkv_retrievability_notes: Option<Vec<(CardId, NoteId)>>,
+    /// Under RWKV-Curve, the S90 of each card's stored curve, which the
+    /// Stability graph draws (spec ui.rwkv-curve-stored-s90).
+    rwkv_curve_s90s: Option<std::sync::Arc<HashMap<CardId, f32>>>,
     algorithm: SchedulingAlgorithm,
     next_day_start: TimestampSecs,
     days_elapsed: u32,
@@ -248,6 +251,9 @@ impl Collection {
             fsrs_preset_by_card,
             rwkv_retrievability_scores,
             rwkv_retrievability_notes,
+            rwkv_curve_s90s: (algorithm == SchedulingAlgorithm::RwkvCurve)
+                .then(|| self.rwkv_curve_s90s())
+                .flatten(),
             algorithm,
             next_day_start: timing.next_day_at,
             local_offset_secs,
@@ -348,6 +354,69 @@ mod test {
         Graph::CardCounts,
         Graph::Retrievability,
     ];
+
+    // Pins spec/ui.md#ui.rwkv-curve-stored-s90: under RWKV-Curve the
+    // Stability graph and `prop:s` read the S90 of the card's stored curve,
+    // not the FSRS-7 S90 in its memory state; under FSRS-7 they read that;
+    // under RWKV-Instant neither has a value.
+    #[test]
+    fn rwkv_curve_stability_is_the_stored_curves_s90() -> Result<()> {
+        use crate::config::ConfigKey;
+        use crate::deckconfig::algorithm::SchedulingAlgorithm as Algorithm;
+        use crate::search::SortMode;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 12.0,
+            stability_fast: Some(3.0),
+            difficulty: 5.0,
+        });
+        col.storage.update_card(&card)?;
+        let stability = |col: &mut Collection| -> Result<Option<Vec<(u32, u32)>>> {
+            Ok(col
+                .graph_data_for_search("", 365)?
+                .stability
+                .map(|stability| {
+                    let mut intervals: Vec<_> = stability.intervals.into_iter().collect();
+                    intervals.sort_unstable();
+                    intervals
+                }))
+        };
+        let matches = |col: &mut Collection, search: &str| -> Result<usize> {
+            Ok(col.search_cards(search, SortMode::NoOrder)?.len())
+        };
+        let set_algorithm = |col: &mut Collection, algorithm: Algorithm| -> Result<()> {
+            col.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
+            col.update_default_deck_config(|config| algorithm.apply_to(config));
+            Ok(())
+        };
+
+        set_algorithm(&mut col, Algorithm::RwkvCurve)?;
+        // RWKV has published nothing yet: no value, and no FSRS-7 one
+        assert_eq!(stability(&mut col)?, Some(vec![]));
+        assert_eq!(matches(&mut col, "prop:s>0")?, 0);
+        col.set_rwkv_curve_s90s(HashMap::from([(card.id, 42.0)]));
+        assert_eq!(stability(&mut col)?, Some(vec![(42, 1)]));
+        assert_eq!(matches(&mut col, "prop:s>40")?, 1);
+        assert_eq!(matches(&mut col, "prop:s<20")?, 0);
+
+        set_algorithm(&mut col, Algorithm::Fsrs7)?;
+        assert_eq!(stability(&mut col)?, Some(vec![(10, 1)]));
+        assert_eq!(matches(&mut col, "prop:s>40")?, 0);
+        assert_eq!(matches(&mut col, "prop:s<20")?, 1);
+
+        set_algorithm(&mut col, Algorithm::RwkvInstant)?;
+        assert_eq!(stability(&mut col)?, None);
+        assert_eq!(matches(&mut col, "prop:s>0")?, 0);
+        Ok(())
+    }
 
     /// 40 cards in two decks, of every type and queue, with reviews of
     /// every kind over the last two years.
