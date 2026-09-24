@@ -1769,9 +1769,9 @@ def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
 class MemorisedDayRows:
     """The rows of the cards a Memorised day scores.
 
-    Total Knowledge and the Memorised history walk the collection day by day
-    and score every card that has a rating and no later reset. A card's row
-    changes only when the card is rated or reset. Three fields of the packed
+    Total Knowledge walks the collection day by day and scores every card
+    that has a rating and no later reset. A card's row changes only when the
+    card is rated or reset. Three fields of the packed
     row change every day - the day and the two elapsed fields - and all three
     follow from the query day and the row's own review day, so the Rust side
     derives them. A row is therefore packed once per rating instead of once
