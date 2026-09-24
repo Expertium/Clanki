@@ -660,7 +660,10 @@ impl Collection {
         for output in self.compute_params_batch(jobs)? {
             match output.result {
                 Ok(params) => {
-                    if params.fsrs_items == 0 {
+                    // the optimizer kept the current parameters (spec
+                    // deck-options.fsrs-optimize-keeps-better-params)
+                    let config = &req.configs[output.index];
+                    if params.fsrs_items == 0 || params.params == config.fsrs_params() {
                         continue;
                     }
                     debug!(preset = output.name, params = ?params.params, "optimized FSRS preset");

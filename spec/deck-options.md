@@ -207,6 +207,36 @@ background pass does it instead.
 `test_the_fake_auto_optimize_matches_the_real_backend`
 (qt/tests/test_fsrs_predictions.py); `auto-optimize.test.ts`.
 
+## deck-options.fsrs-optimize-keeps-better-params
+
+Given an FSRS-7 optimization of a preset, on every path (the automatic
+optimization of `deck-options.fsrs-auto-optimize`, "Optimize All Presets",
+and the `ComputeFsrsParams` and `ComputeFsrsParamsBatch` RPCs), the result
+is the new parameters only when their log loss on the training reviews is
+lower than the log loss of the preset's current FSRS-7 parameters on the
+same reviews (the FSRS-7 defaults when it has none, `sched.fsrs7-only`).
+Otherwise the result is the current parameters, and nothing is saved:
+"Optimize All Presets" leaves such a preset as it was, and the automatic
+optimization only records the day. A preset whose current parameters are
+not the defaults never gets values that fsrs-rs did not train: when the
+training set has fewer than 64 items, or every item is a card's first
+long-term review, the current parameters stay whatever their log loss.
+
+**Why:** Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that
+day: every optimize overwrote the parameters, and the automatic optimization
+runs unasked every 7 days. fsrs-rs returns the defaults for fewer than 8
+items and untrained initial values for fewer than 64, so a preset whose
+"Ignore reviews before" moved to last week, or whose search was narrowed,
+had its trained parameters replaced by those values at the next idle pass,
+and with "Reschedule cards when desired retention changes" on, every card
+of the preset rescheduled, not undoably. Upstream Anki kept the current
+parameters when `FSRS::evaluate` gave them the lower loss; the fork had
+removed that check.
+
+**Pinned by:** `an_optimize_keeps_the_current_params_when_the_new_ones_fit_worse`,
+`a_tiny_training_set_never_replaces_trained_params`
+(`rslib/src/scheduler/fsrs/params.rs`).
+
 ## deck-options.desired-retention-note
 
 Given the deck-options screen under FSRS-7 or RWKV-Curve, a note box sits
