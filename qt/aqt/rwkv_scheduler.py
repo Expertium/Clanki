@@ -18205,6 +18205,20 @@ class _RwkvHistoryHasher:
         return self._digest.hex()
 
 
+class _NoHistoryHasher:
+    """Stands in for `_RwkvHistoryHasher` where nothing reads the hash: it
+    hashes nothing, and its digest is the empty string, which no state cache
+    accepts."""
+
+    __slots__ = ()
+
+    def update(self, review_id: int, review_input: RwkvReviewInput) -> None:
+        pass
+
+    def hexdigest(self) -> str:
+        return ""
+
+
 def _write_rwkv_delta_record_frame(
     out: bytearray,
     review_id: int,
@@ -18630,13 +18644,22 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     ignored_review_ids: AbstractSet[int] = frozenset(),
     prepare_recovery_checkpoint: bool = False,
     between_steps: Callable[[], None] | None = None,
+    hash_history: bool = True,
 ) -> RwkvHistoricalReviewInputs:
     """`between_steps`, when given, runs between two steps of the read: the
     parts of the whole-history query, and then every
     RECORDINGS_PASS_PREPARE_STEP_ROWS rows of the preparation that turns the
     rows into replay inputs. The recording pass passes the one that rests, so
     that no step of it holds the machine for long (spec
-    sched.rwkv-recordings-automatic)."""
+    sched.rwkv-recordings-automatic).
+
+    `hash_history=False` leaves the history hash out: a caller that never
+    stores or compares it (Total Knowledge) saves about a third of the
+    preparation, which runs in Python and so slows the main window down
+    while it lasts. The returned `history_hash` is then the empty string,
+    which no state cache accepts."""
+    if not hash_history and prepare_recovery_checkpoint:
+        raise ValueError("a recovery checkpoint needs the history hash")
 
     start = time.monotonic()
     steps = _RwkvPreparationSteps(between_steps)
@@ -18825,7 +18848,9 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     prepared_row_count = 0
     # the hash chain keeps its digest as bytes through the loop; `history_hash`
     # is read from it where the loop hands a hash out
-    history_hasher = _RwkvHistoryHasher(history_hash)
+    history_hasher: _RwkvHistoryHasher | _NoHistoryHasher = (
+        _RwkvHistoryHasher(history_hash) if hash_history else _NoHistoryHasher()
+    )
     for raw_row_index, row in enumerate(raw_rows):
         historical_state = retained_states[raw_row_index]
         if historical_state is None:
