@@ -1248,9 +1248,14 @@ entry FSRS wrote, the difficulty stored in that entry) and a fast stability
 of 0.8 times the internal stability; the internal stability is solved for.
 Ease is not used. An interval the curve cannot reach gives the nearest
 stability bound (0.0001 or 36,500 days). A card RWKV-Curve answers keeps
-RWKV's S90 as its S90. The `FsrsNextInterval` add-on API
-(`col.fsrs_next_interval`) takes the stability it is given as the card's
-S90 and returns the interval of this state at the requested retention.
+RWKV's S90 as its S90. The add-on APIs that take a stability take it as
+the card's S90 and use this state: `FsrsNextInterval`
+(`col.fsrs_next_interval`) returns its interval at the requested retention,
+`FsrsCurrentRetrievability` (`col.fsrs_current_retrievability`) its
+retrievability after the elapsed days, and `FsrsIntervalAtRetrievability`,
+its `Batch`, `VariableBatch` and `ByConfigBatch` forms
+(`col.fsrs_interval_at_retrievability*`) the time until its curve reaches
+the requested retrievability (the S90 itself at 0.9).
 
 **Why:** Andrew, 2026-09-15, "yep, do it" (fix the conversion), then "check
 RWKV-Curve too, since S90 can (and should) be calculated for it too" and
@@ -1259,12 +1264,17 @@ conversion put the interval into the internal stability, which is not the
 90% point of FSRS-7's two-component curve: a 100-day interval gave an S90 of
 about 226 days, and RWKV-Curve's fallback state did the same with its S90.
 The add-on API made the same mistake; Andrew, 2026-09-15: treat its input as
-the S90.
+the S90. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of that
+day: the retrievability and interval-at-retrievability APIs still read the
+stability as a single-trace internal stability (s_fast = s, d = 5), so a
+card with S90 94.4 days got 212 days from
+`fsrs_interval_at_retrievability(cid, 94.4, 0.9)`.
 
 **Pinned by:** `sm2_conversion_gives_the_interval_as_s90`,
 `truncated_revlog_starting_state_keeps_the_interval_as_s90`,
 `scaling_to_an_unreachable_interval_gives_the_stability_bound`,
 `fsrs_state_for_an_rwkv_s90_has_that_s90`, `next_interval_api_takes_the_s90`,
+`retrievability_apis_take_the_s90`,
 `stored_historical_retention_is_ignored`
 (`rslib/src/scheduler/fsrs/memory_state.rs`);
 `rwkv_s90_answer_without_memory_state_gets_an_fsrs7_state_with_that_s90`

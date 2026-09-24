@@ -1625,9 +1625,9 @@ mod test {
         col.storage.update_card(&high_r)?;
 
         let low_retrievability =
-            col.fsrs_current_retrievability_for_card(low_r_card, 30.0, 20.0)?;
+            col.fsrs_single_trace_retrievability_for_card(low_r_card, 30.0, 20.0)?;
         let high_retrievability =
-            col.fsrs_current_retrievability_for_card(high_r_card, 30.0, 1.0)?;
+            col.fsrs_single_trace_retrievability_for_card(high_r_card, 30.0, 1.0)?;
         assert!(low_retrievability < high_retrievability);
         assert_eq!(col.queue_as_ids(parent.id), vec![low_r_card, high_r_card]);
         Ok(())
@@ -3172,9 +3172,9 @@ mod test {
         )?;
 
         let older_retrievability =
-            col.fsrs_current_retrievability_for_card(older_due_high_r, 1000.0, 10.0)?;
+            col.fsrs_single_trace_retrievability_for_card(older_due_high_r, 1000.0, 10.0)?;
         let later_retrievability =
-            col.fsrs_current_retrievability_for_card(later_due_low_r, 0.1, 1.0)?;
+            col.fsrs_single_trace_retrievability_for_card(later_due_low_r, 0.1, 1.0)?;
         assert!(older_retrievability > later_retrievability);
         assert_eq!(
             col.queue_as_ids(deck.id),
