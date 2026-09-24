@@ -311,10 +311,11 @@ def compute_activity(
 @dataclass
 class _Contents:
     """The card and review sums of an input fingerprint, with the database
-    connection and write count they were read at: (db, writes, sums), one
-    tuple so that a draw on another thread sees all three or none."""
+    connection and the card and review write stamp they were read at: (db,
+    writes, sums), one tuple so that a draw on another thread sees all three
+    or none."""
 
-    last: tuple[Any, int, tuple[Any, ...]] | None = None
+    last: tuple[Any, tuple[Any, ...], tuple[Any, ...]] | None = None
 
 
 @dataclass
@@ -506,16 +507,27 @@ class ActivityReporter:
         )
 
     def _card_and_review_sums(self) -> tuple[Any, ...]:
-        """The card sums (a scan of every card, ~20 ms on 160k cards) and
+        """The card sums (a scan of every card, ~20-60 ms on 160k cards) and
         review sums of the fingerprint. They are read again only after a
-        write: SQLite counts the rows each connection inserts, updates or
-        deletes (total_changes()), and the collection file is opened by one
-        connection only, in exclusive locking mode. Reopening the collection
-        gives a new connection, with its own count, and a new col.db."""
+        write to the cards or the review log: the backend counts the rows of
+        those two tables that its connection inserts, updates or deletes
+        (card_and_review_changes()), and the collection file is opened by
+        one connection only, in exclusive locking mode. A write anywhere
+        else (selecting a deck writes the config; the passes write the
+        retrievability cache) leaves the count alone. A DELETE without a
+        WHERE clause empties a table without being counted; it changes a
+        table's largest id, which is read with the count. Reopening the
+        collection gives a new connection, with its own count, and a new
+        col.db."""
         db = self._col.db
         # read before the sums: a write in between makes the next call
         # read them again, never the reverse
-        writes = db.scalar("SELECT total_changes()")
+        writes = tuple(
+            db.first(
+                "SELECT card_and_review_changes(), "
+                "(SELECT max(id) FROM cards), (SELECT max(id) FROM revlog)"
+            )
+        )
         last = self._contents.last
         if last is not None and last[0] is db and last[1] == writes:
             return last[2]

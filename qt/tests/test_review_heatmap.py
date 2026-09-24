@@ -215,6 +215,15 @@ def test_input_fingerprint_follows_reviews_and_cards_only(tmp_path: Any) -> None
         scoped = reporter.input_fingerprint(current_deck_only=True)
         col.decks.id("Other::Child")
         assert reporter.input_fingerprint(current_deck_only=True) != scoped
+
+        # a DELETE without a WHERE clause empties a table without SQLite's
+        # update hook; it still changes the fingerprint
+        reviewed = reporter.input_fingerprint(current_deck_only=False)
+        col.db.execute("delete from revlog")
+        emptied = reporter.input_fingerprint(current_deck_only=False)
+        assert emptied != reviewed
+        col.db.execute("delete from cards")
+        assert reporter.input_fingerprint(current_deck_only=False) != emptied
     finally:
         col.close(downgrade=False)
 
@@ -453,7 +462,8 @@ def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> No
             first = col.db.first
 
             def counting_first(sql: str, *args: Any) -> Any:
-                if "FROM cards" in sql:
+                # the scan of every card, not the write stamp read before it
+                if "total(mod)" in sql:
                     scans.append(sql)
                 return first(sql, *args)
 
@@ -466,14 +476,25 @@ def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> No
         col.db.execute("UPDATE cards SET due = due + 1")
         changed = fingerprint()
         assert changed != base and len(scans) == 2
-        # a write that changes nothing the report reads still reads again
+        # a write to neither the cards nor the review log does not read again:
+        # selecting a deck writes the config
         col.set_config("someUnrelatedKey", 1)
-        assert fingerprint() == changed and len(scans) == 3
-        assert fingerprint() == changed and len(scans) == 3
+        other = col.decks.id("Other")
+        assert other is not None
+        col.decks.select(other)
+        assert fingerprint() == changed and len(scans) == 2
+        # a review row does
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, "
+            "type) values (1, 1, -1, 3, 1, 0, 2500, 1000, 1)"
+        )
+        reviewed = fingerprint()
+        assert reviewed != changed and len(scans) == 3
+        assert fingerprint() == reviewed and len(scans) == 3
         # reopening gives a new connection with its own write count
         col.close(downgrade=False)
         col.reopen()
-        assert fingerprint() == changed and len(scans) == 4
+        assert fingerprint() == reviewed and len(scans) == 4
     finally:
         col.close(downgrade=False)
 
