@@ -2215,3 +2215,26 @@ they draw no distinct focus indicator and cannot exhibit this bug.
 
 **Pinned by:** `answer button focus indicator shows for keyboard focus, not
 for a mouse click` (`ts/tests/e2e/reviewer-focus-visible.spec.ts`).
+
+## ui.day-rollover
+
+Given an open profile, Clanki checks the day at each day cutoff. When the
+cutoff has moved since the last check, it remembers the new cutoff, refreshes
+the reviewer's queues if the reviewer is showing, and fires the add-on hook
+`gui_hooks.day_did_change` once, in every state, the reviewer included. A
+check that finds the same cutoff as the last one does nothing, so one day
+rollover fires the hook once. After each check Clanki sets the next check
+for the next cutoff.
+
+**Why:** the hook's own contract is "Called when Anki moves to the next
+day" (upstream PR 3817). The upstream check updated the remembered cutoff
+only while reviewing, and it did so before the comparison that fires the
+hook, so the hook never fired while the reviewer was open, which is when a
+rollover matters most to a scheduling add-on. Outside the reviewer the
+remembered cutoff was never updated, so a second check on the same day fired
+the hook a second time. Found in speed hunt round 5 (2026-09-25). Upstream
+`ankitects/anki` main has the same code.
+
+**Pinned by:** `test_the_day_rollover_fires_day_did_change_in_the_reviewer`,
+`test_the_day_rollover_fires_day_did_change_once_outside_the_reviewer`,
+`test_no_rollover_changes_nothing` (`qt/tests/test_main.py`).
