@@ -560,6 +560,12 @@ class Browser(QMainWindow):
 
         if (
             rwkv_scheduler.search_uses_rwkv_retrievability(search)
+            or (
+                # RWKV-Curve's `prop:s` reads the stored curves' S90s (spec
+                # ui.rwkv-curve-stored-s90)
+                rwkv_scheduler.search_uses_stability(search)
+                and rwkv_scheduler.search_needs_rwkv_values(self.col, search)
+            )
             or self._sort_reads_rwkv_retrievability()
         ):
             self._start_rwkv_scored_search(

@@ -555,12 +555,17 @@ def _skip_rwkv_feature_state(cursor: _RwkvCacheCursor) -> None:
 
 def _rwkv_curves_from_cache(cache: bytes) -> dict[int, tuple[list[float], list[float]]]:
     cursor = _RwkvCacheCursor(cache)
-    cursor.expect_magic(b"ARWKVPROCSTATE3")
+    cursor.expect_magic(b"ARWKVPROCSTATE4")
     _skip_rwkv_feature_state(cursor)
+    # how the S90s were found: their kernel and the maximum interval
+    cursor.u32()
+    cursor.u32()
     curves = {}
     for _ in range(cursor.u32()):
         card_id = cursor.i64()
         curves[card_id] = (cursor.f32_vec(), cursor.f32_vec())
+        # the curve's S90 (NaN before it was found)
+        cursor.f32()
     cursor.expect_end()
     return curves
 
@@ -1174,3 +1179,37 @@ def test_rwkv_inference_process_preserves_large_elapsed_seconds(
     assert torch.isfinite(prediction).all()
     assert elapsed_tensors[0].dtype == torch.int64
     assert elapsed_tensors[0].item() == elapsed_seconds
+
+
+# Pins spec/ui.md#ui.rwkv-curve-stored-s90: the batch S90 read gives each
+# answered card the S90 card info shows for its stored curve, and NaN for a
+# card without one.
+def test_rsbridge_card_curve_s90s_are_the_stored_curves_s90() -> None:
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference" / _RWKV_MODEL_FILENAME
+    if not model_path.exists():
+        pytest.skip(f"RWKV model is unavailable: {model_path}")
+
+    rsbridge = _import_rsbridge(root)
+    runtime = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    for review in _RWKV_GOLDEN_REVIEWS[:12]:
+        runtime.review(
+            *_rwkv_review_args(
+                review,
+                is_query=False,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )
+        )
+    card_ids = sorted({review["card_id"] for review in _RWKV_GOLDEN_REVIEWS[:12]})
+    card_ids.append(-1)
+    packed = struct.pack(f"<{len(card_ids)}q", *card_ids)
+    s90s = struct.unpack(f"<{len(card_ids)}f", runtime.card_curve_s90s(packed))
+    for card_id, s90 in zip(card_ids[:-1], s90s, strict=False):
+        curve = runtime.card_curve(card_id, [])
+        assert curve is not None
+        assert s90 == pytest.approx(curve[1], abs=1e-6)
+    assert math.isnan(s90s[-1])

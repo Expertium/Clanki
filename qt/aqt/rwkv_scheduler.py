@@ -1136,6 +1136,12 @@ class RwkvStatefulReviewerBackend:
         card_curve_weights = getattr(self._runtime, "card_curve_weights", None)
         return card_curve_weights(card_ids) if callable(card_curve_weights) else None
 
+    def card_curve_s90s(self, card_ids: bytes) -> bytes | None:
+        """The S90 of each card's stored curve (`card_ids` and the result
+        packed as little-endian i64s and f32s, NaN without a curve)."""
+        card_curve_s90s = getattr(self._runtime, "card_curve_s90s", None)
+        return bytes(card_curve_s90s(card_ids)) if callable(card_curve_s90s) else None
+
     def record_curve_sources(self, on: bool) -> bool:
         """Starts or stops recording curve sources; False when the runtime
         cannot record them (spec ui.card-info-rwkv-curve)."""
@@ -6630,6 +6636,12 @@ def prepare_browser_retrievability_scores(
     algorithm's R (spec ui.browser-memory-columns)."""
 
     reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+    if search_uses_stability(search) and rwkv_curve_collection_active(reviewer):
+        # RWKV-Curve's `prop:s` reads the stored curves' S90s (spec
+        # ui.rwkv-curve-stored-s90)
+        s90_status = publish_rwkv_curve_s90s(mw)
+        if not for_sort and not search_uses_rwkv_retrievability(search):
+            return s90_status
     return prepare_stats_retrievability_scores(
         reviewer,
         search,
@@ -14172,6 +14184,76 @@ def _rwkv_browser_curve_values(
                 elapsed_seconds=elapsed,
             )
     return values
+
+
+def publish_rwkv_curve_s90s(mw: object) -> RwkvStatsPreparationStatus:
+    """Give the backend the S90 of every card's stored RWKV-Curve curve,
+    which the Stats Stability graph and `prop:s` read under RWKV-Curve (spec
+    ui.rwkv-curve-stored-s90): the curve card info shows, never the FSRS-7
+    S90 in the card's memory state. Each S90 is found once and kept with its
+    curve, so this is a lookup. READY when published (an FSRS-7 or
+    RWKV-Instant collection publishes nothing), PENDING while RWKV cannot
+    answer yet, UNAVAILABLE without a model (the map is then empty, and no
+    card has a value). Runs off the main thread."""
+
+    col = getattr(mw, "col", None)
+    if col is None or collection_algorithm(col) != "rwkvCurve":
+        return RwkvStatsPreparationStatus.READY
+    set_s90s = getattr(getattr(col, "_backend", None), "set_rwkv_curve_s90s", None)
+    if not callable(set_s90s):
+        return RwkvStatsPreparationStatus.READY
+    if _reviewer_backend is None:
+        configure_reviewer_backend_from_environment()
+    if _reviewer_backend is None:
+        set_s90s(card_ids=b"", s90s=b"")
+        return RwkvStatsPreparationStatus.UNAVAILABLE
+    reviewer = SimpleNamespace(mw=mw)
+    if not _prepare_reviewer_backend_for_card_info(reviewer):
+        return RwkvStatsPreparationStatus.PENDING
+    state_token = _capture_reviewer_backend_prediction_state_token(reviewer)
+    if state_token is None:
+        return RwkvStatsPreparationStatus.PENDING
+    card_ids = array("q", col.db.list("select id from cards"))
+    if sys.byteorder != "little":
+        card_ids.byteswap()
+    packed_card_ids = card_ids.tobytes()
+    try:
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=state_token,
+        ) as backend:
+            if backend is None:
+                return RwkvStatsPreparationStatus.PENDING
+            card_curve_s90s = getattr(backend, "card_curve_s90s", None)
+            s90s = (
+                card_curve_s90s(packed_card_ids) if callable(card_curve_s90s) else None
+            )
+    except _ReviewerBackendPredictionAborted:
+        return RwkvStatsPreparationStatus.PENDING
+    if s90s is None:
+        # a backend without the S90s: no card has a value
+        set_s90s(card_ids=b"", s90s=b"")
+        return RwkvStatsPreparationStatus.READY
+    set_s90s(card_ids=packed_card_ids, s90s=bytes(s90s))
+    return RwkvStatsPreparationStatus.READY
+
+
+_STABILITY_SEARCH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_:-])prop:s(?=[<>=!])", re.IGNORECASE
+)
+
+
+def search_uses_stability(search: str) -> bool:
+    """True for a search on `prop:s`."""
+    return _STABILITY_SEARCH_PATTERN.search(search) is not None
+
+
+def search_needs_rwkv_values(col: object, search: str) -> bool:
+    """Whether a Browser or AnkiConnect search reads values RWKV prepares:
+    an RWKV retrievability, or under RWKV-Curve the stability (spec
+    ui.rwkv-curve-stored-s90)."""
+    return search_uses_rwkv_retrievability(search) or (
+        search_uses_stability(search) and collection_algorithm(col) == "rwkvCurve"
+    )
 
 
 def _rwkv_browser_instant_values(

@@ -397,6 +397,26 @@ def test_a_stopped_caller_does_not_start_the_backend_build(
     assert calls == []
 
 
+def test_a_state_cache_of_another_model_is_not_read(col: Collection) -> None:
+    """Pins spec/ui.md#ui.rwkv-curve-stored-s90: the state cache, and with it
+    the stored curves and their S90s, names the model (its SHA-256); a cache
+    of another model is not read, so no curve or S90 of that model is
+    used."""
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    history = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+    metadata = rwkv_scheduler._rwkv_state_cache_metadata(
+        reviewer, history, snapshot_review_id=history.last_review_id
+    )
+    model = metadata["model"]
+    assert isinstance(model, dict) and model.get("sha256")
+
+    def compatible(metadata: dict[str, object]) -> bool:
+        return rwkv_scheduler._rwkv_state_cache_metadata_compatible(reviewer, metadata)
+
+    assert compatible(metadata)
+    assert not compatible({**metadata, "model": {**model, "sha256": "0" * 64}})
+
+
 def test_a_state_cache_of_another_feature_layout_is_not_read(col: Collection) -> None:
     """The state cache names the feature layout its states were replayed
     with. A cache written before the name existed holds today's layout and

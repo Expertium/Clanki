@@ -159,6 +159,10 @@ service SchedulerService {
   // Installs or clears a transient desktop-only RWKV retrievability score
   // computed while rendering card info.
   rpc SetRwkvCardInfoScore(RwkvCardInfoScoreRequest) returns (generic.Empty);
+  // Installs the S90 of each card's stored RWKV-Curve curve, which the Stats
+  // Stability graph and prop:s read under RWKV-Curve (spec
+  // ui.rwkv-curve-stored-s90). Replaces the previous map.
+  rpc SetRwkvCurveS90s(RwkvCurveS90sRequest) returns (generic.Empty);
   // Returns the active transient desktop-only RWKV retrievability score for a
   // card, if one has been installed for the current scheduler day.
   rpc GetRwkvRetrievabilityScore(cards.CardId)
@@ -1211,6 +1215,13 @@ message RwkvCardInfoScoreRequest {
   int64 card_id = 1;
   optional float retrievability = 2;
   optional float curve_retrievability = 3;
+}
+
+// `card_ids` as little-endian i64s and `s90s` as little-endian f32s, one per
+// card id; a NaN S90 is a card without a stored curve.
+message RwkvCurveS90sRequest {
+  bytes card_ids = 1;
+  bytes s90s = 2;
 }
 
 message RwkvRetrievabilityScoreResponse {

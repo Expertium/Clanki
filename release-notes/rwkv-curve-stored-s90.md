@@ -1,0 +1,1 @@
+- Under RWKV-Curve, the Stats Stability graph and `prop:s` searches now use the stability of RWKV-Curve's own stored forgetting curve, the value the Browser and Card Info show, instead of an FSRS-7 stability that some cards still carried.

@@ -189,6 +189,9 @@ pub struct CollectionState {
     pub(crate) scheduler_info: Option<SchedulerInfo>,
     pub(crate) card_queues: Option<CardQueues>,
     pub(crate) rwkv_retrievability_scores: Option<RwkvRetrievabilityScores>,
+    /// The S90 of each card's stored RWKV-Curve curve, as RWKV last
+    /// published it (spec ui.rwkv-curve-stored-s90).
+    pub(crate) rwkv_curve_s90s: Option<Arc<HashMap<CardId, f32>>>,
     pub(crate) rwkv_queue_curves: Option<crate::scheduler::rwkv::RwkvQueueCurves>,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
@@ -1000,6 +1003,18 @@ impl Collection {
         retrievability: Option<f32>,
     ) -> Result<()> {
         self.set_rwkv_card_info_scores(card_id, retrievability, None)
+    }
+
+    /// Replaces the S90s of the cards' stored RWKV-Curve curves (spec
+    /// ui.rwkv-curve-stored-s90).
+    pub(crate) fn set_rwkv_curve_s90s(&mut self, s90s: HashMap<CardId, f32>) {
+        self.state.rwkv_curve_s90s = Some(Arc::new(s90s));
+    }
+
+    /// The S90s of the cards' stored RWKV-Curve curves; None before RWKV
+    /// published any.
+    pub(crate) fn rwkv_curve_s90s(&self) -> Option<Arc<HashMap<CardId, f32>>> {
+        self.state.rwkv_curve_s90s.clone()
     }
 
     pub(crate) fn set_rwkv_card_info_scores(
