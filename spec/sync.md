@@ -82,6 +82,13 @@ card does not stop the repair of the others. A failure leaves the cards as
 they came and does not stop the open, the sync or the import. With FSRS off
 nothing runs. Cards with `s_int` are never touched.
 
+The open-time pass reads every card, so it runs only when the collection
+changed: after it runs, the collection's change time (`col.mod`) is saved in
+the retrievability-cache sidecar (local, not synced; the collection itself is
+not written), and an open whose change time equals the saved one skips it. A
+program that edits the file without changing `col.mod` is seen at the first
+open after the next change. A missing sidecar counts as changed.
+
 **Why:** Andrew, 2026-09-15 (interval audit #4). Read as it came, such a
 card's FSRS-6 stability became FSRS-7's internal stability as well as its
 S90, which made its next intervals about 2.3 times too long. He chose "S90 =
@@ -90,9 +97,13 @@ that log already holds the other client's reviews, so the real FSRS-7 state
 comes from it. The damaged-card rule: Andrew, 2026-09-24, "Fix the bugs on
 our side": one card with a missing home deck failed the repair of every
 card, so all of them kept the FSRS-6 stability as their internal one.
+The skip: Andrew, 2026-09-25: the scan cost 20-26 ms on every open; he
+accepted that an edit which leaves the change time alone waits for the next
+change.
 
 **Pinned by:** `fsrs7_state_of_a_foreign_card_is_rebuilt_during_sync`,
-`fsrs7_state_of_a_foreign_card_is_rebuilt_on_open`
+`fsrs7_state_of_a_foreign_card_is_rebuilt_on_open`,
+`the_open_scan_for_foreign_cards_waits_for_a_change`
 (`rslib/src/sync/collection/tests.rs`);
 `imported_foreign_fsrs_state_becomes_an_fsrs7_state`
 (`rslib/src/import_export/package/apkg/tests.rs`);
