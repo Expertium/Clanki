@@ -9,10 +9,10 @@ import { expect, test } from "vitest";
 
 import {
     DEFAULT_REVIEW_ORDER,
-    newGatherChoicesForAlgorithm,
-    newGatherPriorityForAlgorithm,
+    newGatherPriorityWithoutRetrievability,
     reviewOrderForAlgorithm,
     withoutDifficultyOrdersUnderRwkv,
+    withoutRetrievabilityNewGatherOrders,
 } from "./review-order";
 
 // Pins spec/deck-options.md#deck-options.no-difficulty-order-under-rwkv
@@ -47,8 +47,8 @@ test("a difficulty order under RWKV becomes the default order", () => {
     );
 });
 
-// Pins spec/deck-options.md#deck-options.new-retrievability-order-instant-only
-test("the retrievability new-card orders are offered only under RWKV-Instant", () => {
+// Pins spec/deck-options.md#deck-options.no-new-card-retrievability-order
+test("the retrievability new-card orders are never offered", () => {
     const choices = [
         NewCardGatherPriority.DECK,
         NewCardGatherPriority.ASCENDING_RETRIEVABILITY,
@@ -56,19 +56,18 @@ test("the retrievability new-card orders are offered only under RWKV-Instant", (
         NewCardGatherPriority.RANDOM_CARDS,
     ].map((value) => ({ value }));
 
-    expect(newGatherChoicesForAlgorithm(choices, true)).toEqual(choices);
-    expect(newGatherChoicesForAlgorithm(choices, false).map((c) => c.value)).toEqual([
+    expect(withoutRetrievabilityNewGatherOrders(choices).map((c) => c.value)).toEqual([
         NewCardGatherPriority.DECK,
         NewCardGatherPriority.RANDOM_CARDS,
     ]);
-    // a stored one reads as the default under another algorithm
+    // a stored one reads as the default, whatever the algorithm
     expect(
-        newGatherPriorityForAlgorithm(NewCardGatherPriority.ASCENDING_RETRIEVABILITY, false),
+        newGatherPriorityWithoutRetrievability(NewCardGatherPriority.ASCENDING_RETRIEVABILITY),
     ).toBe(NewCardGatherPriority.DECK);
     expect(
-        newGatherPriorityForAlgorithm(NewCardGatherPriority.DESCENDING_RETRIEVABILITY, true),
-    ).toBe(NewCardGatherPriority.DESCENDING_RETRIEVABILITY);
-    expect(newGatherPriorityForAlgorithm(NewCardGatherPriority.RANDOM_CARDS, false)).toBe(
+        newGatherPriorityWithoutRetrievability(NewCardGatherPriority.DESCENDING_RETRIEVABILITY),
+    ).toBe(NewCardGatherPriority.DECK);
+    expect(newGatherPriorityWithoutRetrievability(NewCardGatherPriority.RANDOM_CARDS)).toBe(
         NewCardGatherPriority.RANDOM_CARDS,
     );
 });

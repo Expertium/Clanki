@@ -8,16 +8,61 @@ import importlib.util
 import math
 import struct
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 _RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_CURVE_COUNT = 128
 _RWKV_GOLDEN_CARD_ID = 1549775725979
-_RWKV_GOLDEN_ROW0_IMMEDIATE = 0.89073008298873901
-_RWKV_GOLDEN_ROW34_IMMEDIATE = 0.70197033882141113
-_RWKV_GOLDEN_ROW34_AHEAD = 0.63239266440118969
+# From the PyTorch reference runner (`qt/aqt/rwkv_inference/process.py`),
+# which draws its id codes as spec sched.rwkv-id-codes draws them (torch.randint
+# on a generator seeded by the id); the Rust runtime agrees within 2e-7. Its
+# `id_codes="in_order"` gives the values before that rule: 0.890730 / 0.701970.
+# The trace has no review without an id, so the id pipeline changes nothing
+# on it; the deleted-card rows below tell the pipelines apart.
+_RWKV_GOLDEN_ROW0_IMMEDIATE = 0.9020914435386658
+_RWKV_GOLDEN_ROW34_IMMEDIATE = 0.6945977210998535
+_RWKV_GOLDEN_ROW34_AHEAD = 0.6248379945755005
 _RWKV_ABS_TOL = 1e-6
+
+
+def _rwkv_deleted_card_review(
+    card_id: int, rating: int, duration: int, day_offset: int
+) -> dict[str, Any]:
+    """A review of a deleted card: no note, deck or preset (spec
+    sched.rwkv-replay-deleted-cards)."""
+    return {
+        "card_id": card_id,
+        "note_id": None,
+        "deck_id": None,
+        "preset_id": None,
+        "day_offset": day_offset,
+        "rating": rating,
+        "state": 0,
+        "duration": duration,
+        "elapsed_days": -1,
+        "elapsed_seconds": -1,
+    }
+
+
+# Two deleted cards reviewed after the golden trace, then a query of the
+# second: under the shipped model's id pipeline (int32) the second card's
+# review and query read the note, deck and preset streams the first one
+# advanced, under the int64 pipeline its note stream is its own.
+_RWKV_GOLDEN_DELETED_REVIEWS = [
+    _rwkv_deleted_card_review(1549775725990, 3, 8000, 2),
+    _rwkv_deleted_card_review(1549775725991, 1, 12000, 2),
+]
+_RWKV_GOLDEN_DELETED_QUERY = {
+    **_rwkv_deleted_card_review(1549775725991, 3, 0, 3),
+    "state": 1,
+    "elapsed_days": 1,
+    "elapsed_seconds": 86_400,
+}
+# The reference runner's value (hashed codes, int32 pipeline); its int64
+# pipeline gives 0.55789 instead.
+_RWKV_GOLDEN_DELETED_QUERY_IMMEDIATE = 0.5861462354660034
 
 _RWKV_GOLDEN_REVIEWS = [
     {
@@ -507,15 +552,6 @@ def _skip_rwkv_feature_state(cursor: _RwkvCacheCursor) -> None:
     cursor.skip_i64_map()
     cursor.i64()
 
-    for _ in range(cursor.u32()):
-        cursor.u8()
-        cursor.i64()
-        cursor.f32_vec()
-
-    cursor.u32()
-    for _ in range(624):
-        cursor.u32()
-
 
 def _rwkv_curves_from_cache(cache: bytes) -> dict[int, tuple[list[float], list[float]]]:
     cursor = _RwkvCacheCursor(cache)
@@ -823,6 +859,189 @@ def test_rsbridge_rwkv_golden_predictions_cover_rwkv_and_rwkv_p() -> None:
     ) == pytest.approx(
         runtime.predict_retrievability_many_from_warm_up([query_input]),
         abs=_RWKV_ABS_TOL,
+    )
+
+
+def _reference_features_module() -> Any:
+    """`rwkv_inference/features.py` alone: the package imports torch, the
+    features do not."""
+    path = Path(__file__).resolve().parents[1] / "aqt/rwkv_inference/features.py"
+    spec = importlib.util.spec_from_file_location("_rwkv_reference_features", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_reference_runner_seeds_id_codes_as_the_runtime_does() -> None:
+    """The reference runner's id-code seed is the runtime's (spec
+    sched.rwkv-id-codes; the values `id_codes_match_torch_seeded_by_the_id`
+    pins in rslib/src/rwkv/mod.rs)."""
+    features = _reference_features_module()
+    assert features.id_code_seed("card_id", 123) == 1_658_732_843
+    assert features.id_code_seed("note_id", 456) == 2_409_217_604
+    assert features.id_code_seed("deck_id", 789) == 285_523_619
+    assert features.id_code_seed("preset_id", 10) == 3_968_533_970
+    assert features.id_code_seed("note_id", features.ID_PLACEHOLDER) == 1_456_629_865
+
+
+def test_reference_runner_with_its_own_codes_gives_the_golden_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The PyTorch reference runner, drawing id codes by its default rule,
+    gives the golden rows the Rust runtime is held to, so both sides of the
+    parity check draw codes by the same rule."""
+    torch = pytest.importorskip("torch")
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth"
+    if not model_path.exists():
+        pytest.skip(f"RWKV model is unavailable: {model_path}")
+    monkeypatch.syspath_prepend(str(root / "qt/aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    process = process_module.RwkvInferenceProcess(
+        model_path=model_path, device=torch.device("cpu"), dtype=torch.float32
+    )
+    curves: dict[int, Any] = {}
+    with torch.no_grad():
+        for index, review in enumerate(_RWKV_GOLDEN_REVIEWS):
+            if index == 0:
+                assert math.isclose(
+                    process.imm_predict(dict(review)).item(),
+                    _RWKV_GOLDEN_ROW0_IMMEDIATE,
+                    abs_tol=_RWKV_ABS_TOL,
+                )
+            elif index == 34:
+                assert math.isclose(
+                    process.imm_predict(dict(review)).item(),
+                    _RWKV_GOLDEN_ROW34_IMMEDIATE,
+                    abs_tol=_RWKV_ABS_TOL,
+                )
+                ahead = process.predict_func(
+                    curves[_RWKV_GOLDEN_CARD_ID], review["elapsed_seconds"]
+                ).item()
+                assert math.isclose(
+                    ahead, _RWKV_GOLDEN_ROW34_AHEAD, abs_tol=_RWKV_ABS_TOL
+                )
+            curves[review["card_id"]] = process.process_row(dict(review))
+
+
+def test_reference_runner_gives_the_deleted_card_row_by_its_id_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deleted-card row tells the two id pipelines apart: the int32 one
+    (the shipped model's, the runner's default) gives the value the runtime
+    is held to, the int64 one another."""
+    torch = pytest.importorskip("torch")
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth"
+    if not model_path.exists():
+        pytest.skip(f"RWKV model is unavailable: {model_path}")
+    monkeypatch.syspath_prepend(str(root / "qt/aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    predictions = {}
+    for pipeline in ("int32", "int64"):
+        process = process_module.RwkvInferenceProcess(
+            model_path=model_path,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            id_pipeline=pipeline,
+        )
+        with torch.no_grad():
+            for review in _RWKV_GOLDEN_REVIEWS + _RWKV_GOLDEN_DELETED_REVIEWS:
+                process.process_row(dict(review))
+            predictions[pipeline] = process.imm_predict(
+                dict(_RWKV_GOLDEN_DELETED_QUERY)
+            ).item()
+    assert math.isclose(
+        predictions["int32"],
+        _RWKV_GOLDEN_DELETED_QUERY_IMMEDIATE,
+        abs_tol=_RWKV_ABS_TOL,
+    )
+    assert abs(predictions["int64"] - predictions["int32"]) > 1e-2
+
+
+def test_reference_runner_missing_note_follows_the_id_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec sched.rwkv-replay-deleted-cards: a missing note is one shared
+    placeholder for the shipped model (int32), a note per card for the int64
+    pipeline; deck and preset are shared in both."""
+    torch = pytest.importorskip("torch")
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.pth"
+    if not model_path.exists():
+        pytest.skip(f"RWKV model is unavailable: {model_path}")
+    monkeypatch.syspath_prepend(str(root / "qt/aqt"))
+    process_module = importlib.import_module("rwkv_inference.process")
+    for pipeline, note in (
+        ("int32", process_module.ID_PLACEHOLDER),
+        ("int64", process_module.ID_PLACEHOLDER + 7),
+    ):
+        process = process_module.RwkvInferenceProcess(
+            model_path=model_path,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            id_pipeline=pipeline,
+        )
+        row = process._add_same(
+            {
+                "card_id": 7,
+                "note_id": None,
+                "deck_id": None,
+                "preset_id": None,
+                "day_offset": 0,
+                "elapsed_days": -1,
+                "elapsed_seconds": -1,
+            }
+        )
+        assert (row["note_id"], row["deck_id"], row["preset_id"]) == (
+            note,
+            process_module.ID_PLACEHOLDER,
+            process_module.ID_PLACEHOLDER,
+        )
+        assert row["note_id_is_nan"] == row["deck_id_is_nan"] == 1.0
+
+
+def _rwkv_warm_up_input(
+    review: dict[str, Any], *, is_query: bool
+) -> tuple[object, ...]:
+    return (
+        *_rwkv_review_args(
+            review,
+            is_query=is_query,
+            card_state=None,
+            note_state=None,
+            deck_state=None,
+            preset_state=None,
+            global_state=None,
+        )[:15],
+        True,
+    )
+
+
+def test_rsbridge_deleted_card_reviews_stream_through_the_shared_placeholders() -> None:
+    """Spec sched.rwkv-replay-deleted-cards: the runtime replays deleted
+    cards' reviews through the shipped model's placeholder streams, and its
+    prediction after them is the reference runner's."""
+    root = Path(__file__).resolve().parents[2]
+    model_path = root / "qt/aqt/rwkv_inference" / _RWKV_MODEL_FILENAME
+    if not model_path.exists():
+        pytest.skip(f"RWKV model is unavailable: {model_path}")
+
+    rsbridge = _import_rsbridge(root)
+    runtime = rsbridge.RwkvInference(str(model_path), 0.9, 36500)
+    runtime.warm_up_reviews(
+        [
+            _rwkv_warm_up_input(review, is_query=False)
+            for review in _RWKV_GOLDEN_REVIEWS + _RWKV_GOLDEN_DELETED_REVIEWS
+        ],
+        False,
+    )
+    [prediction] = runtime.predict_retrievability_many_from_warm_up(
+        [_rwkv_warm_up_input(_RWKV_GOLDEN_DELETED_QUERY, is_query=True)]
+    )
+    assert math.isclose(
+        prediction, _RWKV_GOLDEN_DELETED_QUERY_IMMEDIATE, abs_tol=_RWKV_ABS_TOL
     )
 
 

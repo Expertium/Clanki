@@ -37,6 +37,10 @@ pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 /// Which algorithm scheduled a review, one row per review, written when the
 /// review is answered (spec sched.review-scheduler-record).
 pub(crate) const REVIEW_SCHEDULER_TABLE: &str = "review_scheduler";
+/// What the last FSRS-7 prediction pass left uncovered in each deck, so that
+/// a deck it could not cover more of is not stale (spec
+/// ui.stats-fsrs-predictions-ready).
+const FSRS_PREDICTION_COVERAGE_TABLE: &str = "fsrs_prediction_coverage";
 /// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
@@ -141,8 +145,10 @@ pub(crate) struct StudiedToday {
 pub(crate) struct RwkvHistoricalReviewRow {
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
-    pub(crate) note_id: i64,
-    pub(crate) deck_id: i64,
+    /// The card's note and home deck; None for both when the card is gone
+    /// (spec sched.rwkv-replay-deleted-cards).
+    pub(crate) note_id: Option<i64>,
+    pub(crate) deck_id: Option<i64>,
     pub(crate) ease: i64,
     pub(crate) duration_millis: i64,
     pub(crate) review_kind: i64,
@@ -292,9 +298,45 @@ fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
     })
 }
 
+/// The rated reviews of one deck that no validation fold covers: how many,
+/// and the newest one's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct UncoveredReviews {
+    pub count: u32,
+    pub newest: i64,
+}
+
+impl UncoveredReviews {
+    /// The uncovered reviews of two parts of the review log together.
+    pub(crate) fn add(&mut self, other: UncoveredReviews) {
+        self.count += other.count;
+        self.newest = self.newest.max(other.newest);
+    }
+}
+
+/// What a prediction pass left uncovered in a deck, and the preset it
+/// covered the deck for: the preset's id and the selection of reviews it
+/// trained on (its search and "Ignore reviews before").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FsrsPredictionCoverage {
+    pub preset: DeckConfigId,
+    pub selection: String,
+    pub uncovered: UncoveredReviews,
+}
+
+fn uncovered_reviews_of_deck(row: &Row) -> Result<(DeckId, UncoveredReviews)> {
+    Ok((
+        row.get(0)?,
+        UncoveredReviews {
+            count: row.get(1)?,
+            newest: row.get(2)?,
+        },
+    ))
+}
+
 /// One part of the uncovered-review count: each deck with its uncovered
 /// reviews, and the review id the next part starts after (None at the end).
-pub(crate) type UncoveredReviewsPart = (Vec<(DeckId, u32)>, Option<i64>);
+pub(crate) type UncoveredReviewsPart = (Vec<(DeckId, UncoveredReviews)>, Option<i64>);
 
 impl SqliteStorage {
     fn qualified_retrievability_cache_table(table: &str) -> String {
@@ -1002,7 +1044,7 @@ impl SqliteStorage {
         let counts = self
             .db
             .prepare_cached(&format!(
-                "select c.did, count(*) from revlog r
+                "select c.did, count(*), max(r.id) from revlog r
                  cross join cards c on c.id = r.cid
                  where r.id > ?1 and r.id <= ?2 and r.ease > 0
                    and not exists (
@@ -1011,11 +1053,127 @@ impl SqliteStorage {
                    )
                  group by c.did"
             ))?
-            .query_and_then((after, last.unwrap_or(i64::MAX)), |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_and_then((after, last.unwrap_or(i64::MAX)), uncovered_reviews_of_deck)?
             .collect::<Result<_>>()?;
         Ok((counts, last))
+    }
+
+    /// The uncovered reviews of these decks' cards, among the reviews up to
+    /// `up_to`: what `decks_with_uncovered_fsrs_review_predictions_part`
+    /// counts, for the decks a pass has just covered.
+    pub(crate) fn uncovered_fsrs_review_predictions_of_decks(
+        &self,
+        decks: &[DeckId],
+        up_to: i64,
+    ) -> Result<Vec<(DeckId, UncoveredReviews)>> {
+        if decks.is_empty() {
+            return Ok(vec![]);
+        }
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        let mut ids = String::new();
+        write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
+        self.db
+            .prepare(&format!(
+                "select c.did, count(*), max(r.id) from cards c
+                 join revlog r on r.cid = c.id
+                 where c.did in ({ids}) and r.id <= ?1 and r.ease > 0
+                   and not exists (
+                       select 1 from {table} t
+                       where t.revlog_id = r.id and t.sample_role = 'validation_fold'
+                   )
+                 group by c.did"
+            ))?
+            .query_and_then((up_to,), uncovered_reviews_of_deck)?
+            .collect()
+    }
+
+    fn ensure_fsrs_prediction_coverage_schema(&self) -> Result<()> {
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {table} (
+                deck_id INTEGER NOT NULL PRIMARY KEY,
+                preset_id INTEGER NOT NULL,
+                selection TEXT NOT NULL,
+                uncovered INTEGER NOT NULL,
+                newest_uncovered INTEGER NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    /// Records what a pass left uncovered in each of `decks` for `preset`;
+    /// a deck of them with nothing uncovered drops its record.
+    pub(crate) fn set_fsrs_prediction_coverage(
+        &self,
+        decks: &[DeckId],
+        preset: DeckConfigId,
+        selection: &str,
+        uncovered: &[(DeckId, UncoveredReviews)],
+    ) -> Result<()> {
+        self.ensure_fsrs_prediction_coverage_schema()?;
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        let mut delete = self
+            .db
+            .prepare_cached(&format!("delete from {table} where deck_id = ?1"))?;
+        for deck in decks {
+            delete.execute((deck.0,))?;
+        }
+        let mut insert = self.db.prepare_cached(&format!(
+            "insert into {table}
+                 (deck_id, preset_id, selection, uncovered, newest_uncovered)
+             values (?1, ?2, ?3, ?4, ?5)"
+        ))?;
+        for (deck, reviews) in uncovered {
+            if decks.contains(deck) && reviews.count > 0 {
+                insert.execute(params![
+                    deck.0,
+                    preset.0,
+                    selection,
+                    reviews.count,
+                    reviews.newest
+                ])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every deck's record of `set_fsrs_prediction_coverage`.
+    pub(crate) fn fsrs_prediction_coverage(
+        &self,
+    ) -> Result<HashMap<DeckId, FsrsPredictionCoverage>> {
+        let exists: bool = self.db.query_row(
+            &format!(
+                "select exists(select 1 from {RETRIEVABILITY_CACHE_DB_SCHEMA}.sqlite_master
+                 where type = 'table' and name = ?1)"
+            ),
+            (FSRS_PREDICTION_COVERAGE_TABLE,),
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(HashMap::new());
+        }
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        self.db
+            .prepare(&format!(
+                "select deck_id, preset_id, selection, uncovered, newest_uncovered from {table}"
+            ))?
+            .query_and_then([], |row| {
+                Ok((
+                    DeckId(row.get(0)?),
+                    FsrsPredictionCoverage {
+                        preset: DeckConfigId(row.get(1)?),
+                        selection: row.get(2)?,
+                        uncovered: UncoveredReviews {
+                            count: row.get(3)?,
+                            newest: row.get(4)?,
+                        },
+                    },
+                ))
+            })?
+            .collect()
     }
 
     /// Deletes every stored FSRS prediction of the cards of these decks.
@@ -1310,11 +1468,14 @@ impl SqliteStorage {
             *after_review_id = review_id;
             read += 1;
             let card_id: i64 = row.get(1)?;
-            // a review whose card is gone belongs to no history: the query
-            // this replaced joined `cards`, which dropped it
-            let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
-                continue;
-            };
+            // a review whose card is gone stays, with no note and no deck, as
+            // the model's training kept it (spec
+            // sched.rwkv-replay-deleted-cards)
+            let (note_id, deck_id) = cards
+                .get(&card_id)
+                .map_or((None, None), |&(note_id, deck_id)| {
+                    (Some(note_id), Some(deck_id))
+                });
             let ease: i64 = row.get(2)?;
             let review_kind: i64 = row.get(4)?;
             let ease_factor_is_zero: bool = row.get(7)?;
@@ -1379,7 +1540,6 @@ impl SqliteStorage {
         let sql = format!(
             "select r.id
              from revlog r
-             join cards c on c.id = r.cid
              where r.ease between 1 and 4
                and r.type in (0, 1, 2, 3, 4, 5)
                and not (r.type = 3 and r.factor = 0)
@@ -1491,19 +1651,51 @@ impl SqliteStorage {
         Ok(ratings)
     }
 
-    /// The first rating of each searched card over its whole history, the
-    /// period aside: a rating as `searched_ratings_that_affect_scheduling`
-    /// counts one (spec ui.stats-model-metrics).
-    pub(crate) fn first_ratings_of_searched_cards(&self) -> Result<Vec<RevlogId>> {
-        self.db
-            .prepare_cached(
-                "select min(id) from revlog
-                 where cid in (select cid from search_cids)
-                   and ease > 0 and not (type = 3 and factor = 0)
-                 group by cid",
-            )?
-            .query_and_then([], |row| -> Result<RevlogId> { Ok(row.get(0)?) })?
-            .collect()
+    /// The ratings of the searched cards that start a learning sequence,
+    /// over their whole history, the period aside (spec
+    /// ui.stats-model-metrics): a card's first rating, its first rating
+    /// after a Forget, and a rated Learning row whose previous rating is not
+    /// a Learning row (a learning start, where the replays start the card
+    /// again). A rating is counted as `searched_ratings_that_affect_scheduling`
+    /// counts one. Sorted by id.
+    pub(crate) fn sequence_start_ratings_of_searched_cards(&self) -> Result<Vec<RevlogId>> {
+        let mut statement = self.db.prepare_cached(
+            "select id, cid, ease, factor, type from revlog
+             where cid in (select cid from search_cids)
+             order by cid, id",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut starts = vec![];
+        let mut card = None;
+        // the kind of the card's previous rating; None at a sequence start
+        let mut previous: Option<RevlogReviewKind> = None;
+        while let Some(row) = rows.next()? {
+            let entry = RevlogEntry {
+                id: row.get(0)?,
+                cid: row.get(1)?,
+                button_chosen: row.get(2)?,
+                ease_factor: row.get(3)?,
+                review_kind: row.get(4).unwrap_or_default(),
+                ..Default::default()
+            };
+            if card != Some(entry.cid) {
+                card = Some(entry.cid);
+                previous = None;
+            }
+            if entry.is_reset() {
+                previous = None;
+            } else if entry.has_rating_and_affects_scheduling() {
+                let learning = entry.review_kind == RevlogReviewKind::Learning;
+                let learning_start =
+                    learning && previous.is_some_and(|kind| kind != RevlogReviewKind::Learning);
+                if previous.is_none() || learning_start {
+                    starts.push(entry.id);
+                }
+                previous = Some(entry.review_kind);
+            }
+        }
+        starts.sort_unstable();
+        Ok(starts)
     }
 
     pub(crate) fn get_revlog_entries_for_searched_cards(&self) -> Result<Vec<RevlogEntry>> {
@@ -2594,7 +2786,7 @@ with eligible as (
     cast(r.factor as integer) as ease_factor,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  left join cards c on c.id = r.cid
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
@@ -2639,7 +2831,18 @@ where e.id >= s.start_id
 order by e.id, e.cid";
 
     /// One replayed row, as both reads describe it.
-    type ReplayedRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, bool);
+    type ReplayedRow = (
+        i64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        bool,
+    );
 
     fn replayed_rows_from_replaced_sql(
         col: &Collection,
@@ -2772,7 +2975,8 @@ order by e.id, e.cid";
                 }
             }
         }
-        // reviews of a card that was deleted: no read may return them
+        // reviews of a card that was deleted: every read returns them, with
+        // no note and no deck (spec sched.rwkv-replay-deleted-cards)
         for _ in 0..5 {
             review_id += 1 + noise.below(5_000) as i64;
             add_replay_revlog(&col, review_id, 999_999, RATED_REVIEW)?;
@@ -2785,6 +2989,9 @@ order by e.id, e.cid";
             replaced.len()
         );
         assert_eq!(replayed_rows_from_one_pass_read(&col, &[])?, replaced);
+        let deleted: Vec<_> = replaced.iter().filter(|row| row.1 == 999_999).collect();
+        assert_eq!(deleted.len(), 5);
+        assert!(deleted.iter().all(|row| row.2.is_none() && row.3.is_none()));
 
         // the same, with reviews the caller asks the replay to ignore
         assert!(!interesting_review_ids.is_empty());

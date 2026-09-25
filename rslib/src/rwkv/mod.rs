@@ -294,90 +294,17 @@ const MAX_CHANNEL_MIXER_DIM: usize = 256;
 #[cfg(test)]
 const MAX_LORA_RANK: usize = 16;
 const RETRIEVABILITY_GEMM_BATCH_SIZE: usize = 128;
+/// The id a review without a note, deck or preset (the reviews of a deleted
+/// card) is encoded and streamed with (spec sched.rwkv-replay-deleted-cards):
+/// the deck and the preset always, the note as `RwkvIdPipeline` says. The
+/// value lies far above any Anki id (epoch milliseconds), so it never meets a
+/// real entity.
 const ID_PLACEHOLDER: i64 = 314_159_265_358_979_323;
 const ID_SPLIT: u64 = 4;
-const TORCH_ID_RNG_STATE_LEN: usize = 624;
-const TORCH_ID_RNG_INITIAL_INDEX: usize = 4;
-const TORCH_ID_RNG_INITIAL_STATE: [u32; TORCH_ID_RNG_STATE_LEN] = [
-    1682285388, 1851481669, 966820414, 1804407443, 3932621889, 3075156175, 1736360318, 934395819,
-    4040256764, 1428315994, 3735821200, 3330369387, 3669296551, 4124277305, 1875917743, 3028165727,
-    2848364260, 455193708, 1084726271, 4219366876, 4052358395, 3170678824, 468221764, 161941628,
-    2640816207, 267628614, 4070986878, 1225344559, 697494497, 1246641310, 1864086393, 2343787891,
-    956379933, 132227689, 1804503562, 801719826, 2866035087, 3697914572, 3618475839, 3714856595,
-    3045796150, 2653947806, 695225985, 3299305861, 2299901543, 282374836, 2677848525, 308337505,
-    1649403860, 3241582120, 1641323885, 211358346, 1648589179, 3479631618, 11568893, 2867282711,
-    4042451176, 611732436, 3506334995, 3562753239, 1234760878, 2196749548, 3668376444, 2428528228,
-    631426791, 4017895429, 3026146201, 4191008964, 1932380089, 3380014424, 3547882387, 3952077360,
-    386896944, 3997977197, 1529608344, 4132999748, 2534739147, 4182207012, 1114211877, 2611407325,
-    442230326, 2804113464, 4095607840, 2203942301, 3208806807, 4217725735, 851085756, 3111179814,
-    2893561443, 1737762208, 3364884061, 3768266261, 1951940754, 1219713113, 661792618, 2429297141,
-    2854706310, 2555881125, 1720186105, 2231784162, 1816231541, 2459472524, 2303395945, 2802874606,
-    164142194, 3722278385, 965390944, 1789460144, 2277056390, 2785283897, 557026319, 1822107998,
-    2156805627, 1809760430, 751565145, 1320417968, 760565420, 3675458714, 266229863, 3071308558,
-    2588875244, 520697952, 404211066, 3757472951, 1592302302, 1301622844, 283875151, 2264576214,
-    1513690933, 3186056547, 503942925, 3452110716, 4068977508, 1386120901, 35467672, 3736425491,
-    3479928582, 4057588406, 1156892529, 2666030005, 1947426597, 1513426209, 2298519457, 951648,
-    2662765076, 1819076585, 991609795, 3445620136, 4263402744, 683674655, 125305024, 400363870,
-    4175058246, 345274265, 1393354662, 4168368724, 1992205233, 333760424, 430638818, 2038831240,
-    2393249574, 2277698148, 3834699795, 854369076, 1949138442, 879235983, 2687356990, 74489205,
-    675756224, 1108887942, 3850167999, 3202550759, 346927610, 1219004248, 1933710611, 4232192948,
-    127380890, 3413854308, 4259402585, 1947897797, 2281478841, 1250526173, 3584776535, 3962965149,
-    2436415337, 3700599595, 2305091483, 441956968, 98602741, 1004357398, 2171103081, 3555585131,
-    25494344, 474746862, 2168816300, 1445677778, 2762834911, 167135277, 1609410667, 342499195,
-    2658948465, 96705736, 307223780, 2817802860, 1095652744, 1458155099, 2129035584, 3380124286,
-    4277476542, 3149780470, 201762377, 3878283276, 2943856629, 1484419446, 536631262, 3610340050,
-    2021510328, 405479479, 126321448, 112807861, 206360937, 2329863092, 2176182667, 761094335,
-    3055987424, 3047673301, 1636351146, 730123282, 1603106892, 3241403281, 64478013, 2355203790,
-    3571782552, 1977824032, 3103684787, 1440206087, 3529256035, 4029036380, 1727403531, 2250763223,
-    2609572110, 301200603, 2499812360, 1079194345, 1873534699, 592458645, 3367330921, 2157823439,
-    2377315769, 2124247689, 3501423240, 44290279, 2658883840, 3187367635, 2223108434, 621774141,
-    2862251779, 58506969, 1447924885, 3417741267, 3295650570, 2061828420, 656716143, 722185440,
-    2516683235, 2575345773, 2104327887, 3735805058, 1317382073, 297471524, 1841093725, 3008896502,
-    106767431, 125566800, 2298510351, 1201930425, 907367885, 3447227635, 647146338, 926864998,
-    673001384, 2537138065, 1291689589, 1065989187, 640479966, 2169443668, 1796563022, 3530758358,
-    566177121, 1707919249, 1474913925, 3765619977, 3740101935, 3130400739, 2400651968, 1474401929,
-    526695285, 943720479, 874038331, 330689749, 3219805999, 3116943707, 2803955215, 2165155639,
-    4244261781, 2888630181, 252759016, 3783988093, 1530768853, 2944465398, 303528941, 3002511155,
-    2323759006, 3019190001, 2122243812, 1121230145, 1730608278, 741152631, 1508537030, 3728973132,
-    3150372859, 1696219691, 580153578, 2686308765, 1065154441, 582354200, 1629450702, 3804950383,
-    1377430830, 3231855250, 716684766, 2347913152, 3723768936, 3995049093, 1640930380, 2518706901,
-    3418463630, 541497465, 3219798303, 1706475941, 306647767, 1641899345, 1570832171, 1052204431,
-    3913625992, 215023677, 1412164449, 110620318, 1060606607, 702131657, 1847887127, 209232170,
-    3730056702, 1139625814, 1887242045, 3850643319, 3750397920, 2071715462, 3479548451, 1555884857,
-    4190680751, 1832210452, 2962479459, 3822065681, 4014873921, 2886096746, 2233784512, 2238930674,
-    3655246617, 927454496, 148905975, 1631004036, 96233864, 1481847180, 2120974892, 2577516900,
-    1638964877, 1481137923, 1414769434, 3161093534, 112755530, 1764064957, 4190363343, 3887127551,
-    1834924570, 83845051, 1194548396, 4079088278, 2045362678, 1769415013, 4005488543, 3853058044,
-    3236458945, 2957047901, 1695491053, 3109347023, 1966942432, 1450132000, 2200494752, 608196473,
-    3106709220, 4028691397, 1194244113, 3728413990, 3069222360, 3780538931, 2072954337, 3718173202,
-    4049735703, 309723989, 3035905309, 1497948243, 1014496292, 3798948403, 2803094444, 342979147,
-    1189029508, 1965636522, 3735884288, 851551988, 763723908, 4250649925, 1551115212, 2057541610,
-    3495494782, 637069736, 2304408148, 815858117, 2236554473, 1483594123, 1278501755, 2394803515,
-    1955783100, 1792990840, 2122870956, 530734808, 3030700278, 723763396, 2270626039, 2629780941,
-    2984465025, 3688570684, 2776316291, 900046415, 2828563145, 1683929076, 3635512397, 2298110775,
-    218175329, 1069560764, 2297081356, 2401672963, 1007365472, 421703457, 3609147592, 3680957553,
-    2021586893, 3380432468, 3986237638, 1178822340, 3062404559, 1622982873, 3690602096, 2439524694,
-    3587851041, 2408352887, 2166555969, 3451949389, 1782985112, 1721002099, 2722187334, 3644256530,
-    3166709237, 666319864, 3937101570, 2322768459, 2640925986, 3091708170, 176155768, 2070897063,
-    31962327, 1980355715, 1579825601, 2980116859, 1296346288, 3253021476, 1566345931, 1333641409,
-    1466299323, 3535059214, 3755906045, 2436710697, 2624047850, 2773027064, 2735441585, 2397006833,
-    2403155593, 2322419556, 3211067371, 2902277310, 855808633, 2088710794, 2365540733, 3598761409,
-    96395577, 2793454657, 293134636, 997092999, 1516229869, 3830922510, 1456537668, 2543557055,
-    2250567838, 47738566, 3310116596, 429974987, 2597497913, 3570401473, 3554123533, 3733732981,
-    65117535, 89824483, 467063829, 2980094347, 459068879, 288615762, 505566088, 161491799,
-    1950807394, 4134005883, 832113435, 383539149, 3289684623, 984364633, 3767074980, 349818067,
-    3687375566, 2799114350, 945518296, 1410152104, 3876984338, 2571021970, 3352118476, 4178487553,
-    1203153759, 611118555, 3259506420, 2891465405, 3445709652, 3949641380, 2875186838, 2779811328,
-    2510853343, 4275646002, 2491038814, 2422179298, 1650323772, 3000898162, 3627492445, 1678944205,
-    4261066493, 2595842431, 3948513109, 2750405154, 2564814475, 2584030305, 2613484438, 3805313548,
-    3123055455, 1702940891, 1364814166, 3578222670, 1736412364, 2853289958, 182827375, 3335617072,
-    3347856282, 771668471, 2881257662, 1618901303, 2911271774, 2283475553, 1640165049, 3561675959,
-    384011161, 1071788681, 2189107920, 2737255457, 1011242690, 1067383324, 2768630076, 35989731,
-    3477113433, 3502877655, 3126304174, 2125983443, 1065189709, 3085270280, 2313355736, 2406873069,
-    1095216321, 1458394816, 1881192803, 2616673852, 425572748, 1377770342, 4183972521, 154875079,
-    1436212463, 1213363850, 2416318273, 3309606622, 3757797616, 936646994, 3996477797, 836380753,
-    1177367651, 2904456246, 600155443, 2732456183, 2305820104, 1912638872, 271951098, 119535942,
-];
+/// MT19937's state words: the `dim` first outputs after a seed read the
+/// words up to `dim + MT19937_SHIFT`, so an id code needs no more of them.
+const MT19937_SHIFT: usize = 397;
+const MAX_ID_ENCODING_DIM: usize = 12;
 const DAY_OFFSET_ENCODE_PERIODS: [f32; 7] = [3.0, 7.0, 30.0, 100.0, 365.0, 3650.0, 36500.0];
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -418,6 +345,67 @@ pub struct ReviewInput {
     pub enforce_grade_order: bool,
 }
 
+/// Which entities a review without a note, deck or preset (a deleted
+/// card's) streams through and is encoded with: a property of the id
+/// pipeline the model was trained with, so of the model version (spec
+/// sched.rwkv-replay-deleted-cards; the RWKV session's DEPLOY_FUNCTIONS.md
+/// section 7). Deck and preset share one placeholder in both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwkvIdPipeline {
+    /// The shipped model: srs-benchmark cast the filled ids to int32, which
+    /// saturated every placeholder to one value, so all missing notes are
+    /// one shared note too.
+    Int32,
+    /// A model trained on the int64 pipeline (2026-08-21 on): a missing note
+    /// is `ID_PLACEHOLDER + card_id`, a note of its own per card.
+    Int64,
+}
+
+/// The id pipeline of the weights format `SrsModel::load` reads: the shipped
+/// model's. A model trained another way comes with its own loader and says
+/// its own pipeline.
+const PUBLISHED_MODEL_ID_PIPELINE: RwkvIdPipeline = RwkvIdPipeline::Int32;
+
+impl RwkvIdPipeline {
+    /// The note a card without one streams through.
+    fn missing_note_id(self, card_id: i64) -> i64 {
+        match self {
+            RwkvIdPipeline::Int32 => ID_PLACEHOLDER,
+            RwkvIdPipeline::Int64 => ID_PLACEHOLDER + card_id,
+        }
+    }
+}
+
+impl ReviewInput {
+    /// The note whose stream the review reads and advances. A review without
+    /// a note (a deleted card's) uses the model's placeholder note
+    /// (`RwkvIdPipeline`).
+    fn note_key(&self, ids: RwkvIdPipeline) -> i64 {
+        self.note_id
+            .unwrap_or_else(|| ids.missing_note_id(self.card_id))
+    }
+
+    /// The deck stream: one shared placeholder for every review without one.
+    fn deck_key(&self) -> i64 {
+        self.deck_id.unwrap_or(ID_PLACEHOLDER)
+    }
+
+    /// The preset stream, as `deck_key`.
+    fn preset_key(&self) -> i64 {
+        self.preset_id.unwrap_or(ID_PLACEHOLDER)
+    }
+
+    /// The entities whose codes the review's features hold, in feature order.
+    fn encoded_ids(&self, ids: RwkvIdPipeline) -> [(IdKind, i64); 4] {
+        [
+            (IdKind::Card, self.card_id),
+            (IdKind::Note, self.note_key(ids)),
+            (IdKind::Deck, self.deck_key()),
+            (IdKind::Preset, self.preset_key()),
+        ]
+    }
+}
+
 /// One review of a warm-up replay, as the replay predicted it before the
 /// answer (spec ui.stats-model-metrics).
 #[derive(Clone, Copy, Debug)]
@@ -442,8 +430,11 @@ pub struct WarmUpPrediction {
 pub const CURVE_SOURCE_FORMAT: u32 = 1;
 /// The version of the arithmetic that produces the source. Bump it when a
 /// kernel change (another float order, quantization) changes `prehead_x`,
-/// so that sources saved before the change read as stale.
-pub const CURVE_SOURCE_KERNEL: u32 = 1;
+/// so that sources saved before the change read as stale. 2: the replay
+/// keeps deleted cards' reviews and draws id codes from the id (spec
+/// sched.rwkv-replay-deleted-cards, sched.rwkv-id-codes), which changes the
+/// replayed `prehead_x` too.
+pub const CURVE_SOURCE_KERNEL: u32 = 2;
 
 /// A curve as card info draws it: recall at each asked elapsed day, and the
 /// curve's S90.
@@ -523,7 +514,10 @@ pub struct ReviewPredictionOutput {
 /// from a single query pass against the resident warm-up state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReviewIntervalPrediction {
-    pub retrievability: f32,
+    /// The recall of the curve RWKV stored at the card's last answered
+    /// review, at the time since that review (`current_curve_retrievability`);
+    /// `None` when the card has no stored curve or no elapsed time.
+    pub curve_retrievability: Option<f32>,
     pub current_interval: Option<u32>,
     /// `current_interval` unrounded, in days (spec
     /// sched.rwkv-curve-reschedule).
@@ -727,11 +721,13 @@ struct RwkvWorkloadTargetSweep {
 
 impl RwkvInference {
     pub fn load(path: PathBuf, target_retention: f32, max_interval_days: u32) -> io::Result<Self> {
+        let model = Arc::new(SrsModel::load(&path)?);
+        let ids = model.ids;
         Ok(Self {
-            model: Arc::new(SrsModel::load(&path)?),
-            features: FeatureState::default(),
+            model,
+            features: FeatureState::new(ids),
             curves: HashMap::new(),
-            warm_up_states: ReviewStateMaps::default(),
+            warm_up_states: ReviewStateMaps::new(ids),
             state_cache_store: None,
             target_retention,
             max_interval_days,
@@ -951,15 +947,18 @@ impl RwkvInference {
         Ok(self.model.review_retrievability_many_borrowed(&work_items))
     }
 
-    /// Current interval and S90 for each query input, straight from the
-    /// resident warm-up state.
+    /// Current interval and S90 for each query input, from the curve RWKV
+    /// stored for the card at its last answered review (the curve after that
+    /// answer), for "Reschedule cards with RWKV-Curve" (spec
+    /// sched.rwkv-curve-reschedule).
     ///
-    /// This is what "Reschedule cards with RWKV-Curve" needs. `predict_many`
-    /// also runs the four simulated-answer passes and requires the caller to
-    /// ship each card's serialized state across the Python bridge; here the
-    /// state is borrowed in place and only the query pass runs, so the result
-    /// is identical to `predict_many`'s `retrievability` / `current_interval`
-    /// / `current_s90` at a fifth of the compute and none of the copying.
+    /// The curve of a query row is never read here: training masks every
+    /// curve loss on query rows (`ahead_mask = (1 - is_query) * has_label`),
+    /// so that head output is never supervised, and card info, the Browser,
+    /// filtered decks and Stats all read the stored curve
+    /// (ui.rwkv-curve-r-stored-curve). No model pass runs and no state is
+    /// read or changed. A card without a stored curve gets no interval and
+    /// no S90; no other value stands in for it.
     pub fn predict_current_intervals_many_from_warm_up(
         &mut self,
         inputs: Vec<ReviewInput>,
@@ -973,33 +972,24 @@ impl RwkvInference {
             }
         }
 
-        self.warm_up_states.ensure_loaded_many(&inputs)?;
-
-        let features = inputs
-            .iter()
-            .map(|input| self.features.features_for(input))
-            .collect::<Vec<_>>();
-        let work_items = inputs
-            .iter()
-            .zip(features)
-            .map(|(input, features)| ReviewPredictionBorrowedWorkItem {
-                features,
-                state: self.warm_up_states.state_ref(input),
-            })
-            .collect::<Vec<_>>();
-
-        let heads = self.model.review_many_borrowed(&work_items);
         Ok(inputs
             .iter()
-            .zip(heads)
-            .map(|(input, heads)| {
-                let current = self.current_intervals(input, &heads);
-                ReviewIntervalPrediction {
-                    retrievability: heads.retrievability,
-                    current_interval: current.whole_days,
-                    current_interval_unrounded: current.unrounded,
-                    current_s90: current.s90,
+            .map(|input| match self.curves.get(&input.card_id) {
+                Some(curve) => {
+                    let current = self.current_intervals_for_curve(input, curve);
+                    ReviewIntervalPrediction {
+                        curve_retrievability: current_curve_retrievability(input, curve),
+                        current_interval: current.whole_days,
+                        current_interval_unrounded: current.unrounded,
+                        current_s90: current.s90,
+                    }
                 }
+                None => ReviewIntervalPrediction {
+                    curve_retrievability: None,
+                    current_interval: None,
+                    current_interval_unrounded: None,
+                    current_s90: None,
+                },
             })
             .collect())
     }
@@ -1122,6 +1112,7 @@ impl RwkvInference {
         };
         let mut worker = self.worker_from_cache_state(runtime_state)?;
         let mut state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1164,8 +1155,9 @@ impl RwkvInference {
                 "RWKV future prediction requires a runtime state snapshot",
             ));
         };
-        let mut base_features = read_runtime_feature_state(runtime_state)?;
+        let mut base_features = read_runtime_feature_state(runtime_state, self.model.ids)?;
         let base_state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1194,12 +1186,9 @@ impl RwkvInference {
 
         let answer_work_items = answers
             .iter()
-            .map(|answer| {
-                let mut features = base_features.clone();
-                ReviewPredictionWorkItem {
-                    features: features.features_for(answer),
-                    state: base_state_maps.state_owned(answer),
-                }
+            .map(|answer| ReviewPredictionWorkItem {
+                features: base_features.features_for(answer),
+                state: base_state_maps.state_owned(answer),
             })
             .collect::<Vec<_>>();
         let answer_heads = self.model.review_many(&answer_work_items);
@@ -1312,8 +1301,6 @@ impl RwkvInference {
                 continue;
             }
 
-            // Query features must be assigned before answer features so
-            // first-seen ID encodings keep the benchmark-compatible order.
             let query_features = record_predictions.then(|| {
                 let mut query_input = input.clone();
                 query_input.is_query = true;
@@ -1586,7 +1573,7 @@ insert into segments (
         // they are read now; the card and note states are read one at a time
         // when a card actually comes up.
         let index = build_state_cache_index(&connection, &segment_chain)?;
-        let mut warm_up_states = ReviewStateMaps::default();
+        let mut warm_up_states = ReviewStateMaps::new(self.model.ids);
         for (entity_id, row_id) in &index.deck {
             if let Some(state) =
                 read_state_cache_entity(&connection, STATE_CACHE_KIND_DECK, *entity_id, *row_id)?
@@ -1616,7 +1603,7 @@ insert into segments (
             card: index.card,
             note: index.note,
         });
-        let (features, curves) = read_runtime_cache_state(&runtime_state, self.max_interval_days)?;
+        let (features, curves) = read_runtime_cache_state(&runtime_state, self.max_interval_days, self.model.ids)?;
 
         self.warm_up_states = warm_up_states;
         self.features = features;
@@ -1626,6 +1613,7 @@ insert into segments (
 
     pub fn restore_warm_up_snapshot(&mut self, snapshot: RwkvWarmUpSnapshot) -> io::Result<()> {
         self.warm_up_states = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1649,7 +1637,7 @@ insert into segments (
 
     pub fn reset_warm_up_state(&mut self) {
         self.state_cache_store = None;
-        self.warm_up_states = ReviewStateMaps::default();
+        self.warm_up_states = ReviewStateMaps::new(self.model.ids);
     }
 
     fn review_heads(
@@ -1740,17 +1728,21 @@ insert into segments (
     /// whole days (`interval_for_curve`) and unrounded (for the RWKV-Curve
     /// reschedule, spec sched.rwkv-curve-reschedule), and the current S90.
     fn current_intervals(&self, input: &ReviewInput, heads: &ReviewHeads) -> CurrentIntervals {
+        self.current_intervals_for_curve(input, &heads.curve)
+    }
+
+    fn current_intervals_for_curve(
+        &self,
+        input: &ReviewInput,
+        curve: &ReviewCurve,
+    ) -> CurrentIntervals {
         let target_retention = input.target_retentions[2].unwrap_or(self.target_retention);
         let unrounded =
-            unrounded_interval_for_curve(&heads.curve, target_retention, self.max_interval_days);
+            unrounded_interval_for_curve(curve, target_retention, self.max_interval_days);
         CurrentIntervals {
             whole_days: unrounded.map(|days| clamped_interval_days(days, self.max_interval_days)),
             unrounded,
-            s90: unrounded_interval_for_curve(
-                &heads.curve,
-                S90_TARGET_RETENTION,
-                self.max_interval_days,
-            ),
+            s90: unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, self.max_interval_days),
         }
     }
 
@@ -1860,14 +1852,14 @@ insert into segments (
     }
 
     pub fn restore_cache_state(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
         self.features = features;
         self.curves = curves;
         Ok(())
     }
 
     fn worker_from_cache_state(&self, bytes: &[u8]) -> io::Result<RwkvInference> {
-        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days)?;
+        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
         Ok(self.workload_worker(features, curves))
     }
 
@@ -1899,6 +1891,7 @@ insert into segments (
         let base_features = reviewless_worker.features.clone();
         let base_curves = reviewless_worker.curves.clone();
         let reviewless_state_maps = ReviewStateMaps::from_serialized(
+            self.model.ids,
             &snapshot.card_states,
             &snapshot.note_states,
             &snapshot.deck_states,
@@ -1978,6 +1971,7 @@ insert into segments (
         for (offset, dr) in target_drs.into_iter().enumerate() {
             let mut worker = self.workload_worker(base_features.clone(), base_curves.clone());
             let mut state_maps = ReviewStateMaps::from_serialized(
+                self.model.ids,
                 &snapshot.card_states,
                 &snapshot.note_states,
                 &snapshot.deck_states,
@@ -2020,7 +2014,7 @@ insert into segments (
             model: Arc::clone(&self.model),
             features,
             curves,
-            warm_up_states: ReviewStateMaps::default(),
+            warm_up_states: ReviewStateMaps::new(self.model.ids),
             state_cache_store: None,
             target_retention: self.target_retention,
             max_interval_days: self.max_interval_days,
@@ -2337,10 +2331,12 @@ fn predict_retrievability_many_after_reviews_for_identity(
 
 /// The magic of the runtime state `write_runtime_cache_state` writes.
 const RUNTIME_CACHE_STATE_MAGIC: &[u8] = b"ARWKVPROCSTATE4";
-/// The runtime state before the curves carried their S90. It is still read:
-/// each S90 is then found when it is first asked for (spec
-/// ui.rwkv-curve-stored-s90).
-const RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90: &[u8] = b"ARWKVPROCSTATE2";
+/// The runtime state before the curves carried their S90 (the format of
+/// spec sched.rwkv-id-codes, which no longer saves the id codes). It is
+/// still read: each S90 is then found when it is first asked for (spec
+/// ui.rwkv-curve-stored-s90). Older states (`ARWKVPROCSTATE2`) hold another
+/// replay's features and are not read.
+const RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90: &[u8] = b"ARWKVPROCSTATE3";
 /// The version of how a stored curve's S90 is found (`predict_curve` and
 /// `unrounded_interval_for_curve`). A saved S90 found another way is found
 /// again. The S90 depends on nothing else but the curve's own weights and
@@ -2365,10 +2361,10 @@ fn read_runtime_cache_state_magic(cursor: &mut Cursor<'_>) -> io::Result<bool> {
     }
 }
 
-fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
+fn read_runtime_feature_state(bytes: &[u8], ids: RwkvIdPipeline) -> io::Result<FeatureState> {
     let mut cursor = Cursor::new(bytes);
     let with_s90 = read_runtime_cache_state_magic(&mut cursor)?;
-    let features = FeatureState::read_cache_state(&mut cursor)?;
+    let features = FeatureState::read_cache_state(&mut cursor, ids)?;
     if with_s90 {
         cursor.u32()?;
         cursor.u32()?;
@@ -2393,10 +2389,11 @@ fn read_runtime_feature_state(bytes: &[u8]) -> io::Result<FeatureState> {
 fn read_runtime_cache_state(
     bytes: &[u8],
     max_interval_days: u32,
+    ids: RwkvIdPipeline,
 ) -> io::Result<(FeatureState, HashMap<i64, ReviewCurve>)> {
     let mut cursor = Cursor::new(bytes);
     let with_s90 = read_runtime_cache_state_magic(&mut cursor)?;
-    let features = FeatureState::read_cache_state(&mut cursor)?;
+    let features = FeatureState::read_cache_state(&mut cursor, ids)?;
     let s90_found_as = if with_s90 {
         Some((cursor.u32()?, cursor.u32()?))
     } else {
@@ -2419,6 +2416,20 @@ fn read_runtime_cache_state(
     Ok((features, curves))
 }
 
+/// One answer-button probe of a query: the same row with `ease` pressed.
+///
+/// The probe keeps the query's `duration_millis`, which is `None` (the press
+/// has not happened yet), so `scaled_duration` gives it 0.0. For the shipped
+/// model that value is the training mean of the scaled duration (about
+/// 7.3 s): the model was trained with the real duration on every answered row,
+/// and the mean is the stand-in we keep for it.
+///
+/// A NEW model's encoder must give these probes, and the query row, the
+/// "no press yet" encoding instead: scaled duration 0.0 because the press has
+/// not happened, the same constant on the query row and on all four probes,
+/// which is what such a model is trained with. See the RWKV session's
+/// `optimization/DEPLOY_FUNCTIONS.md`, sections 4 and 6 (section 6 also gives
+/// the imputed value a model trained under `RWKV_PROBE_IMPUTE_K` expects).
 fn simulated_answer_input(input: &ReviewInput, ease: u8) -> ReviewInput {
     let mut input = input.clone();
     input.is_query = false;
@@ -2722,13 +2733,19 @@ struct FeatureState {
     card_first_day_offset: HashMap<i64, i64>,
     card_elapsed_days_cumulative: HashMap<i64, i64>,
     card_elapsed_seconds_cumulative: HashMap<i64, i64>,
+    /// The codes of the entities the stored reviews used, kept so that a
+    /// replay computes each once. Only a memo: a code is a function of its
+    /// id (`id_encoding`), so the map is not saved with the state, and a
+    /// query, which must leave the state as it found it, computes a missing
+    /// code without keeping it.
     id_encodings: HashMap<(IdKind, i64), Vec<f32>>,
-    id_rng: TorchIdRng,
     review_index: i64,
+    /// The model's id pipeline: which note a review without one encodes.
+    ids: RwkvIdPipeline,
 }
 
-impl Default for FeatureState {
-    fn default() -> Self {
+impl FeatureState {
+    fn new(ids: RwkvIdPipeline) -> Self {
         Self {
             first_day_offset: None,
             previous_day_offset: None,
@@ -2742,8 +2759,8 @@ impl Default for FeatureState {
             card_elapsed_days_cumulative: HashMap::new(),
             card_elapsed_seconds_cumulative: HashMap::new(),
             id_encodings: HashMap::new(),
-            id_rng: TorchIdRng::default(),
             review_index: 0,
+            ids,
         }
     }
 }
@@ -2823,7 +2840,7 @@ impl FeatureState {
         );
     }
 
-    fn features_for(&mut self, input: &ReviewInput) -> Vec<f32> {
+    fn features_for(&self, input: &ReviewInput) -> Vec<f32> {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
 
@@ -2896,9 +2913,6 @@ impl FeatureState {
             });
         }
 
-        let note_id = input.note_id.unwrap_or(ID_PLACEHOLDER + input.card_id);
-        let deck_id = input.deck_id.unwrap_or(ID_PLACEHOLDER);
-        let preset_id = input.preset_id.unwrap_or(ID_PLACEHOLDER);
         features.extend([
             if input.note_id.is_none() { 1.0 } else { 0.0 },
             if input.deck_id.is_none() { 1.0 } else { 0.0 },
@@ -2917,10 +2931,12 @@ impl FeatureState {
             if input.is_query { 1.0 } else { 0.0 },
         ]);
 
-        self.append_id_encoding(&mut features, IdKind::Card, input.card_id);
-        self.append_id_encoding(&mut features, IdKind::Note, note_id);
-        self.append_id_encoding(&mut features, IdKind::Deck, deck_id);
-        self.append_id_encoding(&mut features, IdKind::Preset, preset_id);
+        for (kind, id) in input.encoded_ids(self.ids) {
+            match self.id_encodings.get(&(kind, id)) {
+                Some(encoding) => features.extend_from_slice(encoding),
+                None => features.extend(id_encoding(kind, id)),
+            }
+        }
         append_day_offset_encoding(&mut features, day_offset, day_offset_first);
         debug_assert_eq!(features.len(), CARD_FEATURES);
         #[cfg(test)]
@@ -2964,6 +2980,11 @@ impl FeatureState {
         }
 
         self.previous_day_offset = Some(day_offset);
+        for key in input.encoded_ids(self.ids) {
+            self.id_encodings
+                .entry(key)
+                .or_insert_with(|| id_encoding(key.0, key.1));
+        }
         self.last_i.insert(input.card_id, self.review_index);
         self.last_new_cards
             .insert(input.card_id, self.card_set.len() as i64);
@@ -2971,14 +2992,6 @@ impl FeatureState {
 
         #[cfg(test)]
         rwkv_warmup_profile_record(RwkvWarmupProfileBucket::FeaturesStore, profile_started);
-    }
-
-    fn append_id_encoding(&mut self, features: &mut Vec<f32>, kind: IdKind, value: i64) {
-        let encoding = self.id_encodings.entry((kind, value)).or_insert_with(|| {
-            let dim = id_encoding_dim(kind);
-            self.id_rng.encoding(dim)
-        });
-        features.extend(encoding.iter().copied());
     }
 
     #[cfg(test)]
@@ -2998,8 +3011,6 @@ impl FeatureState {
             + state_cache_i64_map_len(self.card_elapsed_days_cumulative.len())
             + state_cache_i64_map_len(self.card_elapsed_seconds_cumulative.len())
             + 8
-            + state_cache_id_encodings_len(&self.id_encodings)
-            + self.id_rng.cache_state_len()
     }
 
     fn write_cache_state_to(&self, out: &mut impl io::Write) -> io::Result<()> {
@@ -3014,12 +3025,10 @@ impl FeatureState {
         write_state_cache_i64_map(out, &self.card_first_day_offset)?;
         write_state_cache_i64_map(out, &self.card_elapsed_days_cumulative)?;
         write_state_cache_i64_map(out, &self.card_elapsed_seconds_cumulative)?;
-        out.write_all(&self.review_index.to_le_bytes())?;
-        write_state_cache_id_encodings(out, &self.id_encodings)?;
-        self.id_rng.write_cache_state_to(out)
+        out.write_all(&self.review_index.to_le_bytes())
     }
 
-    fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
+    fn read_cache_state(cursor: &mut Cursor<'_>, ids: RwkvIdPipeline) -> io::Result<Self> {
         Ok(Self {
             first_day_offset: cursor.option_i64()?,
             previous_day_offset: cursor.option_i64()?,
@@ -3033,8 +3042,8 @@ impl FeatureState {
             card_elapsed_days_cumulative: read_i64_map(cursor)?,
             card_elapsed_seconds_cumulative: read_i64_map(cursor)?,
             review_index: cursor.i64()?,
-            id_encodings: read_id_encodings(cursor)?,
-            id_rng: TorchIdRng::read_cache_state(cursor)?,
+            id_encodings: HashMap::new(),
+            ids,
         })
     }
 }
@@ -3062,18 +3071,6 @@ fn id_encoding_dim(kind: IdKind) -> usize {
     }
 }
 
-fn read_id_encodings(cursor: &mut Cursor<'_>) -> io::Result<HashMap<(IdKind, i64), Vec<f32>>> {
-    let count = cursor.u32()? as usize;
-    let mut values = HashMap::with_capacity(count);
-    for _ in 0..count {
-        let kind = IdKind::from_cache_code(cursor.u8()?)?;
-        let value = cursor.i64()?;
-        let encoding = cursor.f32_vec()?;
-        values.insert((kind, value), encoding);
-    }
-    Ok(values)
-}
-
 impl IdKind {
     fn cache_code(self) -> u8 {
         match self {
@@ -3083,98 +3080,54 @@ impl IdKind {
             IdKind::Preset => 3,
         }
     }
-
-    fn from_cache_code(code: u8) -> io::Result<Self> {
-        match code {
-            0 => Ok(IdKind::Card),
-            1 => Ok(IdKind::Note),
-            2 => Ok(IdKind::Deck),
-            3 => Ok(IdKind::Preset),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid RWKV id kind",
-            )),
-        }
-    }
 }
 
-#[derive(Clone)]
-struct TorchIdRng {
-    state: [u32; TORCH_ID_RNG_STATE_LEN],
-    index: usize,
-}
-
-impl Default for TorchIdRng {
-    fn default() -> Self {
-        Self {
-            state: TORCH_ID_RNG_INITIAL_STATE,
-            index: TORCH_ID_RNG_INITIAL_INDEX,
-        }
+/// An entity's id code (spec sched.rwkv-id-codes): a function of the id
+/// alone, so a replay, a live answer and a query give an entity the same
+/// code whatever order they meet it in. It is torch's
+/// `torch.randint(0, ID_SPLIT, (dim,), generator=g) - 1.5` with
+/// `g = torch.Generator().manual_seed(id_code_seed(kind, id))`: the uniform
+/// draw from {-1.5, -0.5, 0.5, 1.5} the model was trained with (training
+/// draws a fresh code per id), seeded by the id instead of by the order the
+/// ids came in.
+fn id_encoding(kind: IdKind, id: i64) -> Vec<f32> {
+    let dim = id_encoding_dim(kind);
+    // MT19937 seeded as torch seeds it (`init_genrand`), then its first
+    // `dim` outputs. Output i twists words i, i + 1 and i + MT19937_SHIFT
+    // only, so the words past the last of those are never computed.
+    let mut state = [0u32; MAX_ID_ENCODING_DIM + MT19937_SHIFT];
+    state[0] = id_code_seed(kind, id);
+    for index in 1..state.len() {
+        let previous = state[index - 1];
+        state[index] = 1_812_433_253u32
+            .wrapping_mul(previous ^ (previous >> 30))
+            .wrapping_add(index as u32);
     }
-}
-
-impl TorchIdRng {
-    fn encoding(&mut self, dim: usize) -> Vec<f32> {
-        (0..dim)
-            .map(|_| (self.next_u32() as u64 % ID_SPLIT) as f32 - ((ID_SPLIT - 1) as f32 / 2.0))
-            .collect()
-    }
-
-    fn next_u32(&mut self) -> u32 {
-        if self.index >= TORCH_ID_RNG_STATE_LEN {
-            self.twist();
-        }
-        let mut value = self.state[self.index];
-        self.index += 1;
-        value ^= value >> 11;
-        value ^= (value << 7) & 0x9d2c_5680;
-        value ^= (value << 15) & 0xefc6_0000;
-        value ^ (value >> 18)
-    }
-
-    fn twist(&mut self) {
-        const UPPER_MASK: u32 = 0x8000_0000;
-        const LOWER_MASK: u32 = 0x7fff_ffff;
-        const MATRIX_A: u32 = 0x9908_b0df;
-
-        for index in 0..TORCH_ID_RNG_STATE_LEN {
-            let next = (index + 1) % TORCH_ID_RNG_STATE_LEN;
-            let twist = (self.state[index] & UPPER_MASK) | (self.state[next] & LOWER_MASK);
-            let mut value = self.state[(index + 397) % TORCH_ID_RNG_STATE_LEN] ^ (twist >> 1);
+    (0..dim)
+        .map(|index| {
+            let twist = (state[index] & 0x8000_0000) | (state[index + 1] & 0x7fff_ffff);
+            let mut value = state[index + MT19937_SHIFT] ^ (twist >> 1);
             if twist & 1 != 0 {
-                value ^= MATRIX_A;
+                value ^= 0x9908_b0df;
             }
-            self.state[index] = value;
-        }
-        self.index = 0;
-    }
+            value ^= value >> 11;
+            value ^= (value << 7) & 0x9d2c_5680;
+            value ^= (value << 15) & 0xefc6_0000;
+            value ^= value >> 18;
+            (value as u64 % ID_SPLIT) as f32 - ((ID_SPLIT - 1) as f32 / 2.0)
+        })
+        .collect()
+}
 
-    fn cache_state_len(&self) -> usize {
-        4 + 4 * self.state.len()
-    }
-
-    fn write_cache_state_to(&self, out: &mut impl io::Write) -> io::Result<()> {
-        write_state_cache_u32(out, self.index)?;
-        for value in self.state {
-            out.write_all(&value.to_le_bytes())?;
-        }
-        Ok(())
-    }
-
-    fn read_cache_state(cursor: &mut Cursor<'_>) -> io::Result<Self> {
-        let index = cursor.u32()? as usize;
-        if index > TORCH_ID_RNG_STATE_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid RWKV id RNG index",
-            ));
-        }
-        let mut state = [0; TORCH_ID_RNG_STATE_LEN];
-        for value in &mut state {
-            *value = cursor.u32()?;
-        }
-        Ok(Self { state, index })
-    }
+/// The seed of an id code: the low 32 bits of splitmix64 of the id, with
+/// the kind in the top two bits so that a deck and a preset with the same
+/// id get codes of their own. torch keeps only these 32 bits of a seed.
+fn id_code_seed(kind: IdKind, id: i64) -> u32 {
+    let mut z =
+        ((id as u64) ^ (u64::from(kind.cache_code()) << 62)).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)) as u32
 }
 
 fn append_day_offset_encoding(features: &mut Vec<f32>, day_offset: i64, first_day_offset: i64) {
@@ -3514,6 +3467,8 @@ impl<'a> Cursor<'a> {
 }
 
 struct SrsModel {
+    /// The id pipeline the model was trained with (`RwkvIdPipeline`).
+    ids: RwkvIdPipeline,
     features_0: Linear,
     features_norm: Norm,
     features_3: Linear,
@@ -3577,6 +3532,7 @@ impl SrsModel {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Self {
+            ids: PUBLISHED_MODEL_ID_PIPELINE,
             features_0: weights.linear("features2card.0", CARD_FEATURES, HEAD_DIM, true)?,
             features_norm: weights.layer_norm("features2card.2", HEAD_DIM, 1e-5)?,
             features_3: weights.linear("features2card.3", HEAD_DIM, D_MODEL, true)?,
@@ -4000,8 +3956,10 @@ struct SrsState {
     global: ModuleState,
 }
 
-#[derive(Default)]
 struct ReviewStateMaps {
+    /// The model's id pipeline: which note stream a review without one
+    /// reads.
+    ids: RwkvIdPipeline,
     card: HashMap<i64, ModuleState>,
     note: HashMap<i64, ModuleState>,
     deck: HashMap<i64, ModuleState>,
@@ -4019,7 +3977,25 @@ struct ReviewStateMaps {
 }
 
 impl ReviewStateMaps {
+    fn new(ids: RwkvIdPipeline) -> Self {
+        Self {
+            ids,
+            card: HashMap::new(),
+            note: HashMap::new(),
+            deck: HashMap::new(),
+            preset: HashMap::new(),
+            global: None,
+            lazy: None,
+            dirty_card: HashSet::new(),
+            dirty_note: HashSet::new(),
+            dirty_deck: HashSet::new(),
+            dirty_preset: HashSet::new(),
+            global_dirty: false,
+        }
+    }
+
     fn from_serialized(
+        ids: RwkvIdPipeline,
         card_states: &[(i64, Vec<u8>)],
         note_states: &[(i64, Vec<u8>)],
         deck_states: &[(i64, Vec<u8>)],
@@ -4027,6 +4003,7 @@ impl ReviewStateMaps {
         global_state: Option<&[u8]>,
     ) -> io::Result<Self> {
         Ok(Self {
+            ids,
             card: deserialize_state_map(card_states)?,
             note: deserialize_state_map(note_states)?,
             deck: deserialize_state_map(deck_states)?,
@@ -4044,9 +4021,9 @@ impl ReviewStateMaps {
     fn state_ref(&self, input: &ReviewInput) -> SrsStateRef<'_> {
         SrsStateRef {
             card: self.card.get(&input.card_id),
-            note: input.note_id.and_then(|id| self.note.get(&id)),
-            deck: input.deck_id.and_then(|id| self.deck.get(&id)),
-            preset: input.preset_id.and_then(|id| self.preset.get(&id)),
+            note: self.note.get(&input.note_key(self.ids)),
+            deck: self.deck.get(&input.deck_key()),
+            preset: self.preset.get(&input.preset_key()),
             global: self.global.as_ref(),
         }
     }
@@ -4054,9 +4031,9 @@ impl ReviewStateMaps {
     fn state_owned(&self, input: &ReviewInput) -> SrsStateOwned {
         SrsStateOwned {
             card: self.card.get(&input.card_id).cloned(),
-            note: input.note_id.and_then(|id| self.note.get(&id).cloned()),
-            deck: input.deck_id.and_then(|id| self.deck.get(&id).cloned()),
-            preset: input.preset_id.and_then(|id| self.preset.get(&id).cloned()),
+            note: self.note.get(&input.note_key(self.ids)).cloned(),
+            deck: self.deck.get(&input.deck_key()).cloned(),
+            preset: self.preset.get(&input.preset_key()).cloned(),
             global: self.global.clone(),
         }
     }
@@ -4064,17 +4041,14 @@ impl ReviewStateMaps {
     fn serialized_state(&self, input: &ReviewInput) -> ReviewStateOwned {
         ReviewStateOwned {
             card: self.card.get(&input.card_id).map(serialize_module_state),
-            note: input
-                .note_id
-                .and_then(|id| self.note.get(&id))
+            note: self
+                .note
+                .get(&input.note_key(self.ids))
                 .map(serialize_module_state),
-            deck: input
-                .deck_id
-                .and_then(|id| self.deck.get(&id))
-                .map(serialize_module_state),
-            preset: input
-                .preset_id
-                .and_then(|id| self.preset.get(&id))
+            deck: self.deck.get(&input.deck_key()).map(serialize_module_state),
+            preset: self
+                .preset
+                .get(&input.preset_key())
                 .map(serialize_module_state),
             global: self.global.as_ref().map(serialize_module_state),
         }
@@ -4087,27 +4061,28 @@ impl ReviewStateMaps {
         next_state: &SrsState,
     ) -> SrsStateOwned {
         SrsStateOwned {
-            card: if query.card_id == answer.card_id {
-                Some(next_state.card.clone())
-            } else {
-                self.card.get(&query.card_id).cloned()
-            },
-            note: branched_optional_module_state(
+            card: branched_module_state(
+                &self.card,
+                query.card_id,
+                answer.card_id,
+                &next_state.card,
+            ),
+            note: branched_module_state(
                 &self.note,
-                query.note_id,
-                answer.note_id,
+                query.note_key(self.ids),
+                answer.note_key(self.ids),
                 &next_state.note,
             ),
-            deck: branched_optional_module_state(
+            deck: branched_module_state(
                 &self.deck,
-                query.deck_id,
-                answer.deck_id,
+                query.deck_key(),
+                answer.deck_key(),
                 &next_state.deck,
             ),
-            preset: branched_optional_module_state(
+            preset: branched_module_state(
                 &self.preset,
-                query.preset_id,
-                answer.preset_id,
+                query.preset_key(),
+                answer.preset_key(),
                 &next_state.preset,
             ),
             global: Some(next_state.global.clone()),
@@ -4115,35 +4090,25 @@ impl ReviewStateMaps {
     }
 
     fn store(&mut self, input: &ReviewInput, state: SrsState) {
-        self.forget_lazy(input.card_id, input.note_id);
+        self.forget_lazy(input.card_id, input.note_key(self.ids));
         self.card.insert(input.card_id, state.card);
         self.mark_dirty(input);
-        if let Some(note_id) = input.note_id {
-            self.note.insert(note_id, state.note);
-        }
-        if let Some(deck_id) = input.deck_id {
-            self.deck.insert(deck_id, state.deck);
-        }
-        if let Some(preset_id) = input.preset_id {
-            self.preset.insert(preset_id, state.preset);
-        }
+        self.note.insert(input.note_key(self.ids), state.note);
+        self.deck.insert(input.deck_key(), state.deck);
+        self.preset.insert(input.preset_key(), state.preset);
         self.global = Some(state.global);
     }
 
     fn mark_dirty(&mut self, input: &ReviewInput) {
         self.dirty_card.insert(input.card_id);
-        if let Some(note_id) = input.note_id {
-            self.dirty_note.insert(note_id);
-        }
-        if let Some(deck_id) = input.deck_id {
-            self.dirty_deck.insert(deck_id);
-        }
-        if let Some(preset_id) = input.preset_id {
-            self.dirty_preset.insert(preset_id);
-        }
+        self.dirty_note.insert(input.note_key(self.ids));
+        self.dirty_deck.insert(input.deck_key());
+        self.dirty_preset.insert(input.preset_key());
         self.global_dirty = true;
     }
 
+    /// Puts one review's saved states back. A missing id is the placeholder
+    /// stream `ReviewInput::note_key` and its siblings give.
     fn restore_serialized(
         &mut self,
         card_id: i64,
@@ -4152,15 +4117,18 @@ impl ReviewStateMaps {
         preset_id: Option<i64>,
         state: &ReviewStateOwned,
     ) -> io::Result<()> {
+        let note_id = note_id.unwrap_or_else(|| self.ids.missing_note_id(card_id));
+        let deck_id = deck_id.unwrap_or(ID_PLACEHOLDER);
+        let preset_id = preset_id.unwrap_or(ID_PLACEHOLDER);
         self.forget_lazy(card_id, note_id);
         restore_serialized_state(&mut self.card, card_id, state.card.as_deref())?;
         self.dirty_card.insert(card_id);
-        restore_optional_serialized_state(&mut self.note, note_id, state.note.as_deref())?;
-        self.dirty_note.extend(note_id);
-        restore_optional_serialized_state(&mut self.deck, deck_id, state.deck.as_deref())?;
-        self.dirty_deck.extend(deck_id);
-        restore_optional_serialized_state(&mut self.preset, preset_id, state.preset.as_deref())?;
-        self.dirty_preset.extend(preset_id);
+        restore_serialized_state(&mut self.note, note_id, state.note.as_deref())?;
+        self.dirty_note.insert(note_id);
+        restore_serialized_state(&mut self.deck, deck_id, state.deck.as_deref())?;
+        self.dirty_deck.insert(deck_id);
+        restore_serialized_state(&mut self.preset, preset_id, state.preset.as_deref())?;
+        self.dirty_preset.insert(preset_id);
         self.global = deserialize_module_state(state.global.as_deref())?;
         self.global_dirty = true;
         Ok(())
@@ -4272,10 +4240,7 @@ impl ReviewStateMaps {
             return Ok(());
         }
         self.load_lazy(STATE_CACHE_KIND_CARD, input.card_id)?;
-        if let Some(note_id) = input.note_id {
-            self.load_lazy(STATE_CACHE_KIND_NOTE, note_id)?;
-        }
-        Ok(())
+        self.load_lazy(STATE_CACHE_KIND_NOTE, input.note_key(self.ids))
     }
 
     fn ensure_loaded_many(&mut self, inputs: &[ReviewInput]) -> io::Result<()> {
@@ -4304,14 +4269,12 @@ impl ReviewStateMaps {
 
     /// Drops the index entries for one input, so a state this session wrote
     /// can never be replaced by the stored one.
-    fn forget_lazy(&mut self, card_id: i64, note_id: Option<i64>) {
+    fn forget_lazy(&mut self, card_id: i64, note_id: i64) {
         let Some(source) = self.lazy.as_mut() else {
             return;
         };
         source.forget(STATE_CACHE_KIND_CARD, card_id);
-        if let Some(note_id) = note_id {
-            source.forget(STATE_CACHE_KIND_NOTE, note_id);
-        }
+        source.forget(STATE_CACHE_KIND_NOTE, note_id);
     }
 
     /// Closes the store handle the lazy reads use, so the app can replace or
@@ -4534,27 +4497,18 @@ fn restore_serialized_state(
     Ok(())
 }
 
-fn restore_optional_serialized_state(
-    states: &mut HashMap<i64, ModuleState>,
-    id: Option<i64>,
-    state: Option<&[u8]>,
-) -> io::Result<()> {
-    if let Some(id) = id {
-        restore_serialized_state(states, id, state)?;
-    }
-    Ok(())
-}
-
-fn branched_optional_module_state(
+/// The state a query reads right after `answer_id`'s review: the new state
+/// where the query shares the answer's stream, else the stored one.
+fn branched_module_state(
     map: &HashMap<i64, ModuleState>,
-    query_id: Option<i64>,
-    answer_id: Option<i64>,
+    query_id: i64,
+    answer_id: i64,
     next_state: &ModuleState,
 ) -> Option<ModuleState> {
-    match query_id {
-        Some(id) if Some(id) == answer_id => Some(next_state.clone()),
-        Some(id) => map.get(&id).cloned(),
-        None => None,
+    if query_id == answer_id {
+        Some(next_state.clone())
+    } else {
+        map.get(&query_id).cloned()
     }
 }
 
@@ -5339,13 +5293,6 @@ fn state_cache_i64_map_len(count: usize) -> usize {
     4 + 16 * count
 }
 
-fn state_cache_id_encodings_len(values: &HashMap<(IdKind, i64), Vec<f32>>) -> usize {
-    4 + values
-        .values()
-        .map(|encoding| 13 + 4 * encoding.len())
-        .sum::<usize>()
-}
-
 fn write_state_cache_u32(out: &mut impl io::Write, value: usize) -> io::Result<()> {
     let value = u32::try_from(value)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "RWKV state is too large"))?;
@@ -5422,21 +5369,6 @@ fn write_state_cache_f32_slice(out: &mut impl io::Write, values: &[f32]) -> io::
             destination.copy_from_slice(&value.to_le_bytes());
         }
         out.write_all(&buffer[..values.len() * 4])?;
-    }
-    Ok(())
-}
-
-fn write_state_cache_id_encodings(
-    out: &mut impl io::Write,
-    values: &HashMap<(IdKind, i64), Vec<f32>>,
-) -> io::Result<()> {
-    let mut values: Vec<_> = values.iter().collect();
-    values.sort_by_key(|((kind, value), _)| (kind.cache_code(), *value));
-    write_state_cache_u32(out, values.len())?;
-    for ((kind, value), encoding) in values {
-        out.write_all(&[kind.cache_code()])?;
-        out.write_all(&value.to_le_bytes())?;
-        write_state_cache_f32_slice(out, encoding)?;
     }
     Ok(())
 }
@@ -8562,7 +8494,7 @@ mod tests {
     fn stored_curve_s90_cost_on_a_real_state() {
         let path = std::env::var("RWKV_S90_BENCH_STATE").unwrap();
         let bytes = std::fs::read(path).unwrap();
-        let (_, curves) = read_runtime_cache_state(&bytes, 36500).unwrap();
+        let (_, curves) = read_runtime_cache_state(&bytes, 36500, PUBLISHED_MODEL_ID_PIPELINE).unwrap();
         let curves: Vec<&ReviewCurve> = curves.values().collect();
         let started = std::time::Instant::now();
         let serial: Vec<Option<f32>> = curves
@@ -10073,22 +10005,25 @@ order by e.id, e.cid
         MetricAccumulator::from_predictions(&values, &outcomes).log_loss
     }
 
-    /// Pins the fast "Reschedule cards with RWKV-Curve" path: the query-only,
-    /// resident-state prediction must return exactly the retrievability,
-    /// current interval and S90 that the full `predict_many` path returns.
+    /// Pins sched.rwkv-curve-reschedule and the `is:rwkv-curve:due` interval
+    /// (ui.rwkv-curve-r-stored-curve): "Reschedule cards with RWKV-Curve"
+    /// takes the current interval and S90 from the curve RWKV stored at the
+    /// card's last answered review, not from the curve of a query row (a head
+    /// output that training never supervises). A card without a stored curve
+    /// gets no interval and no S90, and the call changes no state.
     #[test]
-    fn current_intervals_from_warm_up_match_predict_many() {
+    fn reschedule_intervals_come_from_the_stored_curve() {
         let Some(weights) = embedded_weights_path() else {
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
         let mut inference = RwkvInference::load(weights, 0.9, 36_500).unwrap();
-        let reviews = bulk_parity_reviews(120);
+        let reviews = curve_source_reviews(160);
         inference
             .warm_up_reviews_sequential(reviews.clone(), false)
             .unwrap();
 
-        // one query per card, built from that card's most recent review
+        // one query per card, a day after that card's most recent review
         let mut seen = std::collections::HashSet::new();
         let queries = reviews
             .iter()
@@ -10097,42 +10032,96 @@ order by e.id, e.cid
             .map(|review| ReviewInput {
                 is_query: true,
                 ease: None,
+                duration_millis: None,
+                card_type: Some(2),
+                day_offset: review.day_offset.map(|day| day + 1),
+                current_elapsed_days: Some(1),
+                current_elapsed_seconds: Some(SECONDS_PER_DAY),
                 ..review.clone()
             })
             .collect::<Vec<_>>();
         assert!(queries.len() > 10, "fixture should cover many cards");
 
-        let requests = queries
+        // the curve of each query row, which the reschedule must not read
+        let work_items = queries
             .iter()
-            .map(|input| ReviewPredictionRequest {
-                input: input.clone(),
-                state: inference.warm_up_state(input).unwrap(),
+            .map(|input| {
+                let state = inference.warm_up_state(input).unwrap();
+                inference.prediction_work_item(input, &state).unwrap()
             })
             .collect::<Vec<_>>();
-        let expected = inference.predict_many(requests).unwrap();
+        let query_heads = inference.model.review_many(&work_items);
+        let unseen = ReviewInput {
+            card_id: 99_999,
+            ..queries[0].clone()
+        };
+        let mut asked = queries.clone();
+        asked.push(unseen);
+        let state_before = inference.cache_state();
         let actual = inference
-            .predict_current_intervals_many_from_warm_up(queries)
+            .predict_current_intervals_many_from_warm_up(asked)
             .unwrap();
+        assert_eq!(
+            inference.cache_state(),
+            state_before,
+            "the reschedule's read must not change the state"
+        );
 
-        assert_eq!(expected.len(), actual.len());
+        assert_eq!(actual.len(), queries.len() + 1);
         let mut with_interval = 0;
-        for (expected, actual) in expected.iter().zip(&actual) {
-            assert_eq!(expected.retrievability, actual.retrievability);
-            assert_eq!(expected.current_interval, actual.current_interval);
-            assert_eq!(
-                expected.current_interval_unrounded,
-                actual.current_interval_unrounded
-            );
+        let mut differs_from_query_curve = 0;
+        for ((input, actual), query_heads) in queries.iter().zip(&actual).zip(&query_heads) {
+            let curve = inference.curves.get(&input.card_id).expect("stored curve");
+            let unrounded = unrounded_interval_for_curve(curve, 0.9, 36_500);
+            assert_eq!(actual.current_interval_unrounded, unrounded);
             assert_eq!(
                 actual.current_interval,
-                actual
-                    .current_interval_unrounded
-                    .map(|days| clamped_interval_days(days, 36_500))
+                unrounded.map(|days| clamped_interval_days(days, 36_500))
             );
-            assert_eq!(expected.current_s90, actual.current_s90);
+            assert_eq!(
+                actual.current_s90,
+                unrounded_interval_for_curve(curve, S90_TARGET_RETENTION, 36_500)
+            );
+            assert_eq!(
+                actual.curve_retrievability,
+                current_curve_retrievability(input, curve)
+            );
             with_interval += usize::from(actual.current_interval.is_some());
+            differs_from_query_curve += usize::from(
+                actual.current_s90
+                    != unrounded_interval_for_curve(
+                        &query_heads.curve,
+                        S90_TARGET_RETENTION,
+                        36_500,
+                    ),
+            );
         }
         assert!(with_interval > 0, "fixture should produce intervals");
+        assert!(
+            differs_from_query_curve > 0,
+            "the query row's curve must differ somewhere, or this pin cannot fail"
+        );
+        // the whole days `is:rwkv-curve:due` compares with the elapsed days
+        // (ui.rwkv-curve-r-stored-curve) must differ somewhere too
+        assert!(
+            queries
+                .iter()
+                .zip(&actual)
+                .zip(&query_heads)
+                .any(|((input, actual), query_heads)| {
+                    let target = input.target_retentions[2].unwrap_or(0.9);
+                    actual.current_interval
+                        != unrounded_interval_for_curve(&query_heads.curve, target, 36_500)
+                            .map(|days| clamped_interval_days(days, 36_500))
+                }),
+            "the query row's whole-day interval must differ somewhere"
+        );
+
+        let unseen = actual.last().unwrap();
+        assert_eq!(unseen.curve_retrievability, None);
+        assert_eq!(unseen.current_interval, None);
+        assert_eq!(unseen.current_interval_unrounded, None);
+        assert_eq!(unseen.current_s90, None);
     }
 
     /// Pins the fast Stats Retrievability path: the query-only,
@@ -10479,26 +10468,17 @@ order by e.id, e.cid
         );
 
         let expected = resident
-            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .predict_retrievability_many_from_warm_up(sample.clone())
             .unwrap();
         let actual = lazy
-            .predict_current_intervals_many_from_warm_up(sample.clone())
+            .predict_retrievability_many_from_warm_up(sample.clone())
             .unwrap();
         assert_eq!(expected.len(), sample.len());
         for (index, (expected, actual)) in expected.iter().zip(&actual).enumerate() {
             assert_eq!(
-                expected.retrievability.to_bits(),
-                actual.retrievability.to_bits(),
+                expected.to_bits(),
+                actual.to_bits(),
                 "retrievability diverged at row {index}"
-            );
-            assert_eq!(
-                expected.current_interval, actual.current_interval,
-                "interval diverged at row {index}"
-            );
-            assert_eq!(
-                expected.current_s90.map(f32::to_bits),
-                actual.current_s90.map(f32::to_bits),
-                "S90 diverged at row {index}"
             );
         }
 
@@ -11898,12 +11878,12 @@ create table segment_state_chunks (
         }
 
         let state = inference.cache_state();
-        let (_, curves) = read_runtime_cache_state(&state, 36_500).unwrap();
+        let (_, curves) = read_runtime_cache_state(&state, 36_500, inference.model.ids).unwrap();
         for (card_id, s90) in card_ids.iter().zip(&s90s).take(card_ids.len() - 1) {
             assert_eq!(curves[card_id].s90.get().copied().flatten(), *s90);
         }
         // found at another maximum interval: found again
-        let (_, curves) = read_runtime_cache_state(&state, 3_650).unwrap();
+        let (_, curves) = read_runtime_cache_state(&state, 3_650, inference.model.ids).unwrap();
         assert!(curves.values().all(|curve| curve.s90.get().is_none()));
         // a state from before the S90s: read, and found again
         let mut old = RUNTIME_CACHE_STATE_MAGIC_WITHOUT_S90.to_vec();
@@ -11947,7 +11927,7 @@ create table segment_state_chunks (
             assert_eq!(inference.card_curve(7, &[]).unwrap().1, before);
 
             let state = inference.cache_state();
-            let (_, curves) = read_runtime_cache_state(&state, max_interval_days).unwrap();
+            let (_, curves) = read_runtime_cache_state(&state, max_interval_days, inference.model.ids).unwrap();
             assert_eq!(curves[&7].s90.get().copied(), Some(Some(before)));
 
             // a state whose S90s were found another way
@@ -11955,7 +11935,7 @@ create table segment_state_chunks (
             let mut other_kernel = state.clone();
             other_kernel[kernel_at..kernel_at + 4]
                 .copy_from_slice(&(STORED_CURVE_S90_KERNEL + 1).to_le_bytes());
-            let (_, curves) = read_runtime_cache_state(&other_kernel, max_interval_days).unwrap();
+            let (_, curves) = read_runtime_cache_state(&other_kernel, max_interval_days, inference.model.ids).unwrap();
             assert!(curves[&7].s90.get().is_none());
         }
     }
@@ -12349,7 +12329,7 @@ create table segment_state_chunks (
             preset: Some(serialized.clone()),
             global: Some(serialized.clone()),
         };
-        let mut states = ReviewStateMaps::default();
+        let mut states = ReviewStateMaps::new(PUBLISHED_MODEL_ID_PIPELINE);
 
         states
             .restore_serialized(1, Some(2), Some(3), Some(4), &populated)
@@ -12427,7 +12407,7 @@ create table segment_state_chunks (
 
     #[test]
     fn feature_state_scales_duration_from_milliseconds() {
-        let mut features = FeatureState::default();
+        let features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let input = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -12476,25 +12456,27 @@ create table segment_state_chunks (
         };
 
         for (state, expected_scaled_state) in [(2, 0.0), (4, 2.0), (5, 3.0)] {
-            let values = FeatureState::default().features_for(&ReviewInput {
-                card_type: Some(state),
-                ..input.clone()
-            });
+            let values =
+                FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&ReviewInput {
+                    card_type: Some(state),
+                    ..input.clone()
+                });
             assert_eq!(values[22], expected_scaled_state);
         }
 
-        let query_values = FeatureState::default().features_for(&ReviewInput {
-            is_query: true,
-            ease: None,
-            card_type: Some(4),
-            ..input
-        });
+        let query_values =
+            FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&ReviewInput {
+                is_query: true,
+                ease: None,
+                card_type: Some(4),
+                ..input
+            });
         assert_eq!(query_values[22], 0.0);
     }
 
     #[test]
     fn feature_state_normalizes_day_offset_to_first_raw_review_day() {
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let first = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -12524,39 +12506,8 @@ create table segment_state_chunks (
         assert_eq!(values[17], -2.0 / 3.0);
     }
 
-    #[test]
-    fn feature_state_uses_card_specific_placeholder_for_missing_note_id() {
-        let mut features = FeatureState::default();
-        let input = ReviewInput {
-            card_id: 123,
-            note_id: None,
-            deck_id: None,
-            preset_id: None,
-            is_query: false,
-            ease: Some(3),
-            duration_millis: Some(1234),
-            card_type: Some(2),
-            day_offset: Some(42),
-            current_elapsed_days: Some(3),
-            current_elapsed_seconds: Some(259_200),
-            target_retentions: [None; 4],
-            enforce_grade_order: true,
-        };
-
-        features.features_for(&input);
-
-        assert!(features
-            .id_encodings
-            .contains_key(&(IdKind::Note, ID_PLACEHOLDER + input.card_id)));
-        assert!(!features
-            .id_encodings
-            .contains_key(&(IdKind::Note, ID_PLACEHOLDER)));
-    }
-
-    #[test]
-    fn feature_state_uses_benchmark_id_encoding_stream() {
-        let mut features = FeatureState::default();
-        let input = ReviewInput {
+    fn id_test_input() -> ReviewInput {
+        ReviewInput {
             card_id: 123,
             note_id: Some(456),
             deck_id: Some(789),
@@ -12570,31 +12521,188 @@ create table segment_state_chunks (
             current_elapsed_seconds: Some(259_200),
             target_retentions: [None; 4],
             enforce_grade_order: true,
+        }
+    }
+
+    /// A review without a note, deck or preset (a deleted card's) has the
+    /// three flags set. Under the shipped model's id pipeline (int32) it has
+    /// the codes and streams of the one placeholder note, deck and preset all
+    /// such reviews share; under the int64 pipeline its note is a
+    /// placeholder of its own per card, while deck and preset stay shared
+    /// (spec sched.rwkv-replay-deleted-cards).
+    #[test]
+    fn missing_ids_encode_as_the_model_versions_placeholders() {
+        let input = ReviewInput {
+            note_id: None,
+            deck_id: None,
+            preset_id: None,
+            ..id_test_input()
         };
+        let other = ReviewInput {
+            card_id: 124,
+            ..input.clone()
+        };
+        assert_eq!(PUBLISHED_MODEL_ID_PIPELINE, RwkvIdPipeline::Int32);
+        for ids in [RwkvIdPipeline::Int32, RwkvIdPipeline::Int64] {
+            let features = FeatureState::new(ids);
+            let values = features.features_for(&input);
+            let other_values = features.features_for(&other);
+            assert_eq!(&values[13..16], &[1.0, 1.0, 1.0]);
+            assert_eq!(
+                &values[48..56],
+                &id_encoding(IdKind::Deck, ID_PLACEHOLDER)[..]
+            );
+            assert_eq!(
+                &values[56..64],
+                &id_encoding(IdKind::Preset, ID_PLACEHOLDER)[..]
+            );
+            // deck and preset are shared in both pipelines
+            assert_eq!(&other_values[48..64], &values[48..64]);
+            assert_eq!(input.deck_key(), ID_PLACEHOLDER);
+            assert_eq!(input.preset_key(), ID_PLACEHOLDER);
+            let (note, other_note) = (input.note_key(ids), other.note_key(ids));
+            assert_eq!(&values[36..48], &id_encoding(IdKind::Note, note)[..]);
+            match ids {
+                RwkvIdPipeline::Int32 => {
+                    assert_eq!((note, other_note), (ID_PLACEHOLDER, ID_PLACEHOLDER));
+                    assert_eq!(&other_values[36..48], &values[36..48]);
+                }
+                RwkvIdPipeline::Int64 => {
+                    assert_eq!(
+                        (note, other_note),
+                        (ID_PLACEHOLDER + 123, ID_PLACEHOLDER + 124)
+                    );
+                    assert_ne!(&other_values[36..48], &values[36..48]);
+                }
+            }
+        }
+        // a real note is its own in both
+        assert_eq!(id_test_input().note_key(RwkvIdPipeline::Int64), 456);
+    }
 
-        let values = features.features_for(&input);
+    /// The reviews of deleted cards advance real placeholder streams, as
+    /// training streamed its placeholder entities (spec
+    /// sched.rwkv-replay-deleted-cards): one shared note, deck and preset
+    /// under the shipped model's pipeline; a note per card, deck and preset
+    /// shared, under the int64 one. Before, each read a fresh state and kept
+    /// nothing.
+    #[test]
+    fn reviews_without_ids_stream_through_the_model_versions_placeholders() {
+        let Some(model_path) = embedded_weights_path() else {
+            return;
+        };
+        let reviews = [200, 201]
+            .map(|card_id| ReviewInput {
+                card_id,
+                note_id: None,
+                deck_id: None,
+                preset_id: None,
+                ..id_test_input()
+            })
+            .to_vec();
+        for (ids, notes) in [
+            (RwkvIdPipeline::Int32, vec![ID_PLACEHOLDER]),
+            (
+                RwkvIdPipeline::Int64,
+                vec![ID_PLACEHOLDER + 200, ID_PLACEHOLDER + 201],
+            ),
+        ] {
+            let mut inference = RwkvInference::load(model_path.clone(), 0.9, 36_500).unwrap();
+            if ids != inference.model.ids {
+                Arc::get_mut(&mut inference.model).unwrap().ids = ids;
+                inference.features = FeatureState::new(ids);
+                inference.warm_up_states = ReviewStateMaps::new(ids);
+            }
+            inference.warm_up_reviews(reviews.clone(), false).unwrap();
+            let states = &inference.warm_up_states;
+            let mut note_keys: Vec<i64> = states.note.keys().copied().collect();
+            note_keys.sort_unstable();
+            assert_eq!(note_keys, notes);
+            for map in [&states.deck, &states.preset] {
+                assert_eq!(map.keys().copied().collect::<Vec<_>>(), [ID_PLACEHOLDER]);
+            }
+            assert_eq!(states.card.len(), 2);
+        }
+    }
 
+    /// An id code is torch's `randint(0, 4, (dim,), generator=g) - 1.5` with
+    /// `g = torch.Generator().manual_seed(id_code_seed(kind, id))` (spec
+    /// sched.rwkv-id-codes). The expected values come from torch 2.x itself.
+    #[test]
+    fn id_codes_match_torch_seeded_by_the_id() {
+        assert_eq!(id_code_seed(IdKind::Card, 123), 1_658_732_843);
+        assert_eq!(id_code_seed(IdKind::Note, ID_PLACEHOLDER), 1_456_629_865);
+        let values = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&id_test_input());
         assert_eq!(
             &values[24..36],
-            &[0.5, -1.5, 1.5, -0.5, -1.5, -1.5, 1.5, 1.5, 0.5, -0.5, 0.5, -0.5]
+            &[1.5, 1.5, 1.5, -0.5, -0.5, -1.5, -1.5, 1.5, 0.5, 0.5, -1.5, 0.5]
         );
         assert_eq!(
             &values[36..48],
-            &[1.5, -0.5, 1.5, -0.5, -0.5, -1.5, -1.5, 0.5, 0.5, -0.5, 0.5, 1.5]
+            &[0.5, 0.5, 1.5, -1.5, 0.5, 1.5, -0.5, 1.5, 1.5, -0.5, -0.5, -0.5]
         );
         assert_eq!(
             &values[48..56],
-            &[1.5, 1.5, -0.5, -1.5, -0.5, 1.5, -0.5, 1.5]
+            &[-1.5, -1.5, -1.5, -1.5, -1.5, -0.5, -1.5, -1.5]
         );
         assert_eq!(
             &values[56..64],
-            &[-0.5, -1.5, -0.5, 1.5, 1.5, 1.5, -1.5, -0.5]
+            &[0.5, -0.5, 1.5, -0.5, -0.5, 1.5, 1.5, -0.5]
         );
+        // the kind is part of the seed: a deck and a preset with one id
+        // differ
+        assert_eq!(
+            id_encoding(IdKind::Deck, 10),
+            [1.5, -1.5, 1.5, -1.5, -1.5, -1.5, -0.5, -1.5]
+        );
+        assert_eq!(
+            id_encoding(IdKind::Note, ID_PLACEHOLDER),
+            [1.5, 1.5, -1.5, 1.5, -0.5, -0.5, -1.5, -1.5, -1.5, 1.5, 1.5, 1.5]
+        );
+    }
+
+    /// An entity's code does not depend on which entities came first, and a
+    /// query leaves the state as it found it: a query of an unseen card
+    /// before a replay changes no later feature (spec sched.rwkv-id-codes).
+    #[test]
+    fn id_codes_do_not_depend_on_order_and_queries_change_nothing() {
+        let first = id_test_input();
+        let second = ReviewInput {
+            card_id: 124,
+            note_id: Some(457),
+            deck_id: Some(790),
+            preset_id: Some(11),
+            ..first.clone()
+        };
+        let unseen_query = ReviewInput {
+            card_id: 999,
+            note_id: Some(998),
+            deck_id: Some(997),
+            is_query: true,
+            ease: None,
+            duration_millis: None,
+            ..first.clone()
+        };
+
+        let mut plain = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
+        plain.store_review(&first);
+        let plain_second = plain.features_for(&second);
+
+        let mut queried = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
+        queried.features_for(&unseen_query);
+        queried.store_review(&first);
+        queried.features_for(&unseen_query);
+        assert!(!queried.id_encodings.contains_key(&(IdKind::Card, 999)));
+        assert_eq!(queried.features_for(&second), plain_second);
+
+        // the second review's codes are its own, met first or second
+        let alone = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE).features_for(&second);
+        assert_eq!(&alone[24..64], &plain_second[24..64]);
     }
 
     #[test]
     fn feature_state_initializes_today_like_benchmark() {
-        let mut features = FeatureState::default();
+        let features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let input = ReviewInput {
             card_id: 123,
             note_id: Some(456),
@@ -12618,49 +12726,38 @@ create table segment_state_chunks (
     }
 
     #[test]
-    fn feature_state_cache_round_trips_id_encodings_and_rng() {
-        let mut features = FeatureState::default();
-        let input = ReviewInput {
-            card_id: 123,
-            note_id: Some(456),
-            deck_id: Some(789),
-            preset_id: Some(10),
-            is_query: false,
-            ease: Some(3),
-            duration_millis: Some(1234),
-            card_type: Some(2),
-            day_offset: Some(42),
-            current_elapsed_days: Some(3),
-            current_elapsed_seconds: Some(259_200),
-            target_retentions: [None; 4],
-            enforce_grade_order: true,
-        };
-        let first_values = features.features_for(&input);
-
-        let mut cache = Vec::new();
-        features.write_cache_state(&mut cache);
-        let mut cursor = Cursor::new(&cache);
-        let mut restored = FeatureState::read_cache_state(&mut cursor).unwrap();
-        cursor.expect_end().unwrap();
-
-        let restored_first_values = restored.features_for(&input);
-        assert_eq!(&restored_first_values[24..64], &first_values[24..64]);
-
+    fn feature_state_cache_round_trips_without_id_codes() {
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
+        let input = id_test_input();
+        features.store_review(&input);
         let next_input = ReviewInput {
             card_id: 124,
             note_id: Some(457),
             deck_id: Some(790),
             preset_id: Some(11),
-            ..input
+            ..input.clone()
         };
-        let expected_next_values = features.features_for(&next_input);
-        let restored_next_values = restored.features_for(&next_input);
-        assert_eq!(&restored_next_values[24..64], &expected_next_values[24..64]);
+        let expected = [
+            features.features_for(&input),
+            features.features_for(&next_input),
+        ];
+
+        let mut cache = Vec::new();
+        features.write_cache_state(&mut cache);
+        assert_eq!(cache.len(), features.cache_state_len());
+        let mut cursor = Cursor::new(&cache);
+        let restored =
+            FeatureState::read_cache_state(&mut cursor, PUBLISHED_MODEL_ID_PIPELINE).unwrap();
+        cursor.expect_end().unwrap();
+
+        assert!(restored.id_encodings.is_empty());
+        assert_eq!(restored.features_for(&input), expected[0]);
+        assert_eq!(restored.features_for(&next_input), expected[1]);
     }
 
     #[test]
     fn feature_state_for_card_restores_review_mutations() {
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         let before = features.state_for_card(123);
         let input = ReviewInput {
             card_id: 123,
