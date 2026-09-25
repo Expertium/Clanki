@@ -10,6 +10,7 @@
 //! decoded without the GIL and the objects are made without running Python
 //! code per row.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use anki_proto::scheduler::rwkv_review_input_rows_for_cards_response::Row;
@@ -166,6 +167,7 @@ impl RwkvReviewInputRows {
 
         let mut presets: HashMap<&str, Bound<'py, PyAny>> = HashMap::new();
         let mut kinds: HashMap<&str, Bound<'py, PyAny>> = HashMap::new();
+        let mut retentions: HashMap<u32, Bound<'py, PyTuple>> = HashMap::new();
         let mut groups: Vec<(u32, Bound<'py, PyList>)> = Vec::new();
         let override_group = match &batch_size_override {
             Some(_) => Some(PyList::empty(py)),
@@ -196,23 +198,31 @@ impl RwkvReviewInputRows {
                     _ => row.card_type.into_pyobject(py)?.into_any(),
                 }
             };
-            let target_retention = f64::from(row.target_retention);
-            let target_retention = if target_retention.is_finite()
-                && (0.0..=1.0).contains(&target_retention)
-            {
-                PyFloat::new(py, target_retention)
-            } else {
-                default_target_retention.clone()
+            // one tuple per distinct retention: it is immutable
+            let target_retentions = match retentions.entry(row.target_retention.to_bits()) {
+                Entry::Occupied(entry) => entry.get().clone(),
+                Entry::Vacant(entry) => {
+                    let target_retention = f64::from(row.target_retention);
+                    let target_retention = if target_retention.is_finite()
+                        && (0.0..=1.0).contains(&target_retention)
+                    {
+                        PyFloat::new(py, target_retention)
+                    } else {
+                        default_target_retention.clone()
+                    };
+                    entry
+                        .insert(PyTuple::new(
+                            py,
+                            [
+                                &target_retention,
+                                &target_retention,
+                                &target_retention,
+                                &target_retention,
+                            ],
+                        )?)
+                        .clone()
+                }
             };
-            let target_retentions = PyTuple::new(
-                py,
-                [
-                    &target_retention,
-                    &target_retention,
-                    &target_retention,
-                    &target_retention,
-                ],
-            )?;
 
             let card_id = row.card_id.into_pyobject(py)?.into_any();
 
