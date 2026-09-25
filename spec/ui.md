@@ -1922,7 +1922,7 @@ nothing across a rest: it takes the collection inside a backend call and
 gives it back when that call returns, so there is no lock to hand back.
 
 **A click waits for one batch of rows, not for a preset.** A preset's rows
-go in in batches of at most ten thousand, each batch its own write, and the
+go in in batches of at most 2,500 rows, each batch its own write, and the
 collection is free between two of them; the pass rests a moment there, long
 enough for a click that is already waiting to take the collection first.
 This is the shape the RWKV recording pass uses
@@ -1933,6 +1933,15 @@ saved time, its FSRS-7 parameters and the decks that use it. If any of them
 differs, the preset was saved while its rows were being written. The pass
 then deletes the batches it has already written for that preset, writes no
 more, and reports nothing written; the preset stays stale for the next pass.
+
+Before that, every batch checks that the collection open now is the one the
+job read: the same open of the same file, not only a collection with the
+same preset. Every profile opens on one backend, so a profile switch between
+two batches puts another collection under the job. Then the batch writes
+nothing, takes nothing back, in either collection, and the pass stops. The
+batches already written stay in the job's own collection, as for any pass
+cut off part way. This holds even when the other collection is a copy of the
+first, whose preset passes every other check.
 Only the rows this pass wrote go, named by review id, so another preset's
 rows are untouched. The cache therefore holds no mixture of rows from two
 sets of parameters: a parameter change deletes that preset's stored rows in
@@ -2055,7 +2064,10 @@ of the run were spent holding the collection. With the write in batches the
 worst click of a whole pass is under half a second, its median under a
 tenth, and the collection is held for under two seconds of the run. The
 check per batch costs one read of the preset and of the deck list per batch,
-which is a few milliseconds beside the write it guards.
+which is a few milliseconds beside the write it guards. The check of the
+collection guards against the one case the preset check cannot see: two
+copies of one collection have the same preset,
+the same parameters and the same decks.
 
 A quiet stop on a closed collection is the failure message seen from the
 other side: in round 5 of the speed hunt (2026-09-25) a profile switch
@@ -2091,6 +2103,7 @@ of every preset every day: about 76 s of CPU on his collection.
 `the_pass_covers_every_preset_with_uncovered_reviews`,
 `a_presets_rows_are_written_one_bounded_batch_at_a_time`,
 `a_save_midway_through_the_write_takes_back_what_was_written`,
+`a_job_never_touches_another_collection_with_an_identical_preset`,
 `the_folds_train_on_the_optimizers_reviews`,
 `a_preset_is_covered_after_its_pass_until_it_changes`,
 `a_review_after_the_read_is_not_recorded_as_uncoverable`,

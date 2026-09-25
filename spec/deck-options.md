@@ -177,7 +177,9 @@ call and resting between two of them rather than waiting for the user to
 stop, with the same reviews and settings as "Optimize All Presets". It
 holds the collection only to read the reviews and to save; a preset saved
 in deck options while it trains keeps the saved values and the result is
-dropped. The new parameters are saved as a deck-options save would save
+dropped. So is a result whose collection closed while it trained: another
+collection open by then, even a copy with the same preset, is left as it
+is. The new parameters are saved as a deck-options save would save
 them: the cards' memory states follow them (their due dates too when
 "Reschedule cards when desired retention changes" is on), and the preset's
 stored per-review predictions go and are written again by the same pass.
@@ -200,7 +202,8 @@ optimized when Stats opens, but not at the cost of lag, so the idle
 background pass does it instead.
 
 **Pinned by:** `a_preset_is_optimized_again_after_its_days`,
-`under_rwkv_it_optimizes_but_never_reschedules`, `a_save_during_training_drops_the_result`
+`under_rwkv_it_optimizes_but_never_reschedules`, `a_save_during_training_drops_the_result`,
+`a_job_never_saves_into_another_collection`
 (rslib/src/scheduler/fsrs/auto_optimize.rs);
 `test_due_presets_are_optimized_before_the_predictions`,
 `test_a_started_pass_never_waits_for_the_user_to_stop`,

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use fsrs::FSRS;
 
+use crate::collection::CollectionOpenId;
 use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::prelude::*;
@@ -63,6 +64,9 @@ pub(crate) struct FsrsAutoOptimizeJob {
 /// parameters, and the result is then dropped: the user's save wins.
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) struct FsrsAutoOptimizeJobKey {
+    // the open collection the job read; another one, even an identical
+    // copy, is not the job's (spec deck-options.fsrs-auto-optimize)
+    collection: CollectionOpenId,
     preset: DeckConfigId,
     preset_mtime: TimestampSecs,
     // as bits; a save within the same second leaves the mtime unchanged
@@ -70,8 +74,9 @@ pub(crate) struct FsrsAutoOptimizeJobKey {
 }
 
 impl FsrsAutoOptimizeJobKey {
-    fn of(config: &DeckConfig) -> Self {
+    fn of(collection: CollectionOpenId, config: &DeckConfig) -> Self {
         Self {
+            collection,
             preset: config.id,
             preset_mtime: config.mtime_secs,
             params: config.fsrs_params().iter().map(|p| p.to_bits()).collect(),
@@ -137,7 +142,7 @@ impl Collection {
             enable_scheduling_penalties: true,
         })?;
         Ok(Some(FsrsAutoOptimizeJob {
-            key: FsrsAutoOptimizeJobKey::of(&config),
+            key: FsrsAutoOptimizeJobKey::of(self.state.open_id, &config),
             prepared,
         }))
     }
@@ -158,7 +163,7 @@ impl Collection {
             let Some(mut config) = col.storage.get_deck_config(key.preset)? else {
                 return Ok(false);
             };
-            if FsrsAutoOptimizeJobKey::of(&config) != key {
+            if FsrsAutoOptimizeJobKey::of(col.state.open_id, &config) != key {
                 return Ok(false);
             }
             let changed = fsrs_items > 0 && params != config.fsrs_params().to_vec();
@@ -223,6 +228,7 @@ mod test {
     use super::*;
     use crate::card::CardQueue;
     use crate::card::CardType;
+    use crate::collection::CollectionBuilder;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
     use crate::search::SortMode;
@@ -230,8 +236,13 @@ mod test {
 
     fn fsrs_collection() -> Collection {
         let mut col = Collection::new();
+        add_fsrs_reviews(&mut col);
+        col
+    }
+
+    fn add_fsrs_reviews(col: &mut Collection) {
         col.set_config_bool(BoolKey::Fsrs, true, false).unwrap();
-        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let note = NoteAdder::basic(col).add(col);
         let card = col
             .storage
             .all_cards_of_note(note.id)
@@ -258,7 +269,6 @@ mod test {
                 )
                 .unwrap();
         }
-        col
     }
 
     fn trained(params: &[f32]) -> Vec<f32> {
@@ -362,6 +372,45 @@ mod test {
         let after = col.storage.get_deck_config(preset)?.unwrap();
         assert_eq!(after.inner.fsrs_params_7, saved);
         assert_eq!(after.inner.fsrs_last_optimized_day, None);
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-auto-optimize: every
+    // profile opens on the one backend, so a job still training when the
+    // profile switches finds another collection when it saves. Even an
+    // identical copy is not the job's collection.
+    #[test]
+    fn a_job_never_saves_into_another_collection() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let first_path = dir.path().join("first.anki2");
+        let second_path = dir.path().join("second.anki2");
+        {
+            let mut col = CollectionBuilder::new(&first_path).build()?;
+            add_fsrs_reviews(&mut col);
+            col.close(None)?;
+        }
+        std::fs::copy(&first_path, &second_path)?;
+        let preset = DeckConfigId(1);
+
+        let mut first = CollectionBuilder::new(&first_path).build()?;
+        let job = first.fsrs_auto_optimize_job(preset)?.expect("a job");
+        let params = trained(
+            first
+                .storage
+                .get_deck_config(preset)?
+                .unwrap()
+                .fsrs_params(),
+        );
+        // the profile switches while the job trains
+        first.close(None)?;
+        let mut second = CollectionBuilder::new(&second_path).build()?;
+        let before = second.storage.get_deck_config(preset)?.unwrap();
+
+        assert!(!second.apply_fsrs_auto_optimize(job.key, params, 3)?);
+        let after = second.storage.get_deck_config(preset)?.unwrap();
+        assert_eq!(after.inner.fsrs_params_7, before.inner.fsrs_params_7);
+        assert_eq!(after.inner.fsrs_last_optimized_day, None);
+        assert_eq!(after.mtime_secs, before.mtime_secs);
         Ok(())
     }
 }
