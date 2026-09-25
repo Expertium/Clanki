@@ -19,6 +19,7 @@ use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
@@ -80,12 +81,28 @@ pub(crate) fn get_decay_from_params(params: &[f32]) -> f32 {
     crate::deckconfig::effective_fsrs7_params(params)[23]
 }
 
-pub(crate) fn fsrs_current_retrievability_for_params(
+/// The retrievability after `elapsed_days` of the FSRS-7 state whose S90 is
+/// `s90` (spec sched.fsrs7-sm2-conversion): the `FsrsCurrentRetrievability`
+/// add-on API is given the S90 a card shows, not FSRS-7's internal
+/// stability.
+pub(crate) fn fsrs_current_retrievability_for_s90(
     params: &[f32],
-    stability: f32,
+    s90: f32,
     elapsed_days: f32,
 ) -> Result<f32> {
-    fsrs_current_retrievability_scalar_for_params(params, stability, elapsed_days)
+    let state = fsrs_memory_state_for_s90(params, s90)?;
+    fsrs_current_retrievability_for_state(params, state, elapsed_days)
+}
+
+/// The single-trace state (s, s_fast = s, d = 5) that the add-on API read
+/// before it took the S90; tests use it.
+#[cfg(test)]
+fn single_trace_state(stability: f32) -> MemoryState {
+    MemoryState {
+        stability,
+        difficulty: 5.0,
+        stability_fast: stability,
+    }
 }
 
 /// Calculate retrievability from the complete stored FSRS state.
@@ -256,8 +273,7 @@ impl FsrsCardCurves {
         if let Some(&preset) = self.deck_presets.get(&deck_id) {
             return Ok(preset);
         }
-        let deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        let preset = col.fsrs_preset_for_deck(&deck)?;
+        let preset = col.fsrs_preset_for_home_deck(deck_id)?;
         let preset = (self.model(&preset.params), preset.desired_retention);
         self.deck_presets.insert(deck_id, preset);
         Ok(preset)
@@ -274,24 +290,6 @@ impl FsrsCardCurves {
     }
 }
 
-/// Scalar compatibility helper for callers that do not have a complete
-/// FSRS-7 state. It assumes difficulty 5 and equal slow/fast stability.
-pub(crate) fn fsrs_current_retrievability_scalar_for_params(
-    params: &[f32],
-    stability: f32,
-    elapsed_days: f32,
-) -> Result<f32> {
-    fsrs_current_retrievability_for_memory_state(
-        params,
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-            stability_fast: stability,
-        },
-        elapsed_days,
-    )
-}
-
 /// The interval at `desired_retention` of the FSRS-7 state whose S90 is
 /// `s90` (spec sched.fsrs7-sm2-conversion): the `FsrsNextInterval` add-on API
 /// is given the S90 a card shows, not FSRS-7's internal stability.
@@ -305,20 +303,26 @@ pub(crate) fn fsrs_next_interval_for_s90(
     Ok(fsrs.next_interval_for_state(state, desired_retention.clamp(0.0001, 0.9999)))
 }
 
-pub(crate) fn fsrs_interval_at_retrievability_for_params(
+/// The interval at `target_retrievability` of the FSRS-7 state whose S90 is
+/// `s90` (spec sched.fsrs7-sm2-conversion), as the
+/// `FsrsIntervalAtRetrievability*` add-on APIs take it.
+pub(crate) fn fsrs_interval_at_retrievability_for_s90(
     params: &[f32],
-    stability: f32,
+    s90: f32,
     target_retrievability: f32,
 ) -> Result<f32> {
     let fsrs = FSRS::new(params)?;
-    Ok(fsrs.interval_at_retrievability(
-        MemoryState {
-            stability,
-            difficulty: 5.0,
-            stability_fast: stability,
-        },
-        target_retrievability.clamp(0.0001, 0.9999),
-    ))
+    fsrs_interval_at_retrievability_for_s90_with(&fsrs, params, s90, target_retrievability)
+}
+
+fn fsrs_interval_at_retrievability_for_s90_with(
+    fsrs: &FSRS,
+    params: &[f32],
+    s90: f32,
+    target_retrievability: f32,
+) -> Result<f32> {
+    let state = memory_state_from_sm2_with_params(fsrs, params, 2.5, s90, 0.9)?;
+    Ok(fsrs.interval_at_retrievability(state, target_retrievability.clamp(0.0001, 0.9999)))
 }
 
 pub(crate) fn fsrs_memory_state_for_params(
@@ -1268,7 +1272,39 @@ impl Collection {
         elapsed_days: f32,
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_current_retrievability_for_params(&params, stability, elapsed_days)
+        fsrs_current_retrievability_for_s90(&params, stability, elapsed_days)
+    }
+
+    /// The retrievability of the single-trace state (s, s_fast = s, d = 5)
+    /// that `fsrs_current_retrievability_for_card` read before it took the
+    /// S90; tests use it to build states with a known retrievability.
+    #[cfg(test)]
+    pub(crate) fn fsrs_single_trace_retrievability_for_card(
+        &mut self,
+        card_id: CardId,
+        stability: f32,
+        elapsed_days: f32,
+    ) -> Result<f32> {
+        let params = self.fsrs_params_for_card_id(card_id)?;
+        fsrs_current_retrievability_for_memory_state(
+            &params,
+            single_trace_state(stability),
+            elapsed_days,
+        )
+    }
+
+    /// The interval at `target_retrievability` of the single-trace state
+    /// (s, s_fast = s, d = 5); tests use it to get the S90 of such a state.
+    #[cfg(test)]
+    pub(crate) fn fsrs_single_trace_interval_at_retrievability_for_card(
+        &mut self,
+        card_id: CardId,
+        stability: f32,
+        target_retrievability: f32,
+    ) -> Result<f32> {
+        let params = self.fsrs_params_for_card_id(card_id)?;
+        Ok(FSRS::new(&params)?
+            .interval_at_retrievability(single_trace_state(stability), target_retrievability))
     }
 
     pub(crate) fn fsrs_current_retrievability_for_card_state(
@@ -1316,7 +1352,7 @@ impl Collection {
         target_retrievability: f32,
     ) -> Result<f32> {
         let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)
+        fsrs_interval_at_retrievability_for_s90(&params, stability, target_retrievability)
     }
 
     pub fn fsrs_interval_at_retrievability_for_cards(
@@ -1349,14 +1385,12 @@ impl Collection {
             let fsrs = fsrs_by_preset_id
                 .get(&preset.id)
                 .expect("FSRS instance inserted");
-            intervals.push(fsrs.interval_at_retrievability(
-                MemoryState {
-                    stability: *stability,
-                    difficulty: 5.0,
-                    stability_fast: *stability,
-                },
-                target_retrievability.clamp(0.0001, 0.9999),
-            ));
+            intervals.push(fsrs_interval_at_retrievability_for_s90_with(
+                fsrs,
+                &preset.params,
+                *stability,
+                *target_retrievability,
+            )?);
         }
 
         Ok(intervals)
@@ -1403,7 +1437,7 @@ impl Collection {
                     .get(config_id)
                     .expect("config params inserted")
             };
-            intervals.push(fsrs_interval_at_retrievability_for_params(
+            intervals.push(fsrs_interval_at_retrievability_for_s90(
                 params,
                 *stability,
                 target_retrievability,
@@ -1453,7 +1487,7 @@ impl Collection {
             params,
             revlog,
             historical_retention,
-            fsrs_preset.ignore_revlogs_before_ms()?,
+            fsrs_preset.ignore_revlogs_before_ms(),
         )?;
         let memory_state = if item.is_some() || infer_from_current_card_state {
             let mut card = card.clone();
@@ -1489,6 +1523,55 @@ impl Collection {
     // Used for extra-ordinary circumstances where a memory state is needed but is
     // not availiable, e.g. the card has been moved to a different deck.
     // Try to use update_memory_state where you can.
+    /// An add-on that changes a card's `memory_state.stability` (the S90,
+    /// spec sched.next-state-s90) through `update_cards` writes it next to
+    /// the FSRS-7 traces it read, which still give the old S90. Under
+    /// FSRS-7, when the written S90 is not the stored one and the written
+    /// traces do not give it, the traces are rebuilt to give it: the written
+    /// difficulty and fast/internal ratio, scaled to the new S90 (spec
+    /// sched.fsrs7-addon-stability-edit). Under RWKV the stability is RWKV's
+    /// S90 and the traces stay FSRS-7's own.
+    pub(crate) fn rebuild_fsrs7_traces_for_edited_s90(
+        &mut self,
+        card: &mut Card,
+        existing: &Card,
+    ) -> Result<()> {
+        let Some(written) = card.memory_state else {
+            return Ok(());
+        };
+        let s90 = written.stability;
+        if existing.memory_state.map(|state| state.stability) == Some(s90)
+            || !(s90.is_finite() && s90 > 0.0)
+            || self.effective_scheduling_algorithm()? != SchedulingAlgorithm::Fsrs7
+        {
+            return Ok(());
+        }
+        let params = self.fsrs_preset_for_card(card)?.params;
+        let fsrs = FSRS::new(&params)?;
+        let traces = MemoryState::from(written);
+        let traces_s90 = fsrs.interval_at_retrievability(traces, 0.9);
+        if (traces_s90 - s90).abs() <= 1e-3 * s90 + 1e-4 {
+            return Ok(());
+        }
+        let usable_traces = traces.stability.is_finite()
+            && traces.stability > 0.0
+            && traces.stability_fast.is_finite()
+            && traces.stability_fast > 0.0;
+        card.memory_state = if usable_traces {
+            let rebuilt = scale_state_to_interval(&fsrs, traces, s90, 0.9);
+            Some(FsrsMemoryState {
+                stability: s90,
+                stability_internal: rebuilt.stability,
+                stability_fast: Some(rebuilt.stability_fast),
+                difficulty: written.difficulty,
+            })
+        } else {
+            fsrs_memory_state_for_s90_and_difficulty(&fsrs, s90, written.difficulty)
+                .or(Some(written))
+        };
+        Ok(())
+    }
+
     pub fn compute_and_update_memory_state(&mut self, card: &mut Card) -> Result<()> {
         let fsrs_data = self.compute_memory_state(card.id)?;
         card.memory_state = fsrs_data.state.map(Into::into);
@@ -1977,6 +2060,49 @@ mod tests {
         assert_close(
             col.fsrs_next_interval_for_card(card_id, 20.0, 0.8)?,
             fsrs.next_interval_for_state(state, 0.8),
+        );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-sm2-conversion: the
+    // FsrsCurrentRetrievability and FsrsIntervalAtRetrievability* APIs take
+    // the stability they are given as the S90, like FsrsNextInterval.
+    #[test]
+    fn retrievability_apis_take_the_s90() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let card_id = col.get_first_card().id;
+        // R is 90% at the S90, and the interval at 90% is the S90 itself
+        assert_close(
+            col.fsrs_current_retrievability_for_card(card_id, 94.4, 94.4)?,
+            0.9,
+        );
+        assert_close(
+            col.fsrs_interval_at_retrievability_for_card(card_id, 94.4, 0.9)?,
+            94.4,
+        );
+        assert_close(
+            col.fsrs_interval_at_retrievability_for_cards(&[(card_id, 94.4)], 0.9)?[0],
+            94.4,
+        );
+        assert_close(
+            col.fsrs_interval_at_retrievability_for_card_targets(&[(card_id, 94.4, 0.9)])?[0],
+            94.4,
+        );
+        assert_close(
+            col.fsrs_interval_at_retrievability_for_configs(&[(DeckConfigId(1), 94.4)], 0.9)?[0],
+            94.4,
+        );
+        // at another retrievability, the state with that S90
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let state = memory_state_from_sm2_with_params(&fsrs, &DEFAULT_PARAMETERS, 2.5, 94.4, 0.9)?;
+        assert_close(
+            col.fsrs_interval_at_retrievability_for_card(card_id, 94.4, 0.8)?,
+            fsrs.interval_at_retrievability(state, 0.8),
+        );
+        assert_close(
+            col.fsrs_current_retrievability_for_card(card_id, 94.4, 30.0)?,
+            fsrs.current_retrievability(state, 30.0),
         );
         Ok(())
     }
@@ -2699,31 +2825,20 @@ mod tests {
     #[test]
     fn fsrs_math_helpers_match_inference_fsrs7() -> Result<()> {
         let params = DEFAULT_PARAMETERS.to_vec();
-        let stability = 14.2;
+        let s90 = 14.2;
         let elapsed_days = 21.0;
-        let target_retrievability = 0.9;
+        let target_retrievability = 0.8;
+        let fsrs = FSRS::new(&params)?;
+        let state = memory_state_from_sm2_with_params(&fsrs, &params, 2.5, s90, 0.9)?;
 
-        let expected = FSRS::new(&params)?.current_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-                stability_fast: stability,
-            },
-            elapsed_days,
-        );
-        let actual = fsrs_current_retrievability_for_params(&params, stability, elapsed_days)?;
+        let expected = fsrs.current_retrievability(state, elapsed_days);
+        let actual = fsrs_current_retrievability_for_s90(&params, s90, elapsed_days)?;
         assert!((actual - expected).abs() < 1e-6);
 
-        let expected_interval_at_target = FSRS::new(&params)?.interval_at_retrievability(
-            MemoryState {
-                stability,
-                difficulty: 5.0,
-                stability_fast: stability,
-            },
-            target_retrievability,
-        );
+        let expected_interval_at_target =
+            fsrs.interval_at_retrievability(state, target_retrievability);
         let actual_interval_at_target =
-            fsrs_interval_at_retrievability_for_params(&params, stability, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_s90(&params, s90, target_retrievability)?;
         assert!((actual_interval_at_target - expected_interval_at_target).abs() < 1e-6);
         Ok(())
     }
@@ -2848,9 +2963,9 @@ mod tests {
             target_retrievability,
         )?;
         let expected_tagged =
-            fsrs_interval_at_retrievability_for_params(&addon_params, 12.0, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_s90(&addon_params, 12.0, target_retrievability)?;
         let expected_fallback =
-            fsrs_interval_at_retrievability_for_params(&deck_params, 24.0, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_s90(&deck_params, 24.0, target_retrievability)?;
 
         assert_eq!(intervals.len(), 2);
         assert!((intervals[0] - expected_tagged).abs() < 1e-6);
@@ -2955,11 +3070,8 @@ mod tests {
             &[(config_id, stability)],
             target_retrievability,
         )?[0];
-        let expected = fsrs_interval_at_retrievability_for_params(
-            &params_7,
-            stability,
-            target_retrievability,
-        )?;
+        let expected =
+            fsrs_interval_at_retrievability_for_s90(&params_7, stability, target_retrievability)?;
         assert!((actual - expected).abs() < 1e-6);
         Ok(())
     }
@@ -2985,7 +3097,7 @@ mod tests {
             &[(config_id, stability)],
             target_retrievability,
         )?[0];
-        let expected = fsrs_interval_at_retrievability_for_params(
+        let expected = fsrs_interval_at_retrievability_for_s90(
             &DEFAULT_PARAMETERS,
             stability,
             target_retrievability,
@@ -3022,9 +3134,9 @@ mod tests {
             target_retrievability,
         )?;
         let expected_1 =
-            fsrs_interval_at_retrievability_for_params(&params_7, 20.0, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_s90(&params_7, 20.0, target_retrievability)?;
         let expected_2 =
-            fsrs_interval_at_retrievability_for_params(&other_params, 20.0, target_retrievability)?;
+            fsrs_interval_at_retrievability_for_s90(&other_params, 20.0, target_retrievability)?;
         assert_eq!(actual.len(), 2);
         assert!((actual[0] - expected_1).abs() < 1e-6);
         assert!((actual[1] - expected_2).abs() < 1e-6);
@@ -3060,10 +3172,10 @@ mod tests {
         let actual =
             col.fsrs_interval_at_retrievability_for_configs(&request, target_retrievability)?;
         let expected = vec![
-            fsrs_interval_at_retrievability_for_params(&other_params, 8.0, target_retrievability)?,
-            fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
-            fsrs_interval_at_retrievability_for_params(&other_params, 21.0, target_retrievability)?,
-            fsrs_interval_at_retrievability_for_params(&params_7, 12.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_s90(&other_params, 8.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_s90(&params_7, 12.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_s90(&other_params, 21.0, target_retrievability)?,
+            fsrs_interval_at_retrievability_for_s90(&params_7, 12.0, target_retrievability)?,
         ];
         assert_eq!(actual.len(), expected.len());
         for (a, e) in actual.into_iter().zip(expected) {

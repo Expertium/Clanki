@@ -73,6 +73,25 @@ pub(crate) fn ignore_revlogs_before_ms_from_config(config: &DeckConfig) -> Resul
     ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date)
 }
 
+/// The "ignore reviews before" date of a card's preset for its memory state
+/// (card info, answering a card without one): an unparsable date counts as
+/// no date and is logged, so one bad preset field cannot fail the card
+/// (spec sched.fsrs7-bad-ignore-before-date).
+pub(crate) fn ignore_revlogs_before_ms_or_none(
+    ignore_revlogs_before_date: &String,
+    preset_name: &str,
+) -> TimestampMillis {
+    ignore_revlogs_before_date_to_ms(ignore_revlogs_before_date).unwrap_or_else(|err| {
+        tracing::warn!(
+            preset = preset_name,
+            date = %ignore_revlogs_before_date,
+            ?err,
+            "unparsable \"ignore reviews before\" date counts as no date"
+        );
+        0.into()
+    })
+}
+
 /// The search a preset's FSRS-7 parameters are trained on: its search
 /// filter when it has one, otherwise the preset's cards that are not
 /// suspended. "Optimize All Presets", the automatic optimization and the

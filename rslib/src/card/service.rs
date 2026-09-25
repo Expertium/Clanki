@@ -178,7 +178,15 @@ impl From<FsrsMemoryState> for anki_proto::cards::FsrsMemoryState {
 
 #[cfg(test)]
 mod tests {
+    use fsrs::MemoryState;
+    use fsrs::DEFAULT_PARAMETERS;
+    use fsrs::FSRS;
+
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::card::FsrsMemoryState;
     use crate::prelude::*;
+    use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
     use crate::services::CardsService;
     use crate::tests::DeckAdder;
     use crate::tests::NoteAdder;
@@ -212,5 +220,74 @@ mod tests {
             target.id,
             "card now belongs to the target deck"
         );
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-addon-stability-edit: an add-on
+    // that changes only the S90 of a card gets FSRS-7 traces that give it;
+    // an unchanged write and an RWKV-Curve collection keep the traces.
+    #[test]
+    fn an_addon_edit_of_the_s90_rebuilds_the_fsrs7_traces() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = false);
+        let note = NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.storage.all_cards_of_note(note.id)?.pop().unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 90;
+        card.memory_state = Some(fsrs_memory_state_for_params(
+            &DEFAULT_PARAMETERS,
+            MemoryState {
+                stability: 30.0,
+                difficulty: 3.0,
+                stability_fast: 5.0,
+            },
+        )?);
+        col.storage.update_card(&card)?;
+        let fsrs = FSRS::new(&DEFAULT_PARAMETERS)?;
+        let write_s90 = |col: &mut Collection, s90: f32| -> Result<FsrsMemoryState> {
+            let mut proto: anki_proto::cards::Card = col.storage.get_card(card.id)?.unwrap().into();
+            proto.memory_state.as_mut().unwrap().stability = s90;
+            let _changes = CardsService::update_cards(
+                col,
+                anki_proto::cards::UpdateCardsRequest {
+                    cards: vec![proto],
+                    skip_undo_entry: false,
+                },
+            )?;
+            Ok(col
+                .storage
+                .get_card(card.id)?
+                .unwrap()
+                .memory_state
+                .unwrap())
+        };
+
+        let before = col
+            .storage
+            .get_card(card.id)?
+            .unwrap()
+            .memory_state
+            .unwrap();
+        let edited = write_s90(&mut col, 50.0)?;
+        assert_eq!(edited.stability, 50.0);
+        let traces_s90 = fsrs.interval_at_retrievability(edited.into(), 0.9);
+        assert!((traces_s90 - 50.0).abs() < 0.05, "{traces_s90}");
+        // the difficulty and the fast/internal ratio stay
+        assert_eq!(edited.difficulty, before.difficulty);
+        let ratio =
+            |state: FsrsMemoryState| state.stability_fast.unwrap() / state.stability_internal;
+        assert!((ratio(edited) - ratio(before)).abs() < 1e-3);
+
+        // an unchanged S90 keeps the traces
+        assert_eq!(write_s90(&mut col, 50.0)?, edited);
+
+        // under RWKV-Curve the stability is RWKV's S90: the traces stay
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let rwkv = write_s90(&mut col, 70.0)?;
+        assert_eq!(rwkv.stability, 70.0);
+        assert_eq!(rwkv.stability_internal, edited.stability_internal);
+        assert_eq!(rwkv.stability_fast, edited.stability_fast);
+        Ok(())
     }
 }

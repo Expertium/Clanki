@@ -90,7 +90,11 @@ impl CollectionBuilder {
             if let Err(err) = col.enforce_scheduling_algorithm() {
                 tracing::warn!(?err, "enforcing the scheduling algorithm failed");
             }
-            col.migrate_to_fsrs7_only()?;
+            // a failure must not stop the collection from opening (spec
+            // sched.fsrs7-bad-ignore-before-date)
+            if let Err(err) = col.migrate_to_fsrs7_only() {
+                tracing::warn!(?err, "migrating to FSRS-7 only failed");
+            }
             // cards another client wrote since the last open, including a
             // full download or a restored backup (spec
             // sync.fsrs7-state-of-foreign-cards); a failure must not stop

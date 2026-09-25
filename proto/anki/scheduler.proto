@@ -1021,6 +1021,8 @@ message SchedulingStatesWithIntervalsRequest {
 
 message FsrsCurrentRetrievabilityRequest {
   int64 card_id = 1;
+  // the card's S90 in days, as its memory state shows it, not FSRS-7's
+  // internal stability (spec sched.fsrs7-sm2-conversion)
   float stability = 2;
   float elapsed_days = 3;
 }
@@ -1031,6 +1033,8 @@ message FsrsCurrentRetrievabilityResponse {
 
 message FsrsNextIntervalRequest {
   int64 card_id = 1;
+  // the card's S90 in days, as its memory state shows it, not FSRS-7's
+  // internal stability (spec sched.fsrs7-sm2-conversion)
   float stability = 2;
   float desired_retention = 3;
 }
@@ -1041,6 +1045,8 @@ message FsrsNextIntervalResponse {
 
 message FsrsIntervalAtRetrievabilityRequest {
   int64 card_id = 1;
+  // the card's S90 in days, as its memory state shows it, not FSRS-7's
+  // internal stability (spec sched.fsrs7-sm2-conversion)
   float stability = 2;
   float target_retrievability = 3;
 }
@@ -1052,6 +1058,8 @@ message FsrsIntervalAtRetrievabilityResponse {
 message FsrsIntervalAtRetrievabilityBatchRequest {
   message Item {
     int64 card_id = 1;
+    // the card's S90 in days, as its memory state shows it, not FSRS-7's
+    // internal stability (spec sched.fsrs7-sm2-conversion)
     float stability = 2;
   }
   repeated Item items = 1;
@@ -1070,6 +1078,8 @@ message FsrsIntervalAtRetrievabilityVariableBatchRequest {
   message Item {
     uint32 request_index = 1;
     int64 card_id = 2;
+    // the card's S90 in days, as its memory state shows it, not FSRS-7's
+    // internal stability (spec sched.fsrs7-sm2-conversion)
     float stability = 3;
     float target_retrievability = 4;
   }
@@ -1107,6 +1117,8 @@ message FsrsIntervalAtRetrievabilityByConfigBatchRequest {
   message Item {
     uint32 request_index = 1;
     int64 config_id = 2;
+    // the card's S90 in days, as its memory state shows it, not FSRS-7's
+    // internal stability (spec sched.fsrs7-sm2-conversion)
     float stability = 3;
   }
   repeated Item items = 1;

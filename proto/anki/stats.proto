@@ -129,6 +129,23 @@ message CardStatsResponse {
   // Only in Advanced mode, when the collection's algorithm is RWKV-Curve;
   // empty otherwise (spec ui.card-info-rwkv-curve).
   repeated StatsRevlogEntry fsrs7_revlog = 30;
+  // FSRS-7's forgetting curves, computed by fsrs-rs from each review's
+  // memory state: recall at `elapsed_days` (0, then 300 times evenly spaced
+  // in log time from one minute to 100 years), one segment per review with
+  // an FSRS-7 memory state. From `fsrs7_revlog` when it is sent, else from
+  // `revlog` under FSRS-7. Only in Advanced mode, where card info draws the
+  // curve; card info has no copy of the FSRS-7 curve (spec
+  // sched.fsrs-rs-latest).
+  message Fsrs7Curves {
+    repeated float elapsed_days = 1;
+    message Segment {
+      // seconds, as StatsRevlogEntry.time
+      int64 review_time = 1;
+      repeated float recall = 2;
+    }
+    repeated Segment segments = 2;
+  }
+  optional Fsrs7Curves fsrs7_curves = 31;
 }
 
 message GraphsRequest {

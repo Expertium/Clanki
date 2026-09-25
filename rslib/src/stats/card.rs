@@ -2,6 +2,8 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
+use fsrs::MemoryState;
+use fsrs::FSRS;
 
 use crate::card::CardType;
 use crate::card::FsrsMemoryState;
@@ -73,6 +75,17 @@ impl Collection {
             Vec::new()
         };
 
+        let revlog_entries =
+            self.stats_revlog_entries_with_memory_state(&card, last_review_time, revlog.clone())?;
+        // the chart's curves, in Advanced mode only (spec
+        // ui.card-info-one-algorithm): FSRS-7's own reviews of an RWKV-Curve
+        // card for the toggle, else an FSRS-7 card's reviews
+        let fsrs7_curves = match algorithm {
+            _ if !advanced_ui || card.memory_state.is_none() => None,
+            SchedulingAlgorithm::Fsrs7 => fsrs7_curves(&fsrs_preset.params, &revlog_entries)?,
+            SchedulingAlgorithm::RwkvCurve => fsrs7_curves(&fsrs_preset.params, &fsrs7_revlog)?,
+            SchedulingAlgorithm::RwkvInstant => None,
+        };
         let fsrs_retrievability =
             card.memory_state
                 .zip(Some(seconds_elapsed))
@@ -107,7 +120,7 @@ impl Collection {
             total_secs,
             card_type: nt.get_template(card.template_idx)?.name.clone(),
             notetype: nt.name.clone(),
-            revlog: self.stats_revlog_entries_with_memory_state(&card, last_review_time, revlog)?,
+            revlog: revlog_entries,
             memory_state: card.memory_state.map(Into::into),
             fsrs_retrievability: fsrs_retrievability.transpose()?,
             custom_data: card.custom_data,
@@ -124,6 +137,7 @@ impl Collection {
             scheduling_algorithm: SchedulingAlgorithmProto::from(algorithm) as i32,
             advanced_ui,
             fsrs7_revlog,
+            fsrs7_curves,
         })
     }
 
@@ -189,7 +203,7 @@ impl Collection {
         let historical_retention = fsrs_preset.historical_retention;
         let params = &fsrs_preset.params;
         let fsrs = fsrs_preset.fsrs()?;
-        let ignore_before = fsrs_preset.ignore_revlogs_before_ms()?;
+        let ignore_before = fsrs_preset.ignore_revlogs_before_ms();
 
         let mut result = Vec::new();
         if let Some(item) = fsrs_item_for_memory_state(
@@ -236,6 +250,54 @@ impl Collection {
             Ok(revlog.iter().rev().map(stats_revlog_entry).collect())
         }
     }
+}
+
+/// Card info's elapsed times for FSRS-7's curves: 0, then
+/// `FSRS7_CURVE_TIMES` times evenly spaced in log time from one minute to
+/// 100 years, as RWKV-Curve's curves reach the page.
+const FSRS7_CURVE_TIMES: usize = 300;
+const FSRS7_CURVE_FIRST_DAYS: f32 = 1.0 / 1440.0;
+const FSRS7_CURVE_LAST_DAYS: f32 = 36_500.0;
+
+fn fsrs7_curve_elapsed_days() -> Vec<f32> {
+    let step =
+        (FSRS7_CURVE_LAST_DAYS / FSRS7_CURVE_FIRST_DAYS).ln() / (FSRS7_CURVE_TIMES - 1) as f32;
+    std::iter::once(0.0)
+        .chain((0..FSRS7_CURVE_TIMES).map(|i| FSRS7_CURVE_FIRST_DAYS * (step * i as f32).exp()))
+        .collect()
+}
+
+/// FSRS-7's forgetting curve after each review of `entries` that has a
+/// memory state, computed by fsrs-rs with the preset's parameters (which it
+/// clips), for card info's chart: card info keeps no copy of the curve
+/// (spec sched.fsrs-rs-latest). None when no review has a memory state.
+fn fsrs7_curves(
+    params: &[f32],
+    entries: &[anki_proto::stats::card_stats_response::StatsRevlogEntry],
+) -> Result<Option<anki_proto::stats::card_stats_response::Fsrs7Curves>> {
+    use anki_proto::stats::card_stats_response::fsrs7_curves::Segment;
+    if entries.iter().all(|entry| entry.memory_state.is_none()) {
+        return Ok(None);
+    }
+    let fsrs = FSRS::new(params)?;
+    let elapsed_days = fsrs7_curve_elapsed_days();
+    let segments = entries
+        .iter()
+        .filter_map(|entry| {
+            let state = MemoryState::from(FsrsMemoryState::from(entry.memory_state?));
+            Some(Segment {
+                review_time: entry.time,
+                recall: elapsed_days
+                    .iter()
+                    .map(|&days| fsrs.current_retrievability(state, days))
+                    .collect(),
+            })
+        })
+        .collect();
+    Ok(Some(anki_proto::stats::card_stats_response::Fsrs7Curves {
+        elapsed_days,
+        segments,
+    }))
 }
 
 fn with_current_memory_state_on_latest_review(
@@ -351,6 +413,26 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: card info
+    // reads an unparsable "ignore reviews before" date as no date.
+    #[test]
+    fn card_stats_survive_a_bad_ignore_before_date() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = false);
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![cid.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        col.update_default_deck_config(|config| {
+            config.ignore_revlogs_before_date = "2024-02-30".into();
+        });
+        let stats = col.card_stats(cid)?;
+        assert!(stats.revlog[0].memory_state.is_some());
+        Ok(())
+    }
+
     // Pins spec/ui.md#ui.card-info-one-algorithm
     #[test]
     fn card_stats_report_the_algorithm_and_the_mode() -> Result<()> {
@@ -410,6 +492,77 @@ mod test {
         assert!(own.stability > 0.0);
         // ...while the plain reviews keep the stored one, as before
         assert_eq!(stats.revlog[0].memory_state.unwrap().stability, 1234.0);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs-rs-latest (card info's curve):
+    // card info gets FSRS-7's curves from fsrs-rs, after each review, only in
+    // Advanced mode, and for an RWKV-Curve card from FSRS-7's own states.
+    #[test]
+    fn card_info_curves_are_the_crates_own() -> Result<()> {
+        let (mut col, cid) = test_collection()?;
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = false);
+        for rating in [
+            anki_proto::scheduler::card_answer::Rating::Good,
+            anki_proto::scheduler::card_answer::Rating::Hard,
+        ] {
+            col.grade_now(anki_proto::scheduler::GradeNowRequest {
+                card_ids: vec![cid.into()],
+                rating: rating as i32,
+                card_options: vec![],
+            })?;
+        }
+        // Simple mode draws no curve
+        assert!(col.card_stats(cid)?.fsrs7_curves.is_none());
+
+        col.set_config_bool(BoolKey::AdvancedUi, true, false)?;
+        let stats = col.card_stats(cid)?;
+        let curves = stats.fsrs7_curves.unwrap();
+        assert_eq!(curves.elapsed_days.len(), 301);
+        assert_eq!(curves.elapsed_days[0], 0.0);
+        assert!((curves.elapsed_days[1] - 1.0 / 1440.0).abs() < 1e-7);
+        assert!((curves.elapsed_days[300] - 36_500.0).abs() < 1.0);
+        let fsrs = FSRS::new(&stats.fsrs_params)?;
+        let with_state: Vec<_> = stats
+            .revlog
+            .iter()
+            .filter(|entry| entry.memory_state.is_some())
+            .collect();
+        assert_eq!(curves.segments.len(), with_state.len());
+        for (entry, segment) in with_state.iter().zip(&curves.segments) {
+            assert_eq!(segment.review_time, entry.time);
+            let state = MemoryState::from(FsrsMemoryState::from(entry.memory_state.unwrap()));
+            for (&days, &recall) in curves.elapsed_days.iter().zip(&segment.recall) {
+                assert_eq!(recall, fsrs.current_retrievability(state, days));
+            }
+            // the page joins the points with straight lines: within 0.1% of
+            // the crate's curve in between
+            for step in 1..2000 {
+                let days = step as f32 * 0.05;
+                let high = curves.elapsed_days.iter().position(|&x| x >= days).unwrap();
+                let (x0, x1) = (curves.elapsed_days[high - 1], curves.elapsed_days[high]);
+                let (y0, y1) = (segment.recall[high - 1], segment.recall[high]);
+                let joined = y0 + (y1 - y0) * (days - x0) / (x1 - x0);
+                let exact = fsrs.current_retrievability(state, days);
+                assert!((joined - exact).abs() < 1e-3, "{days}: {joined} vs {exact}");
+            }
+        }
+
+        // an RWKV-Curve card: from FSRS-7's own states, not the stored S90
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+        let mut card = col.storage.get_card(cid)?.unwrap();
+        card.memory_state.as_mut().unwrap().stability = 1234.0;
+        col.storage.update_card(&card)?;
+        let stats = col.card_stats(cid)?;
+        let curves = stats.fsrs7_curves.unwrap();
+        let own = stats.fsrs7_revlog[0].memory_state.unwrap();
+        assert_eq!(curves.segments[0].review_time, stats.fsrs7_revlog[0].time);
+        let state = MemoryState::from(FsrsMemoryState::from(own));
+        assert_eq!(
+            curves.segments[0].recall[150],
+            fsrs.current_retrievability(state, curves.elapsed_days[150])
+        );
         Ok(())
     }
 

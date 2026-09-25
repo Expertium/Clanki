@@ -38,7 +38,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <ForgettingCurve
                     revlog={stats.revlog}
                     {desiredRetention}
-                    fsrsParams={stats.fsrsParams}
+                    fsrs7Curves={stats.fsrs7Curves}
                     rwkvCurve={stats.rwkvCurve}
                     fsrs7Revlog={stats.fsrs7Revlog}
                 />
