@@ -365,12 +365,19 @@ impl Collection {
         let configs_by_id = self.storage.get_deck_config_map()?;
         let enabled_deck_ids = (!input.include_disabled_decks)
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
+        // RWKV-Instant scores interday learning cards like review cards
+        // (spec sched.rwkv-review-order)
+        let include_interday_learning = deck
+            .config_id()
+            .and_then(|config_id| configs_by_id.get(&config_id))
+            .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled);
         let (searched_cards, cards) = self
             .storage
             .rwkv_review_input_candidate_cards_for_deck_review_queue(
                 &deck_ids,
                 enabled_deck_ids.as_ref(),
                 input.include_new_cards,
+                include_interday_learning,
             )?;
         let mut response = self.rwkv_review_input_rows_from_cards(
             cards,
@@ -847,8 +854,13 @@ pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) elapsed_secs_since_last_review: Option<u32>,
     pub(crate) current_deck_id: DeckId,
     pub(crate) source_deck_id: DeckId,
+    /// An interday learning card (queue 3), which RWKV-Instant scores like a
+    /// review card (spec sched.rwkv-review-order).
+    pub(crate) interday_learning: bool,
 }
 
+/// The review and interday learning cards among `card_ids`, the cards
+/// RWKV-Instant scores, with what its eligibility rules read.
 pub(crate) fn rwkv_review_candidate_metadata(
     col: &mut Collection,
     card_ids: &[CardId],
@@ -861,11 +873,12 @@ pub(crate) fn rwkv_review_candidate_metadata(
     let mut without_card_target = Vec::new();
 
     for card in cards {
-        if card.queue != CardQueue::Review {
+        if !matches!(card.queue, CardQueue::Review | CardQueue::DayLearn) {
             continue;
         }
 
         let partial = RwkvReviewCandidatePartial {
+            interday_learning: card.queue == CardQueue::DayLearn,
             reviewed_today: card_reviewed_today(&card, timing),
             elapsed_secs_since_last_review: card
                 .last_review_time
@@ -1024,6 +1037,7 @@ fn rwkv_review_intervening_reviews_elapsed(
 
 #[derive(Debug, Clone, Copy)]
 struct RwkvReviewCandidatePartial {
+    interday_learning: bool,
     reviewed_today: bool,
     elapsed_secs_since_last_review: Option<u32>,
     current_deck_id: DeckId,
@@ -1038,6 +1052,7 @@ impl RwkvReviewCandidatePartial {
             elapsed_secs_since_last_review: self.elapsed_secs_since_last_review,
             current_deck_id: self.current_deck_id,
             source_deck_id: self.source_deck_id,
+            interday_learning: self.interday_learning,
         }
     }
 }
@@ -2471,6 +2486,54 @@ mod test {
         queue_card_ids.sort_unstable();
         assert_eq!(queue_card_ids, vec![rated.id.0, never_rated.id.0]);
 
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-review-order: the study queue's
+    // rows of an RWKV-Instant deck include its interday learning and
+    // relearning cards, which RWKV-Instant scores like review cards; the
+    // rows of an RWKV-Curve deck do not.
+    #[test]
+    fn instant_deck_review_queue_rows_include_interday_learning_cards() -> Result<()> {
+        for instant in [true, false] {
+            let mut col = Collection::new();
+            col.update_default_deck_config(|config| {
+                config.rwkv_review_enabled = !instant;
+                config.rwkv_review_instant_order_enabled = instant;
+                config.rwkv_review_batch_size = 1024;
+            });
+            let timing = col.timing_today()?;
+            let mut ids = vec![];
+            for (note, ctype, queue) in [
+                (10, CardType::Review, CardQueue::Review),
+                (20, CardType::Learn, CardQueue::DayLearn),
+                (30, CardType::Relearn, CardQueue::DayLearn),
+                (40, CardType::Relearn, CardQueue::Learn),
+            ] {
+                let mut card = Card::new(NoteId(note), 0, DeckId(1), timing.days_elapsed as i32);
+                card.ctype = ctype;
+                card.queue = queue;
+                card.interval = 4;
+                card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+                col.add_card(&mut card)?;
+                ids.push(card.id.0);
+            }
+            let response = col.rwkv_review_input_rows_for_deck_review_queue(
+                RwkvReviewInputRowsForDeckReviewQueueRequest {
+                    deck_id: 1,
+                    include_disabled_decks: false,
+                    include_new_cards: false,
+                },
+            )?;
+            let mut rows: Vec<_> = response.rows.iter().map(|row| row.card_id).collect();
+            rows.sort_unstable();
+            let expected = if instant {
+                ids[..3].to_vec()
+            } else {
+                ids[..1].to_vec()
+            };
+            assert_eq!(rows, expected, "instant={instant}");
+        }
         Ok(())
     }
 
