@@ -1868,6 +1868,20 @@ follows the search or the period the Stats page happens to show, because a
 pass that filled only the deck on screen would leave every other deck
 without rows.
 
+Some reviews no pass can cover: each card's first rating, the oldest sixth
+of a preset's reviews (they only ever train a fold), reviews outside the
+preset's selection (`deck-options.fsrs-optimize-keeps-better-params`), and
+every review of a preset too small for folds. So after it has written a
+preset, the pass records, for each of the preset's decks, how many of its
+reviews are still uncovered and the newest of them, together with the preset
+and its selection (search filter and "Ignore reviews before"). A deck whose
+uncovered reviews are exactly the recorded ones, for the same preset and
+selection, is not stale, so an unchanged preset is not fitted again the next
+day. A new review, new parameters (they drop the rows), a new search filter
+or date, or a deck moved to another preset makes it stale again. A review
+answered after the pass read the preset is never recorded as uncoverable.
+The record lives in the prediction cache, next to the rows.
+
 When a preset's FSRS-7 parameters change, every prediction those parameters
 produced is wrong, and Clanki deletes that preset's stored rows in the same
 transaction as the change. Only that preset's rows go; parameters are per
@@ -1885,6 +1899,14 @@ what could not be stored, and does not count that day as done, so the pass
 tries again. An empty FSRS-7 series on its own cannot be told apart from a
 series still being computed, and a pass that reports no progress reports no
 failure either.
+
+A preset's folds train on the reviews its FSRS-7 optimization trains on
+(`deck-options.fsrs-optimize-keeps-better-params`): the reviews of its search
+filter when it has one, otherwise of its cards that are not suspended, and
+none from before its "Ignore reviews before" date. The series therefore
+scores the model the preset runs with. A search filter can reach cards of
+other presets; their reviews train the folds, but only the preset's own
+reviews get its rows, so no preset writes over another preset's rows.
 
 The stored rows are validation folds, so nothing that produced a row had
 seen the review it predicts. The rows written while answering carry a
@@ -1929,6 +1951,14 @@ tenth, and the collection is held for under two seconds of the run. The
 check per batch costs one read of the preset and of the deck list per batch,
 which is a few milliseconds beside the write it guards.
 
+Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that day: the
+folds trained on `preset:"name"`, with suspended cards, without the search
+filter, and with "Ignore reviews before" always read as no date (the date
+never parsed), so the series scored a model fitted on other reviews than the
+preset's parameters. And no preset ever became covered, because the first
+ratings and the oldest sixth never get a fold, so the pass fitted five folds
+of every preset every day: about 76 s of CPU on his collection.
+
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
@@ -1943,7 +1973,11 @@ which is a few milliseconds beside the write it guards.
 (`rslib/src/deckconfig/update.rs`);
 `the_pass_covers_every_preset_with_uncovered_reviews`,
 `a_presets_rows_are_written_one_bounded_batch_at_a_time`,
-`a_save_midway_through_the_write_takes_back_what_was_written`
+`a_save_midway_through_the_write_takes_back_what_was_written`,
+`the_folds_train_on_the_optimizers_reviews`,
+`a_preset_is_covered_after_its_pass_until_it_changes`,
+`a_review_after_the_read_is_not_recorded_as_uncoverable`,
+`a_search_filter_writes_rows_for_the_presets_own_reviews_only`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 

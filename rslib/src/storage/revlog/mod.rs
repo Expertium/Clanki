@@ -37,6 +37,10 @@ pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 /// Which algorithm scheduled a review, one row per review, written when the
 /// review is answered (spec sched.review-scheduler-record).
 pub(crate) const REVIEW_SCHEDULER_TABLE: &str = "review_scheduler";
+/// What the last FSRS-7 prediction pass left uncovered in each deck, so that
+/// a deck it could not cover more of is not stale (spec
+/// ui.stats-fsrs-predictions-ready).
+const FSRS_PREDICTION_COVERAGE_TABLE: &str = "fsrs_prediction_coverage";
 /// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
@@ -292,9 +296,45 @@ fn row_to_revlog_entry(row: &Row) -> Result<RevlogEntry> {
     })
 }
 
+/// The rated reviews of one deck that no validation fold covers: how many,
+/// and the newest one's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct UncoveredReviews {
+    pub count: u32,
+    pub newest: i64,
+}
+
+impl UncoveredReviews {
+    /// The uncovered reviews of two parts of the review log together.
+    pub(crate) fn add(&mut self, other: UncoveredReviews) {
+        self.count += other.count;
+        self.newest = self.newest.max(other.newest);
+    }
+}
+
+/// What a prediction pass left uncovered in a deck, and the preset it
+/// covered the deck for: the preset's id and the selection of reviews it
+/// trained on (its search and "Ignore reviews before").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FsrsPredictionCoverage {
+    pub preset: DeckConfigId,
+    pub selection: String,
+    pub uncovered: UncoveredReviews,
+}
+
+fn uncovered_reviews_of_deck(row: &Row) -> Result<(DeckId, UncoveredReviews)> {
+    Ok((
+        row.get(0)?,
+        UncoveredReviews {
+            count: row.get(1)?,
+            newest: row.get(2)?,
+        },
+    ))
+}
+
 /// One part of the uncovered-review count: each deck with its uncovered
 /// reviews, and the review id the next part starts after (None at the end).
-pub(crate) type UncoveredReviewsPart = (Vec<(DeckId, u32)>, Option<i64>);
+pub(crate) type UncoveredReviewsPart = (Vec<(DeckId, UncoveredReviews)>, Option<i64>);
 
 impl SqliteStorage {
     fn qualified_retrievability_cache_table(table: &str) -> String {
@@ -1002,7 +1042,7 @@ impl SqliteStorage {
         let counts = self
             .db
             .prepare_cached(&format!(
-                "select c.did, count(*) from revlog r
+                "select c.did, count(*), max(r.id) from revlog r
                  cross join cards c on c.id = r.cid
                  where r.id > ?1 and r.id <= ?2 and r.ease > 0
                    and not exists (
@@ -1011,11 +1051,127 @@ impl SqliteStorage {
                    )
                  group by c.did"
             ))?
-            .query_and_then((after, last.unwrap_or(i64::MAX)), |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_and_then((after, last.unwrap_or(i64::MAX)), uncovered_reviews_of_deck)?
             .collect::<Result<_>>()?;
         Ok((counts, last))
+    }
+
+    /// The uncovered reviews of these decks' cards, among the reviews up to
+    /// `up_to`: what `decks_with_uncovered_fsrs_review_predictions_part`
+    /// counts, for the decks a pass has just covered.
+    pub(crate) fn uncovered_fsrs_review_predictions_of_decks(
+        &self,
+        decks: &[DeckId],
+        up_to: i64,
+    ) -> Result<Vec<(DeckId, UncoveredReviews)>> {
+        if decks.is_empty() {
+            return Ok(vec![]);
+        }
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        let mut ids = String::new();
+        write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
+        self.db
+            .prepare(&format!(
+                "select c.did, count(*), max(r.id) from cards c
+                 join revlog r on r.cid = c.id
+                 where c.did in ({ids}) and r.id <= ?1 and r.ease > 0
+                   and not exists (
+                       select 1 from {table} t
+                       where t.revlog_id = r.id and t.sample_role = 'validation_fold'
+                   )
+                 group by c.did"
+            ))?
+            .query_and_then((up_to,), uncovered_reviews_of_deck)?
+            .collect()
+    }
+
+    fn ensure_fsrs_prediction_coverage_schema(&self) -> Result<()> {
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {table} (
+                deck_id INTEGER NOT NULL PRIMARY KEY,
+                preset_id INTEGER NOT NULL,
+                selection TEXT NOT NULL,
+                uncovered INTEGER NOT NULL,
+                newest_uncovered INTEGER NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    /// Records what a pass left uncovered in each of `decks` for `preset`;
+    /// a deck of them with nothing uncovered drops its record.
+    pub(crate) fn set_fsrs_prediction_coverage(
+        &self,
+        decks: &[DeckId],
+        preset: DeckConfigId,
+        selection: &str,
+        uncovered: &[(DeckId, UncoveredReviews)],
+    ) -> Result<()> {
+        self.ensure_fsrs_prediction_coverage_schema()?;
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        let mut delete = self
+            .db
+            .prepare_cached(&format!("delete from {table} where deck_id = ?1"))?;
+        for deck in decks {
+            delete.execute((deck.0,))?;
+        }
+        let mut insert = self.db.prepare_cached(&format!(
+            "insert into {table}
+                 (deck_id, preset_id, selection, uncovered, newest_uncovered)
+             values (?1, ?2, ?3, ?4, ?5)"
+        ))?;
+        for (deck, reviews) in uncovered {
+            if decks.contains(deck) && reviews.count > 0 {
+                insert.execute(params![
+                    deck.0,
+                    preset.0,
+                    selection,
+                    reviews.count,
+                    reviews.newest
+                ])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every deck's record of `set_fsrs_prediction_coverage`.
+    pub(crate) fn fsrs_prediction_coverage(
+        &self,
+    ) -> Result<HashMap<DeckId, FsrsPredictionCoverage>> {
+        let exists: bool = self.db.query_row(
+            &format!(
+                "select exists(select 1 from {RETRIEVABILITY_CACHE_DB_SCHEMA}.sqlite_master
+                 where type = 'table' and name = ?1)"
+            ),
+            (FSRS_PREDICTION_COVERAGE_TABLE,),
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(HashMap::new());
+        }
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
+        self.db
+            .prepare(&format!(
+                "select deck_id, preset_id, selection, uncovered, newest_uncovered from {table}"
+            ))?
+            .query_and_then([], |row| {
+                Ok((
+                    DeckId(row.get(0)?),
+                    FsrsPredictionCoverage {
+                        preset: DeckConfigId(row.get(1)?),
+                        selection: row.get(2)?,
+                        uncovered: UncoveredReviews {
+                            count: row.get(3)?,
+                            newest: row.get(4)?,
+                        },
+                    },
+                ))
+            })?
+            .collect()
     }
 
     /// Deletes every stored FSRS prediction of the cards of these decks.

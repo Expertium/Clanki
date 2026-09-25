@@ -207,6 +207,72 @@ background pass does it instead.
 `test_the_fake_auto_optimize_matches_the_real_backend`
 (qt/tests/test_fsrs_predictions.py); `auto-optimize.test.ts`.
 
+## deck-options.fsrs-optimize-keeps-better-params
+
+Given an FSRS-7 optimization of a preset, on every path (the automatic
+optimization of `deck-options.fsrs-auto-optimize`, "Optimize All Presets",
+and the `ComputeFsrsParams` and `ComputeFsrsParamsBatch` RPCs), the result
+is the new parameters only when their log loss on the training reviews is
+lower than the log loss of the preset's current FSRS-7 parameters on the
+same reviews (the FSRS-7 defaults when it has none, `sched.fsrs7-only`).
+Otherwise the result is the current parameters, and nothing is saved:
+"Optimize All Presets" leaves such a preset as it was, and the automatic
+optimization only records the day. A preset whose current parameters are
+not the defaults never gets values that fsrs-rs did not train: when the
+training set has fewer than 64 items, or every item is a card's first
+long-term review, the current parameters stay whatever their log loss.
+
+**Why:** Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that
+day: every optimize overwrote the parameters, and the automatic optimization
+runs unasked every 7 days. fsrs-rs returns the defaults for fewer than 8
+items and untrained initial values for fewer than 64, so a preset whose
+"Ignore reviews before" moved to last week, or whose search was narrowed,
+had its trained parameters replaced by those values at the next idle pass,
+and with "Reschedule cards when desired retention changes" on, every card
+of the preset rescheduled, not undoably. Upstream Anki kept the current
+parameters when `FSRS::evaluate` gave them the lower loss; the fork had
+removed that check.
+
+**Pinned by:** `an_optimize_keeps_the_current_params_when_the_new_ones_fit_worse`,
+`a_tiny_training_set_never_replaces_trained_params`
+(`rslib/src/scheduler/fsrs/params.rs`).
+
+## deck-options.fsrs-optimize-skips-bad-presets
+
+Given several presets to optimize or to refresh, one preset that fails (its
+search filter is not a valid search, its "Ignore reviews before" date does
+not parse, or its training fails) does not stop the others:
+
+| Path                                               | The failing preset                                                              | The others                  |
+| -------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------- |
+| The daily pass (`ui.stats-fsrs-predictions-ready`) | logged and skipped, in the automatic optimization and in the prediction refresh | optimized and refreshed     |
+| "Optimize All Presets"                             | logged, keeps its parameters, and its day is not recorded as optimized          | optimized and saved         |
+| `ComputeFsrsParamsBatch`                           | logged, answered with the parameters it came with and 0 items                   | answered with their results |
+
+After a daily pass with a failed preset, Clanki warns once in that session
+(`ui.stats-fsrs-predictions-ready`) and does not count the day as done, so
+the next pass tries the failed preset again. A cancelled optimization still
+stops the whole run. A preset whose training panics in "Optimize All Presets"
+or the batch RPC fails like any other failing preset, and the progress
+report of the run stops when the run ends.
+
+**Why:** Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that
+day: the daily pass had no per-preset error handling and recorded the day
+only on success, so one bad search or date stopped every preset after it,
+and every Stats prediction, every day. "Optimize All Presets" and the batch
+RPC failed as a whole for the same cause, and a panic in one of their jobs
+left the progress thread running, since it stops only when every job says it
+is done.
+
+**Pinned by:** `test_one_bad_preset_does_not_stop_the_others`
+(`qt/tests/test_fsrs_predictions.py`);
+`optimize_all_skips_a_preset_that_cannot_be_optimized`
+(`rslib/src/deckconfig/update.rs`);
+`the_batch_rpc_answers_every_item_when_one_cannot_be_optimized`
+(`rslib/src/scheduler/service/mod.rs`);
+`a_panicking_job_fails_its_preset_and_stops_the_progress_thread`
+(`rslib/src/scheduler/fsrs/batch.rs`).
+
 ## deck-options.desired-retention-note
 
 Given the deck-options screen under FSRS-7 or RWKV-Curve, a note box sits
@@ -281,16 +347,27 @@ simulate with their FSRS parameters. The "R*f(S)" graph weights each card by
 its S90 (the time its simulated forgetting curve takes to reach 90% recall),
 not by the simulator's internal stability: weight = 1 − e^(−8·S90/365), with
 the S90 interpolated between exact grid values (weights within 0.00005).
+fsrs-rs simulates one FSRS-7 trace per card (difficulty 5 and a fast
+stability equal to the stability, in the curve), so an existing card starts
+the simulation with the single-trace stability whose S90 equals the S90 of
+its whole FSRS-7 state (stability, fast stability and difficulty), within
+0.01%; its first simulated interval at 90% is then its real one. Its
+difficulty is its own.
 
 **Why:** plan item 6 — RWKV uses many more input features and processes all
 cards together instead of independently, so a correct RWKV simulator is out of
 scope. Andrew, 2026-09-15: every graph that uses a stability uses the S90.
+Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that day: the
+simulator passed the internal stability, so a card with state (10, 3, 8)
+started with an S90 of 12.88 days instead of its real 4.11, and (30, 5, 3)
+with 55.70 instead of 94.38.
 
 **Pinned by:** `test_post_handler_list_has_no_rwkv_workload_handlers`
 (`qt/tests/test_mediasrv.py`); "simulate request carries no RWKV fields"
 (`ts/routes/deck-options/simulate-fsrs-request.test.ts`);
 `weighted_memorized_for_cards_uses_retrievability_times_stability_weight`,
-`simulated_s90_weights_match_the_exact_s90_weights`
+`simulated_s90_weights_match_the_exact_s90_weights`,
+`an_existing_card_starts_the_simulation_with_its_own_s90`
 (`rslib/src/scheduler/fsrs/simulator.rs`).
 
 ## deck-options.reschedule-choice-remembered
