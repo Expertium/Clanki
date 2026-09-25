@@ -24845,7 +24845,7 @@ def _set_rwkv_stats_graph_scores(
     *,
     target_retentions_by_card_id: dict[int, float] | None = None,
     intervening_reviews_by_card_id: dict[int, int] | None = None,
-    curve_due_card_ids: AbstractSet[int] = frozenset(),
+    curve_due_card_ids: frozenset[int] | set[int] = frozenset(),
     curve_retrievabilities_by_card_id: dict[int, float] | None = None,
     collection_backend: object | None = None,
 ) -> None:
@@ -24891,7 +24891,7 @@ def _set_rwkv_stats_graph_scores_if_current(
     state_token: _ReviewerBackendPredictionStateToken,
     target_retentions_by_card_id: dict[int, float] | None = None,
     intervening_reviews_by_card_id: dict[int, int] | None = None,
-    curve_due_card_ids: AbstractSet[int] = frozenset(),
+    curve_due_card_ids: frozenset[int] | set[int] = frozenset(),
     curve_retrievabilities_by_card_id: dict[int, float] | None = None,
 ) -> bool:
     """Publish stats only while the complete prediction state is unchanged."""

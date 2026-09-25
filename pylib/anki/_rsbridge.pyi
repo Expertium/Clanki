@@ -1,4 +1,3 @@
-from collections.abc import Set as AbstractSet
 from typing import Union
 
 class Backend:
@@ -15,7 +14,7 @@ def rwkv_stats_graph_scores_request(
     retrievabilities: dict[int, float | None],
     target_retentions: dict[int, float],
     intervening_reviews: dict[int, int],
-    curve_due_card_ids: AbstractSet[int],
+    curve_due_card_ids: frozenset[int] | set[int],
     curve_retrievabilities: dict[int, float],
 ) -> bytes: ...
 def stored_curve_recalls(
