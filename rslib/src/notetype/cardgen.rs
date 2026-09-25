@@ -49,6 +49,13 @@ pub(crate) struct CardGenContext<N: Deref<Target = Notetype>> {
     /// The last deck that was added to with this note type
     pub last_deck: Option<DeckId>,
     cards: Vec<SingleCardGenContext>,
+    /// The special fields that count as nonempty for every note: those the
+    /// note type has no field of the same name for, except FrontSide and
+    /// Tags.
+    nonempty_special_fields: Vec<&'static str>,
+    /// Whether Tags counts as nonempty when the note has tags (the note type
+    /// has no field of that name).
+    tags_is_special: bool,
 }
 
 // store for data that needs to be looked up multiple times
@@ -68,11 +75,25 @@ impl<N: Deref<Target = Notetype>> CardGenContext<N> {
                 target_deck_id: tmpl.target_deck_id(),
             })
             .collect();
+        let note_field_names: HashSet<_> =
+            nt.fields.iter().map(|field| field.name.as_str()).collect();
+        let nonempty_special_fields = SPECIAL_FIELDS
+            .iter()
+            .copied()
+            .filter(|special_field| {
+                !note_field_names.contains(special_field)
+                    && *special_field != "FrontSide"
+                    && *special_field != "Tags"
+            })
+            .collect();
+        let tags_is_special = !note_field_names.contains("Tags");
         CardGenContext {
             usn,
             last_deck,
             notetype: nt,
             cards,
+            nonempty_special_fields,
+            tags_is_special,
         }
     }
 
@@ -123,19 +144,9 @@ impl<N: Deref<Target = Notetype>> CardGenContext<N> {
         extracted: &ExtractedCardInfo,
     ) -> Vec<CardToGenerate> {
         let mut nonempty_fields = note.nonempty_fields(&self.notetype.fields);
-        let note_field_names: HashSet<_> = self
-            .notetype
-            .fields
-            .iter()
-            .map(|field| field.name.as_str())
-            .collect();
-        for special_field in SPECIAL_FIELDS.iter().copied() {
-            if !note_field_names.contains(special_field)
-                && special_field != "FrontSide"
-                && (special_field != "Tags" || !note.tags.is_empty())
-            {
-                nonempty_fields.insert(special_field);
-            }
+        nonempty_fields.extend(self.nonempty_special_fields.iter().copied());
+        if self.tags_is_special && !note.tags.is_empty() {
+            nonempty_fields.insert("Tags");
         }
 
         self.cards
