@@ -777,7 +777,10 @@ async fn sync_reverts_a_preset_another_client_gave_another_algorithm() -> Result
         let mut config = col2.get_deck_config(DeckConfigId(1), false)?.unwrap();
         SchedulingAlgorithm::Fsrs7.apply_to(&mut config.inner);
         config.set_modified(Usn(-1));
-        col2.storage.update_deck_conf(&config)?;
+        // in a transaction, so the collection counts as modified and the
+        // sync really sends the preset (a client that knows only the preset
+        // flags, writing it)
+        col2.transact_no_undo(|col| col.storage.update_deck_conf(&config))?;
         let out = ctx.normal_sync(&mut col2).await;
         assert_eq!(out.required, SyncActionRequired::NoChanges);
 
@@ -791,6 +794,9 @@ async fn sync_reverts_a_preset_another_client_gave_another_algorithm() -> Result
         };
         let out = ctx.normal_sync(&mut col1).await;
         assert_eq!(out.required, SyncActionRequired::NoChanges);
+        // the preset really arrived, and the mirror wrote it back
+        assert!(out.remote_collection_changed);
+        assert!(out.remote_non_review_collection_changed);
         assert_eq!(preset_algorithm(&col1), SchedulingAlgorithm::RwkvCurve);
         assert_eq!(
             col1.scheduling_algorithm(),
