@@ -1603,7 +1603,8 @@ insert into segments (
             card: index.card,
             note: index.note,
         });
-        let (features, curves) = read_runtime_cache_state(&runtime_state, self.max_interval_days, self.model.ids)?;
+        let (features, curves) =
+            read_runtime_cache_state(&runtime_state, self.max_interval_days, self.model.ids)?;
 
         self.warm_up_states = warm_up_states;
         self.features = features;
@@ -1852,14 +1853,16 @@ insert into segments (
     }
 
     pub fn restore_cache_state(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
+        let (features, curves) =
+            read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
         self.features = features;
         self.curves = curves;
         Ok(())
     }
 
     fn worker_from_cache_state(&self, bytes: &[u8]) -> io::Result<RwkvInference> {
-        let (features, curves) = read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
+        let (features, curves) =
+            read_runtime_cache_state(bytes, self.max_interval_days, self.model.ids)?;
         Ok(self.workload_worker(features, curves))
     }
 
@@ -8494,7 +8497,8 @@ mod tests {
     fn stored_curve_s90_cost_on_a_real_state() {
         let path = std::env::var("RWKV_S90_BENCH_STATE").unwrap();
         let bytes = std::fs::read(path).unwrap();
-        let (_, curves) = read_runtime_cache_state(&bytes, 36500, PUBLISHED_MODEL_ID_PIPELINE).unwrap();
+        let (_, curves) =
+            read_runtime_cache_state(&bytes, 36500, PUBLISHED_MODEL_ID_PIPELINE).unwrap();
         let curves: Vec<&ReviewCurve> = curves.values().collect();
         let started = std::time::Instant::now();
         let serial: Vec<Option<f32>> = curves
@@ -11927,7 +11931,8 @@ create table segment_state_chunks (
             assert_eq!(inference.card_curve(7, &[]).unwrap().1, before);
 
             let state = inference.cache_state();
-            let (_, curves) = read_runtime_cache_state(&state, max_interval_days, inference.model.ids).unwrap();
+            let (_, curves) =
+                read_runtime_cache_state(&state, max_interval_days, inference.model.ids).unwrap();
             assert_eq!(curves[&7].s90.get().copied(), Some(Some(before)));
 
             // a state whose S90s were found another way
@@ -11935,7 +11940,9 @@ create table segment_state_chunks (
             let mut other_kernel = state.clone();
             other_kernel[kernel_at..kernel_at + 4]
                 .copy_from_slice(&(STORED_CURVE_S90_KERNEL + 1).to_le_bytes());
-            let (_, curves) = read_runtime_cache_state(&other_kernel, max_interval_days, inference.model.ids).unwrap();
+            let (_, curves) =
+                read_runtime_cache_state(&other_kernel, max_interval_days, inference.model.ids)
+                    .unwrap();
             assert!(curves[&7].s90.get().is_none());
         }
     }
