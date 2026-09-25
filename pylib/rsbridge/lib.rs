@@ -17,6 +17,8 @@ use pyo3::types::PyList;
 use pyo3::types::PyTuple;
 use pyo3::wrap_pyfunction;
 
+mod review_input_rows;
+
 #[pyclass(module = "_rsbridge")]
 struct Backend {
     backend: RustBackend,
@@ -155,12 +157,10 @@ impl Backend {
         input: &Bound<'a, PyBytes>,
     ) -> PyResult<Bound<'a, PyBytes>> {
         let in_bytes = input.as_bytes();
-        py.detach(|| self.backend.run_service_method(service, method, in_bytes))
-            .map(|out_bytes| {
-                let out_obj = PyBytes::new(py, &out_bytes);
-                out_obj
-            })
-            .map_err(BackendError::new_err)
+        match py.detach(|| self.backend.run_service_method(service, method, in_bytes)) {
+            Ok(out_bytes) => py_bytes_filled_without_the_gil(py, out_bytes),
+            Err(err) => Err(BackendError::new_err(err)),
+        }
     }
 
     /// This takes and returns JSON, due to Python's slow protobuf
@@ -182,14 +182,58 @@ impl Backend {
     }
 }
 
+/// Responses above this size are copied into their Python bytes with the GIL
+/// released.
+const LARGE_RESPONSE_BYTES: usize = 1 << 20;
+
+/// `data` as a Python bytes object. A large one is copied, and freed, with
+/// the GIL released: Total Knowledge's replay is ~77 MB on Andrew's
+/// collection, and copying and freeing it held the GIL for ~26 ms while the
+/// main thread waited.
+fn py_bytes_filled_without_the_gil(py: Python<'_>, data: Vec<u8>) -> PyResult<Bound<'_, PyBytes>> {
+    if data.len() < LARGE_RESPONSE_BYTES {
+        return Ok(PyBytes::new(py, &data));
+    }
+    // SAFETY: a new bytes object of the right size, not yet shared with any
+    // other thread (bytes are not tracked by the garbage collector), so its
+    // buffer can be written while other threads run Python; its contents are
+    // uninitialised only until the copy below.
+    unsafe {
+        let bytes = pyo3::ffi::PyBytes_FromStringAndSize(
+            std::ptr::null(),
+            data.len() as pyo3::ffi::Py_ssize_t,
+        );
+        let bytes = Bound::from_owned_ptr_or_err(py, bytes)?.cast_into_unchecked::<PyBytes>();
+        let buffer = std::slice::from_raw_parts_mut(
+            pyo3::ffi::PyBytes_AsString(bytes.as_ptr()) as *mut u8,
+            data.len(),
+        );
+        py.detach(move || {
+            buffer.copy_from_slice(&data);
+            drop(data);
+        });
+        Ok(bytes)
+    }
+}
+
 #[pymethods]
 impl RwkvInference {
     #[new]
     #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500))]
-    fn new(model_path: &str, target_retention: f32, max_interval_days: u32) -> PyResult<Self> {
-        rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
-            .map(|inner| Self { inner })
-            .map_err(|err| PyException::new_err(err.to_string()))
+    fn new(
+        py: Python<'_>,
+        model_path: &str,
+        target_retention: f32,
+        max_interval_days: u32,
+    ) -> PyResult<Self> {
+        // reading the model takes ~20 ms: other threads, the main one
+        // included, keep running Python meanwhile
+        py.detach(|| {
+            rwkv::RwkvInference::load(model_path.into(), target_retention, max_interval_days)
+                .map_err(|err| err.to_string())
+        })
+        .map(|inner| Self { inner })
+        .map_err(PyException::new_err)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -348,11 +392,13 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    /// Query-only current interval and S90 per input from the resident
-    /// warm-up state; returns `(retrievability, current_interval, current_s90,
-    /// current_interval_unrounded)` with `0` standing for "no interval"; the
-    /// S90 and the last value are unrounded days (spec sched.rwkv-curve-s90,
-    /// sched.rwkv-curve-reschedule). Releases the GIL while predicting.
+    /// Current interval and S90 per input from the curve RWKV stored at the
+    /// card's last answered review; returns `(curve_retrievability,
+    /// current_interval, current_s90, current_interval_unrounded)` with `0`
+    /// standing for "no value" (a stored curve's recall is at least 1e-5);
+    /// the S90 and the last value are unrounded days (spec
+    /// sched.rwkv-curve-s90, sched.rwkv-curve-reschedule). Releases the GIL
+    /// while it runs.
     fn predict_current_intervals_many_from_warm_up(
         &mut self,
         py: Python<'_>,
@@ -372,7 +418,7 @@ impl RwkvInference {
                 .into_iter()
                 .map(|output| {
                     (
-                        output.retrievability,
+                        output.curve_retrievability.unwrap_or(0.0),
                         output.current_interval.unwrap_or(0),
                         output.current_s90.unwrap_or(0.0),
                         output.current_interval_unrounded.unwrap_or(0.0),
@@ -1420,6 +1466,7 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Backend>()?;
     m.add_class::<RwkvInference>()?;
     m.add_class::<RwkvInferenceState>()?;
+    m.add_class::<review_input_rows::RwkvReviewInputRows>()?;
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
     m.add_wrapped(wrap_pyfunction!(

@@ -91,6 +91,10 @@ qt-misc-rwkv-filtered-deck-preparation-failed = { $algorithm } scores could not 
 qt-misc-rwkv-curve-intervals-pending = Getting this card ready…
 # RWKV cannot run because its model file is missing or does not load.
 qt-misc-rwkv-model-not-found = RWKV model not found
+# Card info's retrievability of an RWKV-Instant review card that was never
+# rated (for example Set Due Date on a new card): RWKV has no history to
+# predict from.
+qt-misc-rwkv-no-prediction = No prediction
 # Shown instead of the answer buttons when RWKV-Curve calculated the card but
 # gave no interval for a button. Waiting longer cannot help.
 qt-misc-rwkv-curve-no-interval = RWKV-Curve has no interval for this card. The answer buttons stay hidden, because FSRS-7 intervals must never stand in for RWKV-Curve intervals.

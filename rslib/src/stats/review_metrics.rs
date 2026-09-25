@@ -231,9 +231,10 @@ impl Collection {
             read_ratings_and_predictions(storage, cutoff, many_cards)?;
         // No algorithm knows anything about a card before its first answer,
         // so that rating says nothing about any of them; srs-benchmark
-        // leaves it out too (Andrew, 2026-09-23)
-        let mut first_ratings = storage.first_ratings_of_searched_cards()?;
-        first_ratings.sort_unstable();
+        // leaves it out too (Andrew, 2026-09-23). The same holds for the
+        // first rating after a Forget or at a new learning start, where
+        // every algorithm starts the card again
+        let first_ratings = storage.sequence_start_ratings_of_searched_cards()?;
 
         let mut rows = ScoredRatings {
             fsrs_role: fsrs.role.clone(),
@@ -754,6 +755,53 @@ mod tests {
         assert_eq!(
             col.scored_ratings("", 25)?.revlog_ids,
             vec![second.0, third.0]
+        );
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-model-metrics: the first rating after a
+    // Forget, and a learning start after other ratings, begin a new learning
+    // sequence, so they are left out like a card's first rating
+    #[test]
+    fn ratings_after_a_reset_or_a_learning_start_are_never_scored() -> Result<()> {
+        let mut col = Collection::new();
+        let card = add_card(&mut col);
+        let learn = |col: &mut Collection, day, button| {
+            log_entry(col, card, day, button, 0, RevlogReviewKind::Learning)
+        };
+        let first = learn(&mut col, -60, 3);
+        let second_step = learn(&mut col, -59, 3);
+        let review = rate(&mut col, card, -50, 3);
+        // Forget: a manual row with a zero ease factor
+        log_entry(&mut col, card, -45, 0, 0, RevlogReviewKind::Manual);
+        let after_forget = rate(&mut col, card, -40, 3);
+        let review_2 = rate(&mut col, card, -30, 1);
+        // Set Due Date is a manual row with an ease factor: no reset
+        log_entry(&mut col, card, -25, 0, 2500, RevlogReviewKind::Manual);
+        let after_set_due = rate(&mut col, card, -20, 3);
+        // an old client's relearn from scratch: a Learning row after reviews
+        let relearn_start = learn(&mut col, -10, 1);
+        let relearn_step = learn(&mut col, -9, 3);
+        let all = [
+            first,
+            second_step,
+            review,
+            after_forget,
+            review_2,
+            after_set_due,
+            relearn_start,
+            relearn_step,
+        ];
+        for id in all {
+            store_rwkv(&col, id, 0.7);
+        }
+
+        let rows = col.scored_ratings("", 0)?;
+        assert_eq!(
+            rows.revlog_ids,
+            [second_step, review, review_2, after_set_due, relearn_step]
+                .map(|id| id.0)
+                .to_vec()
         );
         Ok(())
     }

@@ -200,7 +200,11 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "RWKV_trained_on_5000_10000.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_VERSION = 12
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
-_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 3
+# Part of every state cache's and every recording's identity, so a change
+# here rebuilds both. 4: the reviews of deleted cards are replayed and id
+# codes are a function of the id (spec sched.rwkv-replay-deleted-cards,
+# sched.rwkv-id-codes).
+_RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 4
 # The input layout the state cache's states were replayed with: which
 # feature encoder turned the review stream into the model's inputs
 # (rslib/src/scheduler/rwkv_inputs). Today's is the published model's. A
@@ -2052,13 +2056,14 @@ class RwkvStatefulReviewerBackend:
         self,
         review_inputs: Sequence[RwkvReviewInput],
     ) -> Sequence[RwkvReviewPrediction | None] | None:
-        """Query-only current interval and S90 straight from the resident state.
+        """Current interval and S90 from the curve RWKV stored at each card's
+        last answered review (spec sched.rwkv-curve-reschedule).
 
-        This is all that "Reschedule cards with RWKV-Curve" needs. The full
-        prediction path additionally runs the four simulated-answer passes,
-        serializes each card's state across the bridge, hashes it, and holds
-        the GIL; none of that changes the two numbers used here. Returns None
-        when the runtime cannot do it, so callers fall back to the full path.
+        This is all that "Reschedule cards with RWKV-Curve" needs. It never
+        reads the curve of a query row, which training does not supervise,
+        and runs no model pass. A card without a stored curve gets no
+        interval. Returns None when the runtime cannot do it, so callers
+        fall back to the full path.
         """
 
         predict_many = getattr(
@@ -2078,12 +2083,14 @@ class RwkvStatefulReviewerBackend:
             raise ValueError("RWKV current interval prediction count mismatch")
         return [
             RwkvReviewPrediction(
-                retrievability=float(retrievability),
+                curve_retrievability=(
+                    float(curve_retrievability) if curve_retrievability else None
+                ),
                 current_interval=int(current_interval) if current_interval else None,
                 current_interval_unrounded=float(unrounded) if unrounded else None,
                 current_s90=float(current_s90) if current_s90 else None,
             )
-            for retrievability, current_interval, current_s90, unrounded in outputs
+            for curve_retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     @property
@@ -4287,6 +4294,11 @@ def update_reviewer_scheduling_states(
         if not review_active:
             # an FSRS-7 card gets no RWKV prediction at all (spec
             # ui.fsrs7-no-rwkv-values)
+            return states
+        if not curve_enabled and _card_is_new(card):
+            # RWKV-Instant has no value for a first review; RWKV-Curve still
+            # needs its curve for the first answer's intervals (spec
+            # sched.rwkv-no-first-review-retrievability)
             return states
         if not _reviewer_backend_ready_for_review(reviewer):
             logger.debug(
@@ -8293,10 +8305,24 @@ def rwkv_card_info_rows(
     """
     del include_after_review
     card_id = _card_id(card)
-    if not rwkv_review_active(reviewer, card) or rwkv_review_enabled(reviewer, card):
+    if (
+        not rwkv_review_active(reviewer, card)
+        or rwkv_review_enabled(reviewer, card)
+        or _card_is_new(card)
+    ):
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
+
+    candidate = _card_info_review_candidate(reviewer, card)
+    if _rwkv_never_rated_review_card(candidate.reviewer, candidate.card):
+        # no history to predict from: no value, and no query of RWKV (spec
+        # ui.rwkv-no-prediction-never-rated)
+        if card_id is not None:
+            _set_rwkv_card_info_score(reviewer, card_id, None)
+        from aqt.utils import tr
+
+        return [(RWKV_CARD_INFO_R_LABEL, tr.qt_misc_rwkv_no_prediction())]
 
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
@@ -8304,7 +8330,7 @@ def rwkv_card_info_rows(
         reviewer,
         card,
         fallback_source=fallback_source,
-        _candidate=_card_info_review_candidate(reviewer, card),
+        _candidate=candidate,
     )
     retrievability = diagnostics.retrievability if diagnostics else None
     if diagnostics is None and card_id is not None:
@@ -8320,6 +8346,16 @@ def rwkv_card_info_rows(
     else:
         value = "Calculating…"
     return [(RWKV_CARD_INFO_R_LABEL, value)]
+
+
+def _rwkv_never_rated_review_card(reviewer: object, card: object) -> bool:
+    """A review card with no answered review (Set Due Date on a new card, a
+    card imported without its history): RWKV has nothing to predict from."""
+
+    if _int_attr(card, "type") != CARD_TYPE_REV:
+        return False
+    elapsed_days, elapsed_seconds = _elapsed_since_card_last_review(reviewer, card)
+    return elapsed_days is None and elapsed_seconds is None
 
 
 def rwkv_card_info_after_review_row(
@@ -9430,7 +9466,7 @@ def _queried_card_info_diagnostics(
         return None
 
     card_id = _card_id(card)
-    if card_id is None:
+    if card_id is None or _card_is_new(card):
         return None
 
     try:
@@ -9784,6 +9820,14 @@ def _valid_button_probabilities(value: object) -> bool:
 
 def _card_id(card: object) -> int | None:
     return _int_attr(card, "id")
+
+
+def _card_is_new(card: object) -> bool:
+    """True for a card whose next answer is its first review (a new card, or
+    one reset to new). No algorithm has a retrievability for it: RWKV-Instant's
+    value would know only the deck, the preset and the creation date, so it is
+    never computed (spec sched.rwkv-no-first-review-retrievability)."""
+    return _int_attr(card, "type") == int(CARD_TYPE_NEW)
 
 
 def _deck_id(card: object) -> int | None:
@@ -17746,8 +17790,9 @@ def _active_ignored_review_ids(
     ignored_review_ids: AbstractSet[int],
 ) -> tuple[int, ...]:
     """Which of the reviews the state cache ignores still belong to the rated
-    history, in id order: a rated review of a card that exists, wherever its
-    card's start row is. The backend fingerprint's
+    history, in id order: a rated review, of a card that exists or not (spec
+    sched.rwkv-replay-deleted-cards), wherever its card's start row is. The
+    backend fingerprint's
     `rwkv_active_ignored_review_ids` (`rslib/src/storage/revlog/mod.rs`),
     clause for clause, because the state cache stores these ids and the
     fingerprint compares them with its own."""
@@ -17769,7 +17814,6 @@ def _active_ignored_review_ids(
             f"""
 select r.id
 from revlog r
-join cards c on c.id = r.cid
 where {_rwkv_historical_answer_sql_condition("r")}
   and r.id in {ids2str(valid_ids)}
 order by r.id
@@ -17989,8 +18033,11 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     preset_id_by_card.update(
         _resolved_fsrs_preset_ids(
             reviewer,
+            # a card that is gone has no preset to resolve
             _historical_rwkv_review_card_ids(
-                row for _index, row, _state in retained_rows()
+                row
+                for _index, row, _state in retained_rows()
+                if len(row) >= 4 and row[3] is not None
             ),
         )
     )
@@ -18051,11 +18098,13 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             interval_days,
             ease_factor,
         ) = row[:9]
+        # a deleted card's review has no note and no deck (spec
+        # sched.rwkv-replay-deleted-cards)
         if not (
             isinstance(review_id, int)
             and isinstance(card_id, int)
-            and isinstance(note_id, int)
-            and isinstance(row_deck_id, int)
+            and (note_id is None or isinstance(note_id, int))
+            and (row_deck_id is None or isinstance(row_deck_id, int))
             and isinstance(ease, int)
             and isinstance(duration_millis, int)
             and isinstance(review_kind, int)
@@ -18136,8 +18185,11 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             interval_days=historical_interval_days,
             review_count=review_count_so_far,
         )
-        if historical_preset_id is not None:
-            base_preset_id: int | str | None = historical_preset_id
+        if row_deck_id is None:
+            # a card that is gone has no deck, so no preset
+            base_preset_id: int | str | None = None
+        elif historical_preset_id is not None:
+            base_preset_id = historical_preset_id
             historical_preset_rule_matches += 1
         else:
             base_preset_id = preset_id_by_card[card_id]
@@ -18576,17 +18628,28 @@ def _backend_historical_rwkv_review_rows(
             memoryview(getattr(rows, name)).cast("q") for name in _BACKEND_INT64_COLUMNS
         ]
         columns.append(memoryview(rows.learning_starts).cast("B"))
+        deleted = memoryview(rows.deleted_cards).cast("B")
     except Exception:
         logger.exception("the backend could not read the RWKV replay rows")
         return None
     count = len(columns[0])
-    if any(len(column) != count for column in columns):
+    if any(len(column) != count for column in (*columns, deleted)):
         logger.error("the backend's RWKV replay columns differ in length")
         return None
     whole: list[Sequence[object]] = []
     for start in range(0, count, BACKEND_ROWS_CHUNK):
         end = start + BACKEND_ROWS_CHUNK
-        whole.extend(zip(*(column[start:end].tolist() for column in columns)))
+        rows_of_chunk = zip(*(column[start:end].tolist() for column in columns))
+        flags = deleted[start:end]
+        if any(flags):
+            # a card that is gone has no note and no deck (spec
+            # sched.rwkv-replay-deleted-cards)
+            whole.extend(
+                (row[0], row[1], None, None, *row[4:]) if flag else row
+                for row, flag in zip(rows_of_chunk, flags, strict=True)
+            )
+        else:
+            whole.extend(rows_of_chunk)
     return whole
 
 
@@ -18671,6 +18734,7 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
             memoryview(getattr(response, name)).cast("q")
             for name in _BACKEND_INPUT_COLUMNS
         ]
+        deleted = memoryview(response.deleted_cards).cast("B")
         cards = memoryview(response.cards).cast("q").tolist()
     except Exception:
         logger.debug("the backend did not build the RWKV replay inputs", exc_info=True)
@@ -18680,6 +18744,9 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
     steps.step()
 
     total = len(columns[0])
+    if len(deleted) != total:
+        logger.error("the backend's RWKV replay input columns differ in length")
+        return None
     started_at = time.monotonic()
     _report_rwkv_review_input_prepare_progress(
         progress, processed=0, total=total, started_at=started_at
@@ -18690,7 +18757,7 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
         end = start + BACKEND_ROWS_CHUNK
         chunk = [column[start:end].tolist() for column in columns]
         review_ids.extend(chunk[0])
-        reviews.extend(_review_inputs_from_backend_columns(chunk))
+        reviews.extend(_review_inputs_from_backend_columns(chunk, deleted[start:end]))
         _report_rwkv_review_input_prepare_progress(
             progress,
             processed=min(end, total),
@@ -18764,7 +18831,12 @@ def _remember_backend_preset_ids(
     Python build would have used that one, so the caller builds the inputs
     itself."""
     cache = _resolved_preset_id_cache.setdefault(_preset_id_cache_key(reviewer), {})
-    pairs = list(zip(card_ids, preset_ids, strict=True))
+    # a card that is gone has no preset, which the backend sends as ""
+    pairs = [
+        (card_id, preset_id)
+        for card_id, preset_id in zip(card_ids, preset_ids, strict=True)
+        if preset_id
+    ]
     if any(cache.get(card_id, preset_id) != preset_id for card_id, preset_id in pairs):
         return False
     for card_id, preset_id in pairs:
@@ -18774,9 +18846,12 @@ def _remember_backend_preset_ids(
 
 def _review_inputs_from_backend_columns(
     chunk: Sequence[Sequence[int]],
+    deleted: Sequence[int],
 ) -> list[RwkvReviewInput]:
     """The review inputs of one chunk of the backend's columns (all of
-    `_BACKEND_INPUT_COLUMNS`, the review ids included)."""
+    `_BACKEND_INPUT_COLUMNS`, the review ids included). `deleted` holds 1
+    for a review of a card that is gone, which has no note, deck or preset
+    (spec sched.rwkv-replay-deleted-cards)."""
     inputs: list[RwkvReviewInput] = []
     for (
         _review_id,
@@ -18793,15 +18868,20 @@ def _review_inputs_from_backend_columns(
         day_offset,
         elapsed_days,
         elapsed_seconds,
-    ) in zip(*chunk, strict=True):
+        card_is_deleted,
+    ) in zip(*chunk, deleted, strict=True):
         state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
         inputs.append(
             RwkvReviewInput(
-                identity=RwkvReviewIdentity(
-                    card_id=card_id,
-                    note_id=note_id,
-                    deck_id=deck_id,
-                    preset_id=preset_id,
+                identity=(
+                    RwkvReviewIdentity(card_id=card_id)
+                    if card_is_deleted
+                    else RwkvReviewIdentity(
+                        card_id=card_id,
+                        note_id=note_id,
+                        deck_id=deck_id,
+                        preset_id=preset_id,
+                    )
                 ),
                 is_query=False,
                 ease=ease,
@@ -18949,7 +19029,9 @@ with eligible as (
     cast(r.factor as integer) as ease_factor,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  -- a review of a card that is gone stays, with no note and no deck (spec
+  -- sched.rwkv-replay-deleted-cards); a deck clause leaves it out
+  left join cards c on c.id = r.cid
   where {_rwkv_historical_answer_sql_condition("r")}
     {ignored_clause}
     {deck_clause}
@@ -19077,7 +19159,7 @@ with eligible as (
     r.type,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  left join cards c on c.id = r.cid
   where {_rwkv_historical_answer_sql_condition("r")}
     {deck_clause}
 ), retained_starts as (
@@ -19348,7 +19430,7 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
     """Only an RWKV-Instant preset gathers new cards by its scores (spec
-    deck-options.new-retrievability-order-instant-only)."""
+    deck-options.no-new-card-retrievability-order)."""
     if not _rwkv_review_instant_order_enabled(deck_config):
         return False
     value = deck_config.get(
@@ -21091,7 +21173,6 @@ def _rwkv_stats_graph_scores_for_search(
         return None
     scores: list[tuple[int, float]] = []
     curve_scores: list[tuple[int, float]] = []
-    fully_predicted_card_ids: set[int] = set()
     curve_due_card_ids: set[int] = set()
     score_start = time.monotonic()
 
@@ -21122,8 +21203,10 @@ def _rwkv_stats_graph_scores_for_search(
                     return None
                 curve_scores.extend(stored_curve_scores)
     if prepare_curve_due and curve_input_build is not None:
-        # the curve-due flags need the current-interval crossing search, so
-        # that request keeps the full prediction path
+        # a card is RWKV-Curve due once its elapsed days reach the current
+        # interval of the curve stored at its last answered review, the same
+        # interval the RWKV-Curve reschedule gives it (spec
+        # sched.rwkv-curve-reschedule); never the curve of a query row
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
@@ -21133,27 +21216,24 @@ def _rwkv_stats_graph_scores_for_search(
                 # Stats request stops here and frees it
                 # (spec ui.stats-scoring-cancelled)
                 _raise_if_stats_scoring_cancelled(cancel_generation)
-                predictions = _rwkv_review_predictions_for_inputs(
+                predictions = _rwkv_review_current_interval_predictions_for_inputs(
                     batch,
-                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
                     state_token=state_token,
                 )
                 if predictions is None:
                     return None
+                if isinstance(predictions, _ResidentIntervalsUnavailable):
+                    # no stored-curve intervals: no card is curve due
+                    break
                 for (card_id, review_input), prediction in zip(
                     batch,
                     predictions,
                     strict=True,
                 ):
-                    retrievability = (
-                        prediction.retrievability if prediction is not None else None
-                    )
-                    if not _valid_probability(retrievability):
-                        continue
-                    scores.append((card_id, retrievability))
-                    fully_predicted_card_ids.add(card_id)
                     elapsed_days = review_input.current_elapsed_days
-                    current_interval = prediction.current_interval
+                    current_interval = (
+                        prediction.current_interval if prediction is not None else None
+                    )
                     if (
                         review_input.card_type == CARD_TYPE_REV
                         and review_input.card_queue == QUEUE_TYPE_REV
@@ -21169,11 +21249,6 @@ def _rwkv_stats_graph_scores_for_search(
         else ()
     )
     for batch_size, inputs_by_card_id in rating_head_inputs:
-        inputs_by_card_id = [
-            item
-            for item in inputs_by_card_id
-            if item[0] not in fully_predicted_card_ids
-        ]
         # every card is scored now, not taken from the study queue's scores,
         # which may be older than RWKV's R may be (spec sched.rwkv-r-freshness)
         if not inputs_by_card_id:
@@ -21388,10 +21463,10 @@ def _rwkv_review_reschedule_items_for_deck(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -21661,10 +21736,10 @@ def _rwkv_review_reschedule_items_from_input_build(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -22180,7 +22255,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
     *,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
 ) -> list[RwkvReviewPrediction | None] | None | _ResidentIntervalsUnavailable:
-    """Query-only current interval and S90 straight from the resident state.
+    """Current interval and S90 from the curve RWKV stored at each card's
+    last answered review (spec sched.rwkv-curve-reschedule).
 
     Used by rescheduling, which needs nothing else. Returns the
     `_RESIDENT_INTERVALS_UNAVAILABLE` sentinel when the backend cannot do it,
@@ -22211,8 +22287,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
         if predictions is None:
             return _RESIDENT_INTERVALS_UNAVAILABLE
         logger.debug(
-            "RWKV review inputs predicted from resident state (current intervals "
-            "only): inputs=%s elapsed_ms=%.1f",
+            "RWKV current intervals read from the stored curves: inputs=%s "
+            "elapsed_ms=%.1f",
             len(inputs_by_card_id),
             (time.monotonic() - start) * 1000,
         )
@@ -23188,9 +23264,8 @@ def _rwkv_review_input_batch_build_from_backend_response(
     source_label: str,
     source_size: int,
 ) -> RwkvReviewInputBatchBuild:
-    if isinstance(response, scheduler_pb2.RwkvReviewInputRowsForCardsResponse):
-        return _rwkv_review_input_batch_build_from_backend_proto_response(
-            reviewer=reviewer,
+    if isinstance(response, _rsbridge.RwkvReviewInputRows):
+        return _rwkv_review_input_batch_build_from_backend_rows(
             response=response,
             batch_size_override=batch_size_override,
             load_start=load_start,
@@ -23244,33 +23319,39 @@ def _rwkv_review_input_batch_build_from_backend_response(
     )
 
 
-def _rwkv_review_input_batch_build_from_backend_proto_response(
+# the review states a backend row's scheduling state maps to
+# (`_rwkv_review_state_for_scheduling_state`), for `RwkvReviewInputRows`
+_RWKV_BACKEND_ROW_REVIEW_STATES = {
+    "filtered": int(RwkvReviewState.FILTERED),
+    "new": int(RwkvReviewState.LEARN_START),
+    "learning": int(RwkvReviewState.LEARNING),
+    "review": int(RwkvReviewState.REVIEW),
+    "relearning": int(RwkvReviewState.RELEARNING),
+}
+
+
+def _rwkv_review_input_batch_build_from_backend_rows(
     *,
-    reviewer: object,
-    response: scheduler_pb2.RwkvReviewInputRowsForCardsResponse,
+    response: _rsbridge.RwkvReviewInputRows,
     batch_size_override: int | None,
     load_start: float,
     source_label: str,
     source_size: int,
 ) -> RwkvReviewInputBatchBuild:
-    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
-    parsed_cards = 0
-    eligible_cards = 0
-    for row in response.rows:
-        parsed_cards += 1
-        review_input = _rwkv_review_input_from_backend_proto_row(row)
-        card_id = review_input.identity.card_id
-        batch_size = (
-            batch_size_override
-            if batch_size_override is not None
-            else (
-                row.batch_size
-                if _valid_rwkv_review_batch_size(row.batch_size)
-                else _DEFAULT_RWKV_REVIEW_BATCH_SIZE
-            )
-        )
-        inputs_by_batch_size.setdefault(batch_size, []).append((card_id, review_input))
-        eligible_cards += 1
+    # one query input per row, as `_rwkv_review_input_from_backend_row`
+    # reads a row, built in Rust (pylib/rsbridge/review_input_rows.rs)
+    inputs_by_batch_size = response.review_inputs(
+        RwkvReviewInput,
+        RwkvReviewIdentity,
+        _stable_preset_id,
+        _RWKV_BACKEND_ROW_REVIEW_STATES,
+        batch_size_override=batch_size_override,
+        default_batch_size=_DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+        min_batch_size=_MIN_RWKV_REVIEW_BATCH_SIZE,
+        max_batch_size=_MAX_RWKV_REVIEW_BATCH_SIZE,
+        default_target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
+    )
+    eligible_cards = len(response)
 
     elapsed_ms = (time.monotonic() - load_start) * 1000
     logger.debug(
@@ -23285,7 +23366,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     return RwkvReviewInputBatchBuild(
         inputs_by_batch_size=inputs_by_batch_size,
         loaded_rows=response.loaded_cards,
-        parsed_cards=parsed_cards,
+        parsed_cards=eligible_cards,
         cards_with_state=response.cards_with_supported_state,
         disabled_config_cards=response.disabled_config_cards,
         eligible_cards=eligible_cards,
@@ -23315,10 +23396,9 @@ def _rwkv_review_input_rows_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows from backend",
@@ -23363,10 +23443,9 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows for search from backend",
@@ -23415,10 +23494,9 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
                 deck_id=deck_id,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows for deck review queue from backend",
@@ -23490,64 +23568,6 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         current_elapsed_seconds=_rwkv_backend_optional_int(
             row,
             "current_elapsed_seconds",
-        ),
-        target_retentions=(
-            target_retention,
-            target_retention,
-            target_retention,
-            target_retention,
-        ),
-        enforce_grade_order=_rwkv_backend_bool(
-            row,
-            "enforce_grade_order",
-            True,
-        ),
-    )
-
-
-def _rwkv_review_input_from_backend_proto_row(
-    row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
-) -> RwkvReviewInput:
-    preset_id = _stable_preset_id(row.preset_id) if row.preset_id else None
-    target_retention = (
-        row.target_retention
-        if _valid_probability(row.target_retention)
-        else _RWKV_DEFAULT_TARGET_RETENTION
-    )
-    state_kind = row.current_state_kind or None
-    normal_state_kind = row.current_normal_state_kind or None
-
-    return RwkvReviewInput(
-        identity=RwkvReviewIdentity(
-            card_id=row.card_id,
-            note_id=row.note_id,
-            deck_id=row.deck_id,
-            preset_id=preset_id,
-        ),
-        is_query=True,
-        ease=None,
-        duration_millis=None,
-        card_type=_rwkv_review_state_for_scheduling_state(
-            state_kind=state_kind,
-            normal_state_kind=normal_state_kind,
-            card_type=row.card_type,
-        ),
-        card_queue=row.card_queue,
-        card_due=row.card_due,
-        interval_days=row.interval_days,
-        ease_factor=row.ease_factor,
-        reps=row.reps,
-        lapses=row.lapses,
-        day_offset=row.day_offset,
-        current_state_kind=state_kind,
-        current_normal_state_kind=normal_state_kind,
-        current_elapsed_days=(
-            row.current_elapsed_days if row.HasField("current_elapsed_days") else None
-        ),
-        current_elapsed_seconds=(
-            row.current_elapsed_seconds
-            if row.HasField("current_elapsed_seconds")
-            else None
         ),
         target_retentions=(
             target_retention,
@@ -24193,20 +24213,10 @@ def _rwkv_state_fields_for_stats_graph_values(
     first_review_elapsed_from_card_creation: bool,
 ) -> tuple[object, str | None, int | None, int | None]:
     if card_type == int(CARD_TYPE_NEW) and queue == int(QUEUE_TYPE_NEW):
-        elapsed_seconds = (
-            _elapsed_seconds_since_card_created_for_timing(
-                timing,
-                card_id,
-            )
-            if first_review_elapsed_from_card_creation
-            else None
-        )
-        if first_review_elapsed_from_card_creation and elapsed_seconds is None:
-            return None, None, None, None
-        elapsed_days = (
-            elapsed_seconds // 86_400 if elapsed_seconds is not None else None
-        )
-        return "normal", "new", elapsed_days, elapsed_seconds
+        # no algorithm has a retrievability for a card's first review: it
+        # would know only the deck, the preset and the creation date (spec
+        # sched.rwkv-no-first-review-retrievability)
+        return _UNSUPPORTED_RWKV_STATE, None, None, None
 
     if card_type == int(CARD_TYPE_REV) and queue in (
         int(QUEUE_TYPE_REV),
@@ -24960,6 +24970,9 @@ def _clear_rwkv_review_queue_scores(
 
 
 def _duration_millis(card: object, ease: int | None) -> int | None:
+    # No ease: a query row, or the answer buttons before the press. RWKV then
+    # scales the duration to 0.0; see rslib `simulated_answer_input` for what
+    # that means for the shipped model and what a new model's encoder must do.
     if ease is None:
         return None
 
