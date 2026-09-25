@@ -17,6 +17,8 @@ use pyo3::types::PyList;
 use pyo3::types::PyTuple;
 use pyo3::wrap_pyfunction;
 
+mod review_input_rows;
+
 #[pyclass(module = "_rsbridge")]
 struct Backend {
     backend: RustBackend,
@@ -1420,6 +1422,7 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Backend>()?;
     m.add_class::<RwkvInference>()?;
     m.add_class::<RwkvInferenceState>()?;
+    m.add_class::<review_input_rows::RwkvReviewInputRows>()?;
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();
