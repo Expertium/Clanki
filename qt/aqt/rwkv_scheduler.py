@@ -24866,23 +24866,19 @@ def _set_rwkv_stats_graph_scores(
     # the preparation that owns the work records it again right afterwards
     forget_rwkv_stats_scores()
 
-    curve_retrievabilities_by_card_id = curve_retrievabilities_by_card_id or {}
-    retrievabilities_by_card_id: dict[int, float | None] = dict(scores)
-    # a card RWKV-Curve has a curve value for but the rating head did not
-    # score (the head runs only for a request that reads it) is published
-    # with its curve value alone (spec ui.rwkv-curve-r-stored-curve)
-    for card_id in curve_retrievabilities_by_card_id:
-        retrievabilities_by_card_id.setdefault(card_id, None)
     # one score per card, with each optional value that is valid, encoded
-    # in Rust (pylib/rsbridge/stats_scores.rs)
+    # in Rust (pylib/rsbridge/stats_scores.rs). A card RWKV-Curve has a
+    # curve value for but the rating head did not score (the head runs only
+    # for a request that reads it) is published with its curve value alone
+    # (spec ui.rwkv-curve-r-stored-curve), after the scored cards.
     set_scores_raw(
         _rsbridge.rwkv_stats_graph_scores_request(
             search,
-            retrievabilities_by_card_id,
+            dict(scores),
             target_retentions_by_card_id or {},
             intervening_reviews_by_card_id or {},
             curve_due_card_ids,
-            curve_retrievabilities_by_card_id,
+            curve_retrievabilities_by_card_id or {},
         )
     )
 
