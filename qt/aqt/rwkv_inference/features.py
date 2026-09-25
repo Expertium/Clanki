@@ -35,6 +35,22 @@ CARD_FEATURE_COLUMNS = [
 
 ID_PLACEHOLDER = 314159265358979323
 
+# the kind codes an id code's seed mixes in (spec sched.rwkv-id-codes)
+_ID_CODE_KINDS = {"card_id": 0, "note_id": 1, "deck_id": 2, "preset_id": 3}
+_U64 = (1 << 64) - 1
+
+
+def id_code_seed(submodule: str, entity_id: int) -> int:
+    """The seed of an entity's id code, as Clanki's runtime seeds it (spec
+    sched.rwkv-id-codes, `id_code_seed` in rslib/src/rwkv/mod.rs): the low 32
+    bits of splitmix64 of the id, with the kind in the top two bits."""
+    z = ((entity_id & _U64) ^ (_ID_CODE_KINDS[submodule] << 62)) + 0x9E3779B97F4A7C15
+    z &= _U64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _U64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _U64
+    return (z ^ (z >> 31)) & 0xFFFFFFFF
+
+
 _STATISTICS = {
     "elapsed_days_mean": 1.51,
     "elapsed_days_std": 1.62,

@@ -145,8 +145,10 @@ pub(crate) struct StudiedToday {
 pub(crate) struct RwkvHistoricalReviewRow {
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
-    pub(crate) note_id: i64,
-    pub(crate) deck_id: i64,
+    /// The card's note and home deck; None for both when the card is gone
+    /// (spec sched.rwkv-replay-deleted-cards).
+    pub(crate) note_id: Option<i64>,
+    pub(crate) deck_id: Option<i64>,
     pub(crate) ease: i64,
     pub(crate) duration_millis: i64,
     pub(crate) review_kind: i64,
@@ -1466,11 +1468,14 @@ impl SqliteStorage {
             *after_review_id = review_id;
             read += 1;
             let card_id: i64 = row.get(1)?;
-            // a review whose card is gone belongs to no history: the query
-            // this replaced joined `cards`, which dropped it
-            let Some(&(note_id, deck_id)) = cards.get(&card_id) else {
-                continue;
-            };
+            // a review whose card is gone stays, with no note and no deck, as
+            // the model's training kept it (spec
+            // sched.rwkv-replay-deleted-cards)
+            let (note_id, deck_id) = cards
+                .get(&card_id)
+                .map_or((None, None), |&(note_id, deck_id)| {
+                    (Some(note_id), Some(deck_id))
+                });
             let ease: i64 = row.get(2)?;
             let review_kind: i64 = row.get(4)?;
             let ease_factor_is_zero: bool = row.get(7)?;
@@ -1535,7 +1540,6 @@ impl SqliteStorage {
         let sql = format!(
             "select r.id
              from revlog r
-             join cards c on c.id = r.cid
              where r.ease between 1 and 4
                and r.type in (0, 1, 2, 3, 4, 5)
                and not (r.type = 3 and r.factor = 0)
@@ -2782,7 +2786,7 @@ with eligible as (
     cast(r.factor as integer) as ease_factor,
     lag(r.type) over (partition by r.cid order by r.id) as previous_type
   from revlog r
-  join cards c on c.id = r.cid
+  left join cards c on c.id = r.cid
   where r.ease between 1 and 4
     and r.type in (0, 1, 2, 3, 4, 5)
     and not (r.type = 3 and r.factor = 0)
@@ -2827,7 +2831,18 @@ where e.id >= s.start_id
 order by e.id, e.cid";
 
     /// One replayed row, as both reads describe it.
-    type ReplayedRow = (i64, i64, i64, i64, i64, i64, i64, i64, i64, bool);
+    type ReplayedRow = (
+        i64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        bool,
+    );
 
     fn replayed_rows_from_replaced_sql(
         col: &Collection,
@@ -2960,7 +2975,8 @@ order by e.id, e.cid";
                 }
             }
         }
-        // reviews of a card that was deleted: no read may return them
+        // reviews of a card that was deleted: every read returns them, with
+        // no note and no deck (spec sched.rwkv-replay-deleted-cards)
         for _ in 0..5 {
             review_id += 1 + noise.below(5_000) as i64;
             add_replay_revlog(&col, review_id, 999_999, RATED_REVIEW)?;
@@ -2973,6 +2989,9 @@ order by e.id, e.cid";
             replaced.len()
         );
         assert_eq!(replayed_rows_from_one_pass_read(&col, &[])?, replaced);
+        let deleted: Vec<_> = replaced.iter().filter(|row| row.1 == 999_999).collect();
+        assert_eq!(deleted.len(), 5);
+        assert!(deleted.iter().all(|row| row.2.is_none() && row.3.is_none()));
 
         // the same, with reviews the caller asks the replay to ignore
         assert!(!interesting_review_ids.is_empty());

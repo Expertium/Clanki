@@ -97,9 +97,8 @@ fn warm_up_reviews_bulk_impl(
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
 ) -> io::Result<Vec<WarmUpPrediction>> {
-    // Feature prepass, in review order. Query features are assigned before
-    // answer features for each review so first-seen ID encodings keep the
-    // same benchmark-compatible order as the per-review path.
+    // Feature prepass, in review order: each review's features come from
+    // the state before it, and its answer then advances the state.
     let mut original_indices = Vec::new();
     let mut inputs = Vec::new();
     let mut answer_features: Vec<f32> = Vec::new();
@@ -380,7 +379,7 @@ fn run_state_only_module_wavefront(
 }
 
 fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
-    let mut module_states = ReviewStateMaps::default();
+    let mut module_states = ReviewStateMaps::new(states.ids);
     match module_id {
         0 => module_states.card = std::mem::take(&mut states.card),
         1 => module_states.deck = std::mem::take(&mut states.deck),
@@ -407,16 +406,16 @@ fn put_module_states(
     }
 }
 
-/// The recurrent-state scope a module's streams are keyed by. `None` means
-/// the review carries no id for this scope: it sees fresh state and nothing
-/// is persisted, matching `ReviewStateMaps::{state_ref, store}`.
-fn stream_key(module_id: usize, input: &ReviewInput) -> Option<i64> {
+/// The recurrent-state scope a module's streams are keyed by, as
+/// `ReviewStateMaps::{state_ref, store}` key them: a review without a note,
+/// deck or preset streams with every other review without one.
+fn stream_key(module_id: usize, input: &ReviewInput, ids: RwkvIdPipeline) -> i64 {
     match module_id {
-        0 => Some(input.card_id),
-        1 => input.deck_id,
-        2 => input.note_id,
-        3 => input.preset_id,
-        _ => Some(0),
+        0 => input.card_id,
+        1 => input.deck_key(),
+        2 => input.note_key(ids),
+        3 => input.preset_key(),
+        _ => 0,
     }
 }
 
@@ -453,7 +452,7 @@ fn put_stream_state(states: &mut ReviewStateMaps, module_id: usize, key: i64, st
 }
 
 struct StreamPlan {
-    key: Option<i64>,
+    key: i64,
     rows: Vec<u32>,
 }
 
@@ -464,35 +463,24 @@ struct ModulePlan {
 }
 
 impl ModulePlan {
-    fn build(module_id: usize, inputs: &[ReviewInput]) -> Self {
+    fn build(module_id: usize, inputs: &[ReviewInput], ids: RwkvIdPipeline) -> Self {
         let mut streams: Vec<StreamPlan> = Vec::new();
         let mut stream_of_row = Vec::with_capacity(inputs.len());
         let mut prev_row = Vec::with_capacity(inputs.len());
         let mut stream_by_key: HashMap<i64, u32> = HashMap::new();
         for (row, input) in inputs.iter().enumerate() {
-            match stream_key(module_id, input) {
-                Some(key) => {
-                    let stream_index = *stream_by_key.entry(key).or_insert_with(|| {
-                        streams.push(StreamPlan {
-                            key: Some(key),
-                            rows: Vec::new(),
-                        });
-                        (streams.len() - 1) as u32
-                    });
-                    let stream = &mut streams[stream_index as usize];
-                    prev_row.push(stream.rows.last().copied());
-                    stream.rows.push(row as u32);
-                    stream_of_row.push(stream_index);
-                }
-                None => {
-                    streams.push(StreamPlan {
-                        key: None,
-                        rows: vec![row as u32],
-                    });
-                    prev_row.push(None);
-                    stream_of_row.push((streams.len() - 1) as u32);
-                }
-            }
+            let key = stream_key(module_id, input, ids);
+            let stream_index = *stream_by_key.entry(key).or_insert_with(|| {
+                streams.push(StreamPlan {
+                    key,
+                    rows: Vec::new(),
+                });
+                (streams.len() - 1) as u32
+            });
+            let stream = &mut streams[stream_index as usize];
+            prev_row.push(stream.rows.last().copied());
+            stream.rows.push(row as u32);
+            stream_of_row.push(stream_index);
         }
         Self {
             streams,
@@ -526,17 +514,17 @@ fn run_module(
     query_recurrence: QueryRecurrence,
 ) {
     let rows = inputs.len();
-    let plan = ModulePlan::build(module_id, inputs);
+    let plan = ModulePlan::build(module_id, inputs, states.ids);
     let layer_count = module.layers.len();
 
     let mut stream_layers: Vec<Vec<LayerState>> = plan
         .streams
         .iter()
         .map(|stream| {
-            let initial = stream
-                .key
-                .and_then(|key| take_stream_state(states, module_id, key));
-            layer_states(initial, layer_count)
+            layer_states(
+                take_stream_state(states, module_id, stream.key),
+                layer_count,
+            )
         })
         .collect();
 
@@ -560,9 +548,7 @@ fn run_module(
     }
 
     for (stream, layers) in plan.streams.iter().zip(stream_layers) {
-        if let Some(key) = stream.key {
-            put_stream_state(states, module_id, key, ModuleState { layers });
-        }
+        put_stream_state(states, module_id, stream.key, ModuleState { layers });
     }
 }
 
@@ -940,13 +926,11 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 );
                 std::mem::swap(&mut matrix, &mut next_matrix);
             }
-            if plan.streams[stream_index].key.is_some() {
-                let last = *stream_rows.last().unwrap() as usize - chunk_start;
-                layer_state.time = Some(TimeState {
-                    x_shift: row(&x_norm, last).to_vec(),
-                    matrix,
-                });
-            }
+            let last = *stream_rows.last().unwrap() as usize - chunk_start;
+            layer_state.time = Some(TimeState {
+                x_shift: row(&x_norm, last).to_vec(),
+                matrix,
+            });
             Some((outs, outs_query))
         })
         .collect();
@@ -1026,9 +1010,6 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
     }
 
     for &stream_index in &chunk_layout.streams {
-        if plan.streams[stream_index].key.is_none() {
-            continue;
-        }
         let stream_rows = chunk_layout.rows_by_stream[stream_index];
         let last = *stream_rows.last().unwrap() as usize - chunk_start;
         stream_layers[stream_index][layer_id].channel_shift = Some(row(&cm_norm, last).to_vec());

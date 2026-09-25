@@ -17573,10 +17573,11 @@ def _rwkv_cache_reviewer(
                     counts[row[1]] = counts.get(row[1], 0) + 1
                 return sorted(counts.items())
             assert "from revlog r" in sql
-            assert "join cards c" in sql
             active = re.search(r"and r\.id in \(([^)]*)\)", sql)
             if active is not None:
-                # which ignored reviews are rated reviews of the history
+                # which ignored reviews are rated reviews of the history, of
+                # a card that exists or not (spec
+                # sched.rwkv-replay-deleted-cards)
                 requested = {int(value) for value in active[1].split(",")}
                 return [
                     (row[0],)
@@ -17586,6 +17587,7 @@ def _rwkv_cache_reviewer(
                     and 0 <= row[6] <= 5
                     and not (row[6] == 3 and row[8] == 0)
                 ]
+            assert "join cards c" in sql
             ignored = re.search(r"and r\.id not in \(([^)]*)\)", sql)
             ignored_ids = (
                 {int(value) for value in ignored[1].split(",")} if ignored else set()

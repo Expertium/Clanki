@@ -1286,9 +1286,9 @@ mod test {
         hash.update(&PublishedReviewInput {
             review_id: 1_700_000_000_123,
             card_id: 1_699_999_000_123,
-            note_id: 42,
-            deck_id: 100,
-            preset_id: 1_000,
+            note_id: Some(42),
+            deck_id: Some(100),
+            preset_id: Some(1_000),
             ease: 3,
             duration_millis: 2_345,
             card_type: 0,
