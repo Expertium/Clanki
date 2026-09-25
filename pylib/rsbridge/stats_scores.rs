@@ -23,9 +23,8 @@ use pyo3::types::PyInt;
 /// `retrievabilities` (card id -> RWKV-Instant's value or None), in its
 /// order, as Python's encoding built it:
 /// - the value when not None;
-/// - the card's `target_retentions` and `curve_retrievabilities` values
-///   when they are probabilities (an int or float, not a bool, finite, in
-///   [0, 1]);
+/// - the card's `target_retentions` and `curve_retrievabilities` values when
+///   they are probabilities (an int or float, not a bool, finite, in [0, 1]);
 /// - its `intervening_reviews` when an int of 0 or more;
 /// - `curve_due` when the card is in `curve_due_card_ids`.
 ///
@@ -81,8 +80,10 @@ fn probability(value: &Bound<'_, PyAny>) -> PyResult<Option<f32>> {
     }
     // an int too large for a double raises, as math.isfinite does
     let probability = value.extract::<f64>()?;
-    Ok((probability.is_finite() && (0.0..=1.0).contains(&probability))
-        .then_some(probability as f32))
+    Ok(
+        (probability.is_finite() && (0.0..=1.0).contains(&probability))
+            .then_some(probability as f32),
+    )
 }
 
 /// The protobuf library's error for an int its field cannot hold.
