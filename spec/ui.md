@@ -1976,6 +1976,19 @@ tries again. An empty FSRS-7 series on its own cannot be told apart from a
 series still being computed, and a pass that reports no progress reports no
 failure either.
 
+A pass cut short by the collection closing is not a failure. The backend
+gives the collection back between the steps of a preset (the read, the fit,
+each batch), so a close, a profile switch or a full sync can close it
+between two steps, and the next step finds no collection. The pass then
+stops with no message and without counting the day as done, so it runs
+again when the profile next opens. When another profile opened while the
+cut pass still ran, that profile's own request found a pass running and
+started nothing; the pass that stops then starts the pass for the profile
+now open. A failure while the pass's collection is still open still shows
+the message. A preset whose step fails because the collection closed is
+not one bad preset among others: the pass stops there, quietly, and does
+not go on to the next preset.
+
 A preset's folds train on the reviews its FSRS-7 optimization trains on
 (`deck-options.fsrs-optimize-keeps-better-params`): the reviews of its search
 filter when it has one, otherwise of its cards that are not suspended, and
@@ -2027,6 +2040,13 @@ tenth, and the collection is held for under two seconds of the run. The
 check per batch costs one read of the preset and of the deck list per batch,
 which is a few milliseconds beside the write it guards.
 
+A quiet stop on a closed collection is the failure message seen from the
+other side: in round 5 of the speed hunt (2026-09-25) a profile switch
+during the pass showed "the FSRS review prediction pass failed" twice. The
+close took the collection while the pass fitted a preset, the pass's next
+batch found no collection, and the user was told of a failure that was
+only an interruption.
+
 Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that day: the
 folds trained on `preset:"name"`, with suspended cards, without the search
 filter, and with "Ignore reviews before" always read as no date (the date
@@ -2042,7 +2062,11 @@ of every preset every day: about 76 s of CPU on his collection.
 `test_a_started_pass_never_waits_for_the_user_to_stop`,
 `test_the_rest_between_presets_is_a_bounded_multiple_of_the_preset`,
 `test_a_pass_waiting_for_a_pause_stops_when_the_collection_closes`,
-`test_the_fake_backend_returns_what_the_real_backend_returns`
+`test_the_fake_backend_returns_what_the_real_backend_returns`,
+`test_a_pass_cut_short_by_a_profile_switch_stops_quietly`,
+`test_a_pass_cut_short_by_a_full_sync_stops_quietly`,
+`test_the_next_profile_gets_its_pass_when_the_old_one_stops_late`,
+`test_a_failure_with_the_collection_still_open_still_says_so`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,
 `another_presets_predictions_survive_a_parameter_change`

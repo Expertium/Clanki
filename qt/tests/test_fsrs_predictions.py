@@ -67,7 +67,9 @@ class _Backend:
 
 
 def _mw(backend: _Backend, today: int = 3) -> SimpleNamespace:
-    collection = SimpleNamespace(_backend=backend, sched=SimpleNamespace(today=today))
+    collection = SimpleNamespace(
+        _backend=backend, sched=SimpleNamespace(today=today), db=object()
+    )
     warnings: list[object] = []
     return SimpleNamespace(
         col=collection,
@@ -414,6 +416,117 @@ def test_a_pass_that_fails_says_so() -> None:
     predictions.ensure_ready(mw)
     while predictions.is_running():
         pass
+    assert len(mw.reported_failures) == 1
+
+
+class _ClosingBackend(_Backend):
+    """Closes the collection part way through a preset, as a profile switch
+    or a full sync does: the backend gives the collection back between the
+    read, the fit and each batch, so the close gets in, and the call's next
+    step finds no collection."""
+
+    def __init__(self, close: object) -> None:
+        started, release = _quiet()
+        super().__init__(started, release, presets=[11, 22])
+        self.close = close
+
+    def refresh_fsrs_review_predictions(self, deck_config_id: int) -> int:
+        from anki.errors import InvalidInput
+
+        self.calls += 1
+        self.refreshed.append(deck_config_id)
+        self.close()  # type: ignore[operator]
+        # what the backend raises for AnkiError::CollectionNotOpen
+        raise InvalidInput("CollectionNotOpen", None, None, "")
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_pass_cut_short_by_a_profile_switch_stops_quietly() -> None:
+    """Round 5 of the speed hunt saw the warning box twice on a profile
+    switch: the close took the collection between two steps of a preset."""
+
+    mw: SimpleNamespace
+
+    def close() -> None:
+        mw.col = None
+
+    backend = _ClosingBackend(close)
+    mw = _mw(backend)
+
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        time.sleep(0.01)
+
+    # no warning box, no second preset, and the day is not counted as
+    # done, so the pass runs again when the profile next opens
+    assert not mw.reported_failures
+    assert backend.refreshed == [11]
+    assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_pass_cut_short_by_a_full_sync_stops_quietly() -> None:
+    """A full sync closes the collection under the same Collection object,
+    so mw.col does not change; the collection's own db says it is closed."""
+
+    mw: SimpleNamespace
+
+    def close() -> None:
+        mw.col.db = None
+
+    backend = _ClosingBackend(close)
+    mw = _mw(backend)
+
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        time.sleep(0.01)
+
+    assert not mw.reported_failures
+    assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_the_next_profile_gets_its_pass_when_the_old_one_stops_late() -> None:
+    """The new profile asks for its pass as it opens. When the old pass is
+    still inside a backend call at that moment, that request finds a pass
+    running and does nothing; the old pass then starts the new one as it
+    stops, or the new profile would get no pass that session."""
+
+    started, release = _quiet()
+    new_backend = _Backend(started, release)
+    new_mw = _mw(new_backend)
+    mw: SimpleNamespace
+
+    def switch() -> None:
+        mw.col = new_mw.col
+        # the new profile's own request, while the old pass still runs
+        predictions.ensure_ready(mw)
+
+    old_backend = _ClosingBackend(switch)
+    mw = _mw(old_backend)
+
+    predictions.ensure_ready(mw)
+    assert started.wait(5)
+    while predictions.is_running():
+        time.sleep(0.01)
+
+    assert not mw.reported_failures
+    assert new_backend.refreshed == [1]
+    # the day recorded is the new collection's
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_a_failure_with_the_collection_still_open_still_says_so() -> None:
+    """Only a closed collection makes a failure quiet."""
+
+    backend = _ClosingBackend(lambda: None)
+    mw = _mw(backend)
+
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        time.sleep(0.01)
+
     assert len(mw.reported_failures) == 1
 
 
