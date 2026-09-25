@@ -18,6 +18,7 @@ use crate::define_newtype;
 use crate::error;
 use crate::error::AnkiError;
 use crate::error::OrInvalid;
+use crate::notetype::AlreadyGeneratedCardInfo;
 use crate::notetype::CardGenContext;
 use crate::notetype::NoteField;
 use crate::ops::StateChanges;
@@ -26,6 +27,10 @@ use crate::template::field_is_empty;
 use crate::text::ensure_string_in_nfc;
 use crate::text::normalize_to_nfc;
 use crate::text::strip_html_preserving_media_filenames;
+
+/// How many notes [Collection::transform_notes] reads and transforms before
+/// it writes them.
+const TRANSFORM_NOTES_BATCH: usize = 1000;
 
 define_newtype!(NoteId, i64);
 
@@ -552,52 +557,92 @@ impl Collection {
 
         for (ntid, group) in &nids_by_notetype.into_iter().chunk_by(|tup| tup.0) {
             let nt = self.get_notetype(ntid)?.or_invalid("missing note type")?;
+            let group: Vec<NoteId> = group.map(|(_, nid)| nid).collect();
 
             let mut genctx = None;
-            for (_, nid) in group {
-                // grab the note and transform it
-                let mut note = self.storage.get_note(nid)?.unwrap();
-                let original = note.clone();
-                let out = transformer(&mut note, &nt)?;
-                if !out.changed {
-                    continue;
+            // A batch of notes is read and transformed first, then written in
+            // the same order, so the cards of all its notes that generate
+            // cards take one query instead of one query per note. Writing a
+            // note changes only that note and its cards.
+            for batch in group.chunks(TRANSFORM_NOTES_BATCH) {
+                let mut transformed = Vec::with_capacity(batch.len());
+                for &nid in batch {
+                    // grab the note and transform it
+                    let mut note = self.storage.get_note(nid)?.unwrap();
+                    let original = note.clone();
+                    let out = transformer(&mut note, &nt)?;
+                    if out.changed {
+                        transformed.push((note, original, out));
+                    }
                 }
+                let mut cards_by_note = self.storage.existing_cards_for_notes(
+                    &transformed
+                        .iter()
+                        .filter(|(_, _, out)| out.generate_cards)
+                        .map(|(note, _, _)| note.id)
+                        .collect::<Vec<_>>(),
+                )?;
 
-                if out.generate_cards {
-                    let ctx = genctx.get_or_insert_with(|| {
-                        CardGenContext::new(
-                            nt.as_ref(),
-                            self.get_last_deck_added_to_for_notetype(nt.id),
-                            usn,
-                        )
-                    });
-                    self.update_note_inner_generating_cards(
-                        ctx,
+                for (mut note, original, out) in transformed {
+                    self.write_transformed_note(
+                        &nt,
+                        &mut genctx,
+                        &mut cards_by_note,
                         &mut note,
                         &original,
-                        out.mark_modified,
-                        norm,
-                        out.update_tags,
-                        out.mtime,
-                    )?;
-                } else {
-                    self.update_note_inner_without_cards(UpdateNoteInnerWithoutCardsArgs {
-                        note: &mut note,
-                        original: &original,
-                        notetype: &nt,
+                        out,
                         usn,
-                        mark_note_modified: out.mark_modified,
-                        normalize_text: norm,
-                        update_tags: out.update_tags,
-                        mtime: out.mtime,
-                    })?;
+                        norm,
+                    )?;
+                    changed_notes += 1;
                 }
-
-                changed_notes += 1;
             }
         }
 
         Ok(changed_notes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_transformed_note<'a>(
+        &mut self,
+        nt: &'a Notetype,
+        genctx: &mut Option<CardGenContext<&'a Notetype>>,
+        cards_by_note: &mut HashMap<NoteId, Vec<AlreadyGeneratedCardInfo>>,
+        note: &mut Note,
+        original: &Note,
+        out: TransformNoteOutput,
+        usn: Usn,
+        norm: bool,
+    ) -> Result<()> {
+        if out.generate_cards {
+            let ctx = genctx.get_or_insert_with(|| {
+                CardGenContext::new(nt, self.get_last_deck_added_to_for_notetype(nt.id), usn)
+            });
+            self.update_note_inner_without_cards(UpdateNoteInnerWithoutCardsArgs {
+                note,
+                original,
+                notetype: ctx.notetype,
+                usn: ctx.usn,
+                mark_note_modified: out.mark_modified,
+                normalize_text: norm,
+                update_tags: out.update_tags,
+                mtime: out.mtime,
+            })?;
+            let existing = cards_by_note.remove(&note.id).unwrap_or_default();
+            self.generate_cards_for_existing_note_with_cards(ctx, note, &existing)?;
+        } else {
+            self.update_note_inner_without_cards(UpdateNoteInnerWithoutCardsArgs {
+                note,
+                original,
+                notetype: nt,
+                usn,
+                mark_note_modified: out.mark_modified,
+                normalize_text: norm,
+                update_tags: out.update_tags,
+                mtime: out.mtime,
+            })?;
+        }
+        Ok(())
     }
 
     /// Check if there is a cloze in a non-cloze field. Then check if the
