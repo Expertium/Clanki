@@ -25,12 +25,14 @@ pub(crate) struct RwkvReviewEvent {
     /// The review log id: when the answer was given, in milliseconds.
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
-    pub(crate) note_id: i64,
+    /// None, as the deck and the preset, for a review of a deleted card
+    /// (spec sched.rwkv-replay-deleted-cards).
+    pub(crate) note_id: Option<i64>,
     /// The card's home deck.
-    pub(crate) deck_id: i64,
+    pub(crate) deck_id: Option<i64>,
     /// The stable id of the preset the review counts under (see
     /// `RwkvReviewStream::event`).
-    pub(crate) preset_id: i64,
+    pub(crate) preset_id: Option<i64>,
     /// The answer button, 1-4.
     pub(crate) rating: i64,
     /// How long the answer took (the review log's `time`), milliseconds.
@@ -134,21 +136,26 @@ impl<'a> RwkvReviewStream<'a> {
     }
 
     /// The event of the next row. Its preset is the first route that
-    /// matches the card's reviews before this one, else the card's own.
+    /// matches the card's reviews before this one, else the card's own. A
+    /// deleted card's review has no preset, as it has no deck.
     pub(crate) fn event(&mut self, row: RwkvHistoricalReviewRow) -> Result<RwkvReviewEvent> {
         let card_id = CardId(row.card_id);
         let card = match self.cards.entry(card_id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let preset_id = match &self.presets {
-                    RwkvStreamPresets::ByCard(by_card) => by_card.get(&card_id).copied(),
-                    RwkvStreamPresets::HomeDeck {
-                        decks_by_id,
-                        configs_by_id,
-                    } => Some(match self.home_deck_presets.entry(row.deck_id) {
+                let preset_id = match (&self.presets, row.deck_id) {
+                    (_, None) => None,
+                    (RwkvStreamPresets::ByCard(by_card), Some(_)) => by_card.get(&card_id).copied(),
+                    (
+                        RwkvStreamPresets::HomeDeck {
+                            decks_by_id,
+                            configs_by_id,
+                        },
+                        Some(deck_id),
+                    ) => Some(match self.home_deck_presets.entry(deck_id) {
                         Entry::Occupied(deck) => *deck.get(),
                         Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
-                            DeckId(row.deck_id),
+                            DeckId(deck_id),
                             decks_by_id,
                             configs_by_id,
                         )?),
@@ -160,13 +167,20 @@ impl<'a> RwkvReviewStream<'a> {
                 })
             }
         };
-        let preset_id = self
-            .routes
-            .iter()
-            .find(|route| route.matches(card_id, card.review_count, card.previous_interval_days))
-            .map(|route| route.stable_preset_id)
-            .or(card.preset_id)
-            .or_invalid("missing stable RWKV preset id")?;
+        let preset_id = if row.deck_id.is_none() {
+            None
+        } else {
+            Some(
+                self.routes
+                    .iter()
+                    .find(|route| {
+                        route.matches(card_id, card.review_count, card.previous_interval_days)
+                    })
+                    .map(|route| route.stable_preset_id)
+                    .or(card.preset_id)
+                    .or_invalid("missing stable RWKV preset id")?,
+            )
+        };
         card.review_count += 1;
         card.previous_interval_days = row.interval_days;
         Ok(RwkvReviewEvent {

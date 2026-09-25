@@ -41,7 +41,6 @@ pub(crate) struct CardQueues {
     /// user returns from editing a review card.
     current_learning_cutoff: TimestampSecs,
     shown_top_card: Option<CardId>,
-    non_news_sorted_by_retrievability: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     rwkv_scores_pending: bool,
     pub(crate) load_balancer: Option<LoadBalancer>,
@@ -262,17 +261,10 @@ impl CardQueues {
     /// An iterator over the card queues, in the order the cards will
     /// be presented.
     fn iter(&self) -> impl Iterator<Item = QueueEntry> + '_ {
-        let intraday_now = (!self.non_news_sorted_by_retrievability)
-            .then_some(())
-            .into_iter()
-            .flat_map(|_| self.intraday_now_iter().map(Into::into));
-        let intraday_ahead = (!self.non_news_sorted_by_retrievability)
-            .then_some(())
-            .into_iter()
-            .flat_map(|_| self.intraday_ahead_iter().map(Into::into));
-        intraday_now
+        self.intraday_now_iter()
+            .map(Into::into)
             .chain(self.main.iter().map(Into::into))
-            .chain(intraday_ahead)
+            .chain(self.intraday_ahead_iter().map(Into::into))
     }
 
     /// Remove the provided card from the top of the queues and
@@ -306,7 +298,7 @@ impl CardQueues {
     /// cutoff is updated to the current time first, and any newly-due learning
     /// cards are added to the counts.
     pub(crate) fn counts(&mut self) -> Counts {
-        if self.counts.all_zero() && !self.non_news_sorted_by_retrievability {
+        if self.counts.all_zero() {
             // we discard the returned undo information in this case
             self.update_learning_cutoff_and_count();
         }
@@ -315,15 +307,6 @@ impl CardQueues {
 
     fn is_stale(&self, current_day: u32) -> bool {
         self.current_day != current_day
-    }
-
-    fn due_intraday_needs_retrievability_resort(&self) -> bool {
-        self.non_news_sorted_by_retrievability
-            && self
-                .intraday_learning
-                .front()
-                .map(|entry| entry.due <= TimestampSecs::now())
-                .unwrap_or(false)
     }
 }
 
@@ -401,10 +384,7 @@ impl Collection {
                 .state
                 .card_queues
                 .as_ref()
-                .map(|queues| {
-                    queues.due_intraday_needs_retrievability_resort()
-                        || queues.deferred_rwkv_review_is_ready()
-                })
+                .map(|queues| queues.deferred_rwkv_review_is_ready())
                 .unwrap_or(false)
         {
             self.state.card_queues = Some(self.build_queues(deck.id)?);

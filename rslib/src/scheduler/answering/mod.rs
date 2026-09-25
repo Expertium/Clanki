@@ -786,8 +786,11 @@ impl Collection {
             }
             _ => false,
         };
-        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
-        let fsrs_allow_short_term = fsrs_enabled;
+        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals),
+        // except under RWKV-Instant, which has no learning queue: a sub-day
+        // FSRS-7 interval would hand the card's return to FSRS-7 (spec
+        // sched.rwkv-instant-no-steps)
+        let fsrs_allow_short_term = fsrs_enabled && !config.runs_rwkv_instant();
         let original_deck = self
             .storage
             .get_deck(home_deck_id)?
@@ -1119,6 +1122,67 @@ pub(crate) mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-instant-no-steps: a sub-day FSRS-7
+    // interval does not put an RWKV-Instant card in the learning or
+    // relearning queue, where FSRS-7 would decide when it comes back.
+    #[test]
+    fn rwkv_instant_sub_day_fsrs7_intervals_stay_out_of_the_learning_queue() -> Result<()> {
+        fn is_intraday(state: &CardState) -> bool {
+            matches!(
+                state,
+                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+            )
+        }
+        fn states(col: &mut Collection, algorithm: SchedulingAlgorithm) -> Result<[CardState; 2]> {
+            col.update_default_deck_config(|config| {
+                config.rwkv_review_enabled = algorithm == SchedulingAlgorithm::RwkvCurve;
+                config.rwkv_review_instant_order_enabled =
+                    algorithm == SchedulingAlgorithm::RwkvInstant;
+            });
+            let new_card = col.get_first_card().id;
+            let review_card = add_due_review_card(
+                col,
+                1,
+                0,
+                Some(FsrsMemoryState {
+                    stability: 0.3,
+                    stability_internal: 0.3,
+                    stability_fast: None,
+                    difficulty: 5.0,
+                }),
+            )?;
+            let new_again = col.get_scheduling_states(new_card)?.again;
+            let review_again = col.get_scheduling_states(review_card)?.again;
+            col.storage.remove_card(review_card)?;
+            Ok([new_again, review_again])
+        }
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        // FSRS-7's Again intervals of both cards are under a day: RWKV-Curve,
+        // which shares the answer states, keeps them in the intraday queue
+        let [new_again, review_again] = states(&mut col, SchedulingAlgorithm::RwkvCurve)?;
+        assert!(is_intraday(&new_again), "{new_again:?}");
+        assert!(is_intraday(&review_again), "{review_again:?}");
+
+        // RWKV-Instant: both become review cards due in whole days, which
+        // RWKV-Instant's scores then bring back
+        let [new_again, review_again] = states(&mut col, SchedulingAlgorithm::RwkvInstant)?;
+        for state in [new_again, review_again] {
+            match state {
+                CardState::Normal(NormalState::Review(review)) => {
+                    assert!(review.scheduled_days >= 1, "{review:?}")
+                }
+                other => panic!("RWKV-Instant should not use the learning queue: {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
     // A stored custom scheduling script no longer runs, so it does not let the
     // answer's own memory state through (spec sched.no-custom-scheduling):
     // FSRS-7's state at the answer time is stored, and RWKV's S90 then
@@ -1415,6 +1479,97 @@ pub(crate) mod test {
             assert_eq!(with_memory(supplied, Some(b)), fsrs);
         }
 
+        Ok(())
+    }
+
+    /// How long each answer puts the card away, in seconds, for comparing
+    /// the four buttons.
+    fn answer_secs(state: CardState) -> u32 {
+        match state {
+            CardState::Normal(NormalState::Learning(learn)) => learn.scheduled_secs,
+            CardState::Normal(NormalState::Relearning(relearn)) => relearn.learning.scheduled_secs,
+            CardState::Normal(NormalState::Review(review)) => review.scheduled_days * 86_400,
+            other => panic!("unexpected state {other:?}"),
+        }
+    }
+
+    fn assert_buttons_in_order(states: &SchedulingStates) {
+        let secs = [states.again, states.hard, states.good, states.easy].map(answer_secs);
+        assert!(
+            secs.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the buttons must not go backwards: {secs:?}"
+        );
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals: with steps "10m 1d"
+    // and the default FSRS-7 parameters, a new card after Again sits at the
+    // 10 m step; Good's 1 d step used to be longer than Easy's 2.25 h model
+    // interval. Easy is now a day button, above the 1 d step.
+    #[test]
+    fn fsrs7_easy_is_not_shorter_than_a_learning_step() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.change_scheduling_algorithm(SchedulingAlgorithm::Fsrs7)?;
+        col.set_default_learn_steps(vec![10.0, 1440.0]);
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.answer_again().card_id;
+
+        let states = col.get_scheduling_states(cid)?;
+        assert_eq!(answer_secs(states.hard), 43_500, "Hard is its step");
+        assert_eq!(answer_secs(states.good), 86_400, "Good is its step");
+        let CardState::Normal(NormalState::Review(easy)) = states.easy else {
+            panic!("Easy should be a day button, got {:?}", states.easy);
+        };
+        assert!(easy.scheduled_days >= 2, "{easy:?}");
+        assert_buttons_in_order(&states);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-intervals for RWKV-Curve, which
+    // shares the button rules: its intervals are floored by the steps before
+    // them, on a learning and on a relearning card.
+    #[test]
+    fn rwkv_curve_buttons_are_not_shorter_than_a_step_before_them() -> Result<()> {
+        fn rwkv_curve_collection() -> Result<Collection> {
+            let mut col = Collection::new();
+            col.set_config_bool(BoolKey::Fsrs, true, false)?;
+            col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)?;
+            col.set_default_learn_steps(vec![10.0, 1440.0]);
+            col.set_default_relearn_steps(vec![10.0]);
+            Ok(col)
+        }
+        let mut col = rwkv_curve_collection()?;
+
+        // a learning card at the 10 m step: Hard 12 h 5 m and Good 1 d are
+        // steps, and RWKV-Curve's 2.25 h Easy becomes a day button above them
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let cid = col.answer_again().card_id;
+        let states =
+            col.scheduling_states_with_intervals(cid, [None, None, None, Some(0.094)], [None; 4])?;
+        let CardState::Normal(NormalState::Review(easy)) = states.easy else {
+            panic!("Easy should be a day button, got {:?}", states.easy);
+        };
+        assert_eq!(easy.scheduled_days, 2);
+        assert_buttons_in_order(&states);
+
+        // a relearning card at its 10 m step: Hard repeats it at 15 m, and
+        // RWKV-Curve's 86 s Good and 173 s Easy are raised to 15 m
+        let mut col = rwkv_curve_collection()?;
+        let cid = add_due_review_card(&mut col, 10, 0, None)?;
+        col.answer_again();
+        let states = col.scheduling_states_with_intervals(
+            cid,
+            [None, None, Some(0.001), Some(0.002)],
+            [None; 4],
+        )?;
+        assert_eq!(answer_secs(states.hard), 900);
+        assert_eq!(answer_secs(states.good), 900);
+        assert_eq!(answer_secs(states.easy), 900);
+        assert_buttons_in_order(&states);
         Ok(())
     }
 

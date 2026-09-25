@@ -290,6 +290,37 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/database.md#database.dbproxy-read-only: Grade Now builds the
+    // study queue again through its own operation, and the RWKV history read
+    // that follows it (a `WITH ...` read through the DB proxy) leaves its
+    // undo step.
+    #[test]
+    fn grade_now_rebuilds_the_queue_and_a_history_read_keeps_its_undo() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let card_id = add_due_review_card(&mut col)?;
+        col.get_queued_cards(1, false, true)?;
+        assert!(col.state.card_queues.is_some());
+
+        col.grade_now(anki_proto::scheduler::GradeNowRequest {
+            card_ids: vec![card_id.into()],
+            rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
+            card_options: vec![],
+        })?;
+        assert!(col.state.card_queues.is_none());
+        assert_eq!(col.undo_status().undo, Some(Op::GradeNow));
+
+        let read = serde_json::json!({
+            "kind": "query",
+            "sql": "with eligible as (select id, cid from revlog) select id from eligible",
+            "args": [],
+            "first_row_only": false,
+        });
+        crate::backend::dbproxy::db_command_bytes(&mut col, read.to_string().as_bytes())?;
+        assert_eq!(col.undo_status().undo, Some(Op::GradeNow));
+        Ok(())
+    }
+
     fn add_due_review_card(col: &mut Collection) -> Result<CardId> {
         let nt = col.get_notetype_by_name("Basic")?.unwrap();
         let mut note = nt.new_note();

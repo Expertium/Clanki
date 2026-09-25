@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use super::button_intervals::button_intervals;
+use super::button_intervals::ButtonInput;
 use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
 use super::interval_kind::IntervalKind;
@@ -67,15 +68,17 @@ impl ReviewState {
 
     pub(crate) fn next_states(self, ctx: &StateContext) -> SchedulingStates {
         if let Some(states) = &ctx.fsrs_next_states {
-            let again_step = ctx.fsrs_uses_learning_queues()
-                && ctx.relearn_steps.again_delay_secs_learn().is_some();
+            let again_step = ctx
+                .relearn_steps
+                .again_delay_secs_learn()
+                .filter(|_| ctx.fsrs_uses_learning_queues());
             let intervals = button_intervals(
                 ctx,
                 [
-                    (!again_step).then_some(states.again.interval),
-                    Some(states.hard.interval),
-                    Some(states.good.interval),
-                    Some(states.easy.interval),
+                    ButtonInput::new(again_step, states.again.interval),
+                    ButtonInput::new(None, states.hard.interval),
+                    ButtonInput::new(None, states.good.interval),
+                    ButtonInput::new(None, states.easy.interval),
                 ],
                 DayRule::Review {
                     previous_interval: self.scheduled_days,

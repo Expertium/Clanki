@@ -242,9 +242,9 @@ mod test {
         PublishedReviewInput {
             review_id,
             card_id,
-            note_id: 1,
-            deck_id: 1,
-            preset_id: 1,
+            note_id: Some(1),
+            deck_id: Some(1),
+            preset_id: Some(1),
             ease: 3,
             duration_millis: 1_000,
             card_type: 2,
