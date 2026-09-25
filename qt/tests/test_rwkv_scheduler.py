@@ -12993,6 +12993,26 @@ def test_overview_retries_while_rwkv_instant_scores_are_pending(
     assert rwkv_scheduler.rwkv_review_scores_pending(col)
 
 
+def _backend_proto_row_input(
+    row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
+) -> RwkvReviewInput:
+    """The input the backend's raw rows give for `row`."""
+    response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
+    response.rows.append(row)
+    build = rwkv_scheduler._rwkv_review_input_batch_build_from_backend_response(
+        reviewer=None,
+        response=rwkv_scheduler._rsbridge.RwkvReviewInputRows(
+            response.SerializeToString()
+        ),
+        batch_size_override=None,
+        load_start=time.monotonic(),
+        source_label="test",
+        source_size=1,
+    )
+    ((_, review_input),) = rwkv_scheduler._rwkv_review_input_build_inputs(build)
+    return review_input
+
+
 @pytest.mark.parametrize("enforce_grade_order", [True, False])
 def test_backend_review_input_rows_preserve_grade_order(
     enforce_grade_order: bool,
@@ -13000,7 +13020,7 @@ def test_backend_review_input_rows_preserve_grade_order(
     object_input = rwkv_scheduler._rwkv_review_input_from_backend_row(
         SimpleNamespace(card_id=1, enforce_grade_order=enforce_grade_order)
     )
-    proto_input = rwkv_scheduler._rwkv_review_input_from_backend_proto_row(
+    proto_input = _backend_proto_row_input(
         scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row(
             card_id=1,
             enforce_grade_order=enforce_grade_order,
@@ -13016,7 +13036,7 @@ def test_backend_review_input_rows_default_to_enforced_grade_order() -> None:
     object_input = rwkv_scheduler._rwkv_review_input_from_backend_row(
         SimpleNamespace(card_id=1)
     )
-    proto_input = rwkv_scheduler._rwkv_review_input_from_backend_proto_row(
+    proto_input = _backend_proto_row_input(
         scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row(card_id=1)
     )
 

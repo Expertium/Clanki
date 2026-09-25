@@ -23188,9 +23188,8 @@ def _rwkv_review_input_batch_build_from_backend_response(
     source_label: str,
     source_size: int,
 ) -> RwkvReviewInputBatchBuild:
-    if isinstance(response, scheduler_pb2.RwkvReviewInputRowsForCardsResponse):
-        return _rwkv_review_input_batch_build_from_backend_proto_response(
-            reviewer=reviewer,
+    if isinstance(response, _rsbridge.RwkvReviewInputRows):
+        return _rwkv_review_input_batch_build_from_backend_rows(
             response=response,
             batch_size_override=batch_size_override,
             load_start=load_start,
@@ -23244,33 +23243,39 @@ def _rwkv_review_input_batch_build_from_backend_response(
     )
 
 
-def _rwkv_review_input_batch_build_from_backend_proto_response(
+# the review states a backend row's scheduling state maps to
+# (`_rwkv_review_state_for_scheduling_state`), for `RwkvReviewInputRows`
+_RWKV_BACKEND_ROW_REVIEW_STATES = {
+    "filtered": int(RwkvReviewState.FILTERED),
+    "new": int(RwkvReviewState.LEARN_START),
+    "learning": int(RwkvReviewState.LEARNING),
+    "review": int(RwkvReviewState.REVIEW),
+    "relearning": int(RwkvReviewState.RELEARNING),
+}
+
+
+def _rwkv_review_input_batch_build_from_backend_rows(
     *,
-    reviewer: object,
-    response: scheduler_pb2.RwkvReviewInputRowsForCardsResponse,
+    response: _rsbridge.RwkvReviewInputRows,
     batch_size_override: int | None,
     load_start: float,
     source_label: str,
     source_size: int,
 ) -> RwkvReviewInputBatchBuild:
-    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
-    parsed_cards = 0
-    eligible_cards = 0
-    for row in response.rows:
-        parsed_cards += 1
-        review_input = _rwkv_review_input_from_backend_proto_row(row)
-        card_id = review_input.identity.card_id
-        batch_size = (
-            batch_size_override
-            if batch_size_override is not None
-            else (
-                row.batch_size
-                if _valid_rwkv_review_batch_size(row.batch_size)
-                else _DEFAULT_RWKV_REVIEW_BATCH_SIZE
-            )
-        )
-        inputs_by_batch_size.setdefault(batch_size, []).append((card_id, review_input))
-        eligible_cards += 1
+    # one query input per row, as `_rwkv_review_input_from_backend_row`
+    # reads a row, built in Rust (pylib/rsbridge/review_input_rows.rs)
+    inputs_by_batch_size = response.review_inputs(
+        RwkvReviewInput,
+        RwkvReviewIdentity,
+        _stable_preset_id,
+        _RWKV_BACKEND_ROW_REVIEW_STATES,
+        batch_size_override=batch_size_override,
+        default_batch_size=_DEFAULT_RWKV_REVIEW_BATCH_SIZE,
+        min_batch_size=_MIN_RWKV_REVIEW_BATCH_SIZE,
+        max_batch_size=_MAX_RWKV_REVIEW_BATCH_SIZE,
+        default_target_retention=_RWKV_DEFAULT_TARGET_RETENTION,
+    )
+    eligible_cards = len(response)
 
     elapsed_ms = (time.monotonic() - load_start) * 1000
     logger.debug(
@@ -23285,7 +23290,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     return RwkvReviewInputBatchBuild(
         inputs_by_batch_size=inputs_by_batch_size,
         loaded_rows=response.loaded_cards,
-        parsed_cards=parsed_cards,
+        parsed_cards=eligible_cards,
         cards_with_state=response.cards_with_supported_state,
         disabled_config_cards=response.disabled_config_cards,
         eligible_cards=eligible_cards,
@@ -23315,10 +23320,9 @@ def _rwkv_review_input_rows_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows from backend",
@@ -23363,10 +23367,9 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows for search from backend",
@@ -23415,10 +23418,9 @@ def _rwkv_review_input_rows_for_deck_review_queue_backend_response(
                 deck_id=deck_id,
                 include_new_cards=include_new_cards,
             )
-            raw = get_rows_raw(request.SerializeToString())
-            response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
-            response.ParseFromString(raw)
-            return response
+            return _rsbridge.RwkvReviewInputRows(
+                get_rows_raw(request.SerializeToString())
+            )
         except Exception:
             logger.debug(
                 "failed to load RWKV review input rows for deck review queue from backend",
@@ -23490,64 +23492,6 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         current_elapsed_seconds=_rwkv_backend_optional_int(
             row,
             "current_elapsed_seconds",
-        ),
-        target_retentions=(
-            target_retention,
-            target_retention,
-            target_retention,
-            target_retention,
-        ),
-        enforce_grade_order=_rwkv_backend_bool(
-            row,
-            "enforce_grade_order",
-            True,
-        ),
-    )
-
-
-def _rwkv_review_input_from_backend_proto_row(
-    row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
-) -> RwkvReviewInput:
-    preset_id = _stable_preset_id(row.preset_id) if row.preset_id else None
-    target_retention = (
-        row.target_retention
-        if _valid_probability(row.target_retention)
-        else _RWKV_DEFAULT_TARGET_RETENTION
-    )
-    state_kind = row.current_state_kind or None
-    normal_state_kind = row.current_normal_state_kind or None
-
-    return RwkvReviewInput(
-        identity=RwkvReviewIdentity(
-            card_id=row.card_id,
-            note_id=row.note_id,
-            deck_id=row.deck_id,
-            preset_id=preset_id,
-        ),
-        is_query=True,
-        ease=None,
-        duration_millis=None,
-        card_type=_rwkv_review_state_for_scheduling_state(
-            state_kind=state_kind,
-            normal_state_kind=normal_state_kind,
-            card_type=row.card_type,
-        ),
-        card_queue=row.card_queue,
-        card_due=row.card_due,
-        interval_days=row.interval_days,
-        ease_factor=row.ease_factor,
-        reps=row.reps,
-        lapses=row.lapses,
-        day_offset=row.day_offset,
-        current_state_kind=state_kind,
-        current_normal_state_kind=normal_state_kind,
-        current_elapsed_days=(
-            row.current_elapsed_days if row.HasField("current_elapsed_days") else None
-        ),
-        current_elapsed_seconds=(
-            row.current_elapsed_seconds
-            if row.HasField("current_elapsed_seconds")
-            else None
         ),
         target_retentions=(
             target_retention,

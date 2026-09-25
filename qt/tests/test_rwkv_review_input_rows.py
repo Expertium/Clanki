@@ -82,7 +82,9 @@ def _reference_backend_bool(row: Any, name: str, default: bool) -> bool:
 def _reference_input(row: Any) -> RwkvReviewInput:
     preset_id = _reference_stable_preset_id(row.preset_id) if row.preset_id else None
     target_retention = (
-        row.target_retention if _reference_valid_probability(row.target_retention) else 0.9
+        row.target_retention
+        if _reference_valid_probability(row.target_retention)
+        else 0.9
     )
     state_kind = row.current_state_kind or None
     normal_state_kind = row.current_normal_state_kind or None
