@@ -22102,3 +22102,42 @@ def test_a_replay_key_that_cannot_be_read_discards_the_resident_state(
     rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
 
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+# Pins spec database.dbproxy-read-only: the RWKV history read of one card
+# (`with eligible as ...`, run after a new card's first answer and at Grade
+# Now) is a read, so it leaves "Undo Answer Card" and the study queue.
+def test_the_rwkv_history_read_keeps_undo_answer_card(tmp_path: Path) -> None:
+    from anki.cards import CardId
+    from anki.collection import Collection as AnkiCollection
+    from anki.scheduler.v3 import CardAnswer
+    from anki.scheduler.v3 import Scheduler as V3Scheduler
+
+    col = AnkiCollection(str(tmp_path / "history-read.anki2"))
+    try:
+        for front in ("one", "two"):
+            # the stock notetype, not its name: another test may have changed
+            # the language its name and fields are created in
+            note = col.new_note(col.models.current())
+            note.fields[0] = front
+            col.add_note(note, DeckId(1))
+        sched = col.sched
+        assert isinstance(sched, V3Scheduler)
+        top = sched.get_queued_cards().cards[0]
+        card = col.get_card(CardId(top.card.id))
+        card.start_timer()
+        sched.answer_card(
+            sched.build_answer(card=card, states=top.states, rating=CardAnswer.GOOD)
+        )
+        undo = col.undo_status().undo
+        assert undo
+
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        rows = rwkv_scheduler._rwkv_card_history_rows(reviewer, [card.id])
+
+        assert [row[0] for row in rows] == col.db.list(
+            "select id from revlog where cid = ?", card.id
+        )
+        assert col.undo_status().undo == undo
+    finally:
+        col.close(downgrade=False)
