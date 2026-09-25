@@ -204,6 +204,43 @@ using FSRS-7's values.
 `test_rwkv_instant_card_info_says_the_model_is_missing`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.rwkv-no-first-review-retrievability
+
+Given a card whose next answer is its first review (a new card, also one that
+Forget reset to new), no algorithm computes a probability of recall for it,
+and RWKV-Instant never queries the model for it:
+
+- a Stats search, a Browser `prop:rwkv:r` search or a filtered deck scores no
+  new card, also when the search says `is:new`: such a card has no RWKV value,
+  so the Stats retrievability graph does not draw it, `prop:rwkv:r` does not
+  match it, and a filtered deck ordered by retrievability puts it after the
+  cards with a value (`sched.filtered-deck-one-algorithm`);
+- card info and AnkiConnect's `prop:r` give no RWKV-Instant value for it;
+- the reviewer asks RWKV-Instant for no prediction when it shows it, so its
+  first answer stores no RWKV-Instant prediction of that review;
+- no new-card gather order ranks by retrievability
+  (`deck-options.no-new-card-retrievability-order`).
+
+RWKV-Curve still computes its curve when the reviewer shows a new card: the
+curve gives the first answer's intervals, and RWKV-Curve has no value for the
+card before that answer.
+
+**Why:** Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): the value for
+a first review depends only on the deck, the preset and the creation date, so
+it says nothing about the card's memory. Before, RWKV-Instant scored new cards
+for the new-card gather orders, for `is:new` searches, for card info and when
+the reviewer showed one; each query also drew the card's model ID code on the
+live state.
+
+**Pinned by:** `review_input_rows_never_score_a_new_card`,
+`review_input_rows_for_search_uses_search_table` (`is:new`)
+(`rslib/src/scheduler/rwkv.rs`);
+`test_rwkv_instant_scores_no_new_card`,
+`test_rwkv_instant_card_info_has_no_value_for_a_new_card`,
+`test_rwkv_instant_reviewer_does_not_predict_a_new_card`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-instant-waits
 
 Given a collection that runs RWKV-Instant:
@@ -1033,14 +1070,22 @@ state tests; `test_rwkv_curve_states_*` and
 
 ## sched.rwkv-review-order
 
-Given a preset running RWKV-Curve or RWKV-Instant whose review sort order is
+Given a preset running RWKV-Curve whose review sort order is
 "Retrievability ascending", "Retrievability descending" or "Relative
 overdueness", when the study queue gathers due review cards and interday
-learning cards that it does not rank by RWKV-Instant queue scores (under
-RWKV-Instant only interday learning cards: its review cards come only from
-its scores, `sched.rwkv-instant-waits`), it ranks
-them by RWKV's own measure and applies the daily limits in that order. A
-card's retrievability is its RWKV-Curve retrievability score for today; a
+learning cards, it ranks them by RWKV-Curve's own measure and applies the
+daily limits in that order.
+
+Under RWKV-Instant with one of these orders, the review cards come only from
+RWKV-Instant's scores (`sched.rwkv-instant-waits`), ranked by them. Its
+interday learning cards (from another client's steps or an algorithm switch;
+RWKV-Instant itself puts no card in the learning queue,
+`sched.rwkv-instant-no-steps`) have no RWKV-Instant score, so they come by due
+day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
+interval and no FSRS-7 retrievability ranks them.
+
+Under RWKV-Curve, a card's retrievability is its RWKV-Curve retrievability
+score for today; a
 card without a score gets the value of the exponential forgetting curve
 through the interval RWKV scheduled for it, target ^ (days since the last
 review / interval), where the target is the card's desired retention, else
@@ -1057,9 +1102,16 @@ measure relative overdueness should use, he chose "RWKV curve scores"
 the retrievability orders. Before this entry, relative overdueness came from
 an SQL function that applied a one-component FSRS forgetting curve to the
 card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's —
-and the retrievability orders gathered the cards in due-day order.
+and the retrievability orders gathered the cards in due-day order. Andrew,
+2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
+(`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
+RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
+through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
+for them, so the due day, which every order without an algorithm uses, orders
+them.
 
-**Pinned by:** `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
+**Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
+`rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
@@ -1204,7 +1256,12 @@ has no intervals at all.
 
 Given a preset that RWKV-Instant schedules, the preset has no learning steps
 and no relearning steps, whatever steps it stores: a card it answers never
-enters the learning or relearning queue, and the deck-options rows for
+enters the learning or relearning queue. This holds for sub-day intervals too:
+an answer whose FSRS-7 interval is under a day (Again on a new card with the
+default parameters, for one) makes the card a review card due in whole days
+(at least one), as with no learning queue, instead of an intraday learning
+card whose return FSRS-7 would decide; RWKV-Instant's scores then decide when
+it comes back (`sched.rwkv-instant-waits`). The deck-options rows for
 Learning steps, Relearning steps, Maximum interval, Minimum interval and
 Maximum number of same-day reviews are not shown. The stored values are kept
 untouched, so a preset that returns to FSRS-7 or RWKV-Curve gets its steps
@@ -1219,11 +1276,15 @@ steps should merely be hidden or should stop working, he answered that they
 must not exist under Instant. RWKV-Instant decides when a card comes back
 from the card's own score, so every setting that shapes an interval has
 nothing to act on; a setting that is shown but does nothing is worse than no
-setting.
+setting. Andrew, 2026-09-24, "fix the bugs on our side": the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3) found that
+FSRS-7's sub-day intervals still sent Instant cards to the learning queue,
+which RWKV-Instant does not score, so FSRS-7 decided their return.
 
 **Pinned by:** `rwkv_instant_has_no_steps_and_no_same_day_limit`
 (`rslib/src/deckconfig/mod.rs`),
-`rwkv_instant_answers_a_new_card_without_a_learning_step`
+`rwkv_instant_answers_a_new_card_without_a_learning_step`,
+`rwkv_instant_sub_day_fsrs7_intervals_stay_out_of_the_learning_queue`
 (`rslib/src/scheduler/answering/mod.rs`) and
 `ts/routes/deck-options/scheduler-choice.test.ts`.
 

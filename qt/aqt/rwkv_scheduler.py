@@ -4291,6 +4291,11 @@ def update_reviewer_scheduling_states(
             # an FSRS-7 card gets no RWKV prediction at all (spec
             # ui.fsrs7-no-rwkv-values)
             return states
+        if not curve_enabled and _card_is_new(card):
+            # RWKV-Instant has no value for a first review; RWKV-Curve still
+            # needs its curve for the first answer's intervals (spec
+            # sched.rwkv-no-first-review-retrievability)
+            return states
         if not _reviewer_backend_ready_for_review(reviewer):
             logger.debug(
                 "RWKV scheduling prediction skipped: resident state unavailable"
@@ -8296,7 +8301,11 @@ def rwkv_card_info_rows(
     """
     del include_after_review
     card_id = _card_id(card)
-    if not rwkv_review_active(reviewer, card) or rwkv_review_enabled(reviewer, card):
+    if (
+        not rwkv_review_active(reviewer, card)
+        or rwkv_review_enabled(reviewer, card)
+        or _card_is_new(card)
+    ):
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
@@ -9453,7 +9462,7 @@ def _queried_card_info_diagnostics(
         return None
 
     card_id = _card_id(card)
-    if card_id is None:
+    if card_id is None or _card_is_new(card):
         return None
 
     try:
@@ -9807,6 +9816,14 @@ def _valid_button_probabilities(value: object) -> bool:
 
 def _card_id(card: object) -> int | None:
     return _int_attr(card, "id")
+
+
+def _card_is_new(card: object) -> bool:
+    """True for a card whose next answer is its first review (a new card, or
+    one reset to new). No algorithm has a retrievability for it: RWKV-Instant's
+    value would know only the deck, the preset and the creation date, so it is
+    never computed (spec sched.rwkv-no-first-review-retrievability)."""
+    return _int_attr(card, "type") == int(CARD_TYPE_NEW)
 
 
 def _deck_id(card: object) -> int | None:
@@ -19371,7 +19388,7 @@ def _rwkv_review_first_review_elapsed_from_card_creation(
 
 def _new_gather_uses_retrievability(deck_config: dict[str, object]) -> bool:
     """Only an RWKV-Instant preset gathers new cards by its scores (spec
-    deck-options.new-retrievability-order-instant-only)."""
+    deck-options.no-new-card-retrievability-order)."""
     if not _rwkv_review_instant_order_enabled(deck_config):
         return False
     value = deck_config.get(
@@ -24243,20 +24260,10 @@ def _rwkv_state_fields_for_stats_graph_values(
     first_review_elapsed_from_card_creation: bool,
 ) -> tuple[object, str | None, int | None, int | None]:
     if card_type == int(CARD_TYPE_NEW) and queue == int(QUEUE_TYPE_NEW):
-        elapsed_seconds = (
-            _elapsed_seconds_since_card_created_for_timing(
-                timing,
-                card_id,
-            )
-            if first_review_elapsed_from_card_creation
-            else None
-        )
-        if first_review_elapsed_from_card_creation and elapsed_seconds is None:
-            return None, None, None, None
-        elapsed_days = (
-            elapsed_seconds // 86_400 if elapsed_seconds is not None else None
-        )
-        return "normal", "new", elapsed_days, elapsed_seconds
+        # no algorithm has a retrievability for a card's first review: it
+        # would know only the deck, the preset and the creation date (spec
+        # sched.rwkv-no-first-review-retrievability)
+        return _UNSUPPORTED_RWKV_STATE, None, None, None
 
     if card_type == int(CARD_TYPE_REV) and queue in (
         int(QUEUE_TYPE_REV),
