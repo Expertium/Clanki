@@ -169,10 +169,7 @@ impl RwkvReviewInputRows {
         let mut kinds: HashMap<&str, Bound<'py, PyAny>> = HashMap::new();
         let mut retentions: HashMap<u32, Bound<'py, PyTuple>> = HashMap::new();
         let mut groups: Vec<(u32, Bound<'py, PyList>)> = Vec::new();
-        let override_group = match &batch_size_override {
-            Some(_) => Some(PyList::empty(py)),
-            None => None,
-        };
+        let override_group = batch_size_override.as_ref().map(|_| PyList::empty(py));
 
         for row in &self.rows {
             let preset_id = if row.preset_id.is_empty() {
