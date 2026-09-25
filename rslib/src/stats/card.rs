@@ -414,7 +414,8 @@ mod test {
     }
 
     // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: card info
-    // reads an unparsable "ignore reviews before" date as no date.
+    // reads a malformed "ignore reviews before" date that is not repaired yet
+    // as 1970-01-01.
     #[test]
     fn card_stats_survive_a_bad_ignore_before_date() -> Result<()> {
         let (mut col, cid) = test_collection()?;
@@ -425,9 +426,7 @@ mod test {
             rating: anki_proto::scheduler::card_answer::Rating::Good as i32,
             card_options: vec![],
         })?;
-        col.update_default_deck_config(|config| {
-            config.ignore_revlogs_before_date = "2024-02-30".into();
-        });
+        col.store_raw_ignore_before_date(DeckConfigId(1), "2024-02-30");
         let stats = col.card_stats(cid)?;
         assert!(stats.revlog[0].memory_state.is_some());
         Ok(())

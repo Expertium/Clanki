@@ -1341,15 +1341,14 @@ pub(crate) mod test {
 
     // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a card
     // without a memory state in a preset whose "ignore reviews before" date
-    // is unparsable still answers, with the date read as no date.
+    // is malformed and not repaired yet still answers, with the date read as
+    // 1970-01-01.
     #[test]
     fn a_bad_ignore_before_date_does_not_stop_answering() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = false;
-            config.ignore_revlogs_before_date = "not a date".into();
-        });
+        col.update_default_deck_config(|config| config.rwkv_review_enabled = false);
+        col.store_raw_ignore_before_date(DeckConfigId(1), "not a date");
         let cid = add_due_review_card(&mut col, 10, 0, None)?;
         let states = col.get_scheduling_states(cid)?;
         col.answer_card(&mut CardAnswer {

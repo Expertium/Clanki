@@ -2045,9 +2045,7 @@ mod tests {
     fn a_damaged_card_does_not_stop_the_repair_or_the_reconcile() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
-        col.update_default_deck_config(|config| {
-            config.ignore_revlogs_before_date = "not a date".into();
-        });
+        col.store_raw_ignore_before_date(DeckConfigId(1), "not a date");
         let mut no_preset_deck = crate::tests::DeckAdder::new("no preset").add(&mut col);
         no_preset_deck.normal_mut()?.config_id = 999;
         col.storage.update_deck(&no_preset_deck)?;
