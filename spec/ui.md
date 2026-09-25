@@ -1946,7 +1946,9 @@ nothing.
 
 The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
-day, and again whenever a preset's FSRS-7 parameters change.
+day, and again whenever a preset's FSRS-7 parameters change. A later open on
+the same day writes predictions only when a preset is due for optimization
+(`deck-options.fsrs-auto-optimize`).
 
 It waits for a pause in what the user does **before it begins**. It asks
 which presets are stale only once ten seconds have passed without a key

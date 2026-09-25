@@ -107,8 +107,11 @@ def test_the_pass_runs_by_itself_and_only_once_a_day() -> None:
     assert backend.calls == 1
     assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
 
-    # the same day, on its own, it does not run again
+    # the same day, on its own, it only asks whether a preset is due for
+    # optimization, and with none due it writes nothing
     predictions.ensure_ready(mw)
+    while predictions.is_running():
+        pass
     assert backend.calls == 1
 
     # a parameter change does not wait for tomorrow
@@ -593,6 +596,41 @@ def test_due_presets_are_optimized_before_the_predictions() -> None:
     while predictions.is_running():
         pass
     assert mw.reported_failures == []
+
+
+# Pins spec/deck-options.md#deck-options.fsrs-auto-optimize: a preset that
+# becomes due after today's pass (unusable FSRS-7 parameters, such as an
+# outdated 35-value preview) is optimized at the next profile open, after the
+# same pause, without a question and without waiting for tomorrow.
+def test_a_preset_due_after_todays_pass_is_optimized_at_the_next_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = _quiet()
+    backend = _Backend(started, release, presets=[1])
+    mw = _mw(backend)
+    predictions.ensure_ready(mw)
+    started.wait(5)
+    while predictions.is_running():
+        pass
+    assert backend.optimized == []
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+
+    # later the same day the backend reports a due preset; the pass still
+    # waits for a pause before it asks
+    backend.due_for_optimize = [5]
+    waits: list[bool] = []
+
+    def pause(mw_: object, col: object) -> bool:
+        waits.append(True)
+        return True
+
+    monkeypatch.setattr(predictions, "_wait_for_a_pause", pause)
+    predictions.ensure_ready(mw)
+    while predictions.is_running():
+        pass
+    assert waits == [True]
+    assert backend.optimized == [5]
+    assert backend.order[-3:] == ["refresh", "optimize", "refresh"]
 
 
 # Pins spec/deck-options.md#deck-options.fsrs-auto-optimize

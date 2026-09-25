@@ -41,10 +41,24 @@ impl DeckConfig {
             .unwrap_or(DEFAULT_FSRS_AUTO_OPTIMIZE_DAYS)
     }
 
+    /// Stored FSRS-7 parameters that FSRS-7 cannot run (an outdated
+    /// 35-value preview, or any count other than 34): the preset runs the
+    /// FSRS-7 defaults until it is optimized (spec sched.fsrs7-only).
+    pub(crate) fn holds_unusable_fsrs7_params(&self) -> bool {
+        !self.inner.fsrs_params_7.is_empty()
+            && self.fsrs_params() != self.inner.fsrs_params_7.as_slice()
+    }
+
+    /// Due when its days have passed, and at once when it holds unusable
+    /// FSRS-7 parameters, whatever its last optimization; never with 0
+    /// days (spec deck-options.fsrs-auto-optimize).
     fn fsrs_auto_optimize_due(&self, today: u32) -> bool {
         let days = self.fsrs_auto_optimize_days();
         if days == 0 {
             return false;
+        }
+        if self.holds_unusable_fsrs7_params() {
+            return true;
         }
         match self.inner.fsrs_last_optimized_day {
             None => true,
@@ -150,9 +164,12 @@ impl Collection {
     /// Saves the trained parameters as a save in deck options would: the
     /// cards' memory states follow them, and the stored per-review
     /// predictions go. The day is recorded even when nothing changed, so a
-    /// preset with too few reviews is not retrained every day. Not undoable:
-    /// the pass runs while the user reviews, and Undo must stay theirs.
-    /// Returns true when the parameters changed.
+    /// preset with too few reviews is not retrained every day. Unusable
+    /// FSRS-7 parameters that training did not replace are cleared: the
+    /// preset ran the FSRS-7 defaults with them and runs them without, and
+    /// it is then not due again at every pass. Not undoable: the pass runs
+    /// while the user reviews, and Undo must stay theirs. Returns true when
+    /// the parameters changed.
     pub(crate) fn apply_fsrs_auto_optimize(
         &mut self,
         key: FsrsAutoOptimizeJobKey,
@@ -171,6 +188,8 @@ impl Collection {
             if changed {
                 FSRS::new(&params)?;
                 config.inner.fsrs_params_7 = params;
+            } else if config.holds_unusable_fsrs7_params() {
+                config.inner.fsrs_params_7.clear();
             }
             col.add_or_update_deck_config(&mut config)?;
             if changed {
@@ -310,6 +329,55 @@ mod test {
                 "{days:?} {today}"
             );
         }
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-auto-optimize: a preset
+    // with unusable FSRS-7 parameters (an outdated 35-value preview) is due
+    // at the next pass, even when it was optimized today, and is optimized
+    // without a question; parameters training cannot replace are cleared, so
+    // it is not due again. 0 days still means never.
+    #[test]
+    fn a_preset_with_unusable_params_is_optimized_at_the_next_pass() -> Result<()> {
+        let mut col = fsrs_collection();
+        let preset = DeckConfigId(1);
+        let today = col.timing_today()?.days_elapsed;
+        let store = |col: &mut Collection, params: Vec<f32>, days: Option<u32>| {
+            let mut config = col.storage.get_deck_config(preset).unwrap().unwrap();
+            config.inner.fsrs_params_7 = params;
+            config.inner.fsrs_last_optimized_day = Some(today);
+            config.inner.fsrs_auto_optimize_days = days;
+            col.storage.update_deck_conf(&config).unwrap();
+        };
+        let preview = vec![0.5; 35];
+
+        // optimized today with usable parameters: not due
+        store(&mut col, fsrs::DEFAULT_PARAMETERS.to_vec(), None);
+        assert!(col.fsrs_presets_due_for_auto_optimize()?.is_empty());
+        // the same preset with 35 values: due at once, and optimized
+        store(&mut col, preview.clone(), None);
+        assert_eq!(col.fsrs_presets_due_for_auto_optimize()?, vec![preset]);
+        let job = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        // training starts from the FSRS-7 defaults the preset runs
+        let trained_params = trained(&fsrs::DEFAULT_PARAMETERS);
+        assert!(col.apply_fsrs_auto_optimize(job.key, trained_params.clone(), 3)?);
+        let after = col.storage.get_deck_config(preset)?.unwrap();
+        assert_eq!(after.inner.fsrs_params_7, trained_params);
+        assert!(col.fsrs_presets_due_for_auto_optimize()?.is_empty());
+
+        // too few reviews to train: the unusable values go, the preset keeps
+        // running the defaults, and it is not due again
+        store(&mut col, preview.clone(), None);
+        let job = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        assert!(!col.apply_fsrs_auto_optimize(job.key, fsrs::DEFAULT_PARAMETERS.to_vec(), 0)?);
+        let after = col.storage.get_deck_config(preset)?.unwrap();
+        assert!(after.inner.fsrs_params_7.is_empty());
+        assert_eq!(after.fsrs_params(), fsrs::DEFAULT_PARAMETERS);
+        assert!(col.fsrs_presets_due_for_auto_optimize()?.is_empty());
+
+        // "Optimize every 0 days" (never) is left alone
+        store(&mut col, preview, Some(0));
+        assert!(col.fsrs_presets_due_for_auto_optimize()?.is_empty());
         Ok(())
     }
 

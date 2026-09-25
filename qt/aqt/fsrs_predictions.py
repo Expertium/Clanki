@@ -46,7 +46,11 @@ rest of the pass then writes them again for the new parameters.
 It runs at most once a day on its own, which is the upkeep the graphs need:
 a stored row is a validation fold, and the per-answer rows written while
 reviewing carry a different sample role that the graph's role order hides
-behind the folds, so live answering does not keep the set fresh.
+behind the folds, so live answering does not keep the set fresh. Later the
+same day, a profile open still starts a pass that only asks, after the same
+pause, whether a preset is due for optimization, and stops when none is: a
+preset with unusable FSRS-7 parameters (an outdated 35-value preview) is
+due at once, and is optimized then without a question.
 """
 
 from __future__ import annotations
@@ -125,8 +129,9 @@ def is_holding_collection() -> bool:
 
 
 def ensure_ready(mw: Any, *, force: bool = False) -> None:
-    """Starts the pass unless one runs already, or unless one has already
-    finished today and `force` is not set."""
+    """Starts the pass unless one runs already. When one has already
+    finished today and `force` is not set, the pass does its work only if a
+    preset is due for optimization (spec deck-options.fsrs-auto-optimize)."""
 
     col = getattr(mw, "col", None)
     if col is None:
@@ -135,8 +140,7 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
         global _running, _waiting
         if _running:
             return
-        if not force and _finished_today(mw, col):
-            return
+        only_if_due = not force and _finished_today(mw, col)
         if rwkv_startup_busy(mw):
             # the RWKV state cache is loading: ask again rather than start
             # behind it (spec ui.stats-fsrs-predictions-ready)
@@ -150,7 +154,7 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
         _running = True
     threading.Thread(
         target=_run,
-        args=(mw, col),
+        args=(mw, col, only_if_due),
         name="fsrs-predictions",
         daemon=True,
     ).start()
@@ -255,14 +259,19 @@ def _holding() -> Iterator[None]:
         _holding_collection = False
 
 
-def _run(mw: Any, col: Any) -> None:
+def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
     global _running
     try:
         # the pass does not begin until the user has paused: asking which
         # presets are stale holds the collection too
         if not _wait_for_a_pause(mw, col):
             return
-        optimized = _auto_optimize(mw, col)
+        with _holding():
+            due = list(col._backend.fsrs_presets_due_for_auto_optimize())
+        if only_if_due and not due:
+            # today's pass is done and no preset is due for optimization
+            return
+        optimized = _auto_optimize(mw, col, due)
         if optimized is None:
             return
         failed = not optimized
@@ -329,14 +338,12 @@ def _collection_closed(mw: Any, col: Any) -> bool:
     return mw.col is not col or col.db is None
 
 
-def _auto_optimize(mw: Any, col: Any) -> bool | None:
+def _auto_optimize(mw: Any, col: Any, presets: list[int]) -> bool | None:
     """Optimizes the presets that are due, one per call, with a rest between
     two of them. None when the collection closed meanwhile; False when a
     preset could not be optimized. That preset is logged and skipped, and
     the others are still optimized (spec deck-options.fsrs-auto-optimize)."""
     started = time.monotonic()
-    with _holding():
-        presets = list(col._backend.fsrs_presets_due_for_auto_optimize())
     if not _rest_after(mw, col, started):
         return None
     changed = False
