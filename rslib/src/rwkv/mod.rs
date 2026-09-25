@@ -12477,7 +12477,7 @@ create table segment_state_chunks (
             target_retentions: [None; 4],
             enforce_grade_order: true,
         };
-        let mut features = FeatureState::default();
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
         features.store_review(&input(123, 40, -1, 0));
         features.store_review(&input(5, 41, -1, 0));
         features.store_review(&input(123, 45, 5, 2));
@@ -12488,7 +12488,7 @@ create table segment_state_chunks (
 
         assert_eq!(features.review_index, before);
         assert!(features.card_set.contains_key(&5));
-        let mut unseen = features.clone();
+        let unseen = features.clone();
         let forgotten = features.features_for(&input(123, 50, -1, 0));
         let never_seen = unseen.features_for(&input(777, 50, -1, 0));
         // the elapsed, rating, count and state features, then (after the
