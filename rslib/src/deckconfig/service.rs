@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
 use crate::scheduler::fsrs::simulator::is_included_card;
 use crate::scheduler::fsrs::simulator::normalized_fsrs_parameters;
+use crate::scheduler::fsrs::simulator::SingleTraceStability;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 
 impl crate::services::DeckConfigService for Collection {
@@ -125,6 +126,7 @@ impl crate::services::DeckConfigService for Collection {
         let mut config = guard.col.get_optimal_retention_parameters(revlogs)?;
         let fsrs_card_params = std::sync::Arc::new(normalized_fsrs_parameters(&input.w)?);
         let params = fsrs_card_params.clone();
+        let mut single_trace = SingleTraceStability::default();
         let cards = guard
             .col
             .storage
@@ -139,6 +141,7 @@ impl crate::services::DeckConfigService for Collection {
                     c.memory_state?,
                     desired_retention,
                     fsrs_card_params.clone(),
+                    &mut single_trace,
                 )
             })
             .collect::<Vec<fsrs::Card>>();

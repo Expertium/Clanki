@@ -151,15 +151,21 @@ def test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint(
 
 
 def _add_card_with_history(
-    col: Collection, card_id: int, rows: list[tuple[int, int, int]]
+    col: Collection,
+    card_id: int,
+    rows: list[tuple[int, int, int]],
+    *,
+    deleted: bool = False,
 ) -> None:
-    col.db.execute(
-        "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, "
-        "factor, reps, lapses, left, odue, odid, flags, data) "
-        "values (?, 1, ?, 0, 0, -1, 2, 2, 1, 20, 2500, 0, 0, 0, 0, 0, 0, '')",
-        card_id,
-        int(DeckId(1)),
-    )
+    """`deleted`: the card's row is gone and only its reviews are left."""
+    if not deleted:
+        col.db.execute(
+            "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, "
+            "factor, reps, lapses, left, odue, odid, flags, data) "
+            "values (?, 1, ?, 0, 0, -1, 2, 2, 1, 20, 2500, 0, 0, 0, 0, 0, 0, '')",
+            card_id,
+            int(DeckId(1)),
+        )
     day = 86_400 * 1000
     for offset, (ease, kind, factor) in enumerate(rows):
         # interleaved review times across cards, so a merge must really merge
@@ -245,6 +251,10 @@ def test_the_backend_reads_the_same_whole_history_rows_as_the_query(
         assert backend is not None, "the backend did not answer"
         assert len(query) > 50
         assert [tuple(row) for row in backend] == [tuple(row) for row in query]
+        # the deleted cards' reviews are there, with no note and no deck
+        deleted = [row for row in query if row[2] is None]
+        assert len(deleted) > 5
+        assert all(row[3] is None for row in deleted)
         # rows that cross the chunks the columns are read in are the same rows
         monkeypatch.setattr(rwkv_scheduler, "BACKEND_ROWS_CHUNK", 7)
         assert rwkv_scheduler._backend_historical_rwkv_review_rows(col) == backend
@@ -275,7 +285,11 @@ def _build_replay_collection(col: Collection) -> None:
         [RATED_REVIEW, RATED_RELEARNING],
     ]
     for n in range(25):
-        _add_card_with_history(col, 1_700_000_000_000 + n * 7_919, shapes[n % 4])
+        # every sixth card is deleted: its reviews stay in the replay (spec
+        # sched.rwkv-replay-deleted-cards)
+        _add_card_with_history(
+            col, 1_700_000_000_000 + n * 7_919, shapes[n % 4], deleted=n % 6 == 2
+        )
 
 
 def test_a_read_after_a_review_id_returns_the_same_rows_as_the_whole_read(

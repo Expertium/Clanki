@@ -20,15 +20,13 @@ use crate::prelude::*;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateEntry;
 use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::compute_params_from_prepared;
+use crate::scheduler::fsrs::params::fsrs_optimizer_search;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::params::PreparedComputeParams;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
-use crate::search::JoinSearches;
-use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
-use crate::search::StateKind;
 use crate::storage::comma_separated_ids;
 
 /// "Optimize every N days" when the preset has never been given a value.
@@ -129,14 +127,7 @@ impl Collection {
             return Ok(None);
         }
         // the same review set as "Optimize All Presets"
-        let search = if config.inner.param_search.trim().is_empty() {
-            SearchNode::Preset(config.name.clone())
-                .and(SearchNode::State(StateKind::Suspended).negated())
-                .try_into_search()?
-                .to_string()
-        } else {
-            config.inner.param_search.clone()
-        };
+        let search = fsrs_optimizer_search(&config)?;
         let current_params = config.fsrs_params().to_vec();
         let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
             search: &search,

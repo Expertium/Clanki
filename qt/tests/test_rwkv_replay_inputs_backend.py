@@ -51,7 +51,8 @@ def _build(path: Path) -> Collection:
     home deck counts), with every shape of history: Learning starts, Forget
     cuts, relearning, filtered and manual rows, reviews spread over weeks and
     interleaved across cards, some cards created long before their first
-    review and one after it."""
+    review and one after it, and cards that were deleted, whose reviews are
+    all that is left of them (spec sched.rwkv-replay-deleted-cards)."""
     col = Collection(str(path))
     first_review = 1_600_000_000_000
     col.crt = first_review // 1000 - 30 * 86_400
@@ -79,6 +80,8 @@ def _build(path: Path) -> Collection:
             filtered if in_filtered else deck_id,
             deck_id if in_filtered else 0,
         )
+        if n % 9 == 4:
+            col.db.execute("delete from cards where id = ?", card_id)
         for offset, (ease, kind, factor) in enumerate(SHAPES[n % len(SHAPES)]):
             col.db.execute(
                 "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, "
@@ -163,11 +166,47 @@ def test_the_backend_builds_the_whole_history_as_python_does(
     assert backend.review_count > 100
     # the history has what makes the fields differ from review to review
     assert {review.card_type for review in backend.reviews} >= {0, 2, 3, 4}
-    assert len({review.identity.preset_id for review in backend.reviews}) == 2
+    presets = {review.identity.preset_id for review in backend.reviews}
+    assert len(presets - {None}) == 2
     assert any(review.current_elapsed_days == -1 for review in backend.reviews)
     assert any(review.current_elapsed_seconds > 86_400 for review in backend.reviews)
     assert len({review.day_offset for review in backend.reviews}) > 10
     _assert_same(backend, python)
+
+
+def test_a_deleted_cards_reviews_are_replayed_without_ids(
+    col: Collection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins spec sched.rwkv-replay-deleted-cards: the reviews of a card that
+    is gone stay in the replay, in both builds, with no note, deck or preset,
+    and the fingerprint accepts the history."""
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+    backend, python = _both(col, monkeypatch)
+    _assert_same(backend, python)
+    existing = set(col.db.list("select id from cards"))
+    deleted = [
+        review for review in backend.reviews if review.identity.card_id not in existing
+    ]
+    assert len({review.identity.card_id for review in deleted}) == 4
+    assert all(
+        (review.identity.note_id, review.identity.deck_id, review.identity.preset_id)
+        == (None, None, None)
+        for review in deleted
+    )
+    assert all(
+        review.identity.note_id is not None
+        for review in backend.reviews
+        if review.identity.card_id in existing
+    )
+    fingerprint = rwkv_scheduler._rwkv_historical_review_fingerprint(
+        reviewer,
+        expected_identity=rwkv_scheduler._RwkvHistoryPrefixIdentity(
+            last_review_id=backend.last_review_id,
+            review_count=backend.review_count,
+            history_hash=backend.history_hash,
+        ),
+    )
+    assert fingerprint is not None and fingerprint.history_is_valid
 
 
 @pytest.mark.parametrize(

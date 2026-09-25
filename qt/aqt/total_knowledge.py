@@ -28,7 +28,11 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from anki.stats_pb2 import TotalKnowledgeRwkvProgress
+from anki.stats_pb2 import (
+    TotalKnowledgeRwkvProgress,
+    TotalKnowledgeRwkvReplayRequest,
+    TotalKnowledgeRwkvReplayResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +336,7 @@ def _backend_replay(
     reviewer = SimpleNamespace(mw=mw)
     build = getattr(
         getattr(getattr(mw, "col", None), "_backend", None),
-        "total_knowledge_rwkv_replay",
+        "total_knowledge_rwkv_replay_raw",
         None,
     )
     if (
@@ -342,15 +346,19 @@ def _backend_replay(
     ):
         return None
     try:
-        response = build(
-            card_ids=array("q", card_ids).tobytes(),
-            stable_preset_ids=rwkv._rwkv_stable_preset_ids(reviewer),
-            first_review_uses_creation_by_config_id=(
-                rwkv._rwkv_first_review_uses_creation_by_config_id(reviewer)
-            ),
-            today=today,
-            next_day_at=next_day_at,
-            digest_days=digest_days,
+        response, columns = _replay_response(
+            build(
+                TotalKnowledgeRwkvReplayRequest(
+                    card_ids=array("q", card_ids).tobytes(),
+                    stable_preset_ids=rwkv._rwkv_stable_preset_ids(reviewer),
+                    first_review_uses_creation_by_config_id=(
+                        rwkv._rwkv_first_review_uses_creation_by_config_id(reviewer)
+                    ),
+                    today=today,
+                    next_day_at=next_day_at,
+                    digest_days=digest_days,
+                ).SerializeToString()
+            )
         )
     except Exception:
         logger.debug(
@@ -364,13 +372,13 @@ def _backend_replay(
     ):
         return None
 
-    rows = response.packed_rows
+    rows = columns["packed_rows"]
     width = _PACKED_PREDICTION_REQUEST_ROW.size
     first_day = response.first_day
-    change_ends = memoryview(response.day_change_ends).cast("q")
-    change_cards = memoryview(response.change_card_ids).cast("q")
-    change_reviews = memoryview(response.change_review_indexes).cast("q")
-    change_until = memoryview(response.change_until_days).cast("q")
+    change_ends = columns["day_change_ends"].cast("q")
+    change_cards = columns["change_card_ids"].cast("q")
+    change_reviews = columns["change_review_indexes"].cast("q")
+    change_until = columns["change_until_days"].cast("q")
     digests = dict(zip(digest_days, response.digests, strict=True))
 
     def changes(day: int) -> list[tuple[int, Any, int]]:
@@ -390,16 +398,89 @@ def _backend_replay(
     return _Replay(
         first_day=first_day,
         has_reviews=response.review_count > 0,
-        day_review_ends=memoryview(response.day_review_ends).cast("q"),
+        day_review_ends=columns["day_review_ends"].cast("q"),
         warm_up=lambda runtime, start, end: runtime.warm_up_packed_rows_in_place(
-            rows[start * width : end * width], end - start
+            bytes(rows[start * width : end * width]), end - start
         ),
         changes=changes,
         set_rating=lambda last_rating, card_id, review: last_rating.set_row(
-            card_id, rows[review * width : (review + 1) * width]
+            card_id, bytes(rows[review * width : (review + 1) * width])
         ),
         digest=digests.get,
     )
+
+
+# The response's byte columns, by field number. The packed rows alone are
+# ~60 MB on Andrew's collection: parsing the response copied them, and
+# reading the field copied them again, each copy one call that held the GIL
+# for 14-18 ms while the main thread waited. `_replay_response` reads the
+# columns as views of the response's bytes instead.
+_REPLAY_COLUMNS = {
+    field.number: field.name
+    for field in TotalKnowledgeRwkvReplayResponse.DESCRIPTOR.fields
+    if field.name
+    in (
+        "day_review_ends",
+        "day_change_ends",
+        "packed_rows",
+        "change_card_ids",
+        "change_review_indexes",
+        "change_until_days",
+    )
+}
+
+
+def _replay_response(
+    raw: bytes,
+) -> tuple[TotalKnowledgeRwkvReplayResponse, dict[str, memoryview]]:
+    """The backend's `TotalKnowledgeRwkvReplayResponse` without its byte
+    columns, and the columns (`_REPLAY_COLUMNS`) as views of `raw`.
+
+    The backend (prost) writes the fields in number order, so the columns
+    (fields 3-8) lie between the fields before them and the fields after
+    them. Those two parts are parsed as usual; the columns are found by
+    their tags. A column the backend left out (an empty one) is an empty
+    view."""
+
+    view = memoryview(raw)
+    columns = dict.fromkeys(_REPLAY_COLUMNS.values(), memoryview(b""))
+    last_column = max(_REPLAY_COLUMNS)
+    head_end = None
+    offset = 0
+    while offset < len(view):
+        field_start = offset
+        tag, offset = _varint(view, offset)
+        number, wire_type = tag >> 3, tag & 7
+        if number > last_column:
+            offset = field_start
+            break
+        if wire_type == 0:
+            _, offset = _varint(view, offset)
+        elif wire_type == 2:
+            length, start = _varint(view, offset)
+            offset = start + length
+            if number in _REPLAY_COLUMNS:
+                if head_end is None:
+                    head_end = field_start
+                columns[_REPLAY_COLUMNS[number]] = view[start:offset]
+        else:
+            raise ValueError(f"unexpected wire type {wire_type}")
+    response = TotalKnowledgeRwkvReplayResponse()
+    response.ParseFromString(view[: offset if head_end is None else head_end])
+    response.MergeFromString(view[offset:])
+    return response, columns
+
+
+def _varint(view: memoryview, offset: int) -> tuple[int, int]:
+    """The protobuf varint at `offset`, and the offset after it."""
+    value = shift = 0
+    while True:
+        byte = view[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, offset
+        shift += 7
 
 
 def _python_replay(

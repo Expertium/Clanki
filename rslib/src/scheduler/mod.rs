@@ -16,6 +16,7 @@ pub mod new;
 pub(crate) mod queue;
 mod reviews;
 pub(crate) mod rwkv;
+pub mod rwkv_curve_recall;
 pub(crate) mod rwkv_inputs;
 mod service;
 pub mod states;

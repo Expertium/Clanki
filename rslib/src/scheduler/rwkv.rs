@@ -320,18 +320,15 @@ impl Collection {
         let enabled_deck_ids = (!input.include_disabled_decks)
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
         let parsed_search = parse_search(&input.search)?;
-        let candidate_search =
-            broaden_retrievability_properties(Node::Group(parsed_search.clone()), false);
+        let candidate_search = broaden_retrievability_properties(Node::Group(parsed_search), false);
         let guard = self.search_cards_into_table(candidate_search, SortMode::NoOrder)?;
         let searched_cards = guard.cards as u32;
-        let include_new_cards =
-            input.include_new_cards || search_explicitly_includes_new_cards(&parsed_search);
         let cards = guard
             .col
             .storage
             .rwkv_review_input_candidate_cards_in_search(
                 input.include_suspended_review,
-                include_new_cards,
+                input.include_new_cards,
                 enabled_deck_ids.as_ref(),
             )?;
         let mut response = guard.col.rwkv_review_input_rows_from_cards(
@@ -342,6 +339,12 @@ impl Collection {
             input.include_suspended_review,
             input.include_disabled_decks,
         )?;
+        // A review card that was never rated has no history for RWKV to
+        // predict from, so the readers of a search (the Browser, Stats,
+        // prop:rwkv searches, filtered decks, AnkiConnect) get no value for
+        // it (spec ui.rwkv-no-prediction-never-rated). The study queue reads
+        // its own rows and still scores it.
+        response.rows.retain(|row| !never_rated_review_row(row));
         response.searched_cards = searched_cards;
         Ok(response)
     }
@@ -398,7 +401,7 @@ impl Collection {
 
         for card in cards {
             let Some(state) =
-                self.rwkv_review_input_state(&card, timing, include_suspended_review, false)?
+                self.rwkv_review_input_state(&card, timing, include_suspended_review)?
             else {
                 continue;
             };
@@ -419,16 +422,6 @@ impl Collection {
                 disabled_config_cards += 1;
                 continue;
             }
-            let state = if config
-                .inner
-                .rwkv_review_first_review_elapsed_from_card_creation
-            {
-                self.rwkv_review_input_state(&card, timing, include_suspended_review, true)?
-                    .unwrap_or(state)
-            } else {
-                state
-            };
-
             eligible.push(RwkvReviewInputRowPartial {
                 target_retention: deck.effective_desired_retention(config),
                 batch_size: config.inner.rwkv_review_batch_size,
@@ -487,19 +480,12 @@ impl Collection {
         card: &Card,
         timing: SchedTimingToday,
         include_suspended_review: bool,
-        first_review_elapsed_from_card_creation: bool,
     ) -> Result<Option<RwkvReviewInputState>> {
         match (card.ctype, card.queue) {
-            (CardType::New, CardQueue::New) => {
-                let elapsed_seconds = first_review_elapsed_from_card_creation
-                    .then(|| timing.now.elapsed_secs_since_clamped(card.id.as_secs()));
-                Ok(Some(RwkvReviewInputState {
-                    state_kind: "normal".to_string(),
-                    normal_state_kind: "new".to_string(),
-                    elapsed_days: elapsed_seconds.map(|elapsed_seconds| elapsed_seconds / 86_400),
-                    elapsed_seconds,
-                }))
-            }
+            // no algorithm has a retrievability for a card's first review: it
+            // would know only the deck, the preset and the creation date
+            // (spec sched.rwkv-no-first-review-retrievability)
+            (CardType::New, CardQueue::New) => Ok(None),
             (CardType::Review, CardQueue::Review | CardQueue::Suspended) => {
                 if card.queue == CardQueue::Suspended && !include_suspended_review {
                     return Ok(None);
@@ -591,6 +577,14 @@ impl Collection {
     }
 }
 
+/// A review card with no answered review: Set Due Date on a new card, or a
+/// card imported without its history. Its row carries no elapsed time.
+fn never_rated_review_row(row: &scheduler::rwkv_review_input_rows_for_cards_response::Row) -> bool {
+    row.card_type == CardType::Review as i32
+        && row.current_elapsed_days.is_none()
+        && row.current_elapsed_seconds.is_none()
+}
+
 /// Broaden RWKV-dependent conditions so RWKV can score every potential match.
 ///
 /// The final search runs after the resulting scores have been cached. Treating
@@ -624,23 +618,6 @@ fn boolean_search_node(value: bool) -> Node {
         all_cards
     } else {
         Node::Not(Box::new(all_cards))
-    }
-}
-
-fn search_explicitly_includes_new_cards(nodes: &[Node]) -> bool {
-    nodes
-        .iter()
-        .any(|node| node_explicitly_includes_new_cards(node, false))
-}
-
-fn node_explicitly_includes_new_cards(node: &Node, negated: bool) -> bool {
-    match node {
-        Node::Search(SearchNode::State(StateKind::New)) => !negated,
-        Node::Not(inner) => node_explicitly_includes_new_cards(inner, !negated),
-        Node::Group(nodes) => nodes
-            .iter()
-            .any(|node| node_explicitly_includes_new_cards(node, negated)),
-        Node::And | Node::Or | Node::Search(_) => false,
     }
 }
 
@@ -1309,9 +1286,9 @@ mod test {
         hash.update(&PublishedReviewInput {
             review_id: 1_700_000_000_123,
             card_id: 1_699_999_000_123,
-            note_id: 42,
-            deck_id: 100,
-            preset_id: 1_000,
+            note_id: Some(42),
+            deck_id: Some(100),
+            preset_id: Some(1_000),
             ease: 3,
             duration_millis: 2_345,
             card_type: 0,
@@ -2231,42 +2208,118 @@ mod test {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.rwkv-no-first-review-retrievability: a
+    // new card gets no input row, even when the caller asks for new cards
     #[test]
-    fn review_input_rows_for_cards_can_include_new_cards() -> Result<()> {
+    fn review_input_rows_never_score_a_new_card() -> Result<()> {
         let mut col = Collection::new();
         col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
+            config.rwkv_review_enabled = false;
+            config.rwkv_review_instant_order_enabled = true;
             config.rwkv_review_first_review_elapsed_from_card_creation = true;
         });
+        let deck = col.get_or_create_normal_deck("Default")?;
         let timing = col.timing_today()?;
-        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
-        col.add_card(&mut card)?;
+        let mut review_card = Card::new(NoteId(10), 0, deck.id, timing.days_elapsed as i32 + 8);
+        review_card.ctype = CardType::Review;
+        review_card.queue = CardQueue::Review;
+        review_card.interval = 4;
+        review_card.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+        col.add_card(&mut review_card)?;
+        let mut new_card = Card::new(NoteId(20), 0, deck.id, timing.days_elapsed as i32);
+        col.add_card(&mut new_card)?;
+        let ids = vec![review_card.id.0, new_card.id.0];
 
-        let excluded =
-            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
-                card_ids: vec![card.id.0],
-                include_suspended_review: false,
+        for include_new_cards in [false, true] {
+            let by_ids =
+                col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                    card_ids: ids.clone(),
+                    include_suspended_review: false,
+                    include_disabled_decks: false,
+                    include_new_cards,
+                })?;
+            let by_search =
+                col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                    search: format!("cid:{},{}", ids[0], ids[1]),
+                    include_suspended_review: false,
+                    include_disabled_decks: false,
+                    include_new_cards,
+                })?;
+            let by_deck = col.rwkv_review_input_rows_for_deck_review_queue(
+                RwkvReviewInputRowsForDeckReviewQueueRequest {
+                    deck_id: deck.id.0,
+                    include_disabled_decks: false,
+                    include_new_cards,
+                },
+            )?;
+            for response in [by_ids, by_search, by_deck] {
+                let rows: Vec<_> = response.rows.iter().map(|row| row.card_id).collect();
+                assert_eq!(
+                    rows,
+                    vec![review_card.id.0],
+                    "include_new_cards={include_new_cards}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Pins ui.rwkv-no-prediction-never-rated: a review card that was never
+    /// rated (Set Due Date on a new card) gets no row for a search, so no
+    /// RWKV value, while the study queue's rows keep it.
+    #[test]
+    fn never_rated_review_cards_get_no_row_for_a_search() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = false;
+            config.rwkv_review_instant_order_enabled = true;
+            config.rwkv_review_batch_size = 1024;
+        });
+        let timing = col.timing_today()?;
+        let mut rated = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        rated.ctype = CardType::Review;
+        rated.queue = CardQueue::Review;
+        rated.interval = 4;
+        rated.last_review_time = Some(timing.next_day_at.adding_secs(-4 * 86_400));
+        col.add_card(&mut rated)?;
+        let mut never_rated = Card::new(NoteId(20), 0, DeckId(1), timing.days_elapsed as i32);
+        col.add_card(&mut never_rated)?;
+        col.set_due_date(&[never_rated.id], "0", None)?;
+        let never_rated = col.storage.get_card(never_rated.id)?.unwrap();
+        assert_eq!(never_rated.ctype, CardType::Review);
+        assert_eq!(never_rated.last_review_time, None);
+
+        let response =
+            col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                search: format!("cid:{},{}", rated.id.0, never_rated.id.0),
+                include_suspended_review: true,
                 include_disabled_decks: false,
                 include_new_cards: false,
             })?;
-        assert_eq!(excluded.loaded_cards, 0);
-        assert!(excluded.rows.is_empty());
+        assert_eq!(
+            response
+                .rows
+                .iter()
+                .map(|row| row.card_id)
+                .collect::<Vec<_>>(),
+            vec![rated.id.0]
+        );
 
-        let included =
-            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
-                card_ids: vec![card.id.0],
-                include_suspended_review: false,
+        let response = col.rwkv_review_input_rows_for_deck_review_queue(
+            RwkvReviewInputRowsForDeckReviewQueueRequest {
+                deck_id: 1,
                 include_disabled_decks: false,
-                include_new_cards: true,
-            })?;
-        assert_eq!(included.loaded_cards, 1);
-        assert_eq!(included.cards_with_supported_state, 1);
-        assert_eq!(included.rows.len(), 1);
-        assert_eq!(included.rows[0].card_id, card.id.0);
-        assert_eq!(included.rows[0].current_state_kind, "normal");
-        assert_eq!(included.rows[0].current_normal_state_kind, "new");
-        assert!(included.rows[0].current_elapsed_days.is_some());
-        assert!(included.rows[0].current_elapsed_seconds.is_some());
+                include_new_cards: false,
+            },
+        )?;
+        let mut queue_card_ids = response
+            .rows
+            .iter()
+            .map(|row| row.card_id)
+            .collect::<Vec<_>>();
+        queue_card_ids.sort_unstable();
+        assert_eq!(queue_card_ids, vec![rated.id.0, never_rated.id.0]);
+
         Ok(())
     }
 
@@ -2301,6 +2354,8 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
 
+        // an `is:new` search scores no card: a new card has no retrievability
+        // (spec sched.rwkv-no-first-review-retrievability)
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
                 search: format!("cid:{},{} is:new", review_card.id.0, new_card.id.0),
@@ -2310,16 +2365,8 @@ mod test {
             })?;
 
         assert_eq!(response.searched_cards, 1);
-        assert_eq!(response.loaded_cards, 1);
-        assert_eq!(response.cards_with_supported_state, 1);
-        assert_eq!(response.rows.len(), 1);
-        let row = &response.rows[0];
-        assert_eq!(row.card_id, new_card.id.0);
-        assert_eq!(row.current_state_kind, "normal");
-        assert_eq!(row.current_normal_state_kind, "new");
-        assert_eq!(row.current_elapsed_days, Some(0));
-        // seconds since the card was created: a slow run can cross a second
-        assert!(matches!(row.current_elapsed_seconds, Some(0..=2)));
+        assert_eq!(response.loaded_cards, 0);
+        assert!(response.rows.is_empty());
 
         let response =
             col.rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
@@ -2393,51 +2440,6 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
         assert_eq!(response.rows[0].deck_id, child.id.0);
-
-        Ok(())
-    }
-
-    #[test]
-    fn review_input_rows_for_deck_review_queue_can_include_new_cards() -> Result<()> {
-        let mut col = Collection::new();
-        col.update_default_deck_config(|config| {
-            config.rwkv_review_enabled = true;
-            config.rwkv_review_first_review_elapsed_from_card_creation = true;
-        });
-        let deck = col.get_or_create_normal_deck("Default")?;
-        let timing = col.timing_today()?;
-        let last_review_time = timing.next_day_at.adding_secs(-4 * 86_400);
-        let mut review_card = Card::new(NoteId(10), 0, deck.id, timing.days_elapsed as i32 + 8);
-        review_card.ctype = CardType::Review;
-        review_card.queue = CardQueue::Review;
-        review_card.interval = 4;
-        review_card.last_review_time = Some(last_review_time);
-        col.add_card(&mut review_card)?;
-        let mut new_card = Card::new(NoteId(20), 0, deck.id, timing.days_elapsed as i32);
-        col.add_card(&mut new_card)?;
-
-        let response = col.rwkv_review_input_rows_for_deck_review_queue(
-            RwkvReviewInputRowsForDeckReviewQueueRequest {
-                deck_id: deck.id.0,
-                include_disabled_decks: false,
-                include_new_cards: true,
-            },
-        )?;
-
-        assert_eq!(response.searched_cards, 2);
-        assert_eq!(response.loaded_cards, 2);
-        assert_eq!(response.cards_with_supported_state, 2);
-        assert_eq!(response.rows.len(), 2);
-        let new_row = response
-            .rows
-            .iter()
-            .find(|row| row.card_id == new_card.id.0)
-            .unwrap();
-        assert_eq!(new_row.current_state_kind, "normal");
-        assert_eq!(new_row.current_normal_state_kind, "new");
-        assert_eq!(new_row.current_elapsed_days, Some(0));
-        // seconds since the card was created: a slow run can cross a second
-        assert!(matches!(new_row.current_elapsed_seconds, Some(0..=2)));
 
         Ok(())
     }

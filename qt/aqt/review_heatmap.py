@@ -723,8 +723,11 @@ GROUP BY day, deck"""
     WHERE {ids} AND {where} GROUP BY cards.did))"""
         else:
             count_sql = f"(SELECT COUNT() FROM revlog WHERE {ids} AND {where})"
+        # The outer SELECT is needed: the backend treats a statement that
+        # does not start with SELECT as a write, and a write drops the undo
+        # step and the study queues (spec ui.review-heatmap-read-only).
         query = f"""
-WITH RECURSIVE
+SELECT * FROM (WITH RECURSIVE
   days(d, last) AS (
     SELECT ?, ?
     UNION ALL SELECT d + 86400, last FROM days WHERE d <= last),
@@ -738,7 +741,7 @@ WITH RECURSIVE
         AND {utc_offset.format("lo")} = {utc_offset.format("hi - 1")}
     FROM ranges WHERE hi IS NOT NULL)
 SELECT d, lo, hi, ok, CASE WHEN ok THEN {count_sql} END
-FROM checked"""
+FROM checked)"""
         # A few weeks of days per query: a query holds the collection, and
         # the UI thread waits for it. In one piece, 656k reviews held it
         # for 441 ms at start-up. A day's row depends on that day only, so
