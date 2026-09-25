@@ -318,11 +318,13 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    /// Query-only current interval and S90 per input from the resident
-    /// warm-up state; returns `(retrievability, current_interval, current_s90,
-    /// current_interval_unrounded)` with `0` standing for "no interval"; the
-    /// S90 and the last value are unrounded days (spec sched.rwkv-curve-s90,
-    /// sched.rwkv-curve-reschedule). Releases the GIL while predicting.
+    /// Current interval and S90 per input from the curve RWKV stored at the
+    /// card's last answered review; returns `(curve_retrievability,
+    /// current_interval, current_s90, current_interval_unrounded)` with `0`
+    /// standing for "no value" (a stored curve's recall is at least 1e-5);
+    /// the S90 and the last value are unrounded days (spec
+    /// sched.rwkv-curve-s90, sched.rwkv-curve-reschedule). Releases the GIL
+    /// while it runs.
     fn predict_current_intervals_many_from_warm_up(
         &mut self,
         py: Python<'_>,
@@ -342,7 +344,7 @@ impl RwkvInference {
                 .into_iter()
                 .map(|output| {
                     (
-                        output.retrievability,
+                        output.curve_retrievability.unwrap_or(0.0),
                         output.current_interval.unwrap_or(0),
                         output.current_s90.unwrap_or(0.0),
                         output.current_interval_unrounded.unwrap_or(0.0),

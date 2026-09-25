@@ -2052,13 +2052,14 @@ class RwkvStatefulReviewerBackend:
         self,
         review_inputs: Sequence[RwkvReviewInput],
     ) -> Sequence[RwkvReviewPrediction | None] | None:
-        """Query-only current interval and S90 straight from the resident state.
+        """Current interval and S90 from the curve RWKV stored at each card's
+        last answered review (spec sched.rwkv-curve-reschedule).
 
-        This is all that "Reschedule cards with RWKV-Curve" needs. The full
-        prediction path additionally runs the four simulated-answer passes,
-        serializes each card's state across the bridge, hashes it, and holds
-        the GIL; none of that changes the two numbers used here. Returns None
-        when the runtime cannot do it, so callers fall back to the full path.
+        This is all that "Reschedule cards with RWKV-Curve" needs. It never
+        reads the curve of a query row, which training does not supervise,
+        and runs no model pass. A card without a stored curve gets no
+        interval. Returns None when the runtime cannot do it, so callers
+        fall back to the full path.
         """
 
         predict_many = getattr(
@@ -2078,12 +2079,14 @@ class RwkvStatefulReviewerBackend:
             raise ValueError("RWKV current interval prediction count mismatch")
         return [
             RwkvReviewPrediction(
-                retrievability=float(retrievability),
+                curve_retrievability=(
+                    float(curve_retrievability) if curve_retrievability else None
+                ),
                 current_interval=int(current_interval) if current_interval else None,
                 current_interval_unrounded=float(unrounded) if unrounded else None,
                 current_s90=float(current_s90) if current_s90 else None,
             )
-            for retrievability, current_interval, current_s90, unrounded in outputs
+            for curve_retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     @property
@@ -8298,13 +8301,23 @@ def rwkv_card_info_rows(
             _set_rwkv_card_info_score(reviewer, card_id, None)
         return []
 
+    candidate = _card_info_review_candidate(reviewer, card)
+    if _rwkv_never_rated_review_card(candidate.reviewer, candidate.card):
+        # no history to predict from: no value, and no query of RWKV (spec
+        # ui.rwkv-no-prediction-never-rated)
+        if card_id is not None:
+            _set_rwkv_card_info_score(reviewer, card_id, None)
+        from aqt.utils import tr
+
+        return [(RWKV_CARD_INFO_R_LABEL, tr.qt_misc_rwkv_no_prediction())]
+
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
     diagnostics = _queried_card_info_diagnostics(
         reviewer,
         card,
         fallback_source=fallback_source,
-        _candidate=_card_info_review_candidate(reviewer, card),
+        _candidate=candidate,
     )
     retrievability = diagnostics.retrievability if diagnostics else None
     if diagnostics is None and card_id is not None:
@@ -8320,6 +8333,16 @@ def rwkv_card_info_rows(
     else:
         value = "Calculating…"
     return [(RWKV_CARD_INFO_R_LABEL, value)]
+
+
+def _rwkv_never_rated_review_card(reviewer: object, card: object) -> bool:
+    """A review card with no answered review (Set Due Date on a new card, a
+    card imported without its history): RWKV has nothing to predict from."""
+
+    if _int_attr(card, "type") != CARD_TYPE_REV:
+        return False
+    elapsed_days, elapsed_seconds = _elapsed_since_card_last_review(reviewer, card)
+    return elapsed_days is None and elapsed_seconds is None
 
 
 def rwkv_card_info_after_review_row(
@@ -21091,7 +21114,6 @@ def _rwkv_stats_graph_scores_for_search(
         return None
     scores: list[tuple[int, float]] = []
     curve_scores: list[tuple[int, float]] = []
-    fully_predicted_card_ids: set[int] = set()
     curve_due_card_ids: set[int] = set()
     score_start = time.monotonic()
 
@@ -21122,8 +21144,10 @@ def _rwkv_stats_graph_scores_for_search(
                     return None
                 curve_scores.extend(stored_curve_scores)
     if prepare_curve_due and curve_input_build is not None:
-        # the curve-due flags need the current-interval crossing search, so
-        # that request keeps the full prediction path
+        # a card is RWKV-Curve due once its elapsed days reach the current
+        # interval of the curve stored at its last answered review, the same
+        # interval the RWKV-Curve reschedule gives it (spec
+        # sched.rwkv-curve-reschedule); never the curve of a query row
         for inputs_by_card_id in curve_input_build.inputs_by_batch_size.values():
             for batch in _chunks(
                 inputs_by_card_id,
@@ -21133,27 +21157,24 @@ def _rwkv_stats_graph_scores_for_search(
                 # Stats request stops here and frees it
                 # (spec ui.stats-scoring-cancelled)
                 _raise_if_stats_scoring_cancelled(cancel_generation)
-                predictions = _rwkv_review_predictions_for_inputs(
+                predictions = _rwkv_review_current_interval_predictions_for_inputs(
                     batch,
-                    batch_size=_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
                     state_token=state_token,
                 )
                 if predictions is None:
                     return None
+                if isinstance(predictions, _ResidentIntervalsUnavailable):
+                    # no stored-curve intervals: no card is curve due
+                    break
                 for (card_id, review_input), prediction in zip(
                     batch,
                     predictions,
                     strict=True,
                 ):
-                    retrievability = (
-                        prediction.retrievability if prediction is not None else None
-                    )
-                    if not _valid_probability(retrievability):
-                        continue
-                    scores.append((card_id, retrievability))
-                    fully_predicted_card_ids.add(card_id)
                     elapsed_days = review_input.current_elapsed_days
-                    current_interval = prediction.current_interval
+                    current_interval = (
+                        prediction.current_interval if prediction is not None else None
+                    )
                     if (
                         review_input.card_type == CARD_TYPE_REV
                         and review_input.card_queue == QUEUE_TYPE_REV
@@ -21169,11 +21190,6 @@ def _rwkv_stats_graph_scores_for_search(
         else ()
     )
     for batch_size, inputs_by_card_id in rating_head_inputs:
-        inputs_by_card_id = [
-            item
-            for item in inputs_by_card_id
-            if item[0] not in fully_predicted_card_ids
-        ]
         # every card is scored now, not taken from the study queue's scores,
         # which may be older than RWKV's R may be (spec sched.rwkv-r-freshness)
         if not inputs_by_card_id:
@@ -21388,10 +21404,10 @@ def _rwkv_review_reschedule_items_for_deck(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -21661,10 +21677,10 @@ def _rwkv_review_reschedule_items_from_input_build(
             inputs_by_card_id,
             _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE,
         ):
-            # Rescheduling only consumes current_interval / current_s90, so try
-            # the query-only resident-state prediction first; the full path
-            # (five passes per card plus a state round-trip through the bridge)
-            # is the fallback when the runtime cannot provide it.
+            # Rescheduling only consumes current_interval / current_s90, read
+            # from the curve stored at each card's last answered review (spec
+            # sched.rwkv-curve-reschedule); the full path is the fallback when
+            # the runtime cannot provide it.
             resident = _rwkv_review_current_interval_predictions_for_inputs(
                 batch,
                 state_token=state_token,
@@ -22180,7 +22196,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
     *,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
 ) -> list[RwkvReviewPrediction | None] | None | _ResidentIntervalsUnavailable:
-    """Query-only current interval and S90 straight from the resident state.
+    """Current interval and S90 from the curve RWKV stored at each card's
+    last answered review (spec sched.rwkv-curve-reschedule).
 
     Used by rescheduling, which needs nothing else. Returns the
     `_RESIDENT_INTERVALS_UNAVAILABLE` sentinel when the backend cannot do it,
@@ -22211,8 +22228,8 @@ def _rwkv_review_current_interval_predictions_for_inputs(
         if predictions is None:
             return _RESIDENT_INTERVALS_UNAVAILABLE
         logger.debug(
-            "RWKV review inputs predicted from resident state (current intervals "
-            "only): inputs=%s elapsed_ms=%.1f",
+            "RWKV current intervals read from the stored curves: inputs=%s "
+            "elapsed_ms=%.1f",
             len(inputs_by_card_id),
             (time.monotonic() - start) * 1000,
         )
@@ -25009,6 +25026,9 @@ def _clear_rwkv_review_queue_scores(
 
 
 def _duration_millis(card: object, ease: int | None) -> int | None:
+    # No ease: a query row, or the answer buttons before the press. RWKV then
+    # scales the duration to 0.0; see rslib `simulated_answer_input` for what
+    # that means for the shipped model and what a new model's encoder must do.
     if ease is None:
         return None
 
