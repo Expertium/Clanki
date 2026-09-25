@@ -38,9 +38,12 @@ use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::revlog::RevlogReviewKind;
 use crate::scheduler::fsrs::curve::Fsrs7Curve;
+use crate::search::JoinSearches;
+use crate::search::Negated;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::search::SortMode;
+use crate::search::StateKind;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
 use crate::storage::FsrsReviewRetrievabilitySampleRole;
 
@@ -68,6 +71,21 @@ pub(crate) fn ignore_revlogs_before_date_to_ms(
 
 pub(crate) fn ignore_revlogs_before_ms_from_config(config: &DeckConfig) -> Result<TimestampMillis> {
     ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date)
+}
+
+/// The search a preset's FSRS-7 parameters are trained on: its search
+/// filter when it has one, otherwise the preset's cards that are not
+/// suspended. "Optimize All Presets", the automatic optimization and the
+/// Stats validation folds all read their reviews with it.
+pub(crate) fn fsrs_optimizer_search(config: &DeckConfig) -> Result<String> {
+    Ok(if config.inner.param_search.trim().is_empty() {
+        SearchNode::Preset(config.name.clone())
+            .and(SearchNode::State(StateKind::Suspended).negated())
+            .try_into_search()?
+            .to_string()
+    } else {
+        config.inner.param_search.clone()
+    })
 }
 
 pub struct ComputeParamsRequest<'t> {
@@ -112,15 +130,23 @@ pub(crate) struct FsrsReviewRetrievabilityProgress {
 }
 
 /// r: retention
+///
+/// Fitted for FSRS-7 with same-day reviews included in `r` and `c`
+/// (spec `sched.health-check-fsrs7-fit`):
+/// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>
 fn log_loss_adjustment(r: f32) -> f32 {
-    0.623 * (4. * r * (1. - r)).powf(0.738)
+    0.5988 * (4. * r * (1. - r)).powf(0.7303)
 }
 
 /// r: retention
 ///
 /// c: review count
+///
+/// Fitted for FSRS-7 with same-day reviews included in `r` and `c`
+/// (spec `sched.health-check-fsrs7-fit`):
+/// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>
 fn rmse_adjustment(r: f32, c: u32) -> f32 {
-    0.0135 / (r.powf(0.504) - 1.14) + 0.176 / ((c as f32 / 1000.).powf(0.825) + 2.22) + 0.101
+    0.0072 / (r.powf(0.9034) - 1.1) + 0.1578 / ((c as f32 / 1000.).powf(0.6513) + 1.6275) + 0.0711
 }
 
 #[derive(Clone)]
@@ -267,7 +293,9 @@ fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSR
         / fsrs_items as f32;
     let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
     let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
-    adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+    // Thresholds fitted alongside the coefficients above (spec
+    // `sched.health-check-fsrs7-fit`): ~5% of users are warned.
+    adjusted_log_loss <= 1.08 || adjusted_rmse <= 1.34
 }
 
 fn time_series_split_items(
@@ -327,6 +355,50 @@ fn evaluate_from_training_to_external_targets(
     Ok(FSRS::new(&parameters)?.evaluate(evaluation_set, |_| true)?)
 }
 
+/// Below this many items fsrs-rs does not train: it returns the defaults
+/// (under 8) or its initial values (under 64) (`training.rs`).
+const FSRS_MIN_TRAINED_ITEMS: usize = 64;
+
+/// Whether fsrs-rs returns values it did not train for these items: too few
+/// of them, or every one a card's first long-term review, which only the
+/// initial stabilities are fitted to. Before fsrs-rs drops outliers, so a
+/// set this says trains can still come back untrained; the log-loss check of
+/// `params_to_keep` covers that case.
+fn fsrs_leaves_untrained(items: &[FSRSItem]) -> bool {
+    items.len() < FSRS_MIN_TRAINED_ITEMS
+        || items.iter().all(|item| item.long_term_review_cnt() == 1)
+}
+
+/// The parameters an optimize keeps (spec
+/// deck-options.fsrs-optimize-keeps-better-params): the new ones only when
+/// they predict the training reviews better, by log loss on the same items,
+/// than the current ones. Trained parameters are never replaced by values
+/// fsrs-rs did not train (a tiny training set), whatever their log loss on
+/// that set.
+fn params_to_keep(current: &[f32], new: Params, items: &[FSRSItem], card_ids: &[i64]) -> Params {
+    let current = effective_fsrs7_params(current);
+    if new == current || items.is_empty() {
+        return current.to_vec();
+    }
+    if current != fsrs::DEFAULT_PARAMETERS.as_slice() && fsrs_leaves_untrained(items) {
+        return current.to_vec();
+    }
+    let log_loss = |params: &[f32]| -> Option<f32> {
+        let fsrs = FSRS::new(params).ok()?;
+        let eval = if card_ids.len() == items.len() {
+            fsrs.evaluate_with_card_ids(items.to_vec(), card_ids.to_vec(), |_| true)
+        } else {
+            fsrs.evaluate(items.to_vec(), |_| true)
+        };
+        eval.ok().map(|eval| eval.log_loss)
+    };
+    match (log_loss(current), log_loss(&new)) {
+        (Some(current_loss), Some(new_loss)) if new_loss < current_loss => new,
+        (None, Some(_)) => new,
+        _ => current.to_vec(),
+    }
+}
+
 pub(crate) fn compute_params_from_prepared(
     PreparedComputeParams {
         current_params,
@@ -360,7 +432,12 @@ pub(crate) fn compute_params_from_prepared(
         model_version: ComputeParametersVersion::Fsrs7,
         num_relearning_steps: Some(num_of_relearning_steps),
     };
-    let params = compute_parameters(input)?;
+    let params = params_to_keep(
+        &current_params,
+        compute_parameters(input)?,
+        &items,
+        &item_card_ids,
+    );
 
     let health_check_items = TrainingItemsForFsrs::with_card_and_revlog_ids(
         items.clone(),
@@ -1335,6 +1412,137 @@ pub(crate) mod tests {
         convert_ignore_before(revlog, training, 0.into())
     }
 
+    /// Items of `cards` synthetic cards, reviewed with growing intervals and
+    /// failed now and then: every prefix of two reviews or more is an item,
+    /// as `fsrs_items_for_training` makes them. Deterministic.
+    pub(crate) fn synthetic_items(cards: usize, reviews: usize) -> (Vec<FSRSItem>, Vec<i64>) {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 1000) as f32 / 1000.0
+        };
+        let mut items = vec![];
+        let mut card_ids = vec![];
+        for card in 0..cards {
+            let mut history = vec![FSRSReview {
+                rating: 3,
+                delta_t: 0.0,
+            }];
+            let mut interval = 1.0f32;
+            let mut stability = 2.0f32;
+            for _ in 1..reviews {
+                let recall = 0.9f32.powf(interval / stability);
+                let passed = next() < recall;
+                history.push(FSRSReview {
+                    rating: if passed { 3 } else { 1 },
+                    delta_t: interval,
+                });
+                items.push(FSRSItem {
+                    reviews: history.clone(),
+                });
+                card_ids.push(card as i64);
+                if passed {
+                    stability *= 2.5;
+                    interval = (stability * 1.1).round().max(1.0);
+                } else {
+                    stability = (stability * 0.4).max(0.5);
+                    interval = 1.0;
+                }
+            }
+        }
+        (items, card_ids)
+    }
+
+    fn prepared_from_items(
+        current_params: Vec<f32>,
+        (items, card_ids): (Vec<FSRSItem>, Vec<i64>),
+    ) -> PreparedComputeParams {
+        let item_revlog_ids = (1..=items.len() as i64).map(RevlogId).collect();
+        PreparedComputeParams {
+            current_params,
+            num_of_relearning_steps: 1,
+            enable_scheduling_penalties: true,
+            target_counts: training_target_counts_from_items(&items),
+            items,
+            item_card_ids: card_ids,
+            item_revlog_ids,
+            fsrs_prediction_sources: vec![],
+        }
+    }
+
+    fn items_log_loss(params: &[f32], items: &[FSRSItem]) -> f32 {
+        FSRS::new(params)
+            .unwrap()
+            .evaluate(items.to_vec(), |_| true)
+            .unwrap()
+            .log_loss
+    }
+
+    /// Parameters that are not the defaults, as a trained preset holds.
+    fn trained_looking_params() -> Vec<f32> {
+        let mut params = fsrs::DEFAULT_PARAMETERS.to_vec();
+        params[0] *= 1.5;
+        params[2] *= 1.2;
+        params
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-optimize-keeps-better-params
+    #[test]
+    fn an_optimize_keeps_the_current_params_when_the_new_ones_fit_worse() {
+        let (items, card_ids) = synthetic_items(60, 8);
+        let trained = compute_parameters(ComputeParametersInput {
+            training_config: None,
+            train_set: items.clone(),
+            card_ids: Some(card_ids.clone()),
+            progress: None,
+            enable_short_term: true,
+            enable_sched_penalties: true,
+            model_version: ComputeParametersVersion::Fsrs7,
+            num_relearning_steps: Some(1),
+        })
+        .unwrap();
+        let defaults = fsrs::DEFAULT_PARAMETERS.to_vec();
+        assert!(items_log_loss(&trained, &items) < items_log_loss(&defaults, &items));
+
+        // the new parameters fit worse: the current ones stay
+        assert_eq!(
+            params_to_keep(&trained, defaults.clone(), &items, &card_ids),
+            trained
+        );
+        // the new parameters fit better: they replace the current ones
+        assert_eq!(
+            params_to_keep(&defaults, trained.clone(), &items, &card_ids),
+            trained
+        );
+        // parameters the preset cannot run count as the defaults
+        assert_eq!(
+            params_to_keep(&[], trained.clone(), &items, &card_ids),
+            trained
+        );
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-optimize-keeps-better-params:
+    // fsrs-rs returns untrained values for a tiny training set, such as the
+    // one left after "Ignore reviews before" moves to last week.
+    #[test]
+    fn a_tiny_training_set_never_replaces_trained_params() -> Result<()> {
+        let current = trained_looking_params();
+        for items in [synthetic_items(2, 3), synthetic_items(5, 4)] {
+            assert!(items.0.len() >= 4 && items.0.len() < FSRS_MIN_TRAINED_ITEMS);
+            let output = compute_params_from_prepared(
+                prepared_from_items(current.clone(), items),
+                None,
+                false,
+            )?;
+            assert_eq!(output.params, current);
+        }
+        // a real training set is not tiny
+        assert!(!fsrs_leaves_untrained(&synthetic_items(60, 8).0));
+        Ok(())
+    }
+
     #[test]
     fn compute_params_from_prepared_returns_current_params_without_items() -> Result<()> {
         let current_params = fsrs::DEFAULT_PARAMETERS.to_vec();
@@ -1932,6 +2140,44 @@ pub(crate) mod tests {
             eval,
             &long_term_only
         ));
+    }
+
+    /// spec `sched.health-check-fsrs7-fit`. Values from
+    /// <https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>.
+    #[test]
+    fn health_check_fsrs7_fit_adjustments_and_thresholds() {
+        // log_loss_adjustment(0.9) and rmse_adjustment(0.9, 1000).
+        assert!((log_loss_adjustment(0.9) - 0.283_955).abs() < 1e-5);
+        assert!((rmse_adjustment(0.9, 1000) - 0.093_420).abs() < 1e-5);
+
+        // r = 0.85 (850 of 1000 items pass their last review), c = 1000.
+        // log_loss 0.4 / rmse_bins 0.15 passed under the old FSRS-6 fit
+        // (adjusted log loss 1.055 <= 1.11) but fails under the FSRS-7 fit
+        // (adjusted log loss 1.092 > 1.08, adjusted RMSE 1.489 > 1.34): this
+        // is the same-day-reviews-included recalibration the refit exists
+        // for, so the pinning test fails on the old coefficients/thresholds
+        // and passes on the new ones.
+        let mut items: Vec<FSRSItem> = (0..850)
+            .map(|_| FSRSItem {
+                reviews: vec![review(0), review(2)],
+            })
+            .collect();
+        items.extend((0..150).map(|_| FSRSItem {
+            reviews: vec![
+                review(0),
+                FSRSReview {
+                    rating: 1,
+                    delta_t: 2.0,
+                },
+            ],
+        }));
+        assert_eq!(items.len(), 1000);
+
+        let eval = ModelEvaluation {
+            log_loss: 0.4,
+            rmse_bins: 0.15,
+        };
+        assert!(!health_check_passed_for_evaluated_targets(eval, &items));
     }
 
     #[test]

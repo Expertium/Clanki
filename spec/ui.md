@@ -754,6 +754,23 @@ the whole collection's 685-729 ms, at every start; reading them back takes
 `test_kept_counts_read_back_as_they_were`
 (`qt/tests/test_review_heatmap.py`).
 
+## ui.review-heatmap-read-only
+
+Given a heatmap that Clanki draws or computes (the deck list, a deck's
+overview, the stats screen), the heatmap only reads the collection: the
+Undo step the user has (for example "Undo Answer Card" after a review) and
+the study queues stay as they were.
+
+**Why:** 2026-09-25 speed hunt: the heatmap counted its day ranges with a
+statement that starts with WITH, and the backend treats every statement
+that does not start with SELECT as a write, which drops the undo step and
+the study queues. Going back to the deck list after a review lost "Undo
+Answer Card", and the next screen built the study queue again on the main
+thread (9-14 ms).
+
+**Pinned by:** `test_drawing_the_heatmap_keeps_the_undo_step`
+(`qt/tests/test_review_heatmap.py`).
+
 ## ui.periodic-backup-waits
 
 Given the periodic backup check (every 5 minutes while a profile is open),
@@ -1599,9 +1616,15 @@ They all use the same data: for every rating of the search's cards in the
 page's period, the probability of recall an algorithm predicted before that
 answer, and the answer itself (Hard, Good or Easy = remembered; Again =
 forgotten). A rating counts only when it follows an earlier rating of the
-same card in the same learning sequence, so a card's first rating, and its
-first rating after a reset, are left out: no algorithm has a memory state
-before them. Manual reschedules, resets and cram answers are not ratings.
+same card in the same learning sequence, so every rating that starts a
+sequence is left out: a card's first rating, its first rating after a Forget
+(a manual row with a zero ease factor; Set Due Date is no reset), and a rated
+Learning row whose previous rating is not a Learning row (a learning start,
+as when an old client relearned a card from scratch). No algorithm has a
+memory state before them: FSRS-7 and the RWKV replay both start the card
+again there, and RWKV-Instant's value for such a rating knows only the deck,
+the preset and the creation date. Each rule looks at the card's whole
+history, not only at the page's period. Manual reschedules, resets and cram answers are not ratings.
 The period selects the ratings; the algorithms still read the whole history
 before each of them, because that is where the memory state comes from. A
 card whose review log holds no learning step has no FSRS-7 prediction at
@@ -1795,7 +1818,11 @@ scores over two different sets of reviews cannot be compared. Andrew,
 not having higher AUC than Curve is sus"): score them on the shared
 ratings, leave each card's first rating out, and read RWKV's newest row of
 each rating; the RWKV session agreed, and on the benchmark Instant beats
-Curve for 99.5% of users. Reading the
+Curve for 99.5% of users. Andrew, 2026-09-24 ("fix the bugs on our side"):
+the RWKV-Instant review (`reviews/algo-2026-09-24/rwkv-instant.md`, section
+2) found that a relearn after a Forget was scored as a normal rating, which
+this entry already excluded; RWKV-Instant alone was scored on those rows,
+with a value for a first review. Reading the
 stored rows rather than replaying is what the Search Stats Extended fork
 does, and it is why a panel of hundreds of thousands of reviews opens at
 once; a replay of the whole history costs minutes and now belongs to the
@@ -1813,6 +1840,7 @@ notes about the data follow the explanation in the tooltip"
 `one_algorithm_alone_keeps_all_of_its_ratings`,
 `rwkv_takes_the_newest_row_of_each_rating_across_its_roles`,
 `a_cards_first_rating_is_never_scored`,
+`ratings_after_a_reset_or_a_learning_start_are_never_scored`,
 `the_period_selects_the_ratings`,
 `newer_ratings_than_the_stored_predictions_are_reported`,
 `calibration_bins_and_their_intervals`,
@@ -1933,6 +1961,20 @@ follows the search or the period the Stats page happens to show, because a
 pass that filled only the deck on screen would leave every other deck
 without rows.
 
+Some reviews no pass can cover: each card's first rating, the oldest sixth
+of a preset's reviews (they only ever train a fold), reviews outside the
+preset's selection (`deck-options.fsrs-optimize-keeps-better-params`), and
+every review of a preset too small for folds. So after it has written a
+preset, the pass records, for each of the preset's decks, how many of its
+reviews are still uncovered and the newest of them, together with the preset
+and its selection (search filter and "Ignore reviews before"). A deck whose
+uncovered reviews are exactly the recorded ones, for the same preset and
+selection, is not stale, so an unchanged preset is not fitted again the next
+day. A new review, new parameters (they drop the rows), a new search filter
+or date, or a deck moved to another preset makes it stale again. A review
+answered after the pass read the preset is never recorded as uncoverable.
+The record lives in the prediction cache, next to the rows.
+
 When a preset's FSRS-7 parameters change, every prediction those parameters
 produced is wrong, and Clanki deletes that preset's stored rows in the same
 transaction as the change. Only that preset's rows go; parameters are per
@@ -1950,6 +1992,14 @@ what could not be stored, and does not count that day as done, so the pass
 tries again. An empty FSRS-7 series on its own cannot be told apart from a
 series still being computed, and a pass that reports no progress reports no
 failure either.
+
+A preset's folds train on the reviews its FSRS-7 optimization trains on
+(`deck-options.fsrs-optimize-keeps-better-params`): the reviews of its search
+filter when it has one, otherwise of its cards that are not suspended, and
+none from before its "Ignore reviews before" date. The series therefore
+scores the model the preset runs with. A search filter can reach cards of
+other presets; their reviews train the folds, but only the preset's own
+reviews get its rows, so no preset writes over another preset's rows.
 
 The stored rows are validation folds, so nothing that produced a row had
 seen the review it predicts. The rows written while answering carry a
@@ -1994,6 +2044,14 @@ tenth, and the collection is held for under two seconds of the run. The
 check per batch costs one read of the preset and of the deck list per batch,
 which is a few milliseconds beside the write it guards.
 
+Andrew 2026-09-24, "fix FSRS-7 bugs", on the FSRS-7 review of that day: the
+folds trained on `preset:"name"`, with suspended cards, without the search
+filter, and with "Ignore reviews before" always read as no date (the date
+never parsed), so the series scored a model fitted on other reviews than the
+preset's parameters. And no preset ever became covered, because the first
+ratings and the oldest sixth never get a fold, so the pass fitted five folds
+of every preset every day: about 76 s of CPU on his collection.
+
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
@@ -2008,7 +2066,11 @@ which is a few milliseconds beside the write it guards.
 (`rslib/src/deckconfig/update.rs`);
 `the_pass_covers_every_preset_with_uncovered_reviews`,
 `a_presets_rows_are_written_one_bounded_batch_at_a_time`,
-`a_save_midway_through_the_write_takes_back_what_was_written`
+`a_save_midway_through_the_write_takes_back_what_was_written`,
+`the_folds_train_on_the_optimizers_reviews`,
+`a_preset_is_covered_after_its_pass_until_it_changes`,
+`a_review_after_the_read_is_not_recorded_as_uncoverable`,
+`a_search_filter_writes_rows_for_the_presets_own_reviews_only`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 
@@ -2170,3 +2232,26 @@ they draw no distinct focus indicator and cannot exhibit this bug.
 
 **Pinned by:** `answer button focus indicator shows for keyboard focus, not
 for a mouse click` (`ts/tests/e2e/reviewer-focus-visible.spec.ts`).
+
+## ui.day-rollover
+
+Given an open profile, Clanki checks the day at each day cutoff. When the
+cutoff has moved since the last check, it remembers the new cutoff, refreshes
+the reviewer's queues if the reviewer is showing, and fires the add-on hook
+`gui_hooks.day_did_change` once, in every state, the reviewer included. A
+check that finds the same cutoff as the last one does nothing, so one day
+rollover fires the hook once. After each check Clanki sets the next check
+for the next cutoff.
+
+**Why:** the hook's own contract is "Called when Anki moves to the next
+day" (upstream PR 3817). The upstream check updated the remembered cutoff
+only while reviewing, and it did so before the comparison that fires the
+hook, so the hook never fired while the reviewer was open, which is when a
+rollover matters most to a scheduling add-on. Outside the reviewer the
+remembered cutoff was never updated, so a second check on the same day fired
+the hook a second time. Found in speed hunt round 5 (2026-09-25). Upstream
+`ankitects/anki` main has the same code.
+
+**Pinned by:** `test_the_day_rollover_fires_day_did_change_in_the_reviewer`,
+`test_the_day_rollover_fires_day_did_change_once_outside_the_reviewer`,
+`test_no_rollover_changes_nothing` (`qt/tests/test_main.py`).

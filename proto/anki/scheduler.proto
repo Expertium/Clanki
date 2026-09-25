@@ -272,6 +272,10 @@ message RwkvHistoricalReviewRowsResponse {
   bytes interval_days = 18;
   bytes ease_factors = 19;
   bytes learning_starts = 20;
+  // One byte per row: 1 where the card is gone (spec
+  // sched.rwkv-replay-deleted-cards). Such a row has no note and no deck;
+  // its note_ids and deck_ids hold 0.
+  bytes deleted_cards = 21;
 }
 
 message RwkvHistoricalReviewInputsRequest {
@@ -336,8 +340,12 @@ message RwkvHistoricalReviewInputsResponse {
   bytes checkpoint_card_review_counts = 28;
   // Each card's own preset (per card, like `cards`), as
   // GetFsrsPresetIdsForCards gives it: Python keeps these, as its own build
-  // of the inputs does.
+  // of the inputs does. Empty for a card that is gone.
   repeated string card_fsrs_preset_ids = 29;
+  // One byte per review: 1 where the card is gone (spec
+  // sched.rwkv-replay-deleted-cards). Such a review has no note, deck or
+  // preset; its note_ids, deck_ids and preset_ids hold 0.
+  bytes deleted_cards = 30;
 }
 
 message SchedulingState {

@@ -71,8 +71,7 @@ use crate::scheduler::fsrs::params::ComputeParamsRequest;
 use crate::scheduler::fsrs::params::FsrsReviewPredictionContext;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::predictions::presets_with_stale_fsrs_review_predictions_in_parts;
-use crate::scheduler::fsrs::predictions::store_fsrs_review_predictions_in_batches;
-use crate::scheduler::fsrs::predictions::FsrsReviewPredictionRead;
+use crate::scheduler::fsrs::predictions::refresh_fsrs_review_predictions_of_preset;
 use crate::scheduler::fsrs::predictions::PREDICTION_WRITE_BATCH_ROWS;
 use crate::scheduler::fsrs::predictions::STALE_PRESETS_PART_ROWS;
 use crate::scheduler::fsrs::preset::FsrsPreset;
@@ -423,41 +422,55 @@ impl crate::services::SchedulerService for Collection {
         &mut self,
         input: scheduler::ComputeFsrsParamsBatchRequest,
     ) -> Result<scheduler::ComputeFsrsParamsBatchResponse> {
-        let mut response_meta = Vec::with_capacity(input.items.len());
+        // One item that cannot be optimized (a bad search, say) does not stop
+        // the others: it is logged and answered with its current parameters
+        // and no items, which callers already read as "keep what you have"
+        // (spec deck-options.fsrs-optimize-skips-bad-presets).
+        let mut items: Vec<_> = input
+            .items
+            .iter()
+            .map(|item| scheduler::compute_fsrs_params_batch_response::Item {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                params: effective_fsrs7_params(&item.current_params).to_vec(),
+                fsrs_items: 0,
+            })
+            .collect();
         let mut jobs = Vec::with_capacity(input.items.len());
-
         for (index, item) in input.items.into_iter().enumerate() {
             let current_params = effective_fsrs7_params(&item.current_params).to_vec();
-            let prepared = self.prepare_compute_params(PrepareComputeParamsInput {
+            match self.prepare_compute_params(PrepareComputeParamsInput {
                 search: &item.search,
                 ignore_revlogs_before: item.ignore_revlogs_before_ms.into(),
                 current_params: &current_params,
                 num_of_relearning_steps: item.num_of_relearning_steps as usize,
                 // always on (spec deck-options.fsrs-only-controls); the request field is ignored
                 enable_scheduling_penalties: true,
-            })?;
-            response_meta.push((item.id.clone(), item.name.clone()));
-            jobs.push(ComputeParamsBatchInput {
-                index,
-                name: item.name,
-                prepared,
-            });
+            }) {
+                Ok(prepared) => jobs.push(ComputeParamsBatchInput {
+                    index,
+                    name: item.name,
+                    prepared,
+                }),
+                Err(err) => {
+                    tracing::warn!(preset = item.name, error = %err, "skipping FSRS preset that cannot be optimized");
+                }
+            }
         }
 
-        let items = self
-            .compute_params_batch(jobs)?
-            .into_iter()
-            .map(|output| {
-                let (id, name) = &response_meta[output.index];
-                let params = output.result?;
-                Ok(scheduler::compute_fsrs_params_batch_response::Item {
-                    id: id.clone(),
-                    name: name.clone(),
-                    params: params.params,
-                    fsrs_items: params.fsrs_items,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        for output in self.compute_params_batch(jobs)? {
+            match output.result {
+                Ok(params) => {
+                    let item = &mut items[output.index];
+                    item.params = params.params;
+                    item.fsrs_items = params.fsrs_items;
+                }
+                Err(AnkiError::Interrupted) => return Err(AnkiError::Interrupted),
+                Err(err) => {
+                    tracing::warn!(preset = output.name, error = %err, "failed to optimize FSRS preset");
+                }
+            }
+        }
 
         Ok(scheduler::ComputeFsrsParamsBatchResponse { items })
     }
@@ -1300,12 +1313,14 @@ impl crate::services::BackendSchedulerService for Backend {
             interval_days: Vec::with_capacity(wide),
             ease_factors: Vec::with_capacity(wide),
             learning_starts: Vec::with_capacity(rows.len()),
+            deleted_cards: Vec::with_capacity(rows.len()),
         };
         for row in rows {
             out.review_ids.extend(row.review_id.to_le_bytes());
             out.card_ids.extend(row.card_id.to_le_bytes());
-            out.note_ids.extend(row.note_id.to_le_bytes());
-            out.deck_ids.extend(row.deck_id.to_le_bytes());
+            out.note_ids.extend(row.note_id.unwrap_or(0).to_le_bytes());
+            out.deck_ids.extend(row.deck_id.unwrap_or(0).to_le_bytes());
+            out.deleted_cards.push(u8::from(row.deck_id.is_none()));
             out.eases.extend(row.ease.to_le_bytes());
             out.durations_millis
                 .extend(row.duration_millis.to_le_bytes());
@@ -1352,25 +1367,12 @@ impl crate::services::BackendSchedulerService for Backend {
         &self,
         input: scheduler::RefreshFsrsReviewPredictionsRequest,
     ) -> Result<generic::UInt32> {
-        let preset = DeckConfigId(input.deck_config_id);
-        let Some(job) = self
-            .with_col(|col| col.fsrs_review_prediction_read(preset))?
-            .and_then(FsrsReviewPredictionRead::job)
-        else {
-            return Ok(0u32.into());
-        };
-        let rows = job.rows()?;
-        let written = store_fsrs_review_predictions_in_batches(
-            &job,
-            &rows,
+        Ok(refresh_fsrs_review_predictions_of_preset(
+            DeckConfigId(input.deck_config_id),
             PREDICTION_WRITE_BATCH_ROWS,
-            |job, batch, already_written| {
-                self.with_col(|col| {
-                    col.store_fsrs_review_prediction_batch(job, batch, already_written)
-                })
-            },
-        )?;
-        Ok(written.into())
+            &mut |step| self.with_col(|col| step(col)),
+        )?
+        .into())
     }
 
     fn auto_optimize_fsrs_preset(
@@ -1523,6 +1525,44 @@ mod tests {
         );
         assert_eq!(score(&mut col, SchedulingAlgorithm::RwkvCurve)?, Some(0.9));
         assert_eq!(score(&mut col, SchedulingAlgorithm::Fsrs7)?, None);
+        Ok(())
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-optimize-skips-bad-presets
+    #[test]
+    fn the_batch_rpc_answers_every_item_when_one_cannot_be_optimized() -> Result<()> {
+        use anki_proto::scheduler::compute_fsrs_params_batch_request::Item;
+
+        use crate::services::SchedulerService;
+
+        let mut col = Collection::new();
+        let item = |id: &str, search: &str| Item {
+            id: id.into(),
+            name: id.into(),
+            search: search.into(),
+            current_params: vec![],
+            ..Default::default()
+        };
+        let response = SchedulerService::compute_fsrs_params_batch(
+            &mut col,
+            anki_proto::scheduler::ComputeFsrsParamsBatchRequest {
+                items: vec![
+                    item("good", "deck:*"),
+                    item("bad", "("),
+                    item("also good", ""),
+                ],
+            },
+        )?;
+        let answered: Vec<(&str, u32, usize)> = response
+            .items
+            .iter()
+            .map(|item| (item.id.as_str(), item.fsrs_items, item.params.len()))
+            .collect();
+        // the bad item keeps the parameters it came with, the FSRS-7 defaults
+        assert_eq!(
+            answered,
+            vec![("good", 0, 34), ("bad", 0, 34), ("also good", 0, 34)]
+        );
         Ok(())
     }
 

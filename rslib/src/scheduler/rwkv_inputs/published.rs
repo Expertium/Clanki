@@ -47,9 +47,11 @@ pub(crate) enum RwkvFirstReviewElapsed<'a> {
 pub(crate) struct PublishedReviewInput {
     pub(crate) review_id: i64,
     pub(crate) card_id: i64,
-    pub(crate) note_id: i64,
-    pub(crate) deck_id: i64,
-    pub(crate) preset_id: i64,
+    /// None, as the deck and the preset, for a deleted card's review (spec
+    /// sched.rwkv-replay-deleted-cards).
+    pub(crate) note_id: Option<i64>,
+    pub(crate) deck_id: Option<i64>,
+    pub(crate) preset_id: Option<i64>,
     pub(crate) ease: i64,
     pub(crate) duration_millis: i64,
     /// The dataset state: 0 on the replay's start row, else the review
@@ -86,9 +88,9 @@ impl PublishedReviewInput {
     pub(crate) fn write_delta_record(&self, out: &mut Vec<u8>) {
         write_i64(out, self.review_id);
         write_i64(out, self.card_id);
-        write_optional_i64(out, Some(self.note_id));
-        write_optional_i64(out, Some(self.deck_id));
-        write_optional_i64(out, Some(self.preset_id));
+        write_optional_i64(out, self.note_id);
+        write_optional_i64(out, self.deck_id);
+        write_optional_i64(out, self.preset_id);
         // is_query
         out.push(0);
         write_optional_i64(out, Some(self.ease));
@@ -113,12 +115,19 @@ impl PublishedReviewInput {
     /// Python's `_packed_review_input_row`: the row `rsbridge` warms the
     /// model up with. No target retentions; the grade order is enforced.
     pub(crate) fn write_packed_row(&self, out: &mut Vec<u8>) {
-        // note, deck, preset, ease, duration, card type, day, elapsed days
-        // and elapsed seconds are present; the four retentions are not
-        const PRESENCE: u32 = 0x1ff;
-        out.extend_from_slice(&PRESENCE.to_le_bytes());
-        for value in [self.card_id, self.note_id, self.deck_id, self.preset_id] {
-            out.extend_from_slice(&value.to_le_bytes());
+        // note (bit 0), deck (bit 1) and preset (bit 2) where the card has
+        // them; ease, duration, card type, day, elapsed days and elapsed
+        // seconds always; the four retentions never
+        let ids = [self.note_id, self.deck_id, self.preset_id];
+        let presence = ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| id.is_some())
+            .fold(0x1f8u32, |presence, (bit, _)| presence | (1 << bit));
+        out.extend_from_slice(&presence.to_le_bytes());
+        out.extend_from_slice(&self.card_id.to_le_bytes());
+        for id in ids {
+            out.extend_from_slice(&id.unwrap_or(0).to_le_bytes());
         }
         // is_query
         out.push(0);
@@ -230,14 +239,19 @@ impl<'a> PublishedEncoder<'a> {
     }
 }
 
-fn first_review_uses_card_creation(first_review: &RwkvFirstReviewElapsed, deck_id: i64) -> bool {
+/// A deleted card (no deck) has no preset to ask, so only a source that asks
+/// no preset measures its first review from its creation.
+fn first_review_uses_card_creation(
+    first_review: &RwkvFirstReviewElapsed,
+    deck_id: Option<i64>,
+) -> bool {
     match first_review {
         RwkvFirstReviewElapsed::DeckConfig {
             decks_by_id,
             configs_by_id,
             requested,
-        } => decks_by_id
-            .get(&DeckId(deck_id))
+        } => deck_id
+            .and_then(|deck_id| decks_by_id.get(&DeckId(deck_id)))
             .and_then(Deck::config_id)
             .is_some_and(|config_id| {
                 requested

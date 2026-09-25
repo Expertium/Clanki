@@ -12,14 +12,12 @@ import {
     DeckConfig_Config_ReviewMix,
 } from "@generated/anki/deck_config_pb";
 import * as tr from "@generated/ftl";
-import { newGatherChoicesForAlgorithm, withoutDifficultyOrdersUnderRwkv } from "./review-order";
+import { withoutDifficultyOrdersUnderRwkv, withoutRetrievabilityNewGatherOrders } from "./review-order";
 
 import type { Choice } from "$lib/components/EnumSelector.svelte";
 
-export function newGatherPriorityChoices(
-    instant = true,
-): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
-    return newGatherChoicesForAlgorithm(allNewGatherPriorityChoices(), instant);
+export function newGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
+    return withoutRetrievabilityNewGatherOrders(allNewGatherPriorityChoices());
 }
 
 function allNewGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
