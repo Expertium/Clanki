@@ -614,6 +614,55 @@ mod tests {
         Ok(())
     }
 
+    // Pins spec/scheduling.md#sched.fsrs7-preset-fallback for Total
+    // Knowledge: a reviewed card whose home deck is missing or filtered is
+    // counted with the Default preset instead of failing the graph.
+    #[test]
+    fn total_knowledge_counts_a_card_with_a_damaged_home_deck() -> Result<()> {
+        let mut col = fsrs7_collection(fsrs7_params());
+        let filtered = crate::tests::DeckAdder::new("filtered")
+            .filtered(true)
+            .add(&mut col);
+        let healthy = add_card(&mut col);
+        let missing_home = add_card(&mut col);
+        let filtered_home = add_card(&mut col);
+        // one minute apart: review ids are unique
+        for (minute, card_id) in [healthy, missing_home, filtered_home]
+            .into_iter()
+            .enumerate()
+        {
+            let minute = minute as i64;
+            entry(
+                &mut col,
+                card_id,
+                -10,
+                (RevlogReviewKind::Learning, 3, 2500),
+                minute,
+            );
+            entry(
+                &mut col,
+                card_id,
+                -5,
+                (RevlogReviewKind::Review, 3, 2500),
+                minute,
+            );
+        }
+        let mut card = col.storage.get_card(missing_home)?.unwrap();
+        card.deck_id = DeckId(12345);
+        col.storage.update_card(&card)?;
+        let mut card = col.storage.get_card(filtered_home)?.unwrap();
+        card.deck_id = filtered.id;
+        card.original_deck_id = filtered.id;
+        col.storage.update_card(&card)?;
+
+        let response = col.total_knowledge("")?;
+        assert_eq!(*response.reviewed_cards.last().unwrap(), 3);
+        let one = expected_card_r(&mut col, healthy, -10);
+        let tripled: Vec<f64> = one.iter().map(|r| r * 3.0).collect();
+        assert_close(&response.sum_r, &tripled);
+        Ok(())
+    }
+
     // Pins spec/ui.md#ui.stats-total-knowledge
     #[test]
     fn total_knowledge_covers_the_whole_history() -> Result<()> {

@@ -1606,6 +1606,36 @@ noticed the mismatch.
 **Pinned by:** `an_addon_edit_of_the_s90_rebuilds_the_fsrs7_traces`
 (`rslib/src/card/service.rs`).
 
+## sched.addon-s90-only-memory-state
+
+Given a card written through `update_cards` (`col.update_card`,
+`col.update_cards`, AnkiConnect) with a memory state that has a stability
+and a difficulty but no FSRS-7 internal stability (an add-on's
+`FSRSMemoryState(stability=..., difficulty=...)`), the stability is stored
+as the card's S90 with the written difficulty, and never as its internal
+stability:
+
+- under FSRS-7, the card's stored internal and fast stabilities keep their
+  ratio and are scaled so that the curve gives the written S90; when the S90
+  and the difficulty are the stored ones, the traces stay as they are;
+- under RWKV-Curve and RWKV-Instant, the stability is not FSRS-7's, so the
+  stored traces stay as they are;
+- a card without stored traces gets the S90 conversion of
+  `sync.fsrs7-state-of-foreign-cards` (the fsrs crate's fast/internal ratio,
+  scaled to the S90, with the written difficulty).
+
+A write that carries the internal stability follows
+`sched.fsrs7-addon-stability-edit`.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: such a write stored the S90 as the
+internal stability as well, which made the card's intervals about 2.3
+times too long, and since the row then had an internal stability, the
+repair of foreign cards never fixed it.
+
+**Pinned by:** `an_addon_s90_only_memory_state_gets_fsrs7_traces`
+(`rslib/src/card/service.rs`).
+
 ## sched.fsrs7-fractional-elapsed-time
 
 Given a card answered with FSRS (always FSRS-7, `sched.fsrs7-only`), the
@@ -2019,18 +2049,27 @@ algorithm of the presets that schedule the most review and relearning cards
 filtered deck by its original deck; a deck or preset that is missing counts
 as the Default preset). With no review or relearning cards, all cards
 count. Ties go to RWKV-Curve, then FSRS-7, then RWKV-Instant. Every preset
-then takes that algorithm (`sched.one-global-algorithm`); due dates and
-memory states do not change (a collection whose FSRS switch is off follows
-`sched.no-sm2` instead). Given a collection without cards, nothing is
-written, so a new, empty collection does not need a full sync.
+then takes that algorithm (`sched.one-global-algorithm`); due dates do not
+change. When that algorithm is FSRS-7, the cards whose home deck's preset
+ran RWKV-Curve get their FSRS-7 memory state computed again from their
+review logs, as a deck-options switch to FSRS-7 computes it, so no
+RWKV-Curve stability stays behind; every other memory state stays (a
+collection whose FSRS switch is off follows `sched.no-sm2` instead). Given
+a collection without cards, nothing is written, so a new, empty collection
+does not need a full sync.
 
 **Why:** Andrew, 2026-09-15: a collection whose presets used different
-algorithms keeps the one that schedules the most review cards.
+algorithms keeps the one that schedules the most review cards. The
+recompute: Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the cards of an RWKV-Curve preset kept
+the curve's S90, which the Browser, card info, the Stats Stability graph
+and `prop:s` then showed as FSRS-7's (never mix two algorithms).
 
 **Pinned by:**
 `a_collection_without_an_algorithm_gets_the_one_with_most_review_cards`,
 `migration_counts_filtered_cards_by_home_deck_and_breaks_ties`,
-`a_collection_without_cards_gets_no_algorithm`
+`a_collection_without_cards_gets_no_algorithm`,
+`a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
 (`rslib/src/deckconfig/algorithm.rs`);
 `new_empty_collection_should_not_require_full_sync`
 (`rslib/src/sync/collection/tests.rs`).
@@ -2058,6 +2097,34 @@ collection that already runs FSRS in Anki keeps FSRS-7.
 `an_sm2_collection_keeps_its_rwkv_algorithm`,
 `only_sm2_collections_with_cards_change`
 (`rslib/src/deckconfig/algorithm.rs`).
+
+## sched.apkg-import-reads-the-package
+
+Given an `.apkg` import, the package's own collection is read as the
+package holds it: the open-time passes (`sched.one-global-algorithm`,
+`sched.no-sm2`, `sched.fsrs7-only` and
+`sync.fsrs7-state-of-foreign-cards`) do not run on it, so its presets
+compute no memory state. With scheduling imported, the importing
+collection then gives its FSRS-7 memory state, with its own home preset
+(`sync.fsrs7-state-of-foreign-cards`), to two kinds of imported card: a
+card whose row another client wrote (a memory state without `s_int`), and
+a card that is not new and has no memory state (from its review log; a
+card without a usable review stays without one). Every other imported
+card keeps the memory state the package holds, an RWKV-Curve S90
+included. Due dates and the review log do not change.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the import opened the package like a
+collection, so the package's FSRS-off switch made `sched.no-sm2` and then
+the FSRS-7 migration compute every packaged card's memory state twice with
+the package's default parameters. That replaced an imported RWKV-Curve
+card's S90, and it gave every card an internal stability, so the repair
+with the importing collection's preset never found a card to repair.
+
+**Pinned by:** `an_imported_card_gets_its_memory_state_from_the_importing_preset`,
+`an_imported_rwkv_curve_card_keeps_its_s90`,
+`imported_foreign_fsrs_state_becomes_an_fsrs7_state`
+(`rslib/src/import_export/package/apkg/tests.rs`).
 
 ## sched.algorithm-change-prompt
 

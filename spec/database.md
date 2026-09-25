@@ -73,6 +73,29 @@ after the narrow one it replaces is dropped: the file goes from 332 MB to
 `a_collection_that_arrives_with_the_narrow_index_is_upgraded`
 (`rslib/src/storage/revlog/mod.rs`).
 
+## database.legacy-retrievability-cache-cleanup
+
+Given a collection whose main file holds the legacy retrievability cache
+tables of the JSchoreels fork (`search_stats_fsrs_review_retrievability`,
+`search_stats_rwkv_review_retrievability`), opening it or running Check
+Database moves their rows to the retrievability-cache sidecar, drops the
+tables, and requires one full sync, so the server copy loses them too.
+Given a collection without those tables, Check Database requires no full
+sync, the first time or any later time.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the first Check Database on every
+collection required a full sync even when nothing was dropped, and a marker
+kept only on the uploading side made a later Check Database require
+another one after a Download. With AnkiDroid in use, each full sync can
+drop the unsynced reviews of one side.
+
+**Pinned by:** `check_database_without_legacy_tables_needs_no_full_sync`,
+`legacy_retrievability_cache_tables_force_one_way_sync`
+(`rslib/src/dbcheck.rs`),
+`legacy_main_retrievability_cache_tables_migrate_to_sidecar`
+(`rslib/src/storage/revlog/mod.rs`).
+
 ## database.collection-file-locked
 
 While Clanki has a collection open, the collection file itself is locked

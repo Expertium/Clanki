@@ -23,7 +23,7 @@ use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
 use crate::scheduler::answering::get_fuzz_seed;
-use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_or_none;
 use crate::scheduler::fsrs::params::reviews_for_fsrs;
 use crate::scheduler::fsrs::params::Params;
 use crate::scheduler::fsrs::params_fingerprint;
@@ -780,10 +780,8 @@ impl Collection {
         let timing = self.timing_today()?;
         let usn = self.usn()?;
         for (config_id, card_ids) in card_ids_by_config {
-            let config = self
-                .storage
-                .get_deck_config(config_id)?
-                .or_not_found(config_id)?;
+            // the Default preset may itself be missing: the built-in defaults
+            let config = self.storage.get_deck_config(config_id)?.unwrap_or_default();
             let revlog =
                 self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
             let params = config.fsrs_params();
@@ -795,7 +793,11 @@ impl Collection {
                 params,
                 revlog,
                 HISTORICAL_RETENTION,
-                ignore_revlogs_before_ms_from_config(&config)?,
+                // spec sched.fsrs7-bad-ignore-before-date
+                ignore_revlogs_before_ms_or_none(
+                    &config.inner.ignore_revlogs_before_date,
+                    &config.name,
+                ),
             )?;
 
             let (items, mut cards_without_items): (
@@ -859,7 +861,10 @@ impl Collection {
 
     /// The cards grouped by their home deck's preset (a card in a filtered
     /// deck counts in its original deck), with the desired retention of each
-    /// home deck that overrides its preset's.
+    /// home deck that overrides its preset's. A home deck that is missing or
+    /// filtered, or whose preset is missing, counts as using the Default
+    /// preset, as FSRS-7 schedules such a card, and is logged: one damaged
+    /// card must not stop the others (spec sched.fsrs7-preset-fallback).
     #[allow(clippy::type_complexity)]
     fn card_ids_by_home_config(
         &mut self,
@@ -867,20 +872,40 @@ impl Collection {
     ) -> Result<(HashMap<DeckConfigId, Vec<CardId>>, HashMap<DeckId, f32>)> {
         let mut card_ids_by_config: HashMap<DeckConfigId, Vec<CardId>> = HashMap::new();
         let mut deck_desired_retention: HashMap<DeckId, f32> = HashMap::new();
+        let mut config_of_deck: HashMap<DeckId, DeckConfigId> = HashMap::new();
         for card_id in card_ids {
             let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
             let deck_id = card.original_or_current_deck_id();
-            let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
-            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
+            let config_id = match config_of_deck.get(&deck_id) {
+                Some(&config_id) => config_id,
+                None => {
+                    let deck = self.get_deck(deck_id)?;
+                    let home_config = match deck.as_ref().and_then(|deck| deck.config_id()) {
+                        Some(config_id) => {
+                            self.storage.get_deck_config(config_id)?.map(|_| config_id)
+                        }
+                        None => None,
+                    };
+                    if let Some(normal) = deck.as_ref().and_then(|deck| deck.normal().ok()) {
+                        if let Some(desired_retention) = normal.desired_retention {
+                            deck_desired_retention.insert(deck_id, desired_retention);
+                        }
+                    }
+                    let config_id = home_config.unwrap_or_else(|| {
+                        tracing::warn!(
+                            deck_id = deck_id.0,
+                            "home deck is missing or filtered, or its preset is missing:                              the FSRS-7 state uses the Default preset"
+                        );
+                        DeckConfigId(1)
+                    });
+                    config_of_deck.insert(deck_id, config_id);
+                    config_id
+                }
+            };
             card_ids_by_config
                 .entry(config_id)
                 .or_default()
                 .push(card_id);
-            if let Ok(normal) = deck.normal() {
-                if let Some(desired_retention) = normal.desired_retention {
-                    deck_desired_retention.insert(deck_id, desired_retention);
-                }
-            }
         }
         Ok((card_ids_by_config, deck_desired_retention))
     }
@@ -921,10 +946,8 @@ impl Collection {
         let timing = self.timing_today()?;
         let usn = self.usn()?;
         for (config_id, card_ids) in card_ids_by_config {
-            let config = self
-                .storage
-                .get_deck_config(config_id)?
-                .or_not_found(config_id)?;
+            // the Default preset may itself be missing: the built-in defaults
+            let config = self.storage.get_deck_config(config_id)?.unwrap_or_default();
             let revlog =
                 self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&card_ids)))?;
             let params = config.fsrs_params();
@@ -938,7 +961,11 @@ impl Collection {
                 params,
                 revlog,
                 HISTORICAL_RETENTION,
-                ignore_revlogs_before_ms_from_config(&config)?,
+                // spec sched.fsrs7-bad-ignore-before-date
+                ignore_revlogs_before_ms_or_none(
+                    &config.inner.ignore_revlogs_before_date,
+                    &config.name,
+                ),
             )?
             .into_iter()
             .partition_map(|(card_id, item)| match item {
@@ -1572,6 +1599,65 @@ impl Collection {
         Ok(())
     }
 
+    /// An add-on that writes `FSRSMemoryState(stability, difficulty)` gives
+    /// a card only an S90 and a difficulty, with no FSRS-7 traces (spec
+    /// sched.addon-s90-only-memory-state). Stored as it came, the S90 would
+    /// become the internal stability too, and the row would no longer look
+    /// foreign to the repair. Under FSRS-7 the card's stored traces are
+    /// scaled to the written S90 (unchanged when the S90 and the difficulty
+    /// are the stored ones); a card without them gets the S90 conversion of
+    /// the foreign repair. Under RWKV the stability is RWKV's S90, so the
+    /// stored traces stay FSRS-7's own, and a card without them gets the S90
+    /// conversion.
+    pub(crate) fn fsrs7_traces_for_an_s90_only_write(
+        &mut self,
+        card: &mut Card,
+        existing: &Card,
+    ) -> Result<()> {
+        let Some(written) = card.memory_state else {
+            return Ok(());
+        };
+        let s90 = written.stability;
+        if !(s90.is_finite() && s90 > 0.0) {
+            return Ok(());
+        }
+        let stored_traces = existing
+            .memory_state
+            .filter(|state| state.stability_fast.is_some());
+        let fsrs7 = self.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7;
+        let fsrs = FSRS::new(&self.fsrs_preset_for_card(card)?.params)?;
+        let state = match stored_traces {
+            Some(stored)
+                if !fsrs7
+                    || (stored.stability == s90 && stored.difficulty == written.difficulty) =>
+            {
+                Some(FsrsMemoryState {
+                    stability: s90,
+                    difficulty: written.difficulty,
+                    ..stored
+                })
+            }
+            Some(stored) => {
+                let shape = MemoryState {
+                    difficulty: written.difficulty,
+                    ..MemoryState::from(stored)
+                };
+                let scaled = scale_state_to_interval(&fsrs, shape, s90, 0.9);
+                Some(FsrsMemoryState {
+                    stability: s90,
+                    stability_internal: scaled.stability,
+                    stability_fast: Some(scaled.stability_fast),
+                    difficulty: written.difficulty,
+                })
+            }
+            None => fsrs_memory_state_for_s90_and_difficulty(&fsrs, s90, written.difficulty),
+        };
+        if state.is_some() {
+            card.memory_state = state;
+        }
+        Ok(())
+    }
+
     pub fn compute_and_update_memory_state(&mut self, card: &mut Card) -> Result<()> {
         let fsrs_data = self.compute_memory_state(card.id)?;
         card.memory_state = fsrs_data.state.map(Into::into);
@@ -1946,6 +2032,99 @@ mod tests {
             col.storage.card_ids_with_foreign_fsrs_state()?,
             vec![card_ids[0]]
         );
+        Ok(())
+    }
+
+    // Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards and
+    // #sync.fsrs-reconcile-after-sync: a card whose home deck is missing or
+    // filtered, or whose preset is missing, takes the Default preset, and a
+    // Default preset with an unparsable "ignore reviews before" date counts
+    // every review, so neither the repair nor the post-sync reconcile fails
+    // for the other cards.
+    #[test]
+    fn a_damaged_card_does_not_stop_the_repair_or_the_reconcile() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.update_default_deck_config(|config| {
+            config.ignore_revlogs_before_date = "not a date".into();
+        });
+        let mut no_preset_deck = crate::tests::DeckAdder::new("no preset").add(&mut col);
+        no_preset_deck.normal_mut()?.config_id = 999;
+        col.storage.update_deck(&no_preset_deck)?;
+        let filtered_deck = crate::tests::DeckAdder::new("filtered")
+            .filtered(true)
+            .add(&mut col);
+        let mut card_ids = Vec::new();
+        for home in ["healthy", "no preset", "filtered", "missing"] {
+            let note = NoteAdder::basic(&mut col).add(&mut col);
+            let mut card = col.storage.all_cards_of_note(note.id)?.pop().unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 20;
+            match home {
+                "no preset" => card.deck_id = no_preset_deck.id,
+                "filtered" => {
+                    card.deck_id = filtered_deck.id;
+                    card.original_deck_id = filtered_deck.id;
+                }
+                "missing" => card.deck_id = DeckId(12345),
+                _ => {}
+            }
+            col.storage.update_card(&card)?;
+            card_ids.push(card.id);
+        }
+        let write_foreign_states = |col: &mut Collection| -> Result<()> {
+            for card_id in &card_ids {
+                col.storage.db.execute(
+                    r#"update cards set data = '{"s":20.0,"d":6.0}' where id = ?"#,
+                    [card_id],
+                )?;
+            }
+            Ok(())
+        };
+        let assert_repaired = |col: &Collection| -> Result<()> {
+            for card_id in &card_ids {
+                let state = col
+                    .storage
+                    .get_card(*card_id)?
+                    .unwrap()
+                    .memory_state
+                    .unwrap();
+                assert_eq!(state.stability, 20.0);
+                assert_ne!(state.stability_internal, 20.0, "{card_id:?}: {state:?}");
+                assert!(state.stability_fast.is_some());
+            }
+            Ok(())
+        };
+
+        write_foreign_states(&mut col)?;
+        assert_eq!(col.repair_fsrs7_state_of_foreign_cards()?, 4);
+        assert_repaired(&col)?;
+
+        write_foreign_states(&mut col)?;
+        let conflicts = card_ids
+            .iter()
+            .map(|card_id| {
+                (
+                    *card_id,
+                    FsrsSyncConflict {
+                        schedule_differs: false,
+                        memory_state_agreed: true,
+                        last_review_time_agreed: true,
+                    },
+                )
+            })
+            .collect();
+        col.transact_no_undo(|col| col.reconcile_fsrs_state_after_sync(conflicts))?;
+        // an itemless card keeps the agreed state: nothing failed
+        for card_id in &card_ids {
+            assert!(col
+                .storage
+                .get_card(*card_id)?
+                .unwrap()
+                .memory_state
+                .is_some());
+        }
         Ok(())
     }
 
