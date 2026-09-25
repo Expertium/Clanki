@@ -16,6 +16,7 @@ import {
     offersCurveToggle,
     prepareData,
     rwkvRecallAt,
+    withExactFsrs7Recall,
 } from "./forgetting-curve";
 
 // Pins spec/ui.md#ui.card-info-rwkv-curve
@@ -93,6 +94,48 @@ test("an FSRS-7 chart draws the backend's curve after each review, with its S90"
     } finally {
         vi.useRealTimers();
     }
+});
+
+// Pins spec/scheduling.md#sched.fsrs-rs-latest: every point of an FSRS-7
+// chart carries fsrs-rs's own recall at that point's elapsed time, from the
+// memory state of the review whose curve it is on; nothing is joined by
+// straight lines.
+test("an FSRS-7 chart draws fsrs-rs's exact recall at every one of its points", async () => {
+    const revlog = chartRevlog(twoReviews());
+    const curves = { ...fsrs7Curves([1, 0.5, 0.1], [1, 0.8, 0.3]), params: [0.25, 1.5] };
+    const now = Date.parse("2024-01-16T00:00:00Z") / 1000;
+    const data = prepareData(revlog, 30, fsrs7CurvePoints(revlog, curves)!, now);
+    // a stand-in for the backend: a curve no set of straight lines matches
+    const exactAt = (stability: number, days: number) => Math.exp(-(days ** 1.3) / stability);
+    const requests: any[] = [];
+    const recall = async (input: any) => {
+        requests.push(input);
+        return {
+            curves: input.curves.map((curve: any) => ({
+                recall: curve.elapsedDays.map((days: number) => exactAt(curve.memoryState.stability, days)),
+            })),
+        } as any;
+    };
+    const exact = await withExactFsrs7Recall(data, revlog, curves.params, recall);
+
+    // one request, one curve per review, with the backend's parameters
+    expect(requests).toHaveLength(1);
+    expect(requests[0].params).toEqual([0.25, 1.5]);
+    expect(requests[0].curves.map((curve: any) => curve.memoryState.stability).sort()).toEqual([12, 30]);
+    expect(exact).toHaveLength(data.length);
+    const onCurves = exact.filter((point) => point.curveTime !== undefined);
+    expect(onCurves.length).toBe(data.length);
+    for (const point of onCurves) {
+        const review = twoReviews().find((entry: any) => entry.time === point.curveTime);
+        expect(point.retrievability).toBe(
+            exactAt(review.memoryState.stability, point.elapsedDaysSinceLastReview) * 100,
+        );
+    }
+    // the preview after now is exact at its own elapsed time too
+    const preview = exact.filter((point) => point.date.getTime() > now * 1000);
+    expect(preview.length).toBeGreaterThan(0);
+    // the input is not changed
+    expect(data.map((point) => point.retrievability)).not.toEqual(exact.map((point) => point.retrievability));
 });
 
 test("without the backend's FSRS-7 curve the chart has nothing to draw", () => {

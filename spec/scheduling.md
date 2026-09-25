@@ -1591,11 +1591,16 @@ dependency follows the `main` branch of open-spaced-repetition/fsrs-rs, and
 `cargo update -p fsrs`. Every FSRS-7 value is the crate's own: Clanki keeps
 no copy of the FSRS-7 curve or interval solver (the retrievability of the
 Browser, Stats, searches, sorts, queue orders and Total Knowledge included).
-Card info's forgetting curve is the crate's too: in Advanced mode the
-backend sends, for each review with an FSRS-7 memory state, the crate's
-recall of that state (with the parameters the crate clips) at 0 and at 300
-elapsed times evenly spaced in log time from one minute to 100 years, and
-the page joins the points with straight lines (within 0.1% of the curve).
+Card info's forgetting curve is the crate's too, exactly: in Advanced mode
+the chart asks the backend (`FsrsCurveRecall`) for the crate's recall at
+every point it draws (one point per 1/1,000 of the time range, or per day
+when the range is longer than 1,000 days: more points than the chart's 460
+pixels of plot width), from the memory state of the review whose curve the point is on
+and with the parameters the crate clips, and draws only once those values
+arrive. No value on the line comes from joining points. The backend's
+curves at 0 and at 300 elapsed times evenly spaced in log time from one
+minute to 100 years, sent with card info, are only the fallback the chart
+joins with straight lines when that request fails.
 
 **Why:** Andrew, 2026-09-16: "don't pin to a specific commit, always use the
 latest version of fsrs-rs (there won't be FSRS-8 for years, if ever)"; the
@@ -1611,13 +1616,17 @@ memory states from the history 9.6x faster, next states 15.6x faster,
 optimization unchanged. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
 FSRS-7 review of that day: card info still drew the curve and solved the S90
 with a TypeScript copy, on the stored parameters rather than the ones the
-crate clips.
+crate clips. Andrew, 2026-09-25: "Exact FSRS-7 curve", not points joined by
+straight lines.
 
 **Pinned by:** `the_curve_is_the_crates_own`
 (`rslib/src/scheduler/fsrs/curve.rs`); `card_info_curves_are_the_crates_own`
 (`rslib/src/stats/card.rs`); "an FSRS-7 chart draws the backend's curve after
-each review, with its S90", "without the backend's FSRS-7 curve the chart
-has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`).
+each review, with its S90", "an FSRS-7 chart draws fsrs-rs's exact recall at
+every one of its points", "without the backend's FSRS-7 curve the chart
+has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`); "an
+FSRS-7 chart waits for the exact recall and ignores a stale answer"
+(`ts/routes/card-info/forgetting-curve-render.test.ts`).
 
 ## sched.fsrs7-sm2-conversion
 
