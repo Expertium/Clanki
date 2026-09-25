@@ -1044,6 +1044,81 @@ mod test {
         Ok(())
     }
 
+    /// Over more notes than fit in one read, the transformer sees the notes
+    /// in note id order, only changed notes are written, and a note that
+    /// gains a card gets it in the deck and at the new-card position of its
+    /// own existing card, the cards being made in note id order.
+    #[test]
+    fn transform_notes_over_many_notes() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.basic_optional_rev_notetype();
+        let other_deck = col.get_or_create_normal_deck("other")?.id;
+        let mut note_ids = vec![];
+        for i in 0..2503 {
+            let mut note = nt.new_note();
+            note.fields[0] = format!("front {i}");
+            note.fields[1] = format!("back {i}");
+            col.add_note_inner(&mut note, if i % 2 == 0 { DeckId(1) } else { other_deck })?;
+            note_ids.push(note.id);
+        }
+        col.storage
+            .db
+            .execute_batch("update cards set due = 5000 - due")?;
+        let before: Vec<Note> = col.storage.get_all_notes();
+        let mut seen = vec![];
+        // the ids in reverse, to show the order does not come from the input
+        let input: Vec<NoteId> = note_ids.iter().rev().copied().collect();
+        let count = col.transform_notes(&input, |note, _nt| {
+            seen.push(note.id);
+            let index = note_ids.iter().position(|id| *id == note.id).unwrap();
+            let changed = index % 3 == 0;
+            if changed {
+                // fill Add Reverse
+                note.fields[2] = "y".into();
+            }
+            Ok(TransformNoteOutput {
+                changed,
+                generate_cards: true,
+                mark_modified: true,
+                update_tags: false,
+                mtime: None,
+            })
+        })?;
+        assert_eq!(seen, note_ids);
+        assert_eq!(count, note_ids.len().div_ceil(3));
+
+        let mut new_card_ids = vec![];
+        for (index, (nid, original)) in note_ids.iter().zip(&before).enumerate() {
+            let cards: Vec<(i64, u32, i64, i32)> = col
+                .storage
+                .db
+                .prepare("select id, ord, did, due from cards where nid = ? order by ord")?
+                .query_and_then([nid], |r| {
+                    Ok::<_, AnkiError>((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_>>()?;
+            let note = col.storage.get_note(*nid)?.unwrap();
+            if index % 3 == 0 {
+                assert_eq!(cards.len(), 2);
+                assert_eq!((cards[1].2, cards[1].3), (cards[0].2, cards[0].3));
+                new_card_ids.push(cards[1].0);
+                assert_ne!(note.fields()[2], original.fields()[2]);
+            } else {
+                assert_eq!(cards.len(), 1);
+                assert_eq!(&note, original);
+            }
+            let deck = if index % 2 == 0 {
+                DeckId(1)
+            } else {
+                other_deck
+            };
+            assert!(cards.iter().all(|c| c.2 == deck.0));
+        }
+        assert!(new_card_ids.windows(2).all(|w| w[0] < w[1]));
+
+        Ok(())
+    }
+
     #[test]
     fn note_transformation() -> Result<()> {
         let mut col = Collection::new();
