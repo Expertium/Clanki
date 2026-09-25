@@ -1,9 +1,12 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::panic::catch_unwind;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -42,6 +45,22 @@ impl ComputeParamsBatchJob {
     }
 }
 
+/// Marks a job done when dropped, so that the progress thread stops however
+/// the job ends: with a result, or unwinding from a panic (spec
+/// deck-options.fsrs-optimize-skips-bad-presets).
+struct DoneOnDrop(Arc<AtomicBool>);
+
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// A job's result when its training panicked.
+fn panicked(name: &str) -> Result<ComputeFsrsParamsResponse> {
+    invalid_input!("optimizing the FSRS preset {name} panicked")
+}
+
 struct ComputeParamsBatchJobLane {
     estimated_reviews: usize,
     jobs: Vec<ComputeParamsBatchJob>,
@@ -52,6 +71,26 @@ impl Collection {
         &mut self,
         inputs: Vec<ComputeParamsBatchInput>,
     ) -> Result<Vec<ComputeParamsBatchOutput>> {
+        self.compute_params_batch_with(inputs, |prepared, progress| {
+            compute_params_from_prepared(prepared, Some(progress), false)
+        })
+    }
+
+    /// `compute_params_batch` with the training given, so a test can make one
+    /// job fail. A job that panics gives an error for its preset only: the
+    /// other jobs still run, and the progress thread still stops.
+    fn compute_params_batch_with<F>(
+        &mut self,
+        inputs: Vec<ComputeParamsBatchInput>,
+        train: F,
+    ) -> Result<Vec<ComputeParamsBatchOutput>>
+    where
+        F: Fn(
+                PreparedComputeParams,
+                Arc<Mutex<CombinedProgressState>>,
+            ) -> Result<ComputeFsrsParamsResponse>
+            + Sync,
+    {
         self.clear_progress();
 
         let mut jobs = Vec::with_capacity(inputs.len());
@@ -108,12 +147,11 @@ impl Collection {
                     lane.jobs
                         .into_iter()
                         .map(|job| {
-                            let result = compute_params_from_prepared(
-                                job.input.prepared,
-                                Some(job.progress.clone()),
-                                false,
-                            );
-                            job.done.store(true, Ordering::Release);
+                            let _done = DoneOnDrop(job.done.clone());
+                            let (prepared, progress) = (job.input.prepared, job.progress);
+                            let result =
+                                catch_unwind(AssertUnwindSafe(|| train(prepared, progress)))
+                                    .unwrap_or_else(|_| panicked(&job.input.name));
                             ComputeParamsBatchOutput {
                                 index: job.input.index,
                                 name: job.input.name,
@@ -277,6 +315,50 @@ mod test {
         assert_eq!(lane_totals, vec![140, 140]);
         assert_eq!(lanes[0].jobs[0].input.name, "largest");
         assert_eq!(lanes[1].jobs[0].input.name, "large");
+    }
+
+    fn batch_input(index: usize, name: &str, reviews: usize) -> ComputeParamsBatchInput {
+        ComputeParamsBatchInput {
+            index,
+            ..compute_params_batch_test_job(name, reviews).input
+        }
+    }
+
+    // Pins spec/deck-options.md#deck-options.fsrs-optimize-skips-bad-presets:
+    // a job that panics fails its own preset only, and the progress thread
+    // stops, instead of reporting progress for the rest of the session.
+    #[test]
+    fn a_panicking_job_fails_its_preset_and_stops_the_progress_thread() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut col = Collection::new();
+            let outputs = col.compute_params_batch_with(
+                vec![batch_input(0, "good", 10), batch_input(1, "bad", 20)],
+                |prepared, _| {
+                    assert_ne!(prepared.target_counts.total_targets, 20, "a bad preset");
+                    Ok(ComputeFsrsParamsResponse {
+                        params: prepared.current_params,
+                        fsrs_items: 10,
+                        health_check_passed: None,
+                    })
+                },
+            );
+            sender.send(outputs.map(|outputs| {
+                outputs
+                    .into_iter()
+                    .map(|output| (output.name, output.result.is_ok()))
+                    .collect::<Vec<_>>()
+            }))
+        });
+        // the batch joins its progress thread before it returns
+        let outputs = receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the batch never returned: its progress thread still runs")
+            .unwrap();
+        assert_eq!(
+            outputs,
+            vec![("good".to_string(), true), ("bad".to_string(), false)]
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub(crate) use revlog::RwkvHistoricalReviewRow;
 pub(crate) use revlog::RwkvReviewRetrievabilityCacheRow;
 pub(crate) use revlog::RwkvReviewRetrievabilitySampleRole;
 pub(crate) use revlog::SearchedRating;
+pub(crate) use revlog::UncoveredReviews;
 pub(crate) use revlog::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE;
 pub(crate) use revlog::REVIEW_PREDICTIONS_TABLE;
 pub(crate) use revlog::RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE;

@@ -791,8 +791,11 @@ impl Collection {
             }
             _ => false,
         };
-        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals)
-        let fsrs_allow_short_term = fsrs_enabled;
+        // FSRS-7 may always schedule inside a day (spec sched.sub-day-intervals),
+        // except under RWKV-Instant, which has no learning queue: a sub-day
+        // FSRS-7 interval would hand the card's return to FSRS-7 (spec
+        // sched.rwkv-instant-no-steps)
+        let fsrs_allow_short_term = fsrs_enabled && !config.runs_rwkv_instant();
         // spec sched.sub-day-pass-then-again
         let relearning_left_by_passing_answer = fsrs_enabled
             && card.ctype == CardType::Relearn
@@ -1130,6 +1133,67 @@ pub(crate) mod test {
         let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
         assert_eq!(config.inner.learn_steps, vec![1.0, 10.0]);
         assert_eq!(config.inner.relearn_steps, vec![10.0]);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-instant-no-steps: a sub-day FSRS-7
+    // interval does not put an RWKV-Instant card in the learning or
+    // relearning queue, where FSRS-7 would decide when it comes back.
+    #[test]
+    fn rwkv_instant_sub_day_fsrs7_intervals_stay_out_of_the_learning_queue() -> Result<()> {
+        fn is_intraday(state: &CardState) -> bool {
+            matches!(
+                state,
+                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+            )
+        }
+        fn states(col: &mut Collection, algorithm: SchedulingAlgorithm) -> Result<[CardState; 2]> {
+            col.update_default_deck_config(|config| {
+                config.rwkv_review_enabled = algorithm == SchedulingAlgorithm::RwkvCurve;
+                config.rwkv_review_instant_order_enabled =
+                    algorithm == SchedulingAlgorithm::RwkvInstant;
+            });
+            let new_card = col.get_first_card().id;
+            let review_card = add_due_review_card(
+                col,
+                1,
+                0,
+                Some(FsrsMemoryState {
+                    stability: 0.3,
+                    stability_internal: 0.3,
+                    stability_fast: None,
+                    difficulty: 5.0,
+                }),
+            )?;
+            let new_again = col.get_scheduling_states(new_card)?.again;
+            let review_again = col.get_scheduling_states(review_card)?.again;
+            col.storage.remove_card(review_card)?;
+            Ok([new_again, review_again])
+        }
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        // FSRS-7's Again intervals of both cards are under a day: RWKV-Curve,
+        // which shares the answer states, keeps them in the intraday queue
+        let [new_again, review_again] = states(&mut col, SchedulingAlgorithm::RwkvCurve)?;
+        assert!(is_intraday(&new_again), "{new_again:?}");
+        assert!(is_intraday(&review_again), "{review_again:?}");
+
+        // RWKV-Instant: both become review cards due in whole days, which
+        // RWKV-Instant's scores then bring back
+        let [new_again, review_again] = states(&mut col, SchedulingAlgorithm::RwkvInstant)?;
+        for state in [new_again, review_again] {
+            match state {
+                CardState::Normal(NormalState::Review(review)) => {
+                    assert!(review.scheduled_days >= 1, "{review:?}")
+                }
+                other => panic!("RWKV-Instant should not use the learning queue: {other:?}"),
+            }
+        }
         Ok(())
     }
 

@@ -1001,12 +1001,13 @@ class _RustRwkvRuntime:
     def predict_current_intervals_many_from_warm_up(
         self,
         review_inputs: Sequence[RwkvReviewInput],
-    ) -> Sequence[tuple[float, int | None, float | None, float | None]]:
-        """Query-only current interval, S90 and unrounded current interval
-        per input from the resident state.
+    ) -> Sequence[tuple[float | None, int | None, float | None, float | None]]:
+        """The stored curve's recall now, current interval, S90 and unrounded
+        current interval per input, from the curve RWKV stored at the card's
+        last answered review (spec sched.rwkv-curve-reschedule).
 
-        One forward pass per card, no state bytes across the bridge, GIL
-        released in Rust. Used by "Reschedule cards with RWKV-Curve".
+        No model pass, no state bytes across the bridge, GIL released in
+        Rust. Used by "Reschedule cards with RWKV-Curve".
         """
 
         predict_many = getattr(
@@ -1037,12 +1038,12 @@ class _RustRwkvRuntime:
         )
         return [
             (
-                float(retrievability),
+                float(curve_retrievability) if curve_retrievability else None,
                 int(current_interval) if current_interval else None,
                 float(current_s90) if current_s90 else None,
                 float(unrounded) if unrounded else None,
             )
-            for retrievability, current_interval, current_s90, unrounded in outputs
+            for curve_retrievability, current_interval, current_s90, unrounded in outputs
         ]
 
     def predict_curve_retrievability_many_from_warm_up(

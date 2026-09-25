@@ -132,10 +132,10 @@ other's.
 
 Given a review card that the RWKV-Curve reschedule reschedules
 (`deck-options.reschedule-on-change`), its new interval is RWKV-Curve's
-current interval — the unrounded day where the card's curve meets its target
-retention, found as for the answer intervals (`sched.sub-day-intervals`) —
-turned into whole days exactly as the FSRS-7 reschedule turns FSRS-7's
-unrounded interval into days: rounded to the nearest day like an answer, at
+current interval — the unrounded day where the card's stored curve meets its
+target retention, found as for the answer intervals
+(`sched.sub-day-intervals`) — turned into whole days exactly as the FSRS-7
+reschedule turns FSRS-7's unrounded interval into days: rounded to the nearest day like an answer, at
 least 1, at most the home preset's maximum interval, and not below the
 interval before the card's last review while the new interval still reaches
 it within the fuzz range; then the load balancer and Easy Days pick the day
@@ -144,9 +144,14 @@ review as in the FSRS-7 reschedule, and each rescheduled card counts toward
 the load of the cards after it. The card is due that many days after its
 last review.
 
+The stored curve is the forgetting curve RWKV stored for the card at its last
+answered review, after that answer: the curve card info, the Browser, filtered
+decks and Stats read (`ui.rwkv-curve-r-stored-curve`). The curve of a new query
+of RWKV is never used. A card RWKV stored no curve for is not rescheduled.
+
 Its memory state changes as on an RWKV-Curve answer: the S90 becomes
-RWKV-Curve's current S90 (`sched.rwkv-curve-s90`), and the internal and fast
-stabilities keep their values — a card without a fast stability still has
+RWKV-Curve's current S90 (`sched.rwkv-curve-s90`) of the stored curve, and
+the internal and fast stabilities keep their values — a card without a fast stability still has
 none. A card without a usable FSRS-7 state gets the FSRS-7 state whose own
 S90 is RWKV-Curve's (`sched.fsrs7-sm2-conversion`).
 
@@ -155,7 +160,13 @@ fuzz/LB"; the reschedule rounded the crossing up (1.1 d gave 2 d where an
 answer gives 1 d), ignored the maximum interval, and put every card with
 the same interval on the same day. One algorithm's values must not mix into
 the other's: the reschedule wrote RWKV-Curve's S90 into FSRS-7's fast
-stability when the card had none, which an answer never does.
+stability when the card had none, which an answer never does. Andrew,
+2026-09-24: "Yep, fix them", with the RWKV session's rule that the reschedule
+reads the stored curve of the last real review: training never gives the
+curve of a query row a loss (`ahead_mask = (1 - is_query) * has_label`), and
+on a copy of a collection that curve's S90 differed from the stored curve's
+by a median factor of 2.23, so the reschedule moved cards to dates no other
+RWKV-Curve screen agreed with.
 
 **Pinned by:** `reschedule_turns_the_unrounded_interval_into_days_like_fsrs7`,
 `apply_review_reschedule_changes_only_the_s90_of_a_memory_state`,
@@ -163,7 +174,8 @@ stability when the card had none, which an answer never does.
 (`rslib/src/scheduler/rwkv.rs`);
 `rescheduled_interval_days_are_fuzzed_and_load_balanced`
 (`rslib/src/scheduler/fsrs/rescheduler.rs`);
-`current_intervals_from_warm_up_match_predict_many` (`rslib/src/rwkv/mod.rs`);
+`reschedule_intervals_come_from_the_stored_curve` (`rslib/src/rwkv/mod.rs`);
+`test_backend_resident_current_intervals_require_runtime_support`,
 `test_rwkv_reschedule_items_carry_the_unrounded_interval`,
 `test_apply_rwkv_review_reschedule_includes_target_retention`
 (`qt/tests/test_rwkv_scheduler.py`).
@@ -190,6 +202,43 @@ using FSRS-7's values.
 (`qt/tests/test_reviewer.py`);
 `test_startup_without_a_model_warns_instead_of_offering_a_state`,
 `test_rwkv_instant_card_info_says_the_model_is_missing`
+(`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-no-first-review-retrievability
+
+Given a card whose next answer is its first review (a new card, also one that
+Forget reset to new), no algorithm computes a probability of recall for it,
+and RWKV-Instant never queries the model for it:
+
+- a Stats search, a Browser `prop:rwkv:r` search or a filtered deck scores no
+  new card, also when the search says `is:new`: such a card has no RWKV value,
+  so the Stats retrievability graph does not draw it, `prop:rwkv:r` does not
+  match it, and a filtered deck ordered by retrievability puts it after the
+  cards with a value (`sched.filtered-deck-one-algorithm`);
+- card info and AnkiConnect's `prop:r` give no RWKV-Instant value for it;
+- the reviewer asks RWKV-Instant for no prediction when it shows it, so its
+  first answer stores no RWKV-Instant prediction of that review;
+- no new-card gather order ranks by retrievability
+  (`deck-options.no-new-card-retrievability-order`).
+
+RWKV-Curve still computes its curve when the reviewer shows a new card: the
+curve gives the first answer's intervals, and RWKV-Curve has no value for the
+card before that answer.
+
+**Why:** Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): the value for
+a first review depends only on the deck, the preset and the creation date, so
+it says nothing about the card's memory. Before, RWKV-Instant scored new cards
+for the new-card gather orders, for `is:new` searches, for card info and when
+the reviewer showed one; each query also drew the card's model ID code on the
+live state.
+
+**Pinned by:** `review_input_rows_never_score_a_new_card`,
+`review_input_rows_for_search_uses_search_table` (`is:new`)
+(`rslib/src/scheduler/rwkv.rs`);
+`test_rwkv_instant_scores_no_new_card`,
+`test_rwkv_instant_card_info_has_no_value_for_a_new_card`,
+`test_rwkv_instant_reviewer_does_not_predict_a_new_card`
 (`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-instant-waits
@@ -230,6 +279,25 @@ none for a card, and its counts fell back to FSRS-7's.
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_remaining_review_count_is_pending_without_rwkv_instant_scores`
 (`qt/tests/test_reviewer.py`).
+
+## sched.rwkv-instant-order-after-sync-refresh
+
+Given a collection that runs RWKV-Instant, when a sync brings new reviews and
+the RWKV state is refreshed from the merged history, the next card comes in
+the order of the new state's scores. The refresh empties RWKV-Instant's
+score map when it starts, which builds the study queue again; a queue built
+while the state replays holds no review cards (`sched.rwkv-instant-waits`);
+and installing the new state's scores builds the queue again. The history
+reads of the replay do not touch the queue (`database.dbproxy-read-only`).
+
+**Why:** the queue order of RWKV-Instant is its scores, and a refresh changes
+the state they come from. Until 2026-09-25 the replay's history reads also
+dropped the queue, as a side effect of a DB-proxy bug; the two rebuilds above
+are the ones the order depends on.
+
+**Pinned by:**
+`rwkv_instant_order_follows_the_scores_installed_after_a_sync_refresh`
+(`rslib/src/scheduler/queue/builder/mod.rs`).
 
 ## sched.study-queue-kept-after-answer
 
@@ -823,7 +891,8 @@ For this rule an ignored review is not rated: it is never a learning start, and
 it does not separate two Learning runs. An ignored Forget row still cuts the
 history. The ignored reviews a history reports as active, which the state
 cache stores and the fingerprint compares, are the ignored reviews that are
-rated reviews of an existing card, wherever that card's start row is.
+rated reviews, of an existing card or a deleted one
+(`sched.rwkv-replay-deleted-cards`), wherever that card's start row is.
 **Why:** Andrew, 2026-09-24: "Yes, fix B-028". The RWKV session's reason:
 training's `filter_revlog` (button_chosen >= 1, not a filtered-deck reschedule
 with ease 0) runs before anything else, so a learning start is always a rated
@@ -848,6 +917,91 @@ again.
 `test_a_failed_save_of_new_ignored_reviews_keeps_memory_and_file_apart`,
 `test_a_failed_store_metadata_write_keeps_the_deltas_the_old_metadata_needs`
 (`qt/tests/test_rwkv_scheduler.py`).
+
+## sched.rwkv-replay-deleted-cards
+
+Given rated reviews of a card that no longer exists (its row is gone from the
+cards table, its review log rows are not), the RWKV replay keeps them in the
+history, in review-id order among the other reviews, under the same start-row
+rule (`sched.rwkv-replay-start-row`). Such a review has no note, no deck and
+no preset: the three "id is missing" inputs of the published model are 1, and
+it reads and advances placeholder note, deck and preset streams, each with a
+real recurrent state and its own id code. Which placeholders is a property of
+the model version (the id pipeline it was trained with, `RwkvIdPipeline`):
+for the shipped model (int32) every review without an id shares ONE
+placeholder note, deck and preset (`ID_PLACEHOLDER`); for a model trained on
+the int64 pipeline a missing note is a placeholder of its own per card
+(`ID_PLACEHOLDER + card id`), while deck and preset stay one shared
+placeholder each. The PyTorch reference runner
+(`qt/aqt/rwkv_inference/process.py`) follows the same rule (its
+`id_pipeline`). It advances the card's
+own stream and every per-user count (reviews today, new cards today, reviews
+and new cards since the card's last review, the global stream) as any other
+review does. Under the default first-review source (the preset's setting),
+its first review measures no elapsed time from the card's creation, because
+the card has no preset to ask. Every read agrees: the
+backend fingerprint, the backend's replay rows and replay inputs, Total
+Knowledge, and the Python query (whole, in parts and after a review id); a
+read of one deck leaves them out, as they are in no deck.
+**Why:** Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule 1:
+the model's training kept these reviews. Its dataset builder never looks at
+the cards table and `data_processing.py` left-joins it, so a deleted card's
+reviews stay with note, deck and preset missing and the `*_id_is_nan` flags
+set (about 11% of training rows over seven sampled users; 23.8% of the rated
+rows in Andrew's collection). The shipped model's training cast the filled
+placeholder ids to int32, which saturated all of them to one value, so it
+learned one shared note, deck and preset entity for them; the int64 pipeline
+(2026-08-21 on) keeps the per-card note fill (the RWKV session's
+DEPLOY_FUNCTIONS.md section 7). A replay that drops those reviews gives every
+later prediction a state training never produced.
+**Pinned by:** `a_deleted_cards_reviews_stay_in_the_replay_without_ids`
+(`rslib/src/scheduler/rwkv_inputs/mod.rs`),
+`rwkv_replay_read_matches_the_query_it_replaced`
+(`rslib/src/storage/revlog/mod.rs`),
+`missing_ids_encode_as_the_model_versions_placeholders`,
+`reviews_without_ids_stream_through_the_model_versions_placeholders`
+(`rslib/src/rwkv/mod.rs`),
+`test_reference_runner_missing_note_follows_the_id_pipeline`,
+`test_reference_runner_gives_the_deleted_card_row_by_its_id_pipeline`,
+`test_rsbridge_deleted_card_reviews_stream_through_the_shared_placeholders`
+(`qt/tests/test_rwkv_inference_process.py`),
+`test_a_deleted_cards_reviews_are_replayed_without_ids`
+(`qt/tests/test_rwkv_replay_inputs_backend.py`) and
+`test_the_backend_reads_the_same_whole_history_rows_as_the_query`
+(`qt/tests/test_rwkv_replay_sql_drift.py`).
+
+## sched.rwkv-id-codes
+
+Given a card, note, deck or preset id, the RWKV model's code for that entity
+(12 values for a card or a note, 8 for a deck or a preset, each one of -1.5,
+-0.5, 0.5 and 1.5) is a function of the kind and the id alone: torch's
+`torch.randint(0, 4, (dim,), generator=g) - 1.5` with
+`g = torch.Generator().manual_seed(seed)`, where `seed` is the low 32 bits of
+splitmix64 of the id (as an unsigned 64-bit value) XOR the kind shifted left
+by 62 bits (card 0, note 1, deck 2, preset 3). The replay, a live answer, a
+query, a rebuild, the recording pass and Total Knowledge therefore give an
+entity the same code, whatever order they meet it in. A query (a prediction
+of a card that is not being answered) leaves the resident state exactly as it
+found it: it adds no code and changes no count. The codes are not saved with
+the state cache. The PyTorch reference runner
+(`qt/aqt/rwkv_inference/process.py`) draws its codes by the same rule by
+default; `id_codes="in_order"` keeps srs-benchmark's draw from the global
+stream, for reproducing srs-benchmark only.
+**Why:** Andrew, 2026-09-24: "Yep, fix them", and the RWKV session's rule 3.
+The codes used to come from one random stream in the order entities first
+appeared, and a query of an unseen card, note or deck drew from it on the live
+state, so every entity met after that query got another code than a replay of
+the same history gives: live Instant R and the recorded Stats rows disagreed,
+depending on which screens had been opened. Training draws a fresh uniform
+code per id, so any stable code drawn from the same uniform family is
+faithful to it; seeding torch's own generator by the id keeps the family and
+lets the RWKV session reproduce every code in PyTorch.
+**Pinned by:** `id_codes_match_torch_seeded_by_the_id`,
+`id_codes_do_not_depend_on_order_and_queries_change_nothing`,
+`feature_state_cache_round_trips_without_id_codes` (`rslib/src/rwkv/mod.rs`),
+`test_reference_runner_seeds_id_codes_as_the_runtime_does`,
+`test_reference_runner_with_its_own_codes_gives_the_golden_rows`
+(`qt/tests/test_rwkv_inference_process.py`).
 
 **The rule has one implementation: the SQL.** The backend query
 (`rwkv_historical_review_rows`, `rslib/src/storage/revlog/mod.rs`) and the
@@ -1063,14 +1217,22 @@ Review (not Relearning), with a previous interval of 1 day (not 0).
 
 ## sched.rwkv-review-order
 
-Given a preset running RWKV-Curve or RWKV-Instant whose review sort order is
+Given a preset running RWKV-Curve whose review sort order is
 "Retrievability ascending", "Retrievability descending" or "Relative
 overdueness", when the study queue gathers due review cards and interday
-learning cards that it does not rank by RWKV-Instant queue scores (under
-RWKV-Instant only interday learning cards: its review cards come only from
-its scores, `sched.rwkv-instant-waits`), it ranks
-them by RWKV's own measure and applies the daily limits in that order. A
-card's retrievability is its RWKV-Curve retrievability score for today; a
+learning cards, it ranks them by RWKV-Curve's own measure and applies the
+daily limits in that order.
+
+Under RWKV-Instant with one of these orders, the review cards come only from
+RWKV-Instant's scores (`sched.rwkv-instant-waits`), ranked by them. Its
+interday learning cards (from another client's steps or an algorithm switch;
+RWKV-Instant itself puts no card in the learning queue,
+`sched.rwkv-instant-no-steps`) have no RWKV-Instant score, so they come by due
+day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
+interval and no FSRS-7 retrievability ranks them.
+
+Under RWKV-Curve, a card's retrievability is its RWKV-Curve retrievability
+score for today; a
 card without a score gets the value of the exponential forgetting curve
 through the interval RWKV scheduled for it, target ^ (days since the last
 review / interval), where the target is the card's desired retention, else
@@ -1087,9 +1249,16 @@ measure relative overdueness should use, he chose "RWKV curve scores"
 the retrievability orders. Before this entry, relative overdueness came from
 an SQL function that applied a one-component FSRS forgetting curve to the
 card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's —
-and the retrievability orders gathered the cards in due-day order.
+and the retrievability orders gathered the cards in due-day order. Andrew,
+2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
+(`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
+RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
+through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
+for them, so the due day, which every order without an algorithm uses, orders
+them.
 
-**Pinned by:** `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
+**Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
+`rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
 `rwkv_curve_retrievability_orders_use_rwkv`
 (`rslib/src/scheduler/queue/builder/mod.rs`).
@@ -1234,7 +1403,12 @@ has no intervals at all.
 
 Given a preset that RWKV-Instant schedules, the preset has no learning steps
 and no relearning steps, whatever steps it stores: a card it answers never
-enters the learning or relearning queue, and the deck-options rows for
+enters the learning or relearning queue. This holds for sub-day intervals too:
+an answer whose FSRS-7 interval is under a day (Again on a new card with the
+default parameters, for one) makes the card a review card due in whole days
+(at least one), as with no learning queue, instead of an intraday learning
+card whose return FSRS-7 would decide; RWKV-Instant's scores then decide when
+it comes back (`sched.rwkv-instant-waits`). The deck-options rows for
 Learning steps, Relearning steps, Maximum interval, Minimum interval and
 Maximum number of same-day reviews are not shown. The stored values are kept
 untouched, so a preset that returns to FSRS-7 or RWKV-Curve gets its steps
@@ -1249,11 +1423,15 @@ steps should merely be hidden or should stop working, he answered that they
 must not exist under Instant. RWKV-Instant decides when a card comes back
 from the card's own score, so every setting that shapes an interval has
 nothing to act on; a setting that is shown but does nothing is worse than no
-setting.
+setting. Andrew, 2026-09-24, "fix the bugs on our side": the RWKV-Instant
+review (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3) found that
+FSRS-7's sub-day intervals still sent Instant cards to the learning queue,
+which RWKV-Instant does not score, so FSRS-7 decided their return.
 
 **Pinned by:** `rwkv_instant_has_no_steps_and_no_same_day_limit`
 (`rslib/src/deckconfig/mod.rs`),
-`rwkv_instant_answers_a_new_card_without_a_learning_step`
+`rwkv_instant_answers_a_new_card_without_a_learning_step`,
+`rwkv_instant_sub_day_fsrs7_intervals_stay_out_of_the_learning_queue`
 (`rslib/src/scheduler/answering/mod.rs`) and
 `ts/routes/deck-options/scheduler-choice.test.ts`.
 
@@ -1302,6 +1480,42 @@ in `rslib/src/scheduler/fsrs/params.rs`;
 `ts/routes/card-info/forgetting-curve.test.ts` (`stabilityS90`);
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
+
+## sched.health-check-fsrs7-fit
+
+Given a Check Health evaluation, the pass rate `r` and review count `c` used
+to normalize its log loss and RMSE are read from the training items the
+evaluation was run on — same-day reviews included, since FSRS-7 training
+always includes them (`sched.fsrs7-only`), and only each card's first review
+excluded. The normalization uses coefficients fitted to FSRS-7 with same-day
+reviews, not the 2025 FSRS-6 fit:
+
+```
+log_loss_adjustment(r) = 0.5988 * (4 * r * (1 - r)) ^ 0.7303
+rmse_adjustment(r, c)  = 0.0072 / (r ^ 0.9034 - 1.1)
+                       + 0.1578 / ((c / 1000) ^ 0.6513 + 1.6275)
+                       + 0.0711
+```
+
+The check passes unless the adjusted log loss is at least 1.08 **and** the
+adjusted RMSE is at least 1.34 (`adjusted_log_loss <= 1.08 || adjusted_rmse
+<= 1.34`); about 5% of users are warned at these thresholds, against 2.2% at
+the old 1.11/1.53 pair.
+
+**Why:** Andrew, 2026-09-24, asked for a refit of the health-check
+normalization for FSRS-7. The 2025 coefficients and 1.11/1.53 thresholds
+were fitted to FSRS-6 evaluations that excluded same-day reviews from `r`
+and `c`; FSRS-7's log loss and RMSE include same-day reviews, so the old fit
+undercounted both and no longer matched its own median-1.00 calibration.
+Fitted the same way as the 2025 pair (least squares on
+log(actual / predicted), rescaled to a median normalized value of 1.00 on
+each metric, thresholds at the percentile pair that warns ~5% of users) on
+`FSRS-7-sched_penalties-short-secs-recency.jsonl` from srs-benchmark (10,000
+users). Full method and checks:
+<https://github.com/ankitects/anki/pull/5687#issuecomment-5821785780>.
+
+**Pinned by:** `health_check_fsrs7_fit_adjustments_and_thresholds` in
+`rslib/src/scheduler/fsrs/params.rs`.
 
 ## sched.fsrs-rs-latest
 
