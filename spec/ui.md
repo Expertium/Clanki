@@ -754,6 +754,23 @@ the whole collection's 685-729 ms, at every start; reading them back takes
 `test_kept_counts_read_back_as_they_were`
 (`qt/tests/test_review_heatmap.py`).
 
+## ui.review-heatmap-read-only
+
+Given a heatmap that Clanki draws or computes (the deck list, a deck's
+overview, the stats screen), the heatmap only reads the collection: the
+Undo step the user has (for example "Undo Answer Card" after a review) and
+the study queues stay as they were.
+
+**Why:** 2026-09-25 speed hunt: the heatmap counted its day ranges with a
+statement that starts with WITH, and the backend treats every statement
+that does not start with SELECT as a write, which drops the undo step and
+the study queues. Going back to the deck list after a review lost "Undo
+Answer Card", and the next screen built the study queue again on the main
+thread (9-14 ms).
+
+**Pinned by:** `test_drawing_the_heatmap_keeps_the_undo_step`
+(`qt/tests/test_review_heatmap.py`).
+
 ## ui.periodic-backup-waits
 
 Given the periodic backup check (every 5 minutes while a profile is open),
