@@ -246,7 +246,18 @@ impl Collection {
         note: &Note,
     ) -> Result<()> {
         let existing = self.storage.existing_cards_for_note(note.id)?;
-        self.generate_cards_for_note(ctx, note, &existing, ctx.last_deck, &mut Default::default())?;
+        self.generate_cards_for_existing_note_with_cards(ctx, note, &existing)
+    }
+
+    /// [Self::generate_cards_for_existing_note], with the note's current
+    /// cards (in card id order) already read by the caller.
+    pub(crate) fn generate_cards_for_existing_note_with_cards(
+        &mut self,
+        ctx: &CardGenContext<impl Deref<Target = Notetype>>,
+        note: &Note,
+        existing: &[AlreadyGeneratedCardInfo],
+    ) -> Result<()> {
+        self.generate_cards_for_note(ctx, note, existing, ctx.last_deck, &mut Default::default())?;
         Ok(())
     }
 
