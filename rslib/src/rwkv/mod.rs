@@ -1741,6 +1741,19 @@ insert into segments (
         }
     }
 
+    /// Forgets what this state holds of one card itself: its own feature
+    /// counters and its stored curve, as if it had never been reviewed. A
+    /// live answer that starts the card's history again (the first answer
+    /// after Forget) calls it before the answer, so the card starts fresh as
+    /// a rebuild starts it (spec sched.rwkv-replay-start-row); the caller
+    /// passes no card state with that answer. The shared states keep the
+    /// card's earlier reviews until the next rebuild. True when the state had
+    /// seen the card, so that it now differs from a rebuild's.
+    pub fn forget_card(&mut self, card_id: i64) -> bool {
+        self.curves.remove(&card_id);
+        self.features.forget_card(card_id)
+    }
+
     pub fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {
         RwkvInferenceState {
             feature_state: self.features.state_for_card(card_id),
@@ -2703,6 +2716,19 @@ impl FeatureState {
                 .copied(),
             review_index: self.review_index,
         }
+    }
+
+    /// Forgets the card's own counters, as if the state had never seen it;
+    /// the counters of the whole stream stay. True when the state had seen
+    /// the card.
+    fn forget_card(&mut self, card_id: i64) -> bool {
+        let seen = self.card_set.remove(&card_id).is_some();
+        self.last_new_cards.remove(&card_id);
+        self.last_i.remove(&card_id);
+        self.card_first_day_offset.remove(&card_id);
+        self.card_elapsed_days_cumulative.remove(&card_id);
+        self.card_elapsed_seconds_cumulative.remove(&card_id);
+        seen
     }
 
     fn restore_state(&mut self, state: &FeatureStateForCard) {
@@ -12429,6 +12455,51 @@ create table segment_state_chunks (
         assert!(restored.id_encodings.is_empty());
         assert_eq!(restored.features_for(&input), expected[0]);
         assert_eq!(restored.features_for(&next_input), expected[1]);
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-live-learning-start-fresh: a forgotten
+    // card gets the features of a card the state never saw, apart from its own
+    // id code; the counters of the whole stream stay.
+    #[test]
+    fn a_forgotten_card_has_the_features_of_an_unseen_card() {
+        let input = |card_id, day_offset, elapsed_days: i64, card_type| ReviewInput {
+            card_id,
+            note_id: Some(card_id + 1),
+            deck_id: Some(789),
+            preset_id: Some(10),
+            is_query: false,
+            ease: Some(3),
+            duration_millis: Some(1200),
+            card_type: Some(card_type),
+            day_offset: Some(day_offset),
+            current_elapsed_days: Some(elapsed_days),
+            current_elapsed_seconds: Some(elapsed_days * 86_400),
+            target_retentions: [None; 4],
+            enforce_grade_order: true,
+        };
+        let mut features = FeatureState::new(PUBLISHED_MODEL_ID_PIPELINE);
+        features.store_review(&input(123, 40, -1, 0));
+        features.store_review(&input(5, 41, -1, 0));
+        features.store_review(&input(123, 45, 5, 2));
+        let before = features.review_index;
+
+        assert!(features.forget_card(123));
+        assert!(!features.forget_card(123));
+
+        assert_eq!(features.review_index, before);
+        assert!(features.card_set.contains_key(&5));
+        let unseen = features.clone();
+        let forgotten = features.features_for(&input(123, 50, -1, 0));
+        let never_seen = unseen.features_for(&input(777, 50, -1, 0));
+        // the elapsed, rating, count and state features, then (after the
+        // card, note, deck and preset codes) the day features
+        let ids_end = 24
+            + [IdKind::Card, IdKind::Note, IdKind::Deck, IdKind::Preset]
+                .map(id_encoding_dim)
+                .iter()
+                .sum::<usize>();
+        assert_eq!(forgotten[..24], never_seen[..24]);
+        assert_eq!(forgotten[ids_end..], never_seen[ids_end..]);
     }
 
     #[test]

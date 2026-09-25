@@ -1470,14 +1470,22 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
     if not aqt.rwkv_scheduler.rwkv_review_enabled(reviewer, card):
         return
     response.rwkv_curve.SetInParent()
+    # the review whose curve RWKV stored: never a preview or a review the
+    # replay ignores, so the R here is the one the Browser and the queue use
+    review_id = aqt.rwkv_scheduler.rwkv_curve_last_replayed_review_id(reviewer, card)
+    latest_time = review_id // 1000 if review_id is not None else None
     # the revlog is newest first
     latest = next(
-        (i for i, entry in enumerate(response.revlog) if entry.button_chosen > 0),
+        (
+            i
+            for i, entry in enumerate(response.revlog)
+            if entry.button_chosen > 0 and entry.time == latest_time
+        ),
         None,
     )
     elapsed_days = (
-        max(0.0, time.time() - response.revlog[latest].time) / 86_400
-        if latest is not None
+        max(0.0, time.time() - review_id / 1000) / 86_400
+        if review_id is not None
         else None
     )
     result = aqt.rwkv_scheduler.rwkv_card_info_curve_result(
@@ -1492,7 +1500,6 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
         if curve.current_recall is not None:
             response.rwkv_curve.current_recall = curve.current_recall
         # the earlier reviews' own curves; the last review's is the one above
-        latest_time = response.revlog[latest].time if latest is not None else None
         for past in curve.past:
             review_time = past.review_id // 1000
             if latest_time is not None and review_time >= latest_time:
@@ -1500,10 +1507,14 @@ def _add_rwkv_curve(response: CardStatsResponse, reviewer: object, card: Any) ->
             response.rwkv_curve.past.add(
                 review_time=review_time, recall=past.recall, s90=past.s90
             )
+    # only the replayed review shows RWKV's S90: the older reviews, and a
+    # newer preview or ignored review, keep no FSRS-7 memory state
+    for index, entry in enumerate(response.revlog):
+        older = latest is not None and index > latest
+        if index != latest and (older or entry.button_chosen > 0):
+            entry.ClearField("memory_state")
     if latest is None:
         return
-    for entry in response.revlog[latest + 1 :]:
-        entry.ClearField("memory_state")
     latest_review = response.revlog[latest]
     if curve is None:
         latest_review.ClearField("memory_state")

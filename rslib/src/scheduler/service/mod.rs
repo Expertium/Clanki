@@ -918,6 +918,44 @@ impl crate::services::SchedulerService for Collection {
         Ok(FsrsIntervalAtRetrievabilityByConfigBatchResponse { items })
     }
 
+    fn rwkv_review_queue_curve_cards(
+        &mut self,
+        input: scheduler::RwkvReviewQueueCurveCardsRequest,
+    ) -> Result<scheduler::RwkvReviewQueueCurveCardsResponse> {
+        let cards =
+            Collection::rwkv_review_queue_curve_cards(self, input.deck_id.into(), input.state)?;
+        Ok(scheduler::RwkvReviewQueueCurveCardsResponse {
+            card_ids: cards.iter().map(|(card_id, _)| card_id.0).collect(),
+            last_review_secs: cards.iter().map(|(_, time)| time.0).collect(),
+        })
+    }
+
+    fn set_rwkv_review_queue_curves(
+        &mut self,
+        input: scheduler::RwkvReviewQueueCurvesRequest,
+    ) -> Result<()> {
+        require!(
+            input.card_ids.len() == input.last_review_secs.len(),
+            "queue curve cards do not match their review times"
+        );
+        let Some(curves) = crate::rwkv::unpack_stored_curves(&input.curve_card_ids, &input.curves)
+        else {
+            invalid_input!("queue curves do not match their cards");
+        };
+        let cards = input
+            .card_ids
+            .into_iter()
+            .zip(input.last_review_secs)
+            .map(|(card_id, secs)| (CardId(card_id), TimestampSecs(secs)))
+            .collect();
+        let curves = curves
+            .into_iter()
+            .map(|(card_id, curve)| (CardId(card_id), curve))
+            .collect();
+        Collection::set_rwkv_review_queue_curves(self, input.state, cards, curves);
+        Ok(())
+    }
+
     fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
         let scores = rwkv_score_entries(input.scores)?;
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)

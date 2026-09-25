@@ -128,6 +128,16 @@ service SchedulerService {
   // queue ordering. Empty scores clear the map.
   rpc SetRwkvReviewQueueScores(RwkvReviewQueueScoresRequest)
       returns (generic.Empty);
+  // RWKV-Curve's retrievability review orders compute R when the queue is
+  // built, from the curves RWKV stored (spec sched.rwkv-review-order). This
+  // names the due review and interday learning cards of the deck's tree whose
+  // curve the collection does not hold for their last review, with that
+  // review's time; a new RWKV state drops every held curve.
+  rpc RwkvReviewQueueCurveCards(RwkvReviewQueueCurveCardsRequest)
+      returns (RwkvReviewQueueCurveCardsResponse);
+  // Holds the stored curves of those cards for the queue.
+  rpc SetRwkvReviewQueueCurves(RwkvReviewQueueCurvesRequest)
+      returns (generic.Empty);
   // Updates or removes one already-answered card's transient queue score
   // without invalidating the retained queue behind it.
   rpc PatchAnsweredCardRwkvReviewQueueScore(
@@ -1142,6 +1152,29 @@ message RwkvReviewQueueScoresRequest {
   }
   int64 deck_id = 1;
   repeated Score scores = 2;
+}
+
+message RwkvReviewQueueCurveCardsRequest {
+  int64 deck_id = 1;
+  // names the RWKV state the curves come from
+  uint64 state = 2;
+}
+
+message RwkvReviewQueueCurveCardsResponse {
+  repeated int64 card_ids = 1;
+  // the time of each card's last review, in seconds
+  repeated int64 last_review_secs = 2;
+}
+
+message RwkvReviewQueueCurvesRequest {
+  uint64 state = 1;
+  // the cards asked for and their last reviews' times, as the collection
+  // named them
+  repeated int64 card_ids = 2;
+  repeated int64 last_review_secs = 3;
+  // the curves of the cards that have one, packed as for Advance/Postpone
+  repeated int64 curve_card_ids = 4;
+  bytes curves = 5;
 }
 
 message RwkvAnsweredCardQueueScorePatchRequest {
