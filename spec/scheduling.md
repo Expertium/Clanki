@@ -1053,6 +1053,43 @@ may cut at.
 `test_replay_sql_that_drifts_from_the_backend_fails_the_fingerprint`
 (`qt/tests/test_rwkv_replay_sql_drift.py`).
 
+## sched.rwkv-live-learning-start-fresh
+
+Given a live answer under RWKV-Curve or RWKV-Instant (the reviewer, Grade
+Now) that is a card's learning start (`sched.rwkv-replay-start-row`), for
+example the first answer after Forget, the resident RWKV state takes it as
+the start of the card's history, as a rebuild does: the card's own recurrent
+state starts empty, and the state forgets the card's own counters (its
+cumulative elapsed time, its first day, its place in the "new cards" and
+"reviews since" counts) and its stored curve before the answer. A rebuild
+drops the card's earlier rows from the history, so it counts the card as a
+new card on that day; the live answer now counts it the same way. The shared
+states (note, deck, preset, global) and the other cards' counters still hold
+the card's earlier reviews until the next rebuild, which reads the history
+without them. Undo of the answer restores the card's earlier state.
+
+When the state had seen the card, it is marked "stale since Forget": the
+mark stays with the resident state, the state cache saves it (the
+`staleSinceForget` key of its metadata) and a restore of that cache brings
+it back; a replay of the whole history from nothing clears it. The mark
+starts no rebuild by itself: the next rebuild that happens for another
+reason (a new model, a cache that does not load, the Advanced-mode button)
+makes the state exact again.
+
+**Why:** Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Curve
+review (`reviews/algo-2026-09-24/rwkv-curve.md`, section 2): after Forget the
+live answer continued the card's old state (card stream, cumulative elapsed
+time, curve), while every rebuild starts the card fresh, so the card's
+intervals changed at the next rebuild. The RWKV session, 2026-09-25: the
+dataset builder drops every row of a card before its last learning start
+from all streams and counters, so a card-local fresh start fixes the card
+stream (the largest part of the error) and a mark records that the rest
+waits for a rebuild; Clanki must not force a full rebuild on every Forget.
+
+**Pinned by:** `a_forgotten_card_has_the_features_of_an_unseen_card`
+(`rslib/src/rwkv/mod.rs`), `test_live_learning_start_starts_the_card_fresh`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-exact-elapsed
 
 Given a learning card that RWKV predicts for, the elapsed time RWKV gets is
@@ -1092,7 +1129,8 @@ Good, Easy:
   the sub-day button or sub-day step before it; a learning card stays
   learning, and a review or relearning card becomes a relearning card with
   no remaining steps (a passing answer keeps its lapse count, and the
-  card's interval field holds a whole number of days, at least 1);
+  card's interval field holds a whole number of days, at least 1; its next
+  answer is a review, `sched.sub-day-pass-then-again`);
 - any other button (18 hours or more, or after a day button or a day-long
   step) gets whole days (at least 1) after review fuzz, and at least one
   day more than the day button or day-long step before it: with all four
@@ -1173,6 +1211,47 @@ state tests; `test_rwkv_curve_states_*` and
 `test_unrounded_interval_from_recall_curve_keeps_sub_day_crossings`
 (`qt/tests/test_rwkv_scheduler.py`).
 
+## sched.sub-day-pass-then-again
+
+Given a card scheduled by FSRS-7 or RWKV-Curve (or RWKV-Instant, which
+stores FSRS states, `sched.rwkv-instant-no-intervals`) that is a relearning
+card with no remaining steps, and whose last rated review (leaving out preview answers
+in a filtered deck) was Hard, Good or Easy, its next answer is the answer of
+a review card with the card's interval field as its interval:
+
+- Again adds a lapse, runs the leech check (the leech tag, and the leech
+  action), and relearns as a failed review card does (the relearning steps,
+  or a sub-day Again, `sched.sub-day-intervals`);
+- Hard, Good and Easy follow the review rules of `sched.sub-day-intervals`;
+- the review-log row has the kind Review, and its previous interval is the
+  interval field (1 day) instead of 0. Under RWKV-Curve the reviewer sets
+  the row's kind from RWKV's state for the answer
+  (`test_live_same_day_review_uses_scheduler_valid_synthetic_state`): for an
+  answer on the same day as that passing answer it is Filtered, or
+  Relearning after a relearning card's Hard. RWKV gets that state as its
+  input too.
+
+Such a card got there from a passing answer with a sub-day interval: a
+review card's Hard, Good or Easy, or a relearning card's Hard, Good or Easy
+after its steps (it left relearning). A relearning card whose last answer
+was Again is still relearning, and another Again adds no lapse.
+
+**Why:** Andrew, 2026-09-24: "fix FSRS-7 bugs", and later that night "fix
+the bugs on our side", about the FSRS-7 review
+(`clanki-logs/reviews/algo-2026-09-24/fsrs7.md`, section 3). A passing
+sub-day answer stores the card as a relearning card, and the Again after it
+kept the lapse count, ran no leech check and logged as Relearning. The
+database cannot tell such a card from one that lapsed, so the last rated
+review decides. Two side effects for Andrew to confirm or veto: (1) a
+relearning card that finished its steps with a sub-day Hard, Good or Easy
+now also gets a lapse for its next Again, as upstream Anki counts a lapse
+after relearning ends; (2) Hard, Good and Easy on such a card now log as
+Review (not Relearning), with a previous interval of 1 day (not 0).
+
+**Pinned by:** `again_after_a_sub_day_pass_is_a_review_lapse`,
+`again_while_relearning_is_not_a_second_lapse`
+(`rslib/src/scheduler/answering/mod.rs`, both for FSRS-7 and RWKV-Curve).
+
 ## sched.rwkv-review-order
 
 Given a preset running RWKV-Curve whose review sort order is
@@ -1189,17 +1268,33 @@ RWKV-Instant itself puts no card in the learning queue,
 day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
 interval and no FSRS-7 retrievability ranks them.
 
-Under RWKV-Curve, a card's retrievability is its RWKV-Curve retrievability
-score for today; a
-card without a score gets the value of the exponential forgetting curve
-through the interval RWKV scheduled for it, target ^ (days since the last
-review / interval), where the target is the card's desired retention, else
-the preset's. Retrievability ascending puts the lowest first, descending
-the highest first. Relative overdueness puts the lowest retrievability /
-target first — the key RWKV-Instant ranks its scores by; it is 1 when the
-card is due exactly and less the more it is overdue. Ties go by a hash of
-card id and modification time, then card id. The FSRS memory state plays no
-part.
+Under RWKV-Curve a card's retrievability is its stored curve now
+(`ui.rwkv-curve-r-stored-curve`), computed when the queue is built: the
+curve RWKV stored at the card's last review, at the time since that review.
+Before the queue is built (the overview's counts, the reviewer's next card,
+a refresh after an operation), the reviewer hands the collection the stored
+curves of the tree's due review and interday learning cards whose curve the
+collection does not hold for their last review; it never waits for RWKV and
+never starts a warm-up for this. The collection keeps curves, not R values:
+a curve counts only for the review it came with (a later answer or an undo
+makes it unknown), a new RWKV state (a rebuild, a restore, a new model, but
+not an answer) drops them all, and a hand-over that brings a curve builds the
+queue again. After an answer nothing is handed over, so the queue is kept
+(`sched.study-queue-kept-after-answer`).
+No score that the Stats page, a Browser search or card info kept takes part.
+A card RWKV stored no curve for, or whose curve is not held, goes after every
+card with a value. Only when the collection holds no curve for any of the
+due cards (RWKV not ready yet, or no reviewer handed any over) does every
+card get the value of the exponential forgetting curve through the interval
+RWKV scheduled for it, target ^ (days since the last review / interval),
+where the target is the card's desired retention, else the preset's; one
+sort never compares the two measures.
+
+Retrievability ascending puts the lowest first, descending the highest
+first. Relative overdueness puts the lowest retrievability / target first —
+the key RWKV-Instant ranks its scores by; it is 1 when the card is due
+exactly and less the more it is overdue. Ties go by a hash of card id and
+modification time, then card id. The FSRS memory state plays no part.
 
 **Why:** Andrew, 2026-09-15: only one algorithm at a time. Asked which
 measure relative overdueness should use, he chose "RWKV curve scores"
@@ -1208,7 +1303,14 @@ the retrievability orders. Before this entry, relative overdueness came from
 an SQL function that applied a one-component FSRS forgetting curve to the
 card's FSRS-7 internal stability — neither RWKV's measure nor FSRS-7's —
 and the retrievability orders gathered the cards in due-day order. Andrew,
-2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
+2026-09-24 ("fix the bugs on our side"), on the RWKV-Curve review
+(`reviews/algo-2026-09-24/rwkv-curve.md`, section 3): the queue read the
+newest score map any Browser search or the Stats page had kept, checked only
+by day, so a deck's order changed with the last search, a value scored in
+the morning was used at night (`sched.rwkv-r-freshness`: RWKV-Curve keeps no
+R of its own), and scored and unscored cards were compared on two measures.
+
+Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
 (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
 RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
 through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
@@ -1218,8 +1320,14 @@ them.
 **Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
 `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
-`rwkv_curve_retrievability_orders_use_rwkv`
-(`rslib/src/scheduler/queue/builder/mod.rs`).
+`rwkv_curve_retrievability_orders_use_rwkv`,
+`rwkv_curve_retrievability_order_computes_r_when_the_queue_is_built`
+(`rslib/src/scheduler/queue/builder/mod.rs`);
+`test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names`,
+`test_rwkv_curve_queue_curves_only_for_its_retrievability_orders`,
+`test_rwkv_curve_queue_ranks_by_the_curves_handed_over`,
+`test_rwkv_queue_curve_state_changes_with_a_build_not_an_answer`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.fsrs7-review-order
 

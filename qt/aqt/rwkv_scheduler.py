@@ -133,6 +133,19 @@ _REVIEW_ORDER_RETRIEVABILITY_DESCENDING = (
 _REVIEW_ORDER_RELATIVE_OVERDUENESS = (
     deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RELATIVE_OVERDUENESS
 )
+# The review orders RWKV-Curve's study queue ranks by the stored curves now
+# (spec sched.rwkv-review-order); a stored difficulty order gathers as
+# descending retrievability under RWKV (spec
+# deck-options.no-difficulty-order-under-rwkv).
+_RWKV_CURVE_QUEUE_CURVE_ORDERS = frozenset(
+    {
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_ASCENDING,
+        _REVIEW_ORDER_RETRIEVABILITY_DESCENDING,
+        _REVIEW_ORDER_RELATIVE_OVERDUENESS,
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_EASE_ASCENDING,
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_EASE_DESCENDING,
+    }
+)
 _NEW_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY = getattr(
     deck_config_pb2.DeckConfig.Config,
     "NEW_CARD_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY",
@@ -246,6 +259,7 @@ _RWKV_STATE_CACHE_DELTAS_MAGIC = b"ARWKVDELTAS12\0"
 _RWKV_STATE_CACHE_DELTA_WRITE_BUFFER_SIZE = 1024 * 1024
 _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS = 8 * 86_400_000
 _RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY = "ignoredReviewIds"
+_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY = "staleSinceForget"
 _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
 _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
 _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
@@ -1079,7 +1093,16 @@ class RwkvStatefulReviewerBackend:
         self._preset_states: dict[int, object | None] = {}
         self._global_state: object | None = None
         self._resident_state_populated = False
+        # True once a live learning start forgot a card the state had seen:
+        # the shared states still hold that card's earlier reviews, which a
+        # rebuild drops (spec sched.rwkv-live-learning-start-fresh). A replay
+        # from nothing clears it; the state cache keeps it across restarts.
+        self._stale_since_forget = False
         self._state_generation = 0
+        # counts the builds of the whole state (a replay from nothing, a
+        # restore, a release), never an answer: the study queue drops the
+        # curves it holds when it changes (spec sched.rwkv-review-order)
+        self._build_generation = 0
         self._undo_frames: list[RwkvReviewRollbackEntry] = []
         self._redo_frames: list[RwkvReviewRollbackEntry] = []
         self._prediction_cache: OrderedDict[
@@ -1240,6 +1263,7 @@ class RwkvStatefulReviewerBackend:
         if not self.supports_delta_state_store() or not callable(restore):
             raise TypeError("RWKV resident runtime state-store reader is unavailable")
         restore(path, store_generation, segment_id)
+        self._build_generation += 1
         self._clear_python_state_cache()
         self._resident_state_populated = True
         self._advance_state_generation()
@@ -1249,6 +1273,7 @@ class RwkvStatefulReviewerBackend:
 
     def restore_cache_snapshot(self, snapshot: RwkvBackendCacheSnapshot) -> None:
         _restore_runtime_warm_up_snapshot(self._runtime, snapshot)
+        self._build_generation += 1
         if self._runtime_owns_warm_up_state():
             self._clear_python_state_cache()
             self._resident_state_populated = bool(
@@ -1274,9 +1299,27 @@ class RwkvStatefulReviewerBackend:
             if callable(restore_cache_state):
                 restore_cache_state(snapshot.runtime_state)
 
+    @property
+    def stale_since_forget(self) -> bool:
+        """True while the state holds reviews a rebuild would drop, because a
+        live learning start forgot a card it had seen (spec
+        sched.rwkv-live-learning-start-fresh)."""
+        return self._stale_since_forget
+
+    def set_stale_since_forget(self, stale: bool) -> None:
+        """Sets `stale_since_forget`, for a state restored from the cache."""
+        self._stale_since_forget = stale
+
+    def build_generation(self) -> int:
+        """Changes with every build of the whole state, never with an
+        answer."""
+        return self._build_generation
+
     def reset_cache_snapshot(self) -> None:
         self._clear_python_state_cache()
         self._resident_state_populated = False
+        self._stale_since_forget = False
+        self._build_generation += 1
         self._advance_state_generation()
         self._undo_frames.clear()
         self._redo_frames.clear()
@@ -1300,6 +1343,7 @@ class RwkvStatefulReviewerBackend:
         """
         self._clear_python_state_cache()
         self._resident_state_populated = False
+        self._build_generation += 1
         self._undo_frames.clear()
         self._redo_frames.clear()
         self._clear_prediction_cache("runtime released")
@@ -2496,9 +2540,19 @@ class RwkvStatefulReviewerBackend:
         identity = review_input.identity
         before = self._snapshot(identity, review_input)
         before_curve_prediction = self._curve_prediction_for_card(identity.card_id)
+        card_state = before.card_state
+        if review_input.card_type == int(RwkvReviewState.LEARN_START):
+            # the answer starts the card's history (a new card, or its first
+            # answer after Forget): the card starts fresh, as a rebuild
+            # starts it, not from what its earlier reviews left (spec
+            # sched.rwkv-live-learning-start-fresh); undo restores `before`
+            card_state = None
+            forget_card = getattr(self._runtime, "forget_card", None)
+            if callable(forget_card) and forget_card(identity.card_id):
+                self._stale_since_forget = True
         transition = self._runtime.review(
             review_input=review_input,
-            card_state=before.card_state,
+            card_state=card_state,
             note_state=before.note_state,
             deck_state=before.deck_state,
             preset_state=before.preset_state,
@@ -5702,6 +5756,8 @@ def _prepare_current_deck_review_queue_scores(
         return
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    if isinstance(deck_config, dict) and _rwkv_curve_queue_uses_curves(deck_config):
+        prepare_rwkv_curve_queue_curves(reviewer, deck_id)
     if not (
         isinstance(deck_config, dict)
         and _rwkv_review_instant_order_enabled(deck_config)
@@ -5715,6 +5771,78 @@ def _prepare_current_deck_review_queue_scores(
         deck_config=deck_config,
         reason=reason,
     )
+
+
+def _rwkv_curve_queue_uses_curves(deck_config: dict[str, object]) -> bool:
+    """True for an RWKV-Curve preset whose review order ranks by the
+    stored curves (spec sched.rwkv-review-order)."""
+    review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
+    return (
+        _rwkv_review_config_enabled(deck_config)
+        and review_order in _RWKV_CURVE_QUEUE_CURVE_ORDERS
+    )
+
+
+def _rwkv_queue_curve_state(token: _ReviewerBackendPredictionStateToken) -> int:
+    """Names the RWKV state the study queue's curves come from: the
+    backend and the build of its whole state. A live answer or an undo keeps
+    it (the card's review time tells the queue its curve changed), so the
+    queue is not built again after every answer; a rebuild, a restore or a
+    new model changes it."""
+    build_generation = getattr(token.backend, "build_generation", None)
+    return hash(
+        (
+            id(token.backend),
+            token.backend_assignment_generation,
+            build_generation() if callable(build_generation) else 0,
+        )
+    ) & ((1 << 63) - 1)
+
+
+def prepare_rwkv_curve_queue_curves(reviewer: object, deck_id: int) -> None:
+    """Hands the study queue the curves RWKV-Curve stored for the due cards
+    of `deck_id`'s tree, so that the retrievability orders compute R from
+    them when the queue is built (spec sched.rwkv-review-order). Only the
+    cards whose curve the queue does not hold for their last review are
+    read. It never waits and never starts a warm-up: while RWKV is not ready
+    or busy nothing is handed over, and the queue ranks every card by the
+    curve through its RWKV interval."""
+
+    collection_backend = getattr(_collection(reviewer), "_backend", None)
+    cards_without_curve = getattr(
+        collection_backend, "rwkv_review_queue_curve_cards", None
+    )
+    set_curves = getattr(collection_backend, "set_rwkv_review_queue_curves", None)
+    if not callable(cards_without_curve) or not callable(set_curves):
+        return
+    token = _capture_reviewer_backend_prediction_state_token(reviewer)
+    if token is None:
+        return
+    state = _rwkv_queue_curve_state(token)
+    try:
+        wanted = cards_without_curve(deck_id=deck_id, state=state)
+        card_ids = [int(card_id) for card_id in wanted.card_ids]
+        if not card_ids:
+            return
+        with _try_reviewer_backend_prediction_access(
+            expected_state_token=token
+        ) as backend:
+            card_curve_weights = getattr(backend, "card_curve_weights", None)
+            if not callable(card_curve_weights):
+                return
+            result = card_curve_weights(card_ids)
+        if result is None:
+            return
+        curve_card_ids, curves = result
+        set_curves(
+            state=state,
+            card_ids=card_ids,
+            last_review_secs=list(wanted.last_review_secs),
+            curve_card_ids=[int(card_id) for card_id in curve_card_ids],
+            curves=bytes(curves),
+        )
+    except Exception:
+        logger.exception("failed to hand RWKV-Curve curves to the study queue")
 
 
 def prepare_current_deck_review_queue_scores(
@@ -9706,6 +9834,32 @@ def _rwkv_past_curves(
         for review_id, curve in zip(saved.revlog_ids, curves)
         if curve is not None
     )
+
+
+def rwkv_curve_last_replayed_review_id(reviewer: object, card: object) -> int | None:
+    """The id of the review whose curve RWKV-Curve stored for `card`: the
+    card's newest rated review that the replay reads, so neither a preview
+    (a Filtered row with no ease factor) nor one of the reviews the resident
+    state was built without (spec sched.rwkv-replay-start-row). Card info and
+    AnkiConnect measure the curve's R from it (spec ui.card-info-one-algorithm).
+    None when the card has no such review or the collection is not open."""
+
+    card_id = _card_id(card)
+    scalar = getattr(getattr(_collection(reviewer), "db", None), "scalar", None)
+    if card_id is None or not callable(scalar):
+        return None
+    ignored = sorted(
+        review_id
+        for review_id in _resident_ignored_review_ids(reviewer)
+        if isinstance(review_id, int) and not isinstance(review_id, bool)
+    )
+    ignored_clause = f" and id not in {ids2str(ignored)}" if ignored else ""
+    review_id = scalar(
+        "select max(id) from revlog where cid = ? and "
+        f"{_rwkv_historical_answer_sql_condition()}{ignored_clause}",
+        card_id,
+    )
+    return review_id if isinstance(review_id, int) and review_id > 0 else None
 
 
 def rwkv_card_info_curve(
@@ -14220,6 +14374,11 @@ def _restore_reviewer_backend_cache(
         else:
             return None
         del stored_snapshot
+        set_stale_since_forget = getattr(backend, "set_stale_since_forget", None)
+        if callable(set_stale_since_forget):
+            set_stale_since_forget(
+                stored_metadata.get(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY) is True
+            )
         if stored_history.reviews:
             _require_reviewer_backend_warmup_current(is_current)
             _report_rwkv_state_cache_progress(
@@ -16268,6 +16427,12 @@ def _rwkv_state_cache_metadata(
         )
     else:
         metadata.pop(_RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY, None)
+    # the saved state still holds reviews a rebuild would drop (spec
+    # sched.rwkv-live-learning-start-fresh)
+    if getattr(_reviewer_backend, "stale_since_forget", False) is True:
+        metadata[_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY] = True
+    else:
+        metadata.pop(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY, None)
     return metadata
 
 

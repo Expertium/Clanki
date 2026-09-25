@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
 
 use anki_proto::scheduler;
 use anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest;
@@ -24,6 +25,7 @@ use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::ops::Op;
 use crate::prelude::*;
+use crate::rwkv::StoredCurve;
 use crate::scheduler::answering::get_fuzz_seed;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_s90;
 use crate::scheduler::fsrs::memory_state::get_last_revlog_info;
@@ -621,23 +623,174 @@ fn boolean_search_node(value: bool) -> Node {
     }
 }
 
+/// The stored RWKV-Curve curves the study queue ranks its retrievability
+/// orders by (spec sched.rwkv-review-order): the curves RWKV stored at each
+/// due card's last review, which the reviewer hands over before the queue is
+/// built. A curve holds only for the review it came with: a later answer, an
+/// undo or a new RWKV state (`state`) makes it unknown again. R itself is
+/// never kept; the queue computes it from the curve when it is built.
+#[derive(Clone, Default)]
+pub(crate) struct RwkvQueueCurves {
+    state: u64,
+    curves: HashMap<CardId, RwkvQueueCurve>,
+}
+
+#[derive(Clone)]
+struct RwkvQueueCurve {
+    last_review_time: TimestampSecs,
+    /// None: RWKV stored no curve for the card
+    curve: Option<StoredCurve>,
+}
+
+impl fmt::Debug for RwkvQueueCurves {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RwkvQueueCurves")
+            .field("state", &self.state)
+            .field("cards", &self.curves.len())
+            .finish()
+    }
+}
+
+impl Collection {
+    /// The due review and interday learning cards of `deck_id`'s tree whose
+    /// curve the queue does not hold for their last review, with that
+    /// review's time. Curves of another RWKV state, and of cards that are no
+    /// longer due in the tree, are dropped.
+    pub(crate) fn rwkv_review_queue_curve_cards(
+        &mut self,
+        deck_id: DeckId,
+        state: u64,
+    ) -> Result<Vec<(CardId, TimestampSecs)>> {
+        if self.state.rwkv_queue_curves.as_ref().map(|kept| kept.state) != Some(state) {
+            self.state.rwkv_queue_curves = Some(RwkvQueueCurves {
+                state,
+                curves: HashMap::new(),
+            });
+        }
+        let Some(deck) = self.get_deck(deck_id)? else {
+            return Ok(Vec::new());
+        };
+        let deck_ids = self.storage.deck_id_with_children(&deck)?;
+        let today = self.timing_today()?.days_elapsed;
+        let card_ids: Vec<CardId> = self
+            .storage
+            .db
+            .prepare(&format!(
+                "select id from cards where did in ({}) and queue in ({}, {}) and due <= ?",
+                deck_ids
+                    .iter()
+                    .map(|id| id.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                CardQueue::Review as i8,
+                CardQueue::DayLearn as i8,
+            ))?
+            .query_and_then([today], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut cards = self.all_cards_for_ids(&card_ids, false)?;
+        self.populate_rwkv_last_review_times(&mut cards)?;
+        let kept = self.state.rwkv_queue_curves.as_mut().unwrap();
+        let due: HashSet<CardId> = card_ids.iter().copied().collect();
+        kept.curves.retain(|card_id, _| due.contains(card_id));
+        Ok(cards
+            .iter()
+            .filter_map(|card| {
+                let last_review_time = card.last_review_time?;
+                let held = kept
+                    .curves
+                    .get(&card.id)
+                    .is_some_and(|entry| entry.last_review_time == last_review_time);
+                (!held).then_some((card.id, last_review_time))
+            })
+            .collect())
+    }
+
+    /// Holds the curves of the cards `rwkv_review_queue_curve_cards` named
+    /// (a card missing from `curves` has none). A queue built before them is
+    /// built again. Ignored when a newer RWKV state asked in between.
+    pub(crate) fn set_rwkv_review_queue_curves(
+        &mut self,
+        state: u64,
+        cards: Vec<(CardId, TimestampSecs)>,
+        mut curves: HashMap<CardId, StoredCurve>,
+    ) {
+        let Some(kept) = self
+            .state
+            .rwkv_queue_curves
+            .as_mut()
+            .filter(|kept| kept.state == state)
+        else {
+            return;
+        };
+        if cards.is_empty() {
+            return;
+        }
+        for (card_id, last_review_time) in cards {
+            kept.curves.insert(
+                card_id,
+                RwkvQueueCurve {
+                    last_review_time,
+                    curve: curves.remove(&card_id),
+                },
+            );
+        }
+        self.state.card_queues = None;
+    }
+
+    /// Each card's RWKV-Curve R now from its held curve: Some(None) for a
+    /// card RWKV stored no curve for; cards whose curve is not held for
+    /// their last review are left out.
+    fn rwkv_queue_curve_retrievabilities(
+        &self,
+        cards: &[Card],
+        timing: SchedTimingToday,
+    ) -> HashMap<CardId, Option<f32>> {
+        let Some(kept) = self.state.rwkv_queue_curves.as_ref() else {
+            return HashMap::new();
+        };
+        cards
+            .iter()
+            .filter_map(|card| {
+                let entry = kept.curves.get(&card.id)?;
+                (Some(entry.last_review_time) == card.last_review_time).then(|| {
+                    let retrievability = entry.curve.as_ref().map(|curve| {
+                        curve.recall(rwkv_elapsed_days_since_last_review(card, timing))
+                    });
+                    (card.id, retrievability)
+                })
+            })
+            .collect()
+    }
+}
+
 /// The sort key of due cards in RWKV presets whose review order is by
 /// retrievability or relative overdueness (spec sched.rwkv-review-order);
-/// lower keys come first. The retrievability is RWKV-Curve's score for today;
-/// a card the RWKV process has not scored gets the value of the exponential
-/// curve through the interval RWKV scheduled, `target ^ (elapsed /
-/// interval)`. Relative overdueness divides it by the card's target
-/// retention, the key RWKV-Instant ranks its scores by
-/// (`relative_overdueness`): 1 when the card is due exactly, less the more it
-/// is overdue. Descending retrievability negates the key.
+/// lower keys come first; a card without a key goes after every card with
+/// one. Under RWKV-Curve (`curves`) a card's retrievability is its stored
+/// curve now, computed here from the curves the reviewer handed over
+/// (`RwkvQueueCurves`); a card RWKV stored no curve for, or whose curve is
+/// not held, gets no key. Only when no due card's curve is held (RWKV not
+/// ready, or no reviewer asked) does every card get the value of the
+/// exponential curve through the interval RWKV scheduled, `target ^
+/// (elapsed / interval)`, so one sort never compares the two. Relative
+/// overdueness divides the retrievability by the card's target retention,
+/// the key RWKV-Instant ranks its scores by (`relative_overdueness`): 1 when
+/// the card is due exactly, less the more it is overdue. Descending
+/// retrievability negates the key.
 pub(crate) fn rwkv_review_order_keys(
     col: &mut Collection,
     mut cards: Vec<Card>,
     timing: SchedTimingToday,
     order: ReviewCardOrder,
+    curves: bool,
 ) -> Result<HashMap<CardId, f32>> {
-    let curve_scores = col.rwkv_curve_retrievability_scores_for_day(timing.days_elapsed, None);
     col.populate_rwkv_last_review_times(&mut cards)?;
+    let curve_retrievabilities = if curves {
+        col.rwkv_queue_curve_retrievabilities(&cards, timing)
+    } else {
+        HashMap::new()
+    };
+    let exponential = curve_retrievabilities.is_empty();
     let without_card_target: Vec<_> = cards
         .iter()
         .filter(|card| card_desired_retention(card).is_none())
@@ -652,16 +805,14 @@ pub(crate) fn rwkv_review_order_keys(
         else {
             continue;
         };
-        let retrievability = match curve_scores
-            .as_ref()
-            .and_then(|scores| scores.get(&card.id))
-            .filter(|r| r.is_finite())
-        {
-            Some(&retrievability) => retrievability,
-            None => {
-                let elapsed_days = rwkv_elapsed_days_since_last_review(card, timing);
-                let interval_days = card.interval.max(1) as f32;
-                target.powf(elapsed_days / interval_days)
+        let retrievability = if exponential {
+            let elapsed_days = rwkv_elapsed_days_since_last_review(card, timing);
+            let interval_days = card.interval.max(1) as f32;
+            target.powf(elapsed_days / interval_days)
+        } else {
+            match curve_retrievabilities.get(&card.id) {
+                Some(Some(retrievability)) => *retrievability,
+                _ => continue,
             }
         };
         let key = match order {

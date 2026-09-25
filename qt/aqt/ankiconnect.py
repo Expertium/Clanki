@@ -758,17 +758,19 @@ class AnkiConnect:
         return "fsrs7"
 
     def _rwkv_curve(self, card: Card) -> Any:
-        """RWKV-Curve's curve for the card at the time since its last
-        answered review (what card info shows), or None."""
+        """RWKV-Curve's curve for the card at the time since the review that
+        stored it, its last replayed review (what card info shows), or
+        None."""
         from aqt import rwkv_scheduler
 
-        last = self.database().scalar(
-            "select max(id) from revlog where cid=? and ease > 0", card.id
-        )
-        elapsed_days = max(0.0, time.time() - last / 1000) / 86_400 if last else None
+        reviewer = self._algorithm_reviewer()
         try:
+            last = rwkv_scheduler.rwkv_curve_last_replayed_review_id(reviewer, card)
+            elapsed_days = (
+                max(0.0, time.time() - last / 1000) / 86_400 if last else None
+            )
             return rwkv_scheduler.rwkv_card_info_curve(
-                self._algorithm_reviewer(), card, elapsed_days=elapsed_days
+                reviewer, card, elapsed_days=elapsed_days
             )
         except Exception:
             return None

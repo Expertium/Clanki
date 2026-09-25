@@ -1304,6 +1304,18 @@ impl SqliteStorage {
             .map_err(Into::into)
     }
 
+    /// The button (1-4) of the card's last rated review, leaving out
+    /// preview answers in a filtered deck, as `time_of_last_review` does.
+    pub(crate) fn last_review_rating(&self, card_id: CardId) -> Result<Option<u8>> {
+        self.db
+            .prepare_cached(
+                "select ease from revlog where cid = ? and ease between 1 and 4                  and (type != 3 or factor != 0) order by id desc limit 1",
+            )?
+            .query_row([card_id], |row| row.get(0))
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub(crate) fn times_of_last_review(
         &self,
         card_ids: &[CardId],

@@ -173,6 +173,7 @@ pub struct CollectionState {
     /// The S90 of each card's stored RWKV-Curve curve, as RWKV last
     /// published it (spec ui.rwkv-curve-stored-s90).
     pub(crate) rwkv_curve_s90s: Option<Arc<HashMap<CardId, f32>>>,
+    pub(crate) rwkv_queue_curves: Option<crate::scheduler::rwkv::RwkvQueueCurves>,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the

@@ -1324,6 +1324,16 @@ class _RustRwkvRuntime:
             with self._locked_process():
                 self._process.restore_state(state)
 
+    def forget_card(self, card_id: int) -> bool:
+        """Forgets the card's own counters and stored curve, as if the state
+        had never seen it (spec sched.rwkv-live-learning-start-fresh). True
+        when the state had seen the card."""
+        forget = getattr(self._process, "forget_card", None)
+        if not callable(forget):
+            return False
+        with self._locked_process():
+            return bool(forget(card_id))
+
     def card_curve(
         self, card_id: int, elapsed_days: Sequence[float]
     ) -> tuple[list[float], float] | None:

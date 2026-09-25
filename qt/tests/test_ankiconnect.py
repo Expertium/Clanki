@@ -1637,6 +1637,35 @@ def test_card_algorithm_follows_the_card_preset(tmp_path: Path) -> None:
             assert actions._card_algorithm(card) == expected
 
 
+def test_rwkv_curve_prop_r_counts_from_the_replayed_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/ui.md#ui.card-info-one-algorithm: AnkiConnect's RWKV-Curve
+    R counts from the review whose curve RWKV stored, as card info does, not
+    from a newer preview."""
+    from aqt import rwkv_scheduler
+
+    service = AnkiConnectService(_make_mw(cast(Any, None)), AnkiConnectSettings())
+    actions = AnkiConnect(service)
+    card = cast(Any, SimpleNamespace(id=1))
+    elapsed: list[float | None] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "rwkv_curve_last_replayed_review_id",
+        lambda reviewer, card: 1_000_000,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "rwkv_card_info_curve",
+        lambda reviewer, card, *, elapsed_days=None: elapsed.append(elapsed_days),
+    )
+    monkeypatch.setattr(time, "time", lambda: 1_000 + 2 * 86_400)
+
+    actions._rwkv_curve(card)
+
+    assert elapsed == [pytest.approx(2.0)]
+
+
 def test_prop_values_follow_the_algorithm(
     server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
