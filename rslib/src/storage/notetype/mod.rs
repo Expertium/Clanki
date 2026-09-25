@@ -301,6 +301,33 @@ impl SqliteStorage {
             .collect()
     }
 
+    /// The cards of the given notes, by note, each note's cards in card id
+    /// order (as [Self::existing_cards_for_note] returns them).
+    pub(crate) fn existing_cards_for_notes(
+        &self,
+        nids: &[NoteId],
+    ) -> Result<HashMap<NoteId, Vec<AlreadyGeneratedCardInfo>>> {
+        let mut by_note: HashMap<NoteId, Vec<AlreadyGeneratedCardInfo>> = HashMap::new();
+        if nids.is_empty() {
+            return Ok(by_note);
+        }
+        let mut sql = String::from(include_str!("existing_cards.sql"));
+        sql += " where c.nid in ";
+        ids_to_string(&mut sql, nids);
+        for card in self
+            .db
+            .prepare(&sql)?
+            .query_and_then([], row_to_existing_card)?
+        {
+            let card = card?;
+            by_note.entry(card.nid).or_default().push(card);
+        }
+        for cards in by_note.values_mut() {
+            cards.sort_unstable_by_key(|card| card.id);
+        }
+        Ok(by_note)
+    }
+
     pub(crate) fn existing_cards_for_note(
         &self,
         nid: NoteId,
