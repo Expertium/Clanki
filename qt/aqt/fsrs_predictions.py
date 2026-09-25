@@ -34,7 +34,8 @@ were being computed.
 
 A pass that fails says so. It cannot report progress, so a failure left no
 trace at all beyond a log line, and an empty FSRS-7 series looks the same as
-one that is merely still being computed.
+one that is merely still being computed. A pass cut short because its
+collection closed did not fail, and stops without a word.
 
 Before the predictions, the same pass optimizes the FSRS-7 parameters of
 every preset whose "Optimize every N days" is due (spec
@@ -287,11 +288,29 @@ def _run(mw: Any, col: Any) -> None:
         )
         _record_finished(mw, col)
     except Exception:
-        logger.exception("the FSRS review prediction pass failed")
-        report_failure(mw)
+        if _collection_closed(mw, col):
+            # the backend gives the collection back between the steps of a
+            # preset, so a close or a full sync can take it in between and
+            # the next step finds none: the pass was cut short, it did not
+            # fail, and the day stays undone
+            logger.info("the FSRS review prediction pass stopped: collection closed")
+        else:
+            logger.exception("the FSRS review prediction pass failed")
+            report_failure(mw)
     finally:
         with _lock:
             _running = False
+    if mw.col is not col:
+        # a profile that opened while this pass still ran found it running
+        # and asked for nothing; ask for it now
+        ensure_ready(mw)
+
+
+def _collection_closed(mw: Any, col: Any) -> bool:
+    """True when the pass's collection is no longer open: the profile
+    closed or switched (mw.col moved on), or a full sync closed it in place
+    (its db is gone)."""
+    return mw.col is not col or col.db is None
 
 
 def _auto_optimize(mw: Any, col: Any) -> bool:
