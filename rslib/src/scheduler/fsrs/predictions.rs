@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::collection::CollectionOpenId;
 use crate::deckconfig::DeckConfig;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
@@ -51,6 +52,10 @@ pub(crate) enum PredictionBatchOutcome {
     /// The batches already written are gone, and the pass stops: the preset
     /// stays stale for the next pass.
     Superseded,
+    /// The collection open now is not the one the job read: the profile
+    /// closed or switched between two batches. Nothing is written and
+    /// nothing is taken back, in either collection, and the pass stops.
+    OtherCollection,
 }
 
 /// Writes one preset's rows a batch at a time, giving the collection back
@@ -79,6 +84,9 @@ where
         let end = (done + batch_rows).min(rows.len());
         match with_col(job, &rows[done..end], &rows[..done])? {
             PredictionBatchOutcome::Superseded => return Ok(0),
+            // what went into the job's own collection stays there, as when
+            // the pass is cut off in any other way
+            PredictionBatchOutcome::OtherCollection => return Ok(written),
             PredictionBatchOutcome::Stored(stored) => written += stored,
         }
         done = end;
@@ -167,6 +175,10 @@ pub(crate) struct FsrsReviewPredictionJob {
 /// parameter change deletes the old rows and must not see them come back.
 #[derive(PartialEq, Eq, Debug)]
 struct FsrsReviewPredictionJobKey {
+    // the open collection the job read; checked before anything else, so
+    // a job never writes to or deletes from another collection, not even
+    // an identical copy
+    collection: CollectionOpenId,
     preset: DeckConfigId,
     preset_mtime: TimestampSecs,
     // as bits; a save within the same second leaves the mtime unchanged
@@ -328,6 +340,9 @@ impl Collection {
         batch: &[FsrsReviewRetrievabilityCacheRow],
         already_written: &[FsrsReviewRetrievabilityCacheRow],
     ) -> Result<PredictionBatchOutcome> {
+        if job.key.collection != self.state.open_id {
+            return Ok(PredictionBatchOutcome::OtherCollection);
+        }
         let superseded = match self.storage.get_deck_config(job.key.preset)? {
             // the preset is gone, so its rows are nobody's
             None => true,
@@ -358,6 +373,7 @@ impl Collection {
             .collect();
         decks.sort_unstable();
         Ok(FsrsReviewPredictionJobKey {
+            collection: self.state.open_id,
             preset: config.id,
             preset_mtime: config.mtime_secs,
             params: config.fsrs_params().iter().map(|p| p.to_bits()).collect(),
@@ -369,6 +385,7 @@ impl Collection {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::collection::CollectionBuilder;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
     use crate::storage::FsrsReviewRetrievabilityCacheRow;
@@ -671,6 +688,99 @@ mod test {
             )?,
             other_review.0
         );
+        Ok(())
+    }
+
+    fn stored_rows(col: &Collection) -> Vec<(i64, i64, f64)> {
+        let mut statement = col
+            .storage
+            .db
+            .prepare(
+                "select revlog_id, fold_index, prediction
+                 from search_stats_fsrs_review_retrievability
+                 order by revlog_id, fold_index",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: every profile opens
+    // on the one backend, so a job still between batches when the profile
+    // switches finds another collection in its next batch. Even an
+    // identical copy, whose preset passes every other check, is not the
+    // job's collection: nothing is written there and nothing taken back.
+    #[test]
+    fn a_job_never_touches_another_collection_with_an_identical_preset() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let first_path = dir.path().join("first.anki2");
+        let second_path = dir.path().join("second.anki2");
+        {
+            let mut col = CollectionBuilder::new(&first_path).build()?;
+            for _ in 0..6 {
+                card_with_reviews(&mut col);
+            }
+            col.close(None)?;
+        }
+        std::fs::copy(&first_path, &second_path)?;
+        let preset = DeckConfigId(1);
+
+        let mut first = CollectionBuilder::new(&first_path).build()?;
+        let job = first
+            .fsrs_review_prediction_read(preset)?
+            .and_then(FsrsReviewPredictionRead::job)
+            .expect("a job");
+        let rows = job.rows()?;
+        assert!(rows.len() > 4, "the preset needs several rows to batch");
+
+        // the copy holds rows of its own for the reviews of the first two
+        // batches, under the pass's own source, so a write would change
+        // them and a take-back would delete them
+        let own: Vec<FsrsReviewRetrievabilityCacheRow> = rows[..4]
+            .iter()
+            .map(|row| FsrsReviewRetrievabilityCacheRow {
+                revlog_id: row.revlog_id,
+                prediction: 0.125,
+                sample_role: FsrsReviewRetrievabilitySampleRole::ValidationFold,
+                fold_index: row.fold_index,
+            })
+            .collect();
+        let mut open = Some(first);
+        let mut second_before = vec![];
+        let mut batches = 0;
+        let written =
+            store_fsrs_review_predictions_in_batches(&job, &rows, 2, |job, batch, written| {
+                batches += 1;
+                if batches == 2 {
+                    // the profile switches between the first and the second
+                    // batch
+                    open.take().unwrap().close(None)?;
+                    let second = CollectionBuilder::new(&second_path).build()?;
+                    second.storage.set_fsrs_review_retrievability_predictions(
+                        &own,
+                        FSRS_PREDICTION_PASS_SOURCE,
+                    )?;
+                    second_before = stored_rows(&second);
+                    open = Some(second);
+                }
+                open.as_mut()
+                    .unwrap()
+                    .store_fsrs_review_prediction_batch(job, batch, written)
+            })?;
+
+        // the job stopped at the batch that found the other collection
+        assert_eq!(batches, 2);
+        let second = open.take().unwrap();
+        assert_eq!(second_before.len(), 4);
+        assert_eq!(stored_rows(&second), second_before);
+        second.close(None)?;
+        // and the first batch stays in the job's own collection
+        let first = CollectionBuilder::new(&first_path).build()?;
+        assert_eq!(written as usize, stored_rows(&first).len());
+        assert!(written > 0);
         Ok(())
     }
 

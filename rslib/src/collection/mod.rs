@@ -12,6 +12,8 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -79,6 +81,7 @@ impl CollectionBuilder {
             tr,
             server,
             state: CollectionState {
+                open_id: CollectionOpenId::next(),
                 progress: self.progress_handler.clone().unwrap_or_default(),
                 ..Default::default()
             },
@@ -148,8 +151,24 @@ impl CollectionBuilder {
     }
 }
 
+/// Names one open of a collection, unique within the process. Every
+/// profile opens on the one backend, so work that gives the collection back
+/// between two steps can find a different collection in the next step; it
+/// compares this to tell (spec ui.stats-fsrs-predictions-ready). A copy of
+/// the same file, or the same file opened again, gets a new id.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CollectionOpenId(u64);
+
+impl CollectionOpenId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CollectionState {
+    pub(crate) open_id: CollectionOpenId,
     pub(crate) undo: UndoManager,
     pub(crate) notetype_cache: HashMap<NotetypeId, Arc<Notetype>>,
     pub(crate) deck_cache: HashMap<DeckId, Arc<Deck>>,
