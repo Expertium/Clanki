@@ -382,7 +382,11 @@ fn require_fields(cls: &Bound<'_, PyType>, fields: &[&str]) -> PyResult<()> {
         .cast::<PyDict>()?
         .keys()
         .extract()?;
-    if declared.iter().map(String::as_str).eq(fields.iter().copied()) {
+    if declared
+        .iter()
+        .map(String::as_str)
+        .eq(fields.iter().copied())
+    {
         Ok(())
     } else {
         Err(PyTypeError::new_err(format!(
