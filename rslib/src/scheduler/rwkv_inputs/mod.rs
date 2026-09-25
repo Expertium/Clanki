@@ -182,10 +182,12 @@ impl RwkvReplayInputsJob {
         let mut checked_decks = HashSet::new();
         for row in &rows {
             require!(row.review_id >= 0, "RWKV replay review id below 0");
-            if checked_decks.insert(row.deck_id) {
-                let deck = decks_by_id
-                    .get(&DeckId(row.deck_id))
-                    .or_not_found(row.deck_id)?;
+            // a deleted card's review has no deck to check
+            let Some(deck_id) = row.deck_id else {
+                continue;
+            };
+            if checked_decks.insert(deck_id) {
+                let deck = decks_by_id.get(&DeckId(deck_id)).or_not_found(deck_id)?;
                 let config_id = deck.config_id().or_invalid("home deck is filtered")?;
                 require!(config_id.0 >= 0, "RWKV replay preset id below 0");
                 configs_by_id.get(&config_id).or_not_found(config_id)?;
@@ -249,15 +251,26 @@ impl RwkvReplayInputsJob {
             reviews.push(review);
         }
         let cards = encoder.cards().to_vec();
+        let deleted_cards: HashSet<i64> = reviews
+            .iter()
+            .filter(|review| review.deck_id.is_none())
+            .map(|review| review.card_id)
+            .collect();
         let card_fsrs_preset_ids = cards
             .iter()
-            .map(|card| match &presets_by_card {
-                Some(by_card) => by_card
-                    .get(&CardId(card.card_id))
-                    .map(|(_, preset_id)| preset_id.clone()),
-                None => stream
-                    .card_preset_id(card.card_id)
-                    .map(|preset_id| preset_id.to_string()),
+            .map(|card| {
+                if deleted_cards.contains(&card.card_id) {
+                    // a card that is gone has no preset
+                    return Some(String::new());
+                }
+                match &presets_by_card {
+                    Some(by_card) => by_card
+                        .get(&CardId(card.card_id))
+                        .map(|(_, preset_id)| preset_id.clone()),
+                    None => stream
+                        .card_preset_id(card.card_id)
+                        .map(|preset_id| preset_id.to_string()),
+                }
             })
             .collect::<Option<Vec<_>>>()
             .or_invalid("a replay card without a preset")?;
@@ -388,9 +401,13 @@ fn inputs_response(inputs: RwkvReplayInputs) -> RwkvHistoricalReviewInputsRespon
     let mut response = RwkvHistoricalReviewInputsResponse {
         review_ids: review_column(|review| review.review_id),
         card_ids: review_column(|review| review.card_id),
-        note_ids: review_column(|review| review.note_id),
-        deck_ids: review_column(|review| review.deck_id),
-        preset_ids: review_column(|review| review.preset_id),
+        note_ids: review_column(|review| review.note_id.unwrap_or(0)),
+        deck_ids: review_column(|review| review.deck_id.unwrap_or(0)),
+        preset_ids: review_column(|review| review.preset_id.unwrap_or(0)),
+        deleted_cards: reviews
+            .iter()
+            .map(|review| u8::from(review.deck_id.is_none()))
+            .collect(),
         eases: review_column(|review| review.ease),
         durations_millis: review_column(|review| review.duration_millis),
         card_types: review_column(|review| review.card_type),
@@ -581,6 +598,58 @@ mod test {
             inputs.active_ignored_review_ids
         );
         assert!(fingerprint.history_is_valid);
+        Ok(())
+    }
+
+    /// Pins spec sched.rwkv-replay-deleted-cards: the reviews of a card that
+    /// is gone stay in the replay, in review order among the others, with no
+    /// note, deck or preset, and the fingerprint replays the same history.
+    #[test]
+    fn a_deleted_cards_reviews_stay_in_the_replay_without_ids() -> Result<()> {
+        let mut col = Collection::new();
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), 0);
+        col.add_card(&mut card)?;
+        // a card whose row is gone: its reviews are all that is left of it
+        let deleted = Card {
+            id: CardId(card.id.0 - 5_000),
+            ..card.clone()
+        };
+        let first = card.id.0 + 10_000;
+        add_review(&mut col, &deleted, first, RevlogReviewKind::Learning)?;
+        add_review(&mut col, &card, first + 1_000, RevlogReviewKind::Learning)?;
+        add_review(&mut col, &deleted, first + 2_000, RevlogReviewKind::Review)?;
+        add_review(&mut col, &card, first + 3_000, RevlogReviewKind::Review)?;
+
+        let response = inputs_from_the_rpc(&mut col, &[], 2)?;
+        let inputs = &response;
+        assert_eq!(inputs.review_count, 4);
+        assert_eq!(
+            i64_values(&inputs.card_ids),
+            [deleted.id.0, card.id.0, deleted.id.0, card.id.0]
+        );
+        assert_eq!(inputs.deleted_cards, [1, 0, 1, 0]);
+        assert_eq!(i64_values(&inputs.note_ids), [0, 10, 0, 10]);
+        assert_eq!(i64_values(&inputs.deck_ids), [0, 1, 0, 1]);
+        assert_eq!(i64_values(&inputs.preset_ids)[0], 0);
+        assert_eq!(i64_values(&inputs.cards), [deleted.id.0, card.id.0]);
+        assert_eq!(inputs.card_fsrs_preset_ids, ["", "1"]);
+        // the deleted card's second review measures from its first
+        assert_eq!(i64_values(&inputs.elapsed_seconds)[2], 2);
+        assert_the_fingerprint_accepts(&mut col, inputs)?;
+
+        let job = self::inputs(&mut col, &[], &settings())?;
+        let review = &job.reviews[0];
+        assert_eq!(
+            (review.note_id, review.deck_id, review.preset_id),
+            (None, None, None)
+        );
+        let mut packed = Vec::new();
+        review.write_packed_row(&mut packed);
+        // bits 0-2 (note, deck, preset) clear, bits 3-8 set
+        assert_eq!(&packed[..4], &0x1f8u32.to_le_bytes());
+        packed.clear();
+        job.reviews[1].write_packed_row(&mut packed);
+        assert_eq!(&packed[..4], &0x1ffu32.to_le_bytes());
         Ok(())
     }
 

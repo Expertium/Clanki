@@ -506,6 +506,40 @@ def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> No
         col.close(downgrade=False)
 
 
+def test_drawing_the_heatmap_keeps_the_undo_step(tmp_path: Any) -> None:
+    """Pins spec/ui.md#ui.review-heatmap-read-only."""
+    from anki.scheduler.v3 import CardAnswer
+
+    col = _collection_with_reviews(str(tmp_path / "collection.anki2"))
+    try:
+        heatmap = _session(col)
+        # the first draw counts the older reviews; the review below is newer
+        # than its cut-off, so the next draws count it by day ranges
+        for view, current in (
+            (HeatmapView.deckbrowser, False),
+            (HeatmapView.overview, True),
+        ):
+            heatmap.render(view, current_deck_only=current)
+        queued = col.sched.get_queued_cards()
+        card = col.get_card(queued.cards[0].card.id)
+        card.start_timer()
+        col.sched.answer_card(
+            col.sched.build_answer(
+                card=card, states=queued.cards[0].states, rating=CardAnswer.GOOD
+            )
+        )
+        undo = col.undo_status().undo
+        assert undo
+        for view, current in (
+            (HeatmapView.deckbrowser, False),
+            (HeatmapView.overview, True),
+        ):
+            assert "rh-view" in heatmap.render(view, current_deck_only=current)
+            assert col.undo_status().undo == undo, view
+    finally:
+        col.close(downgrade=False)
+
+
 def test_the_background_step_fills_the_cache_and_reports_an_error() -> None:
     heatmap, _drawn = _fill_in_heatmap()
     ops: list[tuple[Any, Any]] = []

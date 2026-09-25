@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import torch  # type: ignore[import-not-found]
 
@@ -15,6 +15,7 @@ from .config import DAY_OFFSET_ENCODE_PERIODS, ID_ENCODE_DIMS, ID_SPLIT, RWKV_SU
 from .features import (
     CARD_FEATURE_COLUMNS,
     ID_PLACEHOLDER,
+    id_code_seed,
     is_missing_id,
     scale_cum_new_cards_today,
     scale_cum_reviews_today,
@@ -32,7 +33,19 @@ from .srs_model_rnn import SrsRWKVRnn
 
 
 class RwkvInferenceProcess:
-    """Inference-only RWKV process compatible with the srs-benchmark runner."""
+    """Inference-only RWKV process compatible with the srs-benchmark runner.
+
+    By default it encodes ids as Clanki's runtime does, so that a parity check
+    compares two sides that follow one rule: `id_codes="hashed"` draws each
+    entity's code from a generator seeded by its id (spec
+    sched.rwkv-id-codes), and `id_pipeline="int32"` streams every missing
+    note through one shared placeholder, as the shipped model was trained
+    (spec sched.rwkv-replay-deleted-cards). To reproduce srs-benchmark, pass
+    `id_codes="in_order"` (codes drawn from the global torch stream in the
+    order ids first appear) and keep `id_pipeline="int32"`: srs-benchmark
+    cast ids to int32, so its missing ids share one placeholder too.
+    `id_pipeline="int64"` is for a model trained on the int64 pipeline (a
+    placeholder note per card)."""
 
     def __init__(
         self,
@@ -40,9 +53,18 @@ class RwkvInferenceProcess:
         model_path: Path,
         device: torch.device,
         dtype: torch.dtype,
+        id_codes: Literal["hashed", "in_order"] = "hashed",
+        id_pipeline: Literal["int32", "int64"] = "int32",
     ) -> None:
+        if id_codes not in ("hashed", "in_order"):
+            raise ValueError(f"unknown id code rule: {id_codes}")
+        if id_pipeline not in ("int32", "int64"):
+            raise ValueError(f"unknown id pipeline: {id_pipeline}")
+        self.id_codes = id_codes
+        self.id_pipeline = id_pipeline
         # Match the upstream runner's deterministic initialization before weights
-        # are loaded, as later ID encodings draw from the same torch RNG stream.
+        # are loaded: `id_codes="in_order"` draws the ID encodings from the same
+        # torch RNG stream.
         torch.manual_seed(2025)
         self.rnn = SrsRWKVRnn(DEFAULT_ANKI_RWKV_CONFIG).to(device)
         state_dict = torch.load(model_path, map_location=device, weights_only=True)
@@ -182,22 +204,36 @@ class RwkvInferenceProcess:
             value = row[submodule]
             if value not in self.id_encodings[submodule]:
                 self.id_encodings[submodule][value] = self._generate_id_encoding(
-                    submodule
+                    submodule, value
                 )
 
             gather.append(self.id_encodings[submodule][value])
 
         return torch.cat(gather, dim=-1)
 
-    def _generate_id_encoding(self, submodule: str) -> torch.Tensor:
+    def _generate_id_encoding(self, submodule: str, value: object) -> torch.Tensor:
         encode_dim = ID_ENCODE_DIMS[submodule]
-        return torch.randint(
-            low=0,
-            high=ID_SPLIT,
-            size=(encode_dim,),
-            device=self.device,
-            requires_grad=False,
-        ).to(self.dtype) - ((ID_SPLIT - 1) / 2)
+        if self.id_codes == "in_order":
+            codes = torch.randint(
+                low=0,
+                high=ID_SPLIT,
+                size=(encode_dim,),
+                device=self.device,
+                requires_grad=False,
+            )
+        else:
+            # a CPU generator, which is where torch's MT19937 lives
+            generator = torch.Generator().manual_seed(
+                id_code_seed(submodule, int(cast(int, value)))
+            )
+            codes = torch.randint(
+                low=0,
+                high=ID_SPLIT,
+                size=(encode_dim,),
+                generator=generator,
+                requires_grad=False,
+            ).to(self.device)
+        return codes.to(self.dtype) - ((ID_SPLIT - 1) / 2)
 
     def _add_day_offset_encoding(
         self, features: torch.Tensor, row: Mapping[str, object]
@@ -382,7 +418,9 @@ class RwkvInferenceProcess:
         for name in ("note_id", "deck_id", "preset_id"):
             if is_missing_id(row.get(name)):
                 row[name] = (
-                    ID_PLACEHOLDER + card_id if name == "note_id" else ID_PLACEHOLDER
+                    ID_PLACEHOLDER + card_id
+                    if name == "note_id" and self.id_pipeline == "int64"
+                    else ID_PLACEHOLDER
                 )
                 row[f"{name}_is_nan"] = 1.0
             else:
