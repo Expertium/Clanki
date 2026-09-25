@@ -1213,6 +1213,31 @@ class ReviewHeatmap:
         key = (settings, reporter.input_fingerprint(current_deck_only))
         return cached.html if cached.key == key else None
 
+    def read_fingerprint_sums(self, view: HeatmapView, current_deck_only: bool) -> None:
+        """For a screen's background step, before the screen draws: read the
+        card and review sums that cached_html() is about to check on the main
+        thread, so that the draw finds them kept instead of scanning every
+        card there (after a review, ~20 ms on 160k cards). Only where
+        cached_html() reads a fingerprint at all: the place is drawn and has a
+        cached heatmap. Nothing is computed that the draw would not read, and
+        a failure here leaves the read to the draw, as before."""
+        col = self.mw.col
+        if col is None:
+            return
+        try:
+            if not self.enabled():
+                return
+            settings = self.settings()
+            if not settings.shows(view) and not settings.streak_stats_always:
+                return
+            if (view, current_deck_only, None, None) not in self._cache:
+                return
+            ActivityReporter(
+                col, settings, None, self._contents
+            )._card_and_review_sums()
+        except Exception:
+            logger.debug("the heatmap sums were not read ahead", exc_info=True)
+
     def _reporter(self, col: Collection, settings: HeatmapSettings) -> ActivityReporter:
         if self._kept_for != col.path:
             # another collection's counts can never match: they go
@@ -1435,6 +1460,14 @@ _instance: ReviewHeatmap | None = None
 
 def instance() -> ReviewHeatmap | None:
     return _instance
+
+
+def read_sums_before_draw(view: HeatmapView, current_deck_only: bool) -> None:
+    """ReviewHeatmap.read_fingerprint_sums() of the heatmap in use, if any;
+    for the deck list's and the overview's background steps."""
+    heatmap = instance()
+    if heatmap is not None:
+        heatmap.read_fingerprint_sums(view, current_deck_only)
 
 
 def initialize(mw: AnkiQt) -> ReviewHeatmap:
