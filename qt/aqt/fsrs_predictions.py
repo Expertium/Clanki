@@ -262,8 +262,10 @@ def _run(mw: Any, col: Any) -> None:
         # presets are stale holds the collection too
         if not _wait_for_a_pause(mw, col):
             return
-        if not _auto_optimize(mw, col):
+        optimized = _auto_optimize(mw, col)
+        if optimized is None:
             return
+        failed = not optimized
         # the generated backend method already returns the ids, not the
         # response message; reading a field off them raised AttributeError
         # on the pass's first line and the log was the only place it showed
@@ -275,10 +277,19 @@ def _run(mw: Any, col: Any) -> None:
         written = 0
         for index, preset in enumerate(presets):
             started = time.monotonic()
-            with _holding():
-                written += col._backend.refresh_fsrs_review_predictions(
-                    deck_config_id=preset
-                )
+            try:
+                with _holding():
+                    written += col._backend.refresh_fsrs_review_predictions(
+                        deck_config_id=preset
+                    )
+            except Exception:
+                # one bad preset does not stop the others (spec
+                # ui.stats-fsrs-predictions-ready); a closed collection
+                # stops the pass quietly, below
+                if _collection_closed(mw, col):
+                    raise
+                logger.exception("FSRS review predictions of preset %s failed", preset)
+                failed = True
             # the collection is free here, so anything the user does goes in
             # between two presets instead of behind all of them
             if index + 1 < len(presets) and not _rest_after(mw, col, started):
@@ -286,7 +297,12 @@ def _run(mw: Any, col: Any) -> None:
         logger.debug(
             "stored %s FSRS review predictions over %s presets", written, len(presets)
         )
-        _record_finished(mw, col)
+        if failed:
+            # the day stays open, so the next pass tries the failed presets
+            # again
+            report_failure(mw)
+        else:
+            _record_finished(mw, col)
     except Exception:
         if _collection_closed(mw, col):
             # the backend gives the collection back between the steps of a
@@ -313,29 +329,38 @@ def _collection_closed(mw: Any, col: Any) -> bool:
     return mw.col is not col or col.db is None
 
 
-def _auto_optimize(mw: Any, col: Any) -> bool:
+def _auto_optimize(mw: Any, col: Any) -> bool | None:
     """Optimizes the presets that are due, one per call, with a rest between
-    two of them. False when the collection closed meanwhile."""
+    two of them. None when the collection closed meanwhile; False when a
+    preset could not be optimized. That preset is logged and skipped, and
+    the others are still optimized (spec deck-options.fsrs-auto-optimize)."""
     started = time.monotonic()
     with _holding():
         presets = list(col._backend.fsrs_presets_due_for_auto_optimize())
     if not _rest_after(mw, col, started):
-        return False
+        return None
     changed = False
+    all_optimized = True
     for preset in presets:
         started = time.monotonic()
-        with _holding():
-            changed |= bool(
-                col._backend.auto_optimize_fsrs_preset(deck_config_id=preset)
-            )
+        try:
+            with _holding():
+                changed |= bool(
+                    col._backend.auto_optimize_fsrs_preset(deck_config_id=preset)
+                )
+        except Exception:
+            if _collection_closed(mw, col):
+                raise
+            logger.exception("optimizing FSRS preset %s failed", preset)
+            all_optimized = False
         if not _rest_after(mw, col, started):
-            return False
+            return None
     if changed:
         # cards' memory states (and due dates, with "Reschedule cards when
         # desired retention changes") moved: the screens show them again,
         # as after a save in deck options
         mw.taskman.run_on_main(lambda: _refresh_screens(mw, col))
-    return True
+    return all_optimized
 
 
 def _refresh_screens(mw: Any, col: Any) -> None:

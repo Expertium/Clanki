@@ -530,6 +530,42 @@ def test_a_failure_with_the_collection_still_open_still_says_so() -> None:
     assert len(mw.reported_failures) == 1
 
 
+# Pins spec/deck-options.md#deck-options.fsrs-optimize-skips-bad-presets
+def test_one_bad_preset_does_not_stop_the_others() -> None:
+    class _OneBadPreset(_Backend):
+        def auto_optimize_fsrs_preset(self, deck_config_id: int) -> bool:
+            if deck_config_id == 2:
+                self.order.append("optimize")
+                raise RuntimeError("invalid search")
+            return super().auto_optimize_fsrs_preset(deck_config_id)
+
+        def refresh_fsrs_review_predictions(self, deck_config_id: int) -> int:
+            if deck_config_id == 5:
+                self.order.append("refresh")
+                raise RuntimeError("invalid date")
+            return super().refresh_fsrs_review_predictions(deck_config_id)
+
+    started, release = _quiet()
+    backend = _OneBadPreset(started, release, presets=[4, 5, 6])
+    backend.due_for_optimize = [1, 2, 3]
+    # no screen refresh, so the only call on the main thread is the warning
+    backend.optimize_changes = False
+    mw = _mw(backend)
+
+    predictions.ensure_ready(mw)
+    started.wait(5)
+    while predictions.is_running():
+        pass
+
+    # every other preset is optimized and refreshed, after the bad one too
+    assert backend.optimized == [1, 3]
+    assert backend.refreshed == [4, 6]
+    assert backend.order == ["optimize"] * 3 + ["refresh"] * 3
+    # the failure is reported once, and the day stays open for a retry
+    assert len(mw.reported_failures) == 1
+    assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+
 # Pins spec/deck-options.md#deck-options.fsrs-auto-optimize
 def test_due_presets_are_optimized_before_the_predictions() -> None:
     started, release = _quiet()
