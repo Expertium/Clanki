@@ -86,3 +86,9 @@ sync-added-updated-count = Added/modified: { $up }↑ { $down }↓
 sync-log-in-button = Log In
 sync-log-out-button = Log Out
 sync-collection-complete = Collection sync complete.
+# Shown once after a sync, when another device turned FSRS off and the sync
+# therefore changed the scheduling algorithm. $algorithm is the algorithm's
+# name, such as RWKV-Curve.
+sync-algorithm-changed-fsrs-off = A sync from another device turned FSRS off, so Clanki now uses { $algorithm }.
+# Shown once after a sync that changed the scheduling algorithm for another reason.
+sync-algorithm-changed = A sync changed the scheduling algorithm. Clanki now uses { $algorithm }.

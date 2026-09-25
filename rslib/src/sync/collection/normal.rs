@@ -7,6 +7,9 @@ use reqwest::Client;
 use tracing::debug;
 
 use crate::collection::Collection;
+use crate::config::BoolKey;
+use crate::deckconfig::algorithm::AlgorithmChangeSource;
+use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::error;
 use crate::error::AnkiError;
 use crate::error::SyncError;
@@ -95,26 +98,43 @@ impl NormalSyncer<'_> {
                 self.col.discard_undo_and_study_queues();
                 let timing = self.col.timing_today()?;
                 self.col.unbury_if_day_rolled_over(timing)?;
+                let algorithm_before = self.col.effective_scheduling_algorithm().ok();
+                self.col.state.fsrs_turned_off_by_sync_after = None;
                 self.col.storage.begin_trx()?;
                 match self.normal_sync_inner(state).await {
                     Ok(mut success) => {
                         self.col.storage.commit_trx()?;
-                        // presets another client gave another algorithm, or a
-                        // collection that arrived without one (spec
-                        // sync.global-algorithm-mirror). This runs after the
-                        // sync, in its own transaction: deck configs travel
-                        // before this point, so the changed presets upload with
-                        // the next sync.
-                        match self.col.enforce_scheduling_algorithm() {
+                        // presets another client gave another algorithm, a
+                        // collection that arrived without one, or one whose
+                        // FSRS switch another client turned off (spec
+                        // sync.global-algorithm-mirror, sched.no-sm2). This
+                        // runs after the sync, in its own transaction: deck
+                        // configs travel before this point, so the changed
+                        // presets upload with the next sync.
+                        let fsrs_was_off = !self.col.get_config_bool(BoolKey::Fsrs);
+                        match self
+                            .col
+                            .enforce_scheduling_algorithm(AlgorithmChangeSource::Sync)
+                        {
                             Ok(changed) => success.remote_non_review_collection_changed |= changed,
                             Err(err) => {
                                 tracing::warn!(?err, "enforcing the scheduling algorithm failed")
                             }
                         }
+                        // the notice the user sees (spec sync.algorithm-change-notice)
+                        let algorithm_after = self.col.effective_scheduling_algorithm().ok();
+                        if algorithm_after != algorithm_before {
+                            success.algorithm_changed =
+                                algorithm_after.map(|algorithm| AlgorithmChangedBySync {
+                                    algorithm,
+                                    fsrs_turned_off: fsrs_was_off,
+                                });
+                        }
                         Ok(success)
                     }
                     Err(e) => {
                         self.col.storage.rollback_trx()?;
+                        self.col.state.fsrs_turned_off_by_sync_after = None;
 
                         let _ = self.server.abort(EmptyInput::request()).await;
 
@@ -213,6 +233,16 @@ pub struct SyncOutput {
     pub remote_collection_changed: bool,
     pub remote_review_ids: Vec<RevlogId>,
     pub remote_non_review_collection_changed: bool,
+    /// The collection's algorithm, when the pass after the sync changed it.
+    pub algorithm_changed: Option<AlgorithmChangedBySync>,
+}
+
+/// A change of the collection's algorithm that a normal sync brought.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlgorithmChangedBySync {
+    pub algorithm: SchedulingAlgorithm,
+    /// Because another device turned the FSRS switch off.
+    pub fsrs_turned_off: bool,
 }
 
 impl From<ClientSyncState> for SyncOutput {
@@ -226,6 +256,7 @@ impl From<ClientSyncState> for SyncOutput {
             remote_collection_changed: false,
             remote_review_ids: vec![],
             remote_non_review_collection_changed: false,
+            algorithm_changed: None,
         }
     }
 }

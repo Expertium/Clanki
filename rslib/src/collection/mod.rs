@@ -22,6 +22,7 @@ use anki_io::create_dir_all;
 
 use crate::browser_table;
 use crate::card::CardId;
+use crate::deckconfig::algorithm::AlgorithmChangeSource;
 use crate::decks::Deck;
 use crate::decks::DeckId;
 use crate::error::Result;
@@ -40,6 +41,7 @@ use crate::scheduler::SchedulerInfo;
 use crate::storage::SchemaVersion;
 use crate::storage::SqliteStorage;
 use crate::timestamp::TimestampMillis;
+use crate::timestamp::TimestampSecs;
 use crate::types::Usn;
 use crate::undo::UndoManager;
 
@@ -91,7 +93,7 @@ impl CollectionBuilder {
             col.migrate_learning_queues_switch()?;
             // one algorithm for every preset (spec sched.one-global-algorithm);
             // a failure must not stop the collection from opening
-            if let Err(err) = col.enforce_scheduling_algorithm() {
+            if let Err(err) = col.enforce_scheduling_algorithm(AlgorithmChangeSource::Open) {
                 tracing::warn!(?err, "enforcing the scheduling algorithm failed");
             }
             // a failure must not stop the collection from opening (spec
@@ -201,6 +203,10 @@ pub struct CollectionState {
     /// The modification time at the last backup, so we don't create multiple
     /// identical backups.
     pub(crate) last_backup_modified: Option<TimestampMillis>,
+    /// Set by a normal sync whose config turned the FSRS switch off: the
+    /// time of the sync before it, after which the other device turned the
+    /// switch off. The post-sync algorithm pass takes it (spec sched.no-sm2).
+    pub(crate) fsrs_turned_off_by_sync_after: Option<TimestampSecs>,
     pub(crate) progress: Arc<Mutex<ProgressState>>,
 }
 

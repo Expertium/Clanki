@@ -46,6 +46,28 @@ class RemoteCollectionChanges:
     non_review_collection_changed: bool = False
 
 
+def algorithm_change_notice(out: SyncOutput) -> str | None:
+    """The one-time notice after a normal sync that changed the collection's
+    scheduling algorithm, or None (spec sync.algorithm-change-notice)."""
+    if not out.algorithm_changed_to:
+        return None
+    names = {
+        "fsrs7": tr.deck_config_scheduler_choice_fsrs,
+        "rwkv_curve": tr.deck_config_scheduler_choice_rwkv_curve,
+        "rwkv_instant": tr.deck_config_scheduler_choice_rwkv_instant,
+    }
+    name = names.get(out.algorithm_changed_to)
+    algorithm = name() if name else out.algorithm_changed_to
+    if out.algorithm_changed_by_fsrs_off:
+        return tr.sync_algorithm_changed_fsrs_off(algorithm=algorithm)
+    return tr.sync_algorithm_changed(algorithm=algorithm)
+
+
+# How long the notice stays: longer than the "sync complete" tooltip, as it
+# has a sentence to read.
+ALGORITHM_CHANGE_NOTICE_MS = 10_000
+
+
 def get_sync_status(
     mw: aqt.main.AnkiQt, callback: Callable[[SyncStatus], None]
 ) -> None:
@@ -142,7 +164,10 @@ def sync_collection(
         if out.server_message:
             showText(out.server_message, parent=mw, type="rich")
         if out.required == out.NO_CHANGES:
-            tooltip(parent=mw, msg=tr.sync_collection_complete())
+            if notice := algorithm_change_notice(out):
+                tooltip(parent=mw, msg=notice, period=ALGORITHM_CHANGE_NOTICE_MS)
+            else:
+                tooltip(parent=mw, msg=tr.sync_collection_complete())
             # all done; track media progress
             mw.media_syncer.start_monitoring()
             return finish(

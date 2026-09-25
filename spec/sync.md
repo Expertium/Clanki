@@ -180,7 +180,10 @@ A collection that arrived without the `schedulingAlgorithm` key gets one
 (`sched.global-algorithm-migration`). When the collection's algorithm is
 FSRS-7, the cards of a preset that the step moves from RWKV-Curve get their
 FSRS-7 memory state computed again from their review logs (due dates stay),
-so the RWKV-Curve S90 another client wrote is not shown as FSRS-7's. The
+so the RWKV-Curve S90 another client wrote is not shown as FSRS-7's. A
+collection whose FSRS switch the sync turned off follows `sched.no-sm2`,
+which compares the user's last choice in Clanki with the sync before this
+one. The
 collection's key wins over a preset's flags because the config table syncs
 as a whole, newest first, and presets sync row by row. The step runs after the sync because deck configs
 travel before the post-sync passes, and a change written during the sync
@@ -196,3 +199,28 @@ change.
 (`rslib/src/sync/collection/tests.rs`);
 `a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
 (`rslib/src/deckconfig/algorithm.rs`).
+
+## sync.algorithm-change-notice
+
+Given a normal sync after which the collection's algorithm (the one deck
+options show) differs from the one before the sync, Clanki shows a
+tooltip for 10 seconds in place of "Collection sync complete.": "A sync
+from another device turned FSRS off, so Clanki now uses RWKV-Curve." when
+the sync turned the FSRS switch off (`sched.no-sm2`), otherwise "A sync
+changed the scheduling algorithm. Clanki now uses FSRS-7." (with the
+algorithm's name). The notice is a tooltip, not a window, so it blocks
+nothing and shows at no start-up; each such sync shows it once. A sync
+after which the algorithm is the same shows no notice, also when the pass
+put the user's choice back. The Rust sync returns the change as
+`SyncCollectionResponse.algorithm_changed_to` (the algorithm's stored name)
+and `algorithm_changed_by_fsrs_off`; the wire protocol does not change.
+
+**Why:** Andrew, 2026-09-25: a sync that changes the algorithm must say
+so, without a modal window ("No waiting windows", CLAUDE.md item 11).
+
+**Pinned by:**
+`a_sync_bringing_fsrs_off_newer_than_the_users_choice_moves_to_rwkv_curve`,
+`a_users_choice_newer_than_another_devices_fsrs_off_stays_after_sync`
+(`rslib/src/sync/collection/tests.rs`);
+`test_a_sync_that_changed_the_algorithm_says_so_once`
+(`qt/tests/test_sync.py`).
