@@ -520,6 +520,30 @@ mod test {
         assert_eq!(context.new_cards_required(&note, &[], false).len(), 1);
     }
 
+    /// Tests if a note field named Tags takes precedence over the note's tags,
+    /// and if a note type's special fields count as nonempty whatever the
+    /// note holds.
+    #[test]
+    fn new_cards_required_normal_tags_field_collision() {
+        let mut col = CollectionBuilder::default().build().unwrap();
+        let arc_note_type = col.get_notetype_by_name("Basic").unwrap().unwrap();
+        let mut note_type = (*arc_note_type).clone();
+        note_type.fields[1].name = "Tags".to_string();
+        note_type.templates[0].config.q_format = "{{#Tags}}{{Front}}{{/Tags}}".to_string();
+        let mut note = note_type.new_note();
+        note.set_field(0, "Hello").unwrap();
+        note.tags.push("tag".into());
+        let context = CardGenContext::new(&note_type, None, Usn(-1));
+        assert!(context.new_cards_required(&note, &[], false).is_empty());
+        note.set_field(1, "field text").unwrap();
+        assert_eq!(context.new_cards_required(&note, &[], false).len(), 1);
+
+        note_type.templates[0].config.q_format = "{{#Subdeck}}{{Card}}{{/Subdeck}}".to_string();
+        let context = CardGenContext::new(&note_type, None, Usn(-1));
+        let empty = note_type.new_note();
+        assert_eq!(context.new_cards_required(&empty, &[], false).len(), 1);
+    }
+
     /// Tests if card generation skips ordinals that already exist(duplication)
     #[test]
     fn new_cards_required_skip_existing_cards() {
