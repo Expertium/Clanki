@@ -156,8 +156,8 @@ const LARGE_RESPONSE_BYTES: usize = 1 << 20;
 
 /// `data` as a Python bytes object. A large one is copied, and freed, with
 /// the GIL released: Total Knowledge's replay is ~77 MB on Andrew's
-/// collection, and copying and freeing it held the GIL for ~26 ms while the main
-/// thread waited.
+/// collection, and copying and freeing it held the GIL for ~26 ms while the
+/// main thread waited.
 fn py_bytes_filled_without_the_gil(py: Python<'_>, data: Vec<u8>) -> PyResult<Bound<'_, PyBytes>> {
     if data.len() < LARGE_RESPONSE_BYTES {
         return Ok(PyBytes::new(py, &data));
