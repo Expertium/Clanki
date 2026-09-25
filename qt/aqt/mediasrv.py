@@ -70,6 +70,7 @@ from aqt import gui_hooks
 from aqt.changenotetype import ChangeNotetypeDialog
 from aqt.deckoptions import (
     DeckOptionsDialog,
+    SchedulingAlgorithm,
     after_algorithm_change,
     ask_reschedule_after_algorithm_change,
     on_deck_options_page_ready,
@@ -887,6 +888,11 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
             algorithm = input.scheduling_algorithm
             reschedule = ask_reschedule_after_algorithm_change(
                 aqt.mw.app.activeModalWidget() or aqt.mw, algorithm
+            )
+            # FSRS-7's reschedule is part of the save: one operation, one
+            # undo step, one replay of the history
+            input.reschedule_all_cards = (
+                reschedule and algorithm == SchedulingAlgorithm.FSRS7
             )
 
             def on_success(_: OpChanges) -> None:

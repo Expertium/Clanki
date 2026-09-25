@@ -2244,7 +2244,11 @@ a desired-retention change in the same save would start
 (`deck-options.reschedule-on-change`). "Reschedule all cards now"
 gives every card the new algorithm's due date after the change is saved:
 FSRS-7 computes every card's memory state and interval with its preset's
-parameters; RWKV-Curve runs its reschedule of all decks. Neither writes
+parameters; RWKV-Curve runs its reschedule of all decks. Under FSRS-7 the
+save and the reschedule are one operation and one undo step, and the review
+history is replayed once: the switch leaves the memory states to the
+reschedule, which computes all of them with the saved parameters. The result
+is the same as a save followed by a separate reschedule. Neither writes
 review-log rows (`sched.reschedule-no-revlog`). A change to RWKV-Instant
 asks nothing, since it has no intervals to reschedule; neither does a save
 without a change of the algorithm, or a change that arrives by sync. After
@@ -2253,17 +2257,22 @@ screens refresh.
 
 **Why:** Andrew, 2026-09-15: on a change of the algorithm, ask each time
 whether to reschedule all cards now or keep their due dates; the question
-appears only when the algorithm changes.
+appears only when the algorithm changes. Andrew, 2026-09-25: "make
+'Reschedule all cards now' one operation"; the second replay cost about 3 s
+on 159k cards, and the reschedule was a second undo step.
 
 **Pinned by:** `test_an_algorithm_change_asks_and_then_reschedules`,
 `test_no_question_without_an_algorithm_change`,
 `test_no_question_for_rwkv_instant`,
 `test_the_question_offers_reschedule_or_keep`,
-`test_after_an_algorithm_change_the_chosen_reschedule_runs`
+`test_after_an_algorithm_change_the_chosen_reschedule_runs`,
+`test_only_fsrs7s_reschedule_is_part_of_the_save`
 (`qt/tests/test_deckoptions.py`);
 `a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
-(`rslib/src/deckconfig/algorithm.rs`, which also checks that the FSRS-7
-reschedule refuses to run under another algorithm).
+(which also checks that the FSRS-7 reschedule refuses to run under another
+algorithm),
+`a_switch_to_fsrs7_with_reschedule_is_one_undo_step_with_the_same_result`
+(`rslib/src/deckconfig/algorithm.rs`).
 
 ## sched.rwkv-r-freshness
 

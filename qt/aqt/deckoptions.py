@@ -359,16 +359,11 @@ def after_algorithm_change(
     mw: aqt.main.AnkiQt, algorithm: SchedulingAlgorithm.V, reschedule: bool
 ) -> None:
     """Drop RWKV's cached targets and queue scores and refresh the study
-    screens; then, if the user chose it, reschedule every card."""
+    screens; then, if the user chose it, reschedule every card under
+    RWKV-Curve. FSRS-7's reschedule already ran inside the save
+    (`reschedule_all_cards`), in the same undo step."""
     from aqt import rwkv_scheduler
-    from aqt.operations import CollectionOp
 
     rwkv_scheduler.rwkv_instant_retention_did_change(mw)
-    if not reschedule:
-        return
-    if algorithm == SchedulingAlgorithm.FSRS7:
-        CollectionOp(
-            mw, lambda col: col._backend.reschedule_all_cards_with_fsrs7()
-        ).run_in_background()
-    elif algorithm == SchedulingAlgorithm.RWKV_CURVE:
+    if reschedule and algorithm == SchedulingAlgorithm.RWKV_CURVE:
         rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(mw)
