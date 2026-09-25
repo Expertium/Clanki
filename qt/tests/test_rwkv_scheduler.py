@@ -9945,6 +9945,19 @@ def test_fsrs7_card_gets_no_rwkv_prediction_and_no_card_info_rows() -> None:
     )
 
 
+def _recording_stats_scores(record: Callable[..., object]) -> Callable[[bytes], bytes]:
+    """A backend's set_rwkv_stats_graph_scores_raw that hands the request's
+    search and scores to `record`, as keywords."""
+
+    def set_scores_raw(message: bytes) -> bytes:
+        request = scheduler_pb2.RwkvStatsGraphScoresRequest()
+        request.ParseFromString(message)
+        record(search=request.search, scores=list(request.scores))
+        return b""
+
+    return set_scores_raw
+
+
 # Pins spec/scheduling.md#sched.rwkv-no-first-review-retrievability
 def test_rwkv_instant_reviewer_does_not_predict_a_new_card(
     monkeypatch: pytest.MonkeyPatch,
@@ -10054,8 +10067,10 @@ def test_fsrs7_collection_prepares_no_rwkv_stats_scores(
     set_reviewer_backend(None)
     published: list[tuple[str, list[tuple[int, float]]]] = []
     backend = SimpleNamespace(
-        set_rwkv_stats_graph_scores=lambda **kwargs: published.append(
-            (kwargs["search"], list(kwargs["scores"]))
+        set_rwkv_stats_graph_scores_raw=_recording_stats_scores(
+            lambda **kwargs: published.append(
+                (kwargs["search"], list(kwargs["scores"]))
+            )
         )
     )
     algorithm = {"schedulingAlgorithm": "fsrs7"}
@@ -13619,14 +13634,12 @@ def test_stats_score_transport_includes_due_metadata() -> None:
         def __init__(self) -> None:
             self.scores: list[object] = []
 
-        def set_rwkv_stats_graph_scores(
-            self,
-            *,
-            search: str,
-            scores: list[object],
-        ) -> None:
-            assert search == "is:rwkv:due"
-            self.scores = scores
+        def set_rwkv_stats_graph_scores_raw(self, message: bytes) -> bytes:
+            request = scheduler_pb2.RwkvStatsGraphScoresRequest()
+            request.ParseFromString(message)
+            assert request.search == "is:rwkv:due"
+            self.scores = list(request.scores)
+            return b""
 
     backend = Backend()
     reviewer = SimpleNamespace(
@@ -17243,13 +17256,13 @@ class _RwkvQueueScoreRpc:
         self.intervening_calls.append(request)
         return b""
 
-    def set_rwkv_stats_graph_scores(
-        self,
-        *,
-        search: str,
-        scores: list[object],
-    ) -> None:
-        self.stats_calls.append({"search": search, "scores": scores})
+    def set_rwkv_stats_graph_scores_raw(self, message: bytes) -> bytes:
+        request = scheduler_pb2.RwkvStatsGraphScoresRequest()
+        request.ParseFromString(message)
+        self.stats_calls.append(
+            {"search": request.search, "scores": list(request.scores)}
+        )
+        return b""
 
     def set_rwkv_card_info_score(self, message: Any) -> None:
         card_id = getattr(message, "card_id")
@@ -19604,7 +19617,9 @@ def test_rwkv_curve_r_publishes_cards_without_the_rating_head() -> None:
 
     calls: list[dict[str, Any]] = []
     backend = SimpleNamespace(
-        set_rwkv_stats_graph_scores=lambda **kwargs: calls.append(kwargs)
+        set_rwkv_stats_graph_scores_raw=_recording_stats_scores(
+            lambda **kwargs: calls.append(kwargs)
+        )
     )
     rwkv_scheduler._set_rwkv_stats_graph_scores(
         SimpleNamespace(),

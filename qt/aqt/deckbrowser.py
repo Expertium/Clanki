@@ -261,6 +261,11 @@ class DeckBrowser:
                         )
                     ),
                 )
+                # the draw checks the heatmap's fingerprint on the main
+                # thread; its card scan is done here instead
+                from aqt.review_heatmap import HeatmapView, read_sums_before_draw
+
+                read_sums_before_draw(HeatmapView.deckbrowser, current_deck_only=False)
                 return data
 
             def start_rwkv_counts(output: RenderData) -> None:

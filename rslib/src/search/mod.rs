@@ -1406,8 +1406,10 @@ mod test {
         let timing = col.timing_today()?;
         let mut card1 = col.storage.get_card(card1_id)?.unwrap();
         let mut card2 = col.storage.get_card(card2_id)?.unwrap();
-        let s90_1 = col.fsrs_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
-        let s90_2 = col.fsrs_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
+        let s90_1 =
+            col.fsrs_single_trace_interval_at_retrievability_for_card(card1.id, 30.0, 0.9)?;
+        let s90_2 =
+            col.fsrs_single_trace_interval_at_retrievability_for_card(card2.id, 30.0, 0.9)?;
         for card in [&mut card1, &mut card2] {
             card.ctype = CardType::Review;
             card.queue = CardQueue::Review;
@@ -1496,9 +1498,9 @@ mod test {
         let overlay_card_id = col.search_cards("overlay", SortMode::NoOrder)?[0];
         let timing = col.timing_today()?;
         let s90_default =
-            col.fsrs_interval_at_retrievability_for_card(default_card_id, 30.0, 0.9)?;
+            col.fsrs_single_trace_interval_at_retrievability_for_card(default_card_id, 30.0, 0.9)?;
         let s90_overlay =
-            col.fsrs_interval_at_retrievability_for_card(overlay_card_id, 30.0, 0.9)?;
+            col.fsrs_single_trace_interval_at_retrievability_for_card(overlay_card_id, 30.0, 0.9)?;
 
         for (card_id, s90) in [
             (default_card_id, s90_default),
@@ -1579,7 +1581,7 @@ mod test {
 
         let state = card1.memory_state.unwrap();
         let exact_r = col.fsrs_current_retrievability_for_card_state(card1.id, state, 20.0)?;
-        let scalar_r = col.fsrs_current_retrievability_for_card(card1.id, 10.0, 20.0)?;
+        let scalar_r = col.fsrs_single_trace_retrievability_for_card(card1.id, 10.0, 20.0)?;
         assert_ne!(exact_r, scalar_r);
         let midpoint = (exact_r + scalar_r) / 2.0;
         let query = if exact_r < scalar_r {
@@ -1627,7 +1629,7 @@ mod test {
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        let fsrs_r = col.fsrs_single_trace_retrievability_for_card(card1.id, 1.0, 100.0)?;
         assert!(
             fsrs_r < 0.9,
             "test requires FSRS retrievability below threshold, got {fsrs_r}"
@@ -1691,7 +1693,7 @@ mod test {
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        let fsrs_r = col.fsrs_single_trace_retrievability_for_card(card1.id, 1.0, 100.0)?;
         assert!(
             fsrs_r < 0.9,
             "test requires FSRS retrievability below threshold, got {fsrs_r}"
@@ -1852,7 +1854,7 @@ mod test {
         card.last_review_time = Some(timing.now.adding_secs(-86_400));
         col.storage.update_card(&card)?;
 
-        let fsrs_r = col.fsrs_current_retrievability_for_card(card.id, 30.0, 1.0)?;
+        let fsrs_r = col.fsrs_single_trace_retrievability_for_card(card.id, 30.0, 1.0)?;
         assert!(
             fsrs_r > 0.9,
             "test requires FSRS retrievability above threshold, got {fsrs_r}"
@@ -1902,7 +1904,7 @@ mod test {
         col.storage.update_card(&card1)?;
         col.storage.update_card(&card2)?;
 
-        let fsrs_r = col.fsrs_current_retrievability_for_card(card1.id, 1.0, 100.0)?;
+        let fsrs_r = col.fsrs_single_trace_retrievability_for_card(card1.id, 1.0, 100.0)?;
         assert!(
             fsrs_r < 0.6,
             "test requires FSRS retrievability below threshold, got {fsrs_r}"
@@ -2083,7 +2085,7 @@ mod test {
         card.ctype = CardType::Review;
         card.queue = CardQueue::Review;
         let raw_s = 30.0;
-        let s90 = col.fsrs_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
+        let s90 = col.fsrs_single_trace_interval_at_retrievability_for_card(card.id, raw_s, 0.9)?;
         card.memory_state = Some(FsrsMemoryState {
             stability: s90,
             stability_internal: raw_s,

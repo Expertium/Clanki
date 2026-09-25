@@ -288,24 +288,34 @@ impl Card {
 }
 
 impl Collection {
+    /// `s90_only`: the cards written with a memory state that has no FSRS-7
+    /// traces (an add-on's `FSRSMemoryState(stability, difficulty)`).
     pub(crate) fn update_cards_maybe_undoable(
         &mut self,
         cards: Vec<Card>,
         undoable: bool,
+        s90_only: &HashSet<CardId>,
     ) -> Result<OpOutput<()>> {
+        let update = |col: &mut Collection, mut card: Card| -> Result<()> {
+            let existing = col.storage.get_card(card.id)?.or_not_found(card.id)?;
+            if s90_only.contains(&card.id) {
+                col.fsrs7_traces_for_an_s90_only_write(&mut card, &existing)?;
+            } else {
+                col.rebuild_fsrs7_traces_for_edited_s90(&mut card, &existing)?;
+            }
+            col.update_card_inner(&mut card, existing, col.usn()?)
+        };
         if undoable {
             self.transact(Op::UpdateCard, |col| {
-                for mut card in cards {
-                    let existing = col.storage.get_card(card.id)?.or_not_found(card.id)?;
-                    col.update_card_inner(&mut card, existing, col.usn()?)?
+                for card in cards {
+                    update(col, card)?;
                 }
                 Ok(())
             })
         } else {
             self.transact_no_undo(|col| {
-                for mut card in cards {
-                    let existing = col.storage.get_card(card.id)?.or_not_found(card.id)?;
-                    col.update_card_inner(&mut card, existing, col.usn()?)?;
+                for card in cards {
+                    update(col, card)?;
                 }
                 Ok(OpOutput {
                     output: (),

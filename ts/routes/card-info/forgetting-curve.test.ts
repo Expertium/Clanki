@@ -6,127 +6,17 @@ import { expect, test, vi } from "vitest";
 
 import type { DataPoint } from "./forgetting-curve";
 import {
+    chartCurve,
     chartRevlog,
     CurveAlgorithm,
     curveInputs,
     forgettingCurveMessage,
     forgettingCurveTooltip,
+    fsrs7CurvePoints,
     offersCurveToggle,
     prepareData,
     rwkvRecallAt,
-    stabilityS90,
 } from "./forgetting-curve";
-
-function fsrs7Params(): number[] {
-    return [
-        0.1104,
-        2.2395,
-        3.9221,
-        11.7841,
-        6.1686,
-        0.6457,
-        3.6807,
-        1.9795,
-        0.0,
-        1.3826,
-        0.7024,
-        0.5999,
-        0.8146,
-        0.6398,
-        1.0,
-        1.3207,
-        0.6707,
-        3.8668,
-        0.4416,
-        0.0934,
-        1.8631,
-        0.6162,
-        1.0869,
-        0.1567,
-        0.0801,
-        0.2421,
-        0.9464,
-        0.1433,
-        0.7145,
-        0.0,
-        0.5667,
-        0.3734,
-        0.5333,
-        0.3048,
-    ];
-}
-
-test("stabilityS90 returns the stored stability without FSRS-7 params", () => {
-    expect(stabilityS90(10, undefined)).toBe(10);
-    // FSRS-6 (21 values) and the FSRS-7 preview (35 values) are not FSRS-7
-    expect(stabilityS90(10, Array(21).fill(1))).toBe(10);
-    expect(stabilityS90(10, Array(35).fill(1))).toBe(10);
-});
-
-test("stabilityS90 derives S90 from FSRS-7 curve params", () => {
-    expect(stabilityS90(10, fsrs7Params())).toBeCloseTo(12.8789, 3);
-});
-
-test("stabilityS90 uses both FSRS-7 stabilities and difficulty", () => {
-    const scalar = stabilityS90(10, fsrs7Params());
-    const fullState = stabilityS90(10, fsrs7Params(), 5, 8);
-
-    expect(fullState).not.toBeCloseTo(scalar, 3);
-});
-
-test("prepareData carries S90 for the forgetting curve tooltip", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2024-01-03T00:00:00Z"));
-
-    try {
-        const data = prepareData(
-            [
-                {
-                    time: Date.parse("2024-01-01T00:00:00Z") / 1000,
-                    memoryState: {
-                        stability: 12.87887574872002,
-                        stabilityInternal: 10,
-                        difficulty: 5,
-                    },
-                },
-            ] as any,
-            2,
-            fsrs7Params(),
-        );
-
-        expect(data.at(-1)?.stability).toBe(10);
-        expect(data.at(-1)?.stabilityS90).toBeCloseTo(12.8789, 3);
-    } finally {
-        vi.useRealTimers();
-    }
-});
-
-test("prepareData computes FSRS-7 retrievability from the full memory state", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2024-01-21T00:00:00Z"));
-
-    try {
-        const data = prepareData(
-            [
-                {
-                    time: Date.parse("2024-01-01T00:00:00Z") / 1000,
-                    memoryState: {
-                        stability: 10,
-                        stabilityInternal: 10,
-                        stabilityFast: 5,
-                        difficulty: 8,
-                    },
-                },
-            ] as any,
-            20,
-            fsrs7Params(),
-        );
-
-        expect(data.at(-1)?.retrievability).toBeCloseTo(82.88255, 4);
-    } finally {
-        vi.useRealTimers();
-    }
-});
 
 // Pins spec/ui.md#ui.card-info-rwkv-curve
 
@@ -166,42 +56,84 @@ function resetThenNothing(): any {
     ];
 }
 
+/** FSRS-7's curves as the backend sends them, for twoReviews(): after the
+ * last review, then after the first one. */
+function fsrs7Curves(latest: number[], first: number[]): any {
+    return {
+        elapsedDays: [0, 10, 100],
+        segments: [
+            { reviewTime: BigInt(twoReviews()[0].time), recall: latest },
+            { reviewTime: BigInt(twoReviews()[1].time), recall: first },
+        ],
+    };
+}
+
+// Pins spec/scheduling.md#sched.fsrs-rs-latest: card info draws the FSRS-7
+// curves fsrs-rs computed in the backend, and keeps no copy of the curve.
+test("an FSRS-7 chart draws the backend's curve after each review, with its S90", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const revlog = chartRevlog(twoReviews());
+        const curve = fsrs7CurvePoints(revlog, fsrs7Curves([1, 0.5, 0.1], [1, 0.8, 0.3]))!;
+        expect(chartCurve(revlog, undefined, fsrs7Curves([1, 0.5, 0.1], [1, 0.8, 0.3]))).toEqual(curve);
+        const data = prepareData(revlog, 30, curve);
+
+        // five days after the first review: halfway to 10 days on its curve
+        const target = Date.parse("2024-01-06T00:00:00Z");
+        const fiveDays = data.reduce((best, point) =>
+            Math.abs(point.date.getTime() - target) < Math.abs(best.date.getTime() - target) ? point : best
+        );
+        expect(fiveDays.retrievability).toBeCloseTo(90, 0);
+        expect(fiveDays.stabilityS90).toBe(12);
+        // now, five days after the last review, on the last review's curve
+        const now = data.find((point) => point.date.getTime() === Date.parse("2024-01-16T00:00:00Z"));
+        expect(now?.retrievability).toBeCloseTo(75, 3);
+        expect(now?.stabilityS90).toBe(30);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+test("without the backend's FSRS-7 curve the chart has nothing to draw", () => {
+    const revlog = chartRevlog(twoReviews());
+    expect(fsrs7CurvePoints(revlog, undefined)).toBeUndefined();
+    expect(fsrs7CurvePoints(revlog, { elapsedDays: [], segments: [] })).toBeUndefined();
+    // no curve for the last review
+    const onlyFirst = fsrs7Curves([1, 0.5, 0.1], [1, 0.8, 0.3]);
+    onlyFirst.segments.shift();
+    expect(fsrs7CurvePoints(revlog, onlyFirst)).toBeUndefined();
+});
+
 // The RULE: no FSRS-7 value reaches an RWKV-Curve card's chart, and the
-// sharpest way to say that is that FSRS-7's parameters change nothing, with
-// or without RWKV's curves after the earlier reviews.
+// sharpest way to say that is that FSRS-7's curves change nothing, with or
+// without RWKV's curves after the earlier reviews.
 test("no FSRS-7 value reaches an RWKV-Curve card's chart", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
     try {
         const past = [{ reviewTime: twoReviews()[1].time, recall: [1, 0.8, 0.3], s90: 4 }];
-        // params 23 to 33 are the ones FSRS-7's own curve reads
-        const otherParams = fsrs7Params().map((value, index) => (index >= 23 ? value * 0.5 : value));
+        const curves = fsrs7Curves([1, 0.9, 0.7], [1, 0.95, 0.8]);
+        const otherCurves = fsrs7Curves([1, 0.6, 0.2], [1, 0.7, 0.4]);
         for (const extra of [{}, { past }]) {
             const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2, ...extra };
-            const drawn = prepareData(
-                chartRevlog(twoReviews(), rwkvCurve),
-                30,
-                fsrs7Params(),
-                rwkvCurve,
-            );
-            const drawnWithOtherParams = prepareData(
-                chartRevlog(twoReviews(), rwkvCurve),
-                30,
-                otherParams,
-                rwkvCurve,
-            );
+            const revlog = chartRevlog(twoReviews(), rwkvCurve);
+            expect(chartCurve(revlog, rwkvCurve, curves)).toBe(rwkvCurve);
+            const drawn = prepareData(revlog, 30, chartCurve(revlog, rwkvCurve, curves)!);
+            const drawnWithOtherCurves = prepareData(revlog, 30, chartCurve(revlog, rwkvCurve, otherCurves)!);
             expect(drawn.length).toBeGreaterThan(0);
-            expect(drawnWithOtherParams).toEqual(drawn);
+            expect(drawnWithOtherCurves).toEqual(drawn);
             // every S90 on the chart is one of RWKV's own
             expect(drawn.every((point) => [2, 4].includes(point.stabilityS90))).toBe(true);
         }
 
-        // and the two parameter sets really do draw different charts for an
-        // FSRS-7 card, so this test can fail
-        const fsrs = prepareData(chartRevlog(twoReviews()), 30, fsrs7Params());
-        const fsrsWithOtherParams = prepareData(chartRevlog(twoReviews()), 30, otherParams);
-        expect(fsrsWithOtherParams).not.toEqual(fsrs);
-        expect(chartRevlog(twoReviews())).toHaveLength(2);
+        // and the two sets of FSRS-7 curves really do draw different charts
+        // for an FSRS-7 card, so this test can fail
+        const revlog = chartRevlog(twoReviews());
+        const fsrs = prepareData(revlog, 30, chartCurve(revlog, undefined, curves)!);
+        const fsrsWithOtherCurves = prepareData(revlog, 30, chartCurve(revlog, undefined, otherCurves)!);
+        expect(fsrsWithOtherCurves).not.toEqual(fsrs);
+        expect(revlog).toHaveLength(2);
     } finally {
         vi.useRealTimers();
     }
@@ -219,7 +151,7 @@ test("an RWKV-Curve card draws RWKV's curve after every review that has one", ()
         };
         const revlog = chartRevlog(twoReviews(), rwkvCurve);
         expect(revlog.map((entry) => entry.time)).toEqual(twoReviews().map((entry: any) => entry.time));
-        const data = prepareData(revlog, 30, fsrs7Params(), rwkvCurve);
+        const data = prepareData(revlog, 30, rwkvCurve);
 
         // the chart starts at the first review, on that review's own curve
         expect(data[0].date.getTime()).toBe(Date.parse("2024-01-01T00:00:00Z"));
@@ -255,7 +187,7 @@ test("a review without a stored RWKV curve gets no segment, and none is invented
         const oldest = { reviewTime: twoReviews()[1].time, recall: [1, 0.8, 0.3], s90: 4 };
         const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2, past: [oldest] };
         // the middle review has no curve: its segment is a break in the line
-        const data = prepareData(chartRevlog(reviews as any, rwkvCurve), 30, fsrs7Params(), rwkvCurve);
+        const data = prepareData(chartRevlog(reviews as any, rwkvCurve), 30, rwkvCurve);
         const middle = Date.parse("2024-01-11T00:00:00Z");
         const next = Date.parse("2024-01-21T00:00:00Z");
         const inside = data.filter((point) => point.date.getTime() > middle && point.date.getTime() < next);
@@ -311,7 +243,7 @@ test("after the last review an RWKV-Curve card follows RWKV's curve and S90", ()
     try {
         const rwkvCurve = { elapsedDays: [0, 10, 100], recall: [1, 0.5, 0.1], s90: 2 };
         const revlog = chartRevlog(twoReviews(), rwkvCurve);
-        const data = prepareData(revlog, 30, fsrs7Params(), rwkvCurve);
+        const data = prepareData(revlog, 30, rwkvCurve);
 
         // five days after the last review: halfway to 10 days on RWKV's curve
         const now = data.find((point) => point.date.getTime() === Date.parse("2024-01-16T00:00:00Z"));
@@ -327,7 +259,7 @@ test("without an RWKV curve yet the chart stops at the last review", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
     try {
-        const data = prepareData(twoReviews(), 30, fsrs7Params(), { elapsedDays: [], recall: [] });
+        const data = prepareData(twoReviews(), 30, { elapsedDays: [], recall: [] });
         expect(data.at(-1)?.date.getTime()).toBe(Date.parse("2024-01-11T00:00:00Z"));
     } finally {
         vi.useRealTimers();

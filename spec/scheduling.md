@@ -1435,7 +1435,6 @@ reschedule treated a card's S90 as its only stability.
 and `rslib/src/deckconfig/update.rs` (including the migration);
 `fsrs7_only_calibration_predictions_without_fsrs7_params_use_the_defaults`
 in `rslib/src/scheduler/fsrs/params.rs`;
-`ts/routes/card-info/forgetting-curve.test.ts` (`stabilityS90`);
 `ts/routes/deck-options/fsrs-params.test.ts`,
 `ts/routes/deck-options/fsrs-param-diagnostics.test.ts`.
 
@@ -1484,6 +1483,11 @@ dependency follows the `main` branch of open-spaced-repetition/fsrs-rs, and
 `cargo update -p fsrs`. Every FSRS-7 value is the crate's own: Clanki keeps
 no copy of the FSRS-7 curve or interval solver (the retrievability of the
 Browser, Stats, searches, sorts, queue orders and Total Knowledge included).
+Card info's forgetting curve is the crate's too: in Advanced mode the
+backend sends, for each review with an FSRS-7 memory state, the crate's
+recall of that state (with the parameters the crate clips) at 0 and at 300
+elapsed times evenly spaced in log time from one minute to 100 years, and
+the page joins the points with straight lines (within 0.1% of the curve).
 
 **Why:** Andrew, 2026-09-16: "don't pin to a specific commit, always use the
 latest version of fsrs-rs (there won't be FSRS-8 for years, if ever)"; the
@@ -1496,10 +1500,16 @@ day (all over 360 days: float rounding), memory states differ by under 1e-4
 relative, and the new optimizer fits his reviews as well (review-weighted
 log loss 0.0003 lower over 9 presets). Measured (120 pairs, RELEASE builds):
 memory states from the history 9.6x faster, next states 15.6x faster,
-optimization unchanged.
+optimization unchanged. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
+FSRS-7 review of that day: card info still drew the curve and solved the S90
+with a TypeScript copy, on the stored parameters rather than the ones the
+crate clips.
 
 **Pinned by:** `the_curve_is_the_crates_own`
-(`rslib/src/scheduler/fsrs/curve.rs`).
+(`rslib/src/scheduler/fsrs/curve.rs`); `card_info_curves_are_the_crates_own`
+(`rslib/src/stats/card.rs`); "an FSRS-7 chart draws the backend's curve after
+each review, with its S90", "without the backend's FSRS-7 curve the chart
+has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`).
 
 ## sched.fsrs7-sm2-conversion
 
@@ -1515,9 +1525,14 @@ entry FSRS wrote, the difficulty stored in that entry) and a fast stability
 of 0.8 times the internal stability; the internal stability is solved for.
 Ease is not used. An interval the curve cannot reach gives the nearest
 stability bound (0.0001 or 36,500 days). A card RWKV-Curve answers keeps
-RWKV's S90 as its S90. The `FsrsNextInterval` add-on API
-(`col.fsrs_next_interval`) takes the stability it is given as the card's
-S90 and returns the interval of this state at the requested retention.
+RWKV's S90 as its S90. The add-on APIs that take a stability take it as
+the card's S90 and use this state: `FsrsNextInterval`
+(`col.fsrs_next_interval`) returns its interval at the requested retention,
+`FsrsCurrentRetrievability` (`col.fsrs_current_retrievability`) its
+retrievability after the elapsed days, and `FsrsIntervalAtRetrievability`,
+its `Batch`, `VariableBatch` and `ByConfigBatch` forms
+(`col.fsrs_interval_at_retrievability*`) the time until its curve reaches
+the requested retrievability (the S90 itself at 0.9).
 
 **Why:** Andrew, 2026-09-15, "yep, do it" (fix the conversion), then "check
 RWKV-Curve too, since S90 can (and should) be calculated for it too" and
@@ -1526,12 +1541,17 @@ conversion put the interval into the internal stability, which is not the
 90% point of FSRS-7's two-component curve: a 100-day interval gave an S90 of
 about 226 days, and RWKV-Curve's fallback state did the same with its S90.
 The add-on API made the same mistake; Andrew, 2026-09-15: treat its input as
-the S90.
+the S90. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of that
+day: the retrievability and interval-at-retrievability APIs still read the
+stability as a single-trace internal stability (s_fast = s, d = 5), so a
+card with S90 94.4 days got 212 days from
+`fsrs_interval_at_retrievability(cid, 94.4, 0.9)`.
 
 **Pinned by:** `sm2_conversion_gives_the_interval_as_s90`,
 `truncated_revlog_starting_state_keeps_the_interval_as_s90`,
 `scaling_to_an_unreachable_interval_gives_the_stability_bound`,
 `fsrs_state_for_an_rwkv_s90_has_that_s90`, `next_interval_api_takes_the_s90`,
+`retrievability_apis_take_the_s90`,
 `stored_historical_retention_is_ignored`
 (`rslib/src/scheduler/fsrs/memory_state.rs`);
 `rwkv_s90_answer_without_memory_state_gets_an_fsrs7_state_with_that_s90`
@@ -1561,6 +1581,60 @@ S90" row and add-ons showed the internal stability under the S90 name.
 (`rslib/src/scheduler/answering/mod.rs`),
 `leech_only_if_young_uses_fsrs_stability`
 (`rslib/src/scheduler/states/review.rs`).
+
+## sched.fsrs7-addon-stability-edit
+
+Given a collection that runs FSRS-7, and a card written through
+`update_cards` (`col.update_card`, `col.update_cards`, AnkiConnect) whose
+memory state's `stability` (its S90) is not the stored one and is not the
+S90 of the internal and fast stabilities written with it, the card's FSRS-7
+traces are rebuilt before it is stored: its written difficulty and
+fast/internal stability ratio, scaled so that the curve gives the written
+S90 (a state with no usable traces gets the S90 conversion of
+`sched.fsrs7-sm2-conversion` with its difficulty). Retrievability, the
+retrievability review orders and the next intervals then follow the
+edit. A write that keeps the stored S90, or whose traces already give it,
+is stored as written. Under RWKV-Curve and RWKV-Instant the stability is
+not FSRS-7's, and the traces are stored as written.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: an add-on that changed `memory_state.stability` stored the new
+S90 next to the old traces, so the Browser Stability column showed the edit
+while retrievability and scheduling used the old traces, and nothing
+noticed the mismatch.
+
+**Pinned by:** `an_addon_edit_of_the_s90_rebuilds_the_fsrs7_traces`
+(`rslib/src/card/service.rs`).
+
+## sched.addon-s90-only-memory-state
+
+Given a card written through `update_cards` (`col.update_card`,
+`col.update_cards`, AnkiConnect) with a memory state that has a stability
+and a difficulty but no FSRS-7 internal stability (an add-on's
+`FSRSMemoryState(stability=..., difficulty=...)`), the stability is stored
+as the card's S90 with the written difficulty, and never as its internal
+stability:
+
+- under FSRS-7, the card's stored internal and fast stabilities keep their
+  ratio and are scaled so that the curve gives the written S90; when the S90
+  and the difficulty are the stored ones, the traces stay as they are;
+- under RWKV-Curve and RWKV-Instant, the stability is not FSRS-7's, so the
+  stored traces stay as they are;
+- a card without stored traces gets the S90 conversion of
+  `sync.fsrs7-state-of-foreign-cards` (the fsrs crate's fast/internal ratio,
+  scaled to the S90, with the written difficulty).
+
+A write that carries the internal stability follows
+`sched.fsrs7-addon-stability-edit`.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: such a write stored the S90 as the
+internal stability as well, which made the card's intervals about 2.3
+times too long, and since the row then had an internal stability, the
+repair of foreign cards never fixed it.
+
+**Pinned by:** `an_addon_s90_only_memory_state_gets_fsrs7_traces`
+(`rslib/src/card/service.rs`).
 
 ## sched.fsrs7-fractional-elapsed-time
 
@@ -1596,6 +1670,48 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 `fsrs7_interday_delta_uses_fractional_elapsed_time`,
 `fsrs7_same_day_delta_uses_fractional_elapsed_time`
 (`rslib/src/scheduler/fsrs/params.rs`) for the training side.
+
+## sched.fsrs7-bad-ignore-before-date
+
+Given a preset whose "Ignore reviews before" date is not a valid
+`YYYY-MM-DD` date (another client, an add-on or a damaged collection can
+write one), the collection still opens. The one-time FSRS-7 migration
+(`sched.fsrs7-only`) skips that preset, logs it, and still sets its done
+flag, so the next open does not try again. Card info and answering a card
+without a memory state read the date as no date (every review counts) and
+log it.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: the migration propagated the date's parse error out of the
+collection open, so one bad date failed every open (the done flag was never
+set), and the same date failed card info for every card of the preset and
+the answer of a card that had no memory state.
+
+**Pinned by:** `migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date`
+(`rslib/src/deckconfig/update.rs`),
+`card_stats_survive_a_bad_ignore_before_date` (`rslib/src/stats/card.rs`),
+`a_bad_ignore_before_date_does_not_stop_answering`
+(`rslib/src/scheduler/answering/mod.rs`).
+
+## sched.fsrs7-preset-fallback
+
+Given a card that no add-on overlay rule moves, and whose home deck is
+missing, is a filtered deck, or uses a preset that is missing, FSRS-7 gives
+the card the Default preset (preset id 1, else the built-in defaults), with
+the home deck's desired retention when the deck exists, and logs it.
+`prop:r` and `prop:s` searches, the FSRS-7 Stats graphs, the retrievability
+review orders and the card's Browser row then work, and read the card with
+the Default preset's parameters. Check Database still repairs
+such a card.
+
+**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
+that day: the preset lookup returned an error for such a card, so one
+damaged card failed every `prop:r` and `prop:s` search (the search reads the
+preset of every card), the FSRS-7 Retrievability graph, the R-ordered queue
+of its deck and its Browser row.
+
+**Pinned by:** `a_card_with_a_damaged_home_deck_takes_the_default_preset`
+(`rslib/src/scheduler/fsrs/preset.rs`).
 
 ## sched.elapsed-time-fallback
 
@@ -1933,18 +2049,27 @@ algorithm of the presets that schedule the most review and relearning cards
 filtered deck by its original deck; a deck or preset that is missing counts
 as the Default preset). With no review or relearning cards, all cards
 count. Ties go to RWKV-Curve, then FSRS-7, then RWKV-Instant. Every preset
-then takes that algorithm (`sched.one-global-algorithm`); due dates and
-memory states do not change (a collection whose FSRS switch is off follows
-`sched.no-sm2` instead). Given a collection without cards, nothing is
-written, so a new, empty collection does not need a full sync.
+then takes that algorithm (`sched.one-global-algorithm`); due dates do not
+change. When that algorithm is FSRS-7, the cards whose home deck's preset
+ran RWKV-Curve get their FSRS-7 memory state computed again from their
+review logs, as a deck-options switch to FSRS-7 computes it, so no
+RWKV-Curve stability stays behind; every other memory state stays (a
+collection whose FSRS switch is off follows `sched.no-sm2` instead). Given
+a collection without cards, nothing is written, so a new, empty collection
+does not need a full sync.
 
 **Why:** Andrew, 2026-09-15: a collection whose presets used different
-algorithms keeps the one that schedules the most review cards.
+algorithms keeps the one that schedules the most review cards. The
+recompute: Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the cards of an RWKV-Curve preset kept
+the curve's S90, which the Browser, card info, the Stats Stability graph
+and `prop:s` then showed as FSRS-7's (never mix two algorithms).
 
 **Pinned by:**
 `a_collection_without_an_algorithm_gets_the_one_with_most_review_cards`,
 `migration_counts_filtered_cards_by_home_deck_and_breaks_ties`,
-`a_collection_without_cards_gets_no_algorithm`
+`a_collection_without_cards_gets_no_algorithm`,
+`a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
 (`rslib/src/deckconfig/algorithm.rs`);
 `new_empty_collection_should_not_require_full_sync`
 (`rslib/src/sync/collection/tests.rs`).
@@ -1972,6 +2097,34 @@ collection that already runs FSRS in Anki keeps FSRS-7.
 `an_sm2_collection_keeps_its_rwkv_algorithm`,
 `only_sm2_collections_with_cards_change`
 (`rslib/src/deckconfig/algorithm.rs`).
+
+## sched.apkg-import-reads-the-package
+
+Given an `.apkg` import, the package's own collection is read as the
+package holds it: the open-time passes (`sched.one-global-algorithm`,
+`sched.no-sm2`, `sched.fsrs7-only` and
+`sync.fsrs7-state-of-foreign-cards`) do not run on it, so its presets
+compute no memory state. With scheduling imported, the importing
+collection then gives its FSRS-7 memory state, with its own home preset
+(`sync.fsrs7-state-of-foreign-cards`), to two kinds of imported card: a
+card whose row another client wrote (a memory state without `s_int`), and
+a card that is not new and has no memory state (from its review log; a
+card without a usable review stays without one). Every other imported
+card keeps the memory state the package holds, an RWKV-Curve S90
+included. Due dates and the review log do not change.
+
+**Why:** Andrew, 2026-09-24, "Fix the bugs on our side", for the
+cross-cutting review of that day: the import opened the package like a
+collection, so the package's FSRS-off switch made `sched.no-sm2` and then
+the FSRS-7 migration compute every packaged card's memory state twice with
+the package's default parameters. That replaced an imported RWKV-Curve
+card's S90, and it gave every card an internal stability, so the repair
+with the importing collection's preset never found a card to repair.
+
+**Pinned by:** `an_imported_card_gets_its_memory_state_from_the_importing_preset`,
+`an_imported_rwkv_curve_card_keeps_its_s90`,
+`imported_foreign_fsrs_state_becomes_an_fsrs7_state`
+(`rslib/src/import_export/package/apkg/tests.rs`).
 
 ## sched.algorithm-change-prompt
 

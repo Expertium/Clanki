@@ -10,6 +10,7 @@ use std::io::Write;
 use anki_io::read_file;
 use anki_proto::import_export::ImportAnkiPackageOptions;
 
+use crate::card::FsrsMemoryState;
 use crate::import_export::package::ExportAnkiPackageOptions;
 use crate::media::files::sha1_of_data;
 use crate::media::MediaManager;
@@ -348,6 +349,138 @@ fn imported_foreign_fsrs_state_becomes_an_fsrs7_state() {
         0.9,
     );
     assert!((s90 - 20.0).abs() < 0.01, "{state:?} reaches 90% at {s90}");
+}
+
+/// A studied review card in `col` with two answers in its review log, and
+/// the stored memory state `state`; its id.
+fn add_studied_card(col: &mut Collection, state: Option<FsrsMemoryState>) -> CardId {
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
+
+    let note = NoteAdder::basic(col).add(col);
+    let mut card = col.storage.all_cards_of_note(note.id).unwrap().remove(0);
+    let timing = col.timing_today().unwrap();
+    card.ctype = CardType::Review;
+    card.queue = CardQueue::Review;
+    card.interval = 15;
+    card.due = timing.days_elapsed as i32 + 5;
+    card.memory_state = state;
+    card.last_review_time = Some(TimestampSecs(timing.now.0 - 10 * 86_400));
+    col.storage.update_card(&card).unwrap();
+    for (days_ago, kind, interval) in [
+        (20, RevlogReviewKind::Learning, -600),
+        (10, RevlogReviewKind::Review, 15),
+    ] {
+        let entry = RevlogEntry {
+            id: RevlogId((timing.now.0 - days_ago * 86_400) * 1000),
+            cid: card.id,
+            button_chosen: 3,
+            interval,
+            ease_factor: 2500,
+            review_kind: kind,
+            ..Default::default()
+        };
+        col.storage.add_revlog_entry(&entry, false).unwrap();
+    }
+    card.id
+}
+
+fn export_with_scheduling(col: &mut Collection, apkg: &std::path::Path) {
+    col.export_apkg(
+        apkg,
+        ExportAnkiPackageOptions {
+            with_scheduling: true,
+            with_deck_configs: false,
+            with_media: false,
+            legacy: false,
+        },
+        SearchNode::WholeCollection,
+        None,
+    )
+    .unwrap();
+}
+
+fn import_with_scheduling(col: &mut Collection, apkg: &std::path::Path) -> Card {
+    col.import_apkg(
+        apkg,
+        ImportAnkiPackageOptions {
+            with_scheduling: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let card_id: CardId = col
+        .storage
+        .db
+        .query_row("select id from cards", [], |row| row.get(0))
+        .unwrap();
+    col.storage.get_card(card_id).unwrap().unwrap()
+}
+
+// Pins spec/scheduling.md#sched.apkg-import-reads-the-package: a package's
+// studied card without a memory state gets its FSRS-7 memory state from its
+// review log with the importing collection's preset, not the package's.
+#[test]
+fn an_imported_card_gets_its_memory_state_from_the_importing_preset() {
+    let (mut src_col, src_tempdir) = open_fs_test_collection("src");
+    let (mut target_col, _target_tempdir) = open_fs_test_collection("target");
+    target_col
+        .set_config_bool(BoolKey::Fsrs, true, false)
+        .unwrap();
+    let mut params = fsrs::DEFAULT_PARAMETERS.to_vec();
+    for w in &mut params[..4] {
+        *w *= 3.0;
+    }
+    target_col.update_default_deck_config(|config| {
+        config.rwkv_review_enabled = false;
+        config.fsrs_params_7 = params.clone();
+    });
+    let apkg_path = src_tempdir.path().join("studied.apkg");
+    add_studied_card(&mut src_col, None);
+    export_with_scheduling(&mut src_col, &apkg_path);
+
+    let card = import_with_scheduling(&mut target_col, &apkg_path);
+
+    let stored = card.memory_state.expect("a memory state");
+    let expected: FsrsMemoryState = target_col
+        .compute_memory_state(card.id)
+        .unwrap()
+        .state
+        .unwrap()
+        .into();
+    assert!(
+        (stored.stability_internal - expected.stability_internal).abs() < 0.01,
+        "{stored:?} vs {expected:?}"
+    );
+    assert!((stored.difficulty - expected.difficulty).abs() < 0.01);
+}
+
+// Pins spec/scheduling.md#sched.apkg-import-reads-the-package: an imported
+// card with Clanki's own memory state (an RWKV-Curve S90 and FSRS-7 traces)
+// keeps it as the package holds it.
+#[test]
+fn an_imported_rwkv_curve_card_keeps_its_s90() {
+    let (mut src_col, src_tempdir) = open_fs_test_collection("src");
+    let (mut target_col, _target_tempdir) = open_fs_test_collection("target");
+    target_col
+        .set_config_bool(BoolKey::Fsrs, true, false)
+        .unwrap();
+    target_col.update_default_deck_config(|config| config.rwkv_review_enabled = true);
+    let apkg_path = src_tempdir.path().join("curve.apkg");
+    let state = FsrsMemoryState {
+        stability: 33.0,
+        stability_internal: 12.0,
+        stability_fast: Some(3.0),
+        difficulty: 5.0,
+    };
+    add_studied_card(&mut src_col, Some(state));
+    export_with_scheduling(&mut src_col, &apkg_path);
+
+    let card = import_with_scheduling(&mut target_col, &apkg_path);
+
+    assert_eq!(card.memory_state, Some(state));
 }
 
 #[test]

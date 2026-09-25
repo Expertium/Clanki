@@ -15,7 +15,7 @@ use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::decks::Deck;
 use crate::prelude::*;
-use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_or_none;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
 use crate::search::FieldSearchMode;
 use crate::search::Node;
@@ -132,23 +132,29 @@ pub(crate) struct FsrsPresetSimulatorRule {
 }
 
 impl FsrsPreset {
-    pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Result<Self> {
-        Ok(Self {
+    /// The preset `config` of the cards of `deck`, a normal deck; without a
+    /// deck, the preset's own desired retention.
+    pub(crate) fn from_deck_config(config: &DeckConfig, deck: Option<&Deck>) -> Self {
+        Self {
             id: FsrsPresetId::DeckConfig(config.id),
             name: config.name.clone(),
             params: config.fsrs_params().to_vec(),
-            desired_retention: deck.effective_desired_retention(config),
+            desired_retention: deck.map_or(config.inner.desired_retention, |deck| {
+                deck.effective_desired_retention(config)
+            }),
             historical_retention: HISTORICAL_RETENTION,
             ignore_revlogs_before_date: config.inner.ignore_revlogs_before_date.clone(),
-        })
+        }
     }
 
     pub(crate) fn fsrs(&self) -> Result<FSRS> {
         Ok(FSRS::new(&self.params)?)
     }
 
-    pub(crate) fn ignore_revlogs_before_ms(&self) -> Result<TimestampMillis> {
-        ignore_revlogs_before_date_to_ms(&self.ignore_revlogs_before_date)
+    /// An unparsable date counts as no date (spec
+    /// sched.fsrs7-bad-ignore-before-date).
+    pub(crate) fn ignore_revlogs_before_ms(&self) -> TimestampMillis {
+        ignore_revlogs_before_ms_or_none(&self.ignore_revlogs_before_date, &self.name)
     }
 }
 
@@ -177,6 +183,50 @@ impl AddonFsrsPreset {
             ignore_revlogs_before_date: self.ignore_revlogs_before_date,
         })
     }
+}
+
+/// The preset of the cards whose home deck is `deck`, found with `config`.
+/// A home deck that is missing or filtered, or whose preset is missing,
+/// gives the Default preset (id 1, else the built-in defaults), as
+/// scheduling does, and is logged: one damaged card must not fail a search,
+/// a graph, the queue or a Browser row (spec sched.fsrs7-preset-fallback).
+fn home_deck_fsrs_preset(
+    deck_id: DeckId,
+    deck: Option<&Deck>,
+    mut config: impl FnMut(DeckConfigId) -> Result<Option<DeckConfig>>,
+) -> Result<FsrsPreset> {
+    let home_config = match deck.map(Deck::config_id) {
+        Some(Some(config_id)) => {
+            let home_config = config(config_id)?;
+            if home_config.is_none() {
+                tracing::warn!(
+                    deck_id = deck_id.0,
+                    config_id = config_id.0,
+                    "home deck's preset is missing: FSRS-7 uses the Default preset"
+                );
+            }
+            home_config
+        }
+        Some(None) => {
+            tracing::warn!(
+                deck_id = deck_id.0,
+                "home deck is filtered: FSRS-7 uses the Default preset"
+            );
+            None
+        }
+        None => {
+            tracing::warn!(
+                deck_id = deck_id.0,
+                "home deck is missing: FSRS-7 uses the Default preset"
+            );
+            None
+        }
+    };
+    let config = match home_config {
+        Some(config) => config,
+        None => config(DeckConfigId(1))?.unwrap_or_default(),
+    };
+    Ok(FsrsPreset::from_deck_config(&config, deck))
 }
 
 fn node_uses_exact_fsrs_metric(node: &Node) -> bool {
@@ -336,11 +386,10 @@ impl Collection {
                 presets_by_card.insert_index(card.id, *index);
                 continue;
             }
-            let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
-            let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-            let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
-            let index =
-                presets_by_card.insert(card.id, FsrsPreset::from_deck_config(config, deck)?)?;
+            let preset = home_deck_fsrs_preset(deck_id, decks_by_id.get(&deck_id), |config_id| {
+                Ok(configs_by_id.get(&config_id).cloned())
+            })?;
+            let index = presets_by_card.insert(card.id, preset)?;
             index_by_deck.insert(deck_id, index);
         }
 
@@ -361,9 +410,7 @@ impl Collection {
         if let Some(preset) = self.fsrs_overlay_preset_for_card(card)? {
             return Ok(preset);
         }
-        let deck_id = card.original_deck_id.or(card.deck_id);
-        let deck = self.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        self.fsrs_preset_for_deck(&deck)
+        self.fsrs_preset_for_home_deck(card.original_deck_id.or(card.deck_id))
     }
 
     /// The add-on overlay preset of the card, or None when the card takes the
@@ -446,13 +493,14 @@ impl Collection {
         Ok(None)
     }
 
-    pub(crate) fn fsrs_preset_for_deck(&mut self, deck: &Deck) -> Result<FsrsPreset> {
-        let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-        let config = self
-            .storage
-            .get_deck_config(config_id)?
-            .or_not_found(config_id)?;
-        FsrsPreset::from_deck_config(&config, deck)
+    /// The preset of the cards whose home deck is `deck_id`, with the
+    /// Default preset for a home deck that is missing or filtered, or whose
+    /// preset is missing (`home_deck_fsrs_preset`).
+    pub(crate) fn fsrs_preset_for_home_deck(&mut self, deck_id: DeckId) -> Result<FsrsPreset> {
+        let deck = self.storage.get_deck(deck_id)?;
+        home_deck_fsrs_preset(deck_id, deck.as_ref(), |config_id| {
+            self.storage.get_deck_config(config_id)
+        })
     }
 
     pub(crate) fn fsrs_preset_simulator_rules(
@@ -767,6 +815,80 @@ mod test {
         // Pins spec/deck-options.md#deck-options.historical-retention-fixed
         assert_eq!(preset.historical_retention, HISTORICAL_RETENTION);
         assert_eq!(preset.ignore_revlogs_before_date, "2024-01-02");
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-preset-fallback: a card whose home
+    // deck is missing or filtered, or whose home deck's preset is missing,
+    // takes the Default preset, so the screens that read the preset of every
+    // card still work.
+    #[test]
+    fn a_card_with_a_damaged_home_deck_takes_the_default_preset() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = false;
+            config.review_order =
+                crate::deckconfig::ReviewCardOrder::RetrievabilityDescending as i32;
+        });
+        let mut no_preset_deck = crate::tests::DeckAdder::new("no preset").add(&mut col);
+        no_preset_deck.normal_mut()?.config_id = 999;
+        col.storage.update_deck(&no_preset_deck)?;
+        let filtered_deck = crate::tests::DeckAdder::new("filtered")
+            .filtered(true)
+            .add(&mut col);
+        let healthy = NoteAdder::basic(&mut col).add(&mut col);
+        let without_preset = NoteAdder::basic(&mut col)
+            .deck(no_preset_deck.id)
+            .add(&mut col);
+        let filtered_home = NoteAdder::basic(&mut col).add(&mut col);
+        let missing_home = NoteAdder::basic(&mut col).add(&mut col);
+        let timing = col.timing_today()?;
+        let mut cards = Vec::new();
+        for note in [&healthy, &without_preset, &filtered_home, &missing_home] {
+            let mut card = col.storage.all_cards_of_note(note.id)?.pop().unwrap();
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.due = timing.days_elapsed as i32;
+            card.interval = 10;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 12.0,
+                stability_fast: Some(6.0),
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-10 * 86_400));
+            if note.id == filtered_home.id {
+                card.deck_id = filtered_deck.id;
+                card.original_deck_id = filtered_deck.id;
+            } else if note.id == missing_home.id {
+                card.deck_id = DeckId(12345);
+            }
+            col.storage.update_card(&card)?;
+            cards.push(card);
+        }
+
+        let default_preset = FsrsPresetId::DeckConfig(DeckConfigId(1));
+        for card in &cards {
+            assert_eq!(col.fsrs_preset_for_card(card)?.id, default_preset);
+        }
+        let card_refs: Vec<&Card> = cards.iter().collect();
+        let presets = col.fsrs_presets_for_cards_in_batch(&card_refs)?;
+        for card in &cards {
+            assert_eq!(presets.get(card.id).unwrap().id, default_preset);
+        }
+        // the searches, the graphs, the R queue and the Browser row
+        assert_eq!(col.search_cards("prop:r>0", SortMode::NoOrder)?.len(), 4);
+        assert_eq!(col.search_cards("prop:s>0", SortMode::NoOrder)?.len(), 4);
+        let _graphs = col.graph_data_for_search("", 365)?;
+        col.set_current_deck(no_preset_deck.id)?;
+        let queued = col.get_queued_cards(10, false, false)?;
+        assert_eq!(queued.cards[0].card.id, cards[1].id);
+        col.state.active_browser_columns = Some(std::sync::Arc::new(vec![
+            crate::browser_table::Column::Retrievability,
+        ]));
+        let row = col.browser_row_for_id(cards[1].id.0)?;
+        assert!(!row.cells[0].text.is_empty());
         Ok(())
     }
 

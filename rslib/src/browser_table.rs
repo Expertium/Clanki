@@ -864,7 +864,7 @@ mod tests {
 
         let mut card = col.storage.get_card(cid)?.unwrap();
         let stability = 42.0;
-        let s90 = col.fsrs_interval_at_retrievability_for_card(cid, stability, 0.9)?;
+        let s90 = col.fsrs_single_trace_interval_at_retrievability_for_card(cid, stability, 0.9)?;
         card.memory_state = Some(FsrsMemoryState {
             stability: s90,
             stability_internal: stability,

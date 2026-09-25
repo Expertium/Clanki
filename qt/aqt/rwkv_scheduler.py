@@ -24935,22 +24935,22 @@ def _set_rwkv_stats_graph_scores(
     search: str,
     scores: Sequence[tuple[int, float]],
     *,
-    target_retentions_by_card_id: Mapping[int, float] | None = None,
-    intervening_reviews_by_card_id: Mapping[int, int] | None = None,
-    curve_due_card_ids: AbstractSet[int] = frozenset(),
-    curve_retrievabilities_by_card_id: Mapping[int, float] | None = None,
+    target_retentions_by_card_id: dict[int, float] | None = None,
+    intervening_reviews_by_card_id: dict[int, int] | None = None,
+    curve_due_card_ids: frozenset[int] | set[int] = frozenset(),
+    curve_retrievabilities_by_card_id: dict[int, float] | None = None,
     collection_backend: object | None = None,
 ) -> None:
     if collection_backend is None:
         mw = getattr(reviewer, "mw", None)
         col = getattr(mw, "col", None)
         collection_backend = getattr(col, "_backend", None)
-    set_scores = getattr(
+    set_scores_raw = getattr(
         collection_backend,
-        "set_rwkv_stats_graph_scores",
+        "set_rwkv_stats_graph_scores_raw",
         None,
     )
-    if not callable(set_scores):
+    if not callable(set_scores_raw):
         return
 
     # any other publication may push the memo's map out of the collection's
@@ -24958,36 +24958,20 @@ def _set_rwkv_stats_graph_scores(
     # the preparation that owns the work records it again right afterwards
     forget_rwkv_stats_scores()
 
-    target_retentions_by_card_id = target_retentions_by_card_id or {}
-    intervening_reviews_by_card_id = intervening_reviews_by_card_id or {}
-    curve_retrievabilities_by_card_id = curve_retrievabilities_by_card_id or {}
-    score_messages: list[scheduler_pb2.RwkvStatsGraphScoresRequest.Score] = []
-    retrievabilities_by_card_id: dict[int, float | None] = dict(scores)
-    # a card RWKV-Curve has a curve value for but the rating head did not
-    # score (the head runs only for a request that reads it) is published
-    # with its curve value alone (spec ui.rwkv-curve-r-stored-curve)
-    for card_id in curve_retrievabilities_by_card_id:
-        retrievabilities_by_card_id.setdefault(card_id, None)
-    for card_id, retrievability in retrievabilities_by_card_id.items():
-        score = scheduler_pb2.RwkvStatsGraphScoresRequest.Score(card_id=card_id)
-        if retrievability is not None:
-            score.retrievability = retrievability
-        target_retention = target_retentions_by_card_id.get(card_id)
-        if _valid_probability(target_retention):
-            score.target_retention = target_retention
-        intervening_reviews = intervening_reviews_by_card_id.get(card_id)
-        if isinstance(intervening_reviews, int) and intervening_reviews >= 0:
-            score.intervening_reviews = intervening_reviews
-        if card_id in curve_due_card_ids:
-            score.curve_due = True
-        curve_retrievability = curve_retrievabilities_by_card_id.get(card_id)
-        if _valid_probability(curve_retrievability):
-            score.curve_retrievability = curve_retrievability
-        score_messages.append(score)
-
-    set_scores(
-        search=search,
-        scores=score_messages,
+    # one score per card, with each optional value that is valid, encoded
+    # in Rust (pylib/rsbridge/stats_scores.rs). A card RWKV-Curve has a
+    # curve value for but the rating head did not score (the head runs only
+    # for a request that reads it) is published with its curve value alone
+    # (spec ui.rwkv-curve-r-stored-curve), after the scored cards.
+    set_scores_raw(
+        _rsbridge.rwkv_stats_graph_scores_request(
+            search,
+            dict(scores),
+            target_retentions_by_card_id or {},
+            intervening_reviews_by_card_id or {},
+            curve_due_card_ids,
+            curve_retrievabilities_by_card_id or {},
+        )
     )
 
 
@@ -24997,10 +24981,10 @@ def _set_rwkv_stats_graph_scores_if_current(
     scores: Sequence[tuple[int, float]],
     *,
     state_token: _ReviewerBackendPredictionStateToken,
-    target_retentions_by_card_id: Mapping[int, float] | None = None,
-    intervening_reviews_by_card_id: Mapping[int, int] | None = None,
-    curve_due_card_ids: AbstractSet[int] = frozenset(),
-    curve_retrievabilities_by_card_id: Mapping[int, float] | None = None,
+    target_retentions_by_card_id: dict[int, float] | None = None,
+    intervening_reviews_by_card_id: dict[int, int] | None = None,
+    curve_due_card_ids: frozenset[int] | set[int] = frozenset(),
+    curve_retrievabilities_by_card_id: dict[int, float] | None = None,
 ) -> bool:
     """Publish stats only while the complete prediction state is unchanged."""
 

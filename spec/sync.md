@@ -24,14 +24,20 @@ the log — except that a value both rows agreed on is kept as it is. The
 repaired row is marked modified so the same sync uploads it, and the other
 device takes it on its next sync. Cards that only differ in deck, card type or
 queue, cards the server did not send, and cards not modified locally are not
-touched. With FSRS off nothing runs.
+touched. With FSRS off nothing runs. A card whose home deck is missing or
+filtered, or whose preset is missing, is computed with the Default preset
+(`sched.fsrs7-preset-fallback`), and an unparsable "ignore reviews before"
+date counts as no date (`sched.fsrs7-bad-ignore-before-date`); a failure
+leaves the cards as the merge left them and does not stop the sync.
 
 **Why:** upstream PR 4717 (JSchoreels). Cards merge as whole rows by `mtime`,
 so a device that recomputed FSRS data before seeing another device's review
 kept stale memory state after the sync, and the only cure was a full sync. The
 agreed-value exception is Andrew's review finding of 2026-06-20: a momentary
 difference in last review time must not wipe a memory state both devices
-already held.
+already held. The damaged-card rule: Andrew, 2026-09-24, "Fix the bugs on
+our side", for the cross-cutting review of that day: one such card in a
+conflict failed the whole normal sync, and every retry failed the same way.
 
 **Pinned by:** `fsrs_stale_card_state_is_reconciled_during_sync`,
 `fsrs_metadata_conflict_is_reconciled_without_rescheduling`,
@@ -42,7 +48,9 @@ already held.
 `fsrs_reconciliation_respects_deck_overrides_within_one_preset`,
 `fsrs_state_is_recomputed_from_reviews_on_both_devices`
 (`rslib/src/sync/collection/tests.rs`); `fsrs_sync_conflict_*`
-(`rslib/src/sync/collection/chunks.rs`) for what counts as a conflict.
+(`rslib/src/sync/collection/chunks.rs`) for what counts as a conflict;
+`a_damaged_card_does_not_stop_the_repair_or_the_reconcile`
+(`rslib/src/scheduler/fsrs/memory_state.rs`).
 
 ## sync.fsrs7-state-of-foreign-cards
 
@@ -66,23 +74,30 @@ uploads it. This runs when the collection opens (which covers a full download
 and a restored backup), in every normal sync after the reconcile and before
 the upload (so the same sync uploads the rows it repaired), and after an
 `.apkg` import with scheduling, for the imported cards whose rows in the
-package were foreign. A failure leaves the cards as they came and does not stop the
-open, the sync or the import. With FSRS off nothing runs. Cards with `s_int`
-are never touched.
+package were foreign. A card whose home deck is missing or filtered, or
+whose preset is missing, is repaired with the Default preset
+(`sched.fsrs7-preset-fallback`), and an unparsable "ignore reviews before"
+date counts as no date (`sched.fsrs7-bad-ignore-before-date`), so one such
+card does not stop the repair of the others. A failure leaves the cards as
+they came and does not stop the open, the sync or the import. With FSRS off
+nothing runs. Cards with `s_int` are never touched.
 
 **Why:** Andrew, 2026-09-15 (interval audit #4). Read as it came, such a
 card's FSRS-6 stability became FSRS-7's internal stability as well as its
 S90, which made its next intervals about 2.3 times too long. He chose "S90 =
 stored stability" for these cards; where the card has a usable review log,
 that log already holds the other client's reviews, so the real FSRS-7 state
-comes from it.
+comes from it. The damaged-card rule: Andrew, 2026-09-24, "Fix the bugs on
+our side": one card with a missing home deck failed the repair of every
+card, so all of them kept the FSRS-6 stability as their internal one.
 
 **Pinned by:** `fsrs7_state_of_a_foreign_card_is_rebuilt_during_sync`,
 `fsrs7_state_of_a_foreign_card_is_rebuilt_on_open`
 (`rslib/src/sync/collection/tests.rs`);
 `imported_foreign_fsrs_state_becomes_an_fsrs7_state`
 (`rslib/src/import_export/package/apkg/tests.rs`);
-`only_rows_without_the_internal_stability_are_foreign`
+`only_rows_without_the_internal_stability_are_foreign`,
+`a_damaged_card_does_not_stop_the_repair_or_the_reconcile`
 (`rslib/src/scheduler/fsrs/memory_state.rs`).
 
 ## sync.post-sync-reschedule-gate
@@ -162,9 +177,12 @@ step: a preset that another client switched to another algorithm (a client
 that knows only the preset flags, such as an older build, AnkiDroid or an
 add-on) gets the collection's algorithm back, and the next sync uploads it.
 A collection that arrived without the `schedulingAlgorithm` key gets one
-(`sched.global-algorithm-migration`). The collection's key wins over a
-preset's flags because the config table syncs as a whole, newest first, and
-presets sync row by row. The step runs after the sync because deck configs
+(`sched.global-algorithm-migration`). When the collection's algorithm is
+FSRS-7, the cards of a preset that the step moves from RWKV-Curve get their
+FSRS-7 memory state computed again from their review logs (due dates stay),
+so the RWKV-Curve S90 another client wrote is not shown as FSRS-7's. The
+collection's key wins over a preset's flags because the config table syncs
+as a whole, newest first, and presets sync row by row. The step runs after the sync because deck configs
 travel before the post-sync passes, and a change written during the sync
 would be left unsent. Nothing is written when all presets agree. An
 algorithm that changes by sync asks no question
@@ -175,4 +193,6 @@ clients only know the per-preset flags, so the mirror must repair what they
 change.
 
 **Pinned by:** `sync_reverts_a_preset_another_client_gave_another_algorithm`
-(`rslib/src/sync/collection/tests.rs`).
+(`rslib/src/sync/collection/tests.rs`);
+`a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
+(`rslib/src/deckconfig/algorithm.rs`).

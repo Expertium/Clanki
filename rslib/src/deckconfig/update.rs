@@ -78,6 +78,21 @@ impl Collection {
             .all_deck_config()?
             .into_iter()
             .filter(|config| legacy_fsrs_params(config) != config.fsrs_params())
+            // a malformed "ignore reviews before" date skips its preset: the
+            // flag below is still set, so it cannot fail every open (spec
+            // sched.fsrs7-bad-ignore-before-date)
+            .filter(|config| match ignore_revlogs_before_ms_from_config(config) {
+                Ok(_) => true,
+                Err(err) => {
+                    warn!(
+                        preset = config.name,
+                        date = config.inner.ignore_revlogs_before_date,
+                        ?err,
+                        "FSRS-7 migration skips a preset with an unparsable \"ignore reviews before\" date"
+                    );
+                    false
+                }
+            })
             .map(|config| (config.id, config))
             .collect();
         let entries = self.memory_state_entries_for_presets(&changed, false)?;
@@ -944,6 +959,45 @@ mod test {
             col.storage.get_collection_timestamps()?.collection_change,
             modified_before
         );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a preset
+    // with an unparsable "ignore reviews before" date is skipped, the other
+    // presets migrate, the flag is set, and the collection still opens.
+    #[test]
+    fn migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date() -> Result<()> {
+        let (mut col, dir) = crate::tests::open_fs_test_collection("migrate");
+        col.set_config_bool_inner(BoolKey::Fsrs, true)?;
+        let fsrs6 = |config: &mut DeckConfig| {
+            config.inner.rwkv_review_enabled = false;
+            config.inner.fsrs_version = FsrsVersion::Six as i32;
+            config.inner.fsrs_params_6 = FSRS6_DEFAULT_PARAMETERS.to_vec();
+            config.inner.fsrs_params_7.clear();
+        };
+        let good_deck = DeckAdder::new("good").with_config(fsrs6).add(&mut col);
+        let bad_deck = DeckAdder::new("bad")
+            .with_config(|config| {
+                fsrs6(config);
+                config.inner.ignore_revlogs_before_date = "2024/13/45".into();
+            })
+            .add(&mut col);
+        let good_card =
+            reviewed_card_with_memory_state(&mut col, good_deck.id, &FSRS6_DEFAULT_PARAMETERS)?;
+        let bad_card =
+            reviewed_card_with_memory_state(&mut col, bad_deck.id, &FSRS6_DEFAULT_PARAMETERS)?;
+        // storage rounds the memory state, so compare the stored forms
+        let bad_card = col.storage.get_card(bad_card.id)?.unwrap();
+        // before the fix, the next open failed here, and on every open after
+        col.close(None)?;
+        let path = dir.path().join("migrate.anki2");
+        let col = crate::collection::CollectionBuilder::new(&path).build()?;
+
+        assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
+        let migrated = col.storage.get_card(good_card.id)?.unwrap();
+        assert_ne!(migrated.memory_state, good_card.memory_state);
+        let skipped = col.storage.get_card(bad_card.id)?.unwrap();
+        assert_eq!(skipped.memory_state, bad_card.memory_state);
         Ok(())
     }
 

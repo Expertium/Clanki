@@ -24,6 +24,8 @@ struct Backend {
     backend: RustBackend,
 }
 
+mod stats_scores;
+
 #[pyclass(module = "_rsbridge")]
 struct RwkvInference {
     inner: rwkv::RwkvInference,
@@ -1484,6 +1486,10 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<review_input_rows::RwkvReviewInputRows>()?;
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();
     m.add_wrapped(wrap_pyfunction!(open_backend)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(
+        stats_scores::rwkv_stats_graph_scores_request
+    ))
+    .unwrap();
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();
     m.add_wrapped(wrap_pyfunction!(syncserver)).unwrap();
     m.add_wrapped(wrap_pyfunction!(stored_curve_recalls))

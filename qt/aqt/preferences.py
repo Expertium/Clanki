@@ -36,6 +36,29 @@ from aqt.utils import (
 from aqt.webview import AnkiWebView, AnkiWebViewKind
 
 
+class _TabBuiltWhenShown(QWidget):
+    """A tab page whose content is made the first time the page is shown.
+
+    Opening Preferences then does not pay for a tab the user does not open:
+    the UI split tab alone cost ~14 ms of the ~90 ms. Only for a tab well
+    below the tallest and the widest pages: the dialog takes its size from
+    its biggest page, which an empty page must not change."""
+
+    def __init__(self, build: Callable[[], QWidget]) -> None:
+        super().__init__()
+        self._build: Callable[[], QWidget] | None = build
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+    def showEvent(self, event: QShowEvent | None) -> None:
+        if self._build is not None:
+            build, self._build = self._build, None
+            layout = self.layout()
+            assert layout is not None
+            layout.addWidget(build())
+        super().showEvent(event)
+
+
 class Preferences(QDialog):
     def __init__(self, mw: AnkiQt) -> None:
         QDialog.__init__(self, mw, Qt.WindowType.Window)
@@ -454,7 +477,8 @@ class Preferences(QDialog):
         if restart_required:
             showInfo(tr.preferences_changes_will_take_effect_when_you())
 
-        self.ankiconnect_tab.save()
+        if self.ankiconnect_tab is not None:
+            self.ankiconnect_tab.save()
         self.updateOptions()
 
     def on_theme_changed(self, index: int) -> None:
@@ -473,13 +497,21 @@ class Preferences(QDialog):
 
     def setup_ankiconnect(self) -> None:
         """The AnkiConnect tab, after Review Heatmap (spec
-        ankiconnect.settings). Its settings are global, like the add-on's."""
+        ankiconnect.settings). Its settings are global, like the add-on's.
+        The tab is made when it is first shown; until then there is nothing
+        to save."""
         from aqt.ankiconnect_prefs import AnkiConnectPreferences
 
-        self.ankiconnect_tab = AnkiConnectPreferences(self.mw)
+        self.ankiconnect_tab: AnkiConnectPreferences | None = None
+
+        def build() -> QWidget:
+            self.ankiconnect_tab = AnkiConnectPreferences(self.mw)
+            return self.ankiconnect_tab
+
+        self._ankiconnect_page = _TabBuiltWhenShown(build)
         self.form.tabWidget.insertTab(
             self.form.tabWidget.indexOf(self.heatmap_tab) + 1,
-            self.ankiconnect_tab,
+            self._ankiconnect_page,
             tr.preferences_ankiconnect_tab(),
         )
 
@@ -489,13 +521,19 @@ class Preferences(QDialog):
     def setup_ui_split(self) -> None:
         """The UI split tab, after AnkiConnect (spec ui.split-configurable).
         It is not an item of the split, so it is always there. Its changes
-        are stored as they are made."""
+        are stored as they are made. The tab is made when it is first
+        shown."""
         from aqt.ui_split_prefs import UiSplitPreferences
 
-        self.ui_split_tab = UiSplitPreferences(self.mw)
+        self.ui_split_tab: UiSplitPreferences | None = None
+
+        def build() -> QWidget:
+            self.ui_split_tab = UiSplitPreferences(self.mw)
+            return self.ui_split_tab
+
         self.form.tabWidget.insertTab(
-            self.form.tabWidget.indexOf(self.ankiconnect_tab) + 1,
-            self.ui_split_tab,
+            self.form.tabWidget.indexOf(self._ankiconnect_page) + 1,
+            _TabBuiltWhenShown(build),
             tr.preferences_ui_split_tab(),
         )
 

@@ -109,11 +109,14 @@ impl Collection {
     }
 
     /// Makes `algorithm` the collection's algorithm and mirrors it into every
-    /// preset.
-    fn set_scheduling_algorithm_inner(&mut self, algorithm: SchedulingAlgorithm) -> Result<()> {
+    /// preset. Returns the presets that changed, with the algorithm each ran
+    /// before.
+    fn set_scheduling_algorithm_inner(
+        &mut self,
+        algorithm: SchedulingAlgorithm,
+    ) -> Result<Vec<(DeckConfig, SchedulingAlgorithm)>> {
         self.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
-        self.mirror_scheduling_algorithm(algorithm)?;
-        Ok(())
+        self.mirror_scheduling_algorithm(algorithm)
     }
 
     /// The user's choice in deck options. FSRS goes on (every algorithm needs
@@ -135,23 +138,59 @@ impl Collection {
             let configs = self.storage.get_deck_config_map()?;
             let entries = self.memory_state_entries_for_presets(&configs, false)?;
             self.update_memory_state(entries)?;
+            // every memory state now comes from the FSRS-7 parameters, which
+            // is all the one-time FSRS-7 migration would compute again
+            // (spec sched.fsrs7-only)
+            self.set_config_bool_inner(BoolKey::Fsrs7OnlyMigrated, true)?;
         }
         Ok(())
     }
 
-    /// Gives every preset the algorithm's flags. True if any changed.
-    fn mirror_scheduling_algorithm(&mut self, algorithm: SchedulingAlgorithm) -> Result<bool> {
+    /// Gives every preset the algorithm's flags. Returns the presets that
+    /// changed, as they are now, with the algorithm each ran before.
+    fn mirror_scheduling_algorithm(
+        &mut self,
+        algorithm: SchedulingAlgorithm,
+    ) -> Result<Vec<(DeckConfig, SchedulingAlgorithm)>> {
         let usn = self.usn()?;
-        let mut changed = false;
+        let mut changed = Vec::new();
         for original in self.storage.all_deck_config()? {
             if !algorithm.is_applied_to(&original.inner) {
+                let before = SchedulingAlgorithm::of_preset(&original.inner);
                 let mut config = original.clone();
                 algorithm.apply_to(&mut config.inner);
                 self.update_deck_config_inner(&mut config, original, Some(usn))?;
-                changed = true;
+                changed.push((config, before));
             }
         }
         Ok(changed)
+    }
+
+    /// After the open-time migration or the post-sync mirror moved presets
+    /// to FSRS-7: the cards of the presets that ran RWKV-Curve hold its S90
+    /// as their stability, so their FSRS-7 memory states are computed again
+    /// from their review logs, as a deck-options switch to FSRS-7 does. Due
+    /// dates do not change (spec sched.global-algorithm-migration,
+    /// sync.global-algorithm-mirror).
+    fn recompute_memory_states_left_by_rwkv_curve(
+        &mut self,
+        algorithm: SchedulingAlgorithm,
+        changed: &[(DeckConfig, SchedulingAlgorithm)],
+    ) -> Result<()> {
+        if algorithm != SchedulingAlgorithm::Fsrs7 {
+            return Ok(());
+        }
+        let configs: HashMap<DeckConfigId, DeckConfig> = changed
+            .iter()
+            .filter(|(_, before)| *before == SchedulingAlgorithm::RwkvCurve)
+            .map(|(config, _)| (config.id, config.clone()))
+            .collect();
+        if configs.is_empty() {
+            return Ok(());
+        }
+        let entries = self.memory_state_entries_for_presets(&configs, false)?;
+        self.update_memory_state(entries)?;
+        Ok(())
     }
 
     /// Run when the collection opens, after a normal sync and after an .apkg
@@ -182,12 +221,15 @@ impl Collection {
             return Ok(true);
         }
         if let Some(algorithm) = self.scheduling_algorithm() {
-            return self.mirror_scheduling_algorithm(algorithm);
+            let changed = self.mirror_scheduling_algorithm(algorithm)?;
+            self.recompute_memory_states_left_by_rwkv_curve(algorithm, &changed)?;
+            return Ok(!changed.is_empty());
         }
         let Some(algorithm) = self.most_used_scheduling_algorithm()? else {
             return Ok(false);
         };
-        self.set_scheduling_algorithm_inner(algorithm)?;
+        let changed = self.set_scheduling_algorithm_inner(algorithm)?;
+        self.recompute_memory_states_left_by_rwkv_curve(algorithm, &changed)?;
         Ok(true)
     }
 
@@ -293,6 +335,7 @@ mod test {
 
     use super::SchedulingAlgorithm::*;
     use super::*;
+    use crate::card::FsrsMemoryState;
     use crate::deckconfig::UpdateDeckConfigsRequest;
     use crate::tests::DeckAdder;
     use crate::tests::NoteAdder;
@@ -349,6 +392,9 @@ mod test {
         let after = col.get_first_card();
         assert!(after.memory_state.is_some());
         assert_eq!(after.due, before.due);
+        // one replay: the FSRS-7 migration of the same open computes nothing
+        // again
+        assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
         // the next open has nothing to do
         assert!(!col.enforce_scheduling_algorithm()?);
         Ok(())
@@ -578,6 +624,85 @@ mod test {
             col.storage.get_all_revlog_entries(TimestampSecs(0))?.len(),
             revlog_rows
         );
+        Ok(())
+    }
+
+    /// A card answered under FSRS-7 whose stability another client's
+    /// RWKV-Curve then replaced with the curve's S90 (123 days), in a deck of
+    /// its own that runs `algorithm`; the card's id and its FSRS-7 memory
+    /// state.
+    fn add_answered_card(
+        col: &mut Collection,
+        name: &str,
+        algorithm: SchedulingAlgorithm,
+    ) -> (CardId, FsrsMemoryState) {
+        let deck = add_deck(col, name, Fsrs7);
+        let note = NoteAdder::basic(col).deck(deck).add(col);
+        let mut card = col.storage.all_cards_of_note(note.id).unwrap().remove(0);
+        col.set_current_deck(deck).unwrap();
+        col.answer_good();
+        card = col.storage.get_card(card.id).unwrap().unwrap();
+        let fsrs7 = card.memory_state.unwrap();
+        card.memory_state.as_mut().unwrap().stability = 123.0;
+        col.storage.update_card(&card).unwrap();
+        let config_id = col.get_deck(deck).unwrap().unwrap().config_id().unwrap();
+        let mut config = col.storage.get_deck_config(config_id).unwrap().unwrap();
+        algorithm.apply_to(&mut config.inner);
+        col.storage.update_deck_conf(&config).unwrap();
+        (card.id, fsrs7)
+    }
+
+    fn stability(col: &Collection, card_id: CardId) -> f32 {
+        col.storage
+            .get_card(card_id)
+            .unwrap()
+            .unwrap()
+            .memory_state
+            .unwrap()
+            .stability
+    }
+
+    // Pins spec/scheduling.md#sched.global-algorithm-migration and
+    // spec/sync.md#sync.global-algorithm-mirror: presets that ran
+    // RWKV-Curve and now run FSRS-7 get their cards' FSRS-7 memory states
+    // again; other cards keep theirs.
+    #[test]
+    fn a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets() -> Result<()> {
+        // the mirror: the key says FSRS-7, another client flipped one preset
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let (curve_card, fsrs7) = add_answered_card(&mut col, "curve", RwkvCurve);
+        let (fsrs7_card, _) = add_answered_card(&mut col, "fsrs7", Fsrs7);
+        col.set_config(ConfigKey::SchedulingAlgorithm, &Fsrs7)?;
+        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(preset_algorithms(&col).iter().all(|a| *a == Fsrs7));
+        assert!((stability(&col, curve_card) - fsrs7.stability).abs() < 1e-3);
+        assert_eq!(stability(&col, fsrs7_card), 123.0);
+
+        // the migration of a collection without the key: FSRS-7 has more
+        // review cards
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let (curve_card, fsrs7) = add_answered_card(&mut col, "curve", RwkvCurve);
+        let (first, _) = add_answered_card(&mut col, "fsrs7 one", Fsrs7);
+        let (second, _) = add_answered_card(&mut col, "fsrs7 two", Fsrs7);
+        col.storage
+            .db
+            .execute("update cards set type = 2, queue = 2", [])?;
+        assert_eq!(col.scheduling_algorithm(), None);
+        assert!(col.enforce_scheduling_algorithm()?);
+        assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
+        assert!((stability(&col, curve_card) - fsrs7.stability).abs() < 1e-3);
+        assert_eq!(stability(&col, first), 123.0);
+        assert_eq!(stability(&col, second), 123.0);
+
+        // a move to RWKV-Curve recomputes nothing
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let (card, _) = add_answered_card(&mut col, "fsrs7", Fsrs7);
+        col.set_config(ConfigKey::SchedulingAlgorithm, &RwkvCurve)?;
+        assert!(col.enforce_scheduling_algorithm()?);
+        assert_eq!(stability(&col, card), 123.0);
         Ok(())
     }
 }

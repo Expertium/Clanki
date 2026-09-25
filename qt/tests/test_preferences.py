@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
+from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from anki.collection import Preferences as PreferencesProto
 from aqt.preferences import Preferences
@@ -181,3 +185,51 @@ def test_update_collection_writes_the_review_heatmap_preference(
     mock_set_preferences.assert_called_once_with(
         parent=dialog, preferences=dialog.prefs
     )
+
+
+@pytest.fixture(scope="module")
+def qapp() -> Any:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from aqt.qt import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+def test_a_tab_built_when_shown_is_made_once_on_first_show(qapp: Any) -> None:
+    from aqt.preferences import _TabBuiltWhenShown
+    from aqt.qt import QLabel, QTabWidget
+
+    made: list[QLabel] = []
+
+    def build() -> QLabel:
+        made.append(QLabel("content"))
+        return made[-1]
+
+    tabs = QTabWidget()
+    tabs.addTab(QLabel("first"), "first")
+    page = _TabBuiltWhenShown(build)
+    tabs.addTab(page, "later")
+    tabs.show()
+    qapp.processEvents()
+    # a page the user has not opened has no content yet
+    assert made == []
+    tabs.setCurrentWidget(page)
+    qapp.processEvents()
+    tabs.setCurrentIndex(0)
+    tabs.setCurrentWidget(page)
+    qapp.processEvents()
+    assert len(made) == 1
+    assert made[0].parent() is page
+    tabs.close()
+
+
+def test_an_unopened_ankiconnect_tab_saves_nothing() -> None:
+    dialog = Preferences.__new__(Preferences)
+    dialog.mw = MagicMock()
+    dialog.mw.pm.uiScale.return_value = 1.0
+    dialog.form = MagicMock()
+    dialog.form.uiScale.value.return_value = 100
+    dialog.ankiconnect_tab = None
+    dialog.mw.col._get_experiments_dirty.return_value = dialog.mw.col._experiments
+    with patch.object(Preferences, "update_video_driver"):
+        dialog.update_global()

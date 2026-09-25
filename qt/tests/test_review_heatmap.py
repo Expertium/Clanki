@@ -506,6 +506,70 @@ def test_fingerprint_sums_are_read_again_only_after_a_write(tmp_path: Any) -> No
         col.close(downgrade=False)
 
 
+def test_the_sums_read_before_a_draw_are_the_ones_the_draw_checks(
+    tmp_path: Any,
+) -> None:
+    """A screen's background step reads the fingerprint's card scan, and the
+    draw on the main thread then finds it kept: the same HTML, one scan. It
+    reads nothing where the draw would read no fingerprint."""
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "heatmap.anki2"))
+    try:
+        note = col.new_note(col.models.current())
+        note.fields[0] = "front"
+        col.add_note(note, DeckId(1))
+        col.db.execute(
+            "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, "
+            "type) values (?, ?, -1, 3, 1, 0, 2500, 1000, 1)",
+            int(time.time() * 1000) - DAY * 1000,
+            note.card_ids()[0],
+        )
+        scans: list[str] = []
+        first = col.db.first
+
+        def counting_first(sql: str, *args: Any) -> Any:
+            if "total(mod)" in sql:
+                scans.append(sql)
+            return first(sql, *args)
+
+        def session() -> ReviewHeatmap:
+            return ReviewHeatmap(cast(Any, SimpleNamespace(col=col, pm=None)))
+
+        view = HeatmapView.deckbrowser
+        with patch.object(col.db, "first", counting_first):
+            # no cached heatmap: the draw reads no fingerprint, nor does this
+            heatmap = session()
+            heatmap.read_fingerprint_sums(view, current_deck_only=False)
+            assert scans == [] and heatmap._contents.last is None
+            html = heatmap.render(view, current_deck_only=False)
+            assert "rh-view-deckbrowser" in html
+            twin = session()
+            twin.render(view, current_deck_only=False)
+            for write in ("UPDATE cards SET due = due + 1", None):
+                if write:
+                    col.db.execute(write)
+                expected = twin.cached_html(view, current_deck_only=False)
+                scans.clear()
+                heatmap.read_fingerprint_sums(view, current_deck_only=False)
+                # after the write the step scans once; with no write, not at all
+                assert len(scans) == (1 if write else 0)
+                assert heatmap.cached_html(view, current_deck_only=False) == expected
+                # the draw scanned nothing
+                assert len(scans) == (1 if write else 0)
+            # the overview's place has no cached heatmap yet
+            scans.clear()
+            col.db.execute("UPDATE cards SET due = due + 1")
+            heatmap.read_fingerprint_sums(HeatmapView.overview, current_deck_only=True)
+            assert scans == []
+            # nothing is read while the heatmap is off
+            col.set_config_bool(Config.Bool.REVIEW_HEATMAP_ENABLED, False)
+            heatmap.read_fingerprint_sums(view, current_deck_only=False)
+            assert scans == []
+    finally:
+        col.close(downgrade=False)
+
+
 def test_drawing_the_heatmap_keeps_the_undo_step(tmp_path: Any) -> None:
     """Pins spec/ui.md#ui.review-heatmap-read-only."""
     from anki.scheduler.v3 import CardAnswer
@@ -538,6 +602,47 @@ def test_drawing_the_heatmap_keeps_the_undo_step(tmp_path: Any) -> None:
             assert col.undo_status().undo == undo, view
     finally:
         col.close(downgrade=False)
+
+
+def test_the_deck_list_and_overview_read_the_heatmap_sums_before_drawing(
+    monkeypatch: Any,
+) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    from aqt.deckbrowser import DeckBrowser
+    from aqt.overview import Overview
+
+    heatmap = MagicMock()
+    mw = MagicMock()
+    ops: list[Any] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            ops.append(op)
+
+        def run_in_background(self) -> None:
+            pass
+
+    with (
+        patch.object(review_heatmap, "instance", return_value=heatmap),
+        patch("aqt.deckbrowser.QueryOp", FakeQueryOp),
+        patch("aqt.overview.QueryOp", FakeQueryOp),
+        patch("aqt.rwkv_scheduler.rwkv_state_cache_loading", return_value=False),
+        patch("aqt.rwkv_scheduler.rwkv_review_scores_pending", return_value=False),
+        patch("aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores"),
+        patch("aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores"),
+        patch("aqt.rwkv_scheduler.deck_browser_rwkv_count_scope_ids", return_value=()),
+    ):
+        DeckBrowser(mw).refresh()
+        ops[-1](mw.col)
+        heatmap.read_fingerprint_sums.assert_called_once_with(
+            HeatmapView.deckbrowser, False
+        )
+        Overview(mw).refresh()
+        ops[-1](mw.col)
+        heatmap.read_fingerprint_sums.assert_called_with(HeatmapView.overview, True)
+        assert heatmap.read_fingerprint_sums.call_count == 2
 
 
 def test_the_background_step_fills_the_cache_and_reports_an_error() -> None:
