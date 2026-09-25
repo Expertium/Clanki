@@ -106,6 +106,11 @@ struct CardStateUpdater {
     /// answer's new state carries, which was computed when the card was
     /// shown (spec sched.fsrs7-fractional-elapsed-time).
     fsrs_answer_memory_state: Option<fsrs::MemoryState>,
+    /// A relearning card with no remaining steps whose last answer was Hard,
+    /// Good or Easy: that answer gave it a sub-day interval, so the card
+    /// left relearning and is answered as a review card (spec
+    /// sched.sub-day-pass-then-again). FSRS-7 and RWKV-Curve only.
+    relearning_left_by_passing_answer: bool,
 }
 
 impl CardStateUpdater {
@@ -791,6 +796,14 @@ impl Collection {
         // FSRS-7 interval would hand the card's return to FSRS-7 (spec
         // sched.rwkv-instant-no-steps)
         let fsrs_allow_short_term = fsrs_enabled && !config.runs_rwkv_instant();
+        // spec sched.sub-day-pass-then-again
+        let relearning_left_by_passing_answer = fsrs_enabled
+            && card.ctype == CardType::Relearn
+            && card.remaining_steps() == 0
+            && self
+                .storage
+                .last_review_rating(card.id)?
+                .is_some_and(|rating| rating > 1);
         let original_deck = self
             .storage
             .get_deck(home_deck_id)?
@@ -812,6 +825,7 @@ impl Collection {
             same_day_review_limit_reached,
             fsrs_allow_short_term,
             fsrs_answer_memory_state: None,
+            relearning_left_by_passing_answer,
         })
     }
 
@@ -1570,6 +1584,156 @@ pub(crate) mod test {
         assert_eq!(answer_secs(states.good), 900);
         assert_eq!(answer_secs(states.easy), 900);
         assert_buttons_in_order(&states);
+        Ok(())
+    }
+
+    /// Answers `cid` with the given states, as the reviewer does, and returns
+    /// the card and the kind of the review-log row just written.
+    fn answer_with_states(
+        col: &mut Collection,
+        cid: CardId,
+        states: &SchedulingStates,
+        rating: Rating,
+    ) -> Result<(Card, RevlogReviewKind)> {
+        let new_state = match rating {
+            Rating::Again => states.again,
+            Rating::Hard => states.hard,
+            Rating::Good => states.good,
+            Rating::Easy => states.easy,
+        };
+        col.answer_card(&mut CardAnswer {
+            card_id: cid,
+            current_state: states.current,
+            new_state,
+            rating,
+            answered_at: TimestampMillis::now(),
+            milliseconds_taken: 0,
+            custom_data: None,
+            desired_retention_override: None,
+            rwkv_s90: None,
+            rwkv_retrievability: None,
+            rwkv_review_kind: None,
+            from_queue: false,
+        })?;
+        let card = col.storage.get_card(cid)?.unwrap();
+        let kind = col
+            .storage
+            .get_revlog_entries_for_card(cid)?
+            .into_iter()
+            .max_by_key(|entry| entry.id)
+            .unwrap()
+            .review_kind;
+        Ok((card, kind))
+    }
+
+    fn lapse_test_collection(algorithm: SchedulingAlgorithm) -> Result<Collection> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.change_scheduling_algorithm(algorithm)?;
+        col.update_default_deck_config(|config| {
+            config.relearn_steps = vec![];
+            config.leech_threshold = 1;
+            config.leech_action = LeechAction::TagOnly as i32;
+        });
+        Ok(col)
+    }
+
+    fn fsrs7_review_card(col: &mut Collection) -> Result<CardId> {
+        add_due_review_card(
+            col,
+            10,
+            0,
+            Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: None,
+                difficulty: 5.0,
+            }),
+        )
+    }
+
+    fn has_leech_tag(col: &Collection, card: &Card) -> Result<bool> {
+        let note = col.storage.get_note(card.note_id)?.unwrap();
+        Ok(note.tags.iter().any(|tag| tag == LEECH_TAG))
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-pass-then-again, for FSRS-7 and
+    // RWKV-Curve (which shares the answer states): Hard gives a review card
+    // a sub-day interval, so the card relearns without a lapse; the next
+    // Again is a lapse of a review card. It adds a lapse, runs the leech
+    // check and logs as Review.
+    #[test]
+    fn again_after_a_sub_day_pass_is_a_review_lapse() -> Result<()> {
+        for algorithm in [SchedulingAlgorithm::Fsrs7, SchedulingAlgorithm::RwkvCurve] {
+            let mut col = lapse_test_collection(algorithm)?;
+            let cid = fsrs7_review_card(&mut col)?;
+            // the sub-day intervals come from the supplied ones, which for
+            // FSRS-7 stand in for a short FSRS-7 interval
+            let intervals = [Some(0.25), Some(0.4), Some(2.0), Some(3.0)];
+            let states = col.scheduling_states_with_intervals(cid, intervals, [None; 4])?;
+            let (card, kind) = answer_with_states(&mut col, cid, &states, Rating::Hard)?;
+            assert_eq!(card.ctype, CardType::Relearn, "{algorithm:?}");
+            assert_eq!(card.lapses, 0, "{algorithm:?}");
+            assert_eq!(kind, RevlogReviewKind::Review, "{algorithm:?}");
+
+            let states = match algorithm {
+                SchedulingAlgorithm::Fsrs7 => col.get_scheduling_states(cid)?,
+                _ => col.scheduling_states_with_intervals(cid, intervals, [None; 4])?,
+            };
+            assert!(
+                matches!(states.current, CardState::Normal(NormalState::Review(_))),
+                "{algorithm:?}: {:?}",
+                states.current
+            );
+            let (card, kind) = answer_with_states(&mut col, cid, &states, Rating::Again)?;
+            assert_eq!(card.lapses, 1, "{algorithm:?}");
+            assert_eq!(kind, RevlogReviewKind::Review, "{algorithm:?}");
+            assert!(has_leech_tag(&col, &card)?, "{algorithm:?}");
+        }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.sub-day-pass-then-again: a card that
+    // failed and relearns (Again with a sub-day interval) still gets no second
+    // lapse for another Again, and a passing answer after its relearning
+    // steps (a sub-day Good) ends relearning, so the Again after it is a
+    // lapse again.
+    #[test]
+    fn again_while_relearning_is_not_a_second_lapse() -> Result<()> {
+        for algorithm in [SchedulingAlgorithm::Fsrs7, SchedulingAlgorithm::RwkvCurve] {
+            let mut col = lapse_test_collection(algorithm)?;
+            col.update_default_deck_config(|config| config.leech_threshold = 8);
+            let cid = fsrs7_review_card(&mut col)?;
+            let intervals = [Some(0.01), Some(0.1), Some(0.2), Some(3.0)];
+            let states = col.scheduling_states_with_intervals(cid, intervals, [None; 4])?;
+            let (card, _) = answer_with_states(&mut col, cid, &states, Rating::Again)?;
+            assert_eq!(card.ctype, CardType::Relearn, "{algorithm:?}");
+            assert_eq!(card.lapses, 1, "{algorithm:?}");
+
+            // Again while relearning: no second lapse, logged as Relearning
+            let states = col.scheduling_states_with_intervals(cid, intervals, [None; 4])?;
+            assert!(
+                matches!(
+                    states.current,
+                    CardState::Normal(NormalState::Relearning(_))
+                ),
+                "{algorithm:?}: {:?}",
+                states.current
+            );
+            let (card, kind) = answer_with_states(&mut col, cid, &states, Rating::Again)?;
+            assert_eq!(card.lapses, 1, "{algorithm:?}");
+            assert_eq!(kind, RevlogReviewKind::Relearning, "{algorithm:?}");
+
+            // a sub-day Good ends relearning; the next Again is a lapse
+            let states = col.scheduling_states_with_intervals(cid, intervals, [None; 4])?;
+            let (card, kind) = answer_with_states(&mut col, cid, &states, Rating::Good)?;
+            assert_eq!(card.ctype, CardType::Relearn, "{algorithm:?}");
+            assert_eq!(kind, RevlogReviewKind::Relearning, "{algorithm:?}");
+            let states = col.scheduling_states_with_intervals(cid, intervals, [None; 4])?;
+            let (card, kind) = answer_with_states(&mut col, cid, &states, Rating::Again)?;
+            assert_eq!(card.lapses, 2, "{algorithm:?}");
+            assert_eq!(kind, RevlogReviewKind::Review, "{algorithm:?}");
+        }
         Ok(())
     }
 

@@ -1,0 +1,1 @@
+- Under FSRS-7 and RWKV-Curve, Again on a card that you passed earlier with an interval under a day now counts as a lapse: it adds to the lapse count, can make the card a leech, and logs as a review.
