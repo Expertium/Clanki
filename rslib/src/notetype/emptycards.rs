@@ -1,6 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write;
 
@@ -14,6 +15,9 @@ use crate::collection::Collection;
 use crate::error::Result;
 use crate::notes::NoteId;
 use crate::text::strip_html;
+
+/// How many notes the Empty Cards scan reads in one query.
+const EMPTY_CARDS_NOTE_BATCH: usize = 1000;
 
 pub struct EmptyCardsForNote {
     pub nid: NoteId,
@@ -29,10 +33,20 @@ impl Collection {
         let existing_cards = self.storage.existing_cards_for_notetype(nt.id)?;
         let by_note = group_generated_cards_by_note(existing_cards);
         let mut out = Vec::with_capacity(by_note.len());
+        let batch_note_ids: Vec<NoteId> = by_note.iter().map(|(nid, _)| *nid).collect();
 
-        for (nid, existing) in by_note {
-            let note = self.storage.get_note(nid)?.unwrap();
-            let cards = ctx.new_cards_required(&note, &[], false);
+        // the notes are read a batch at a time, one query per batch rather
+        // than one query per note
+        let mut notes = HashMap::new();
+        for (index, (nid, existing)) in by_note.into_iter().enumerate() {
+            if index % EMPTY_CARDS_NOTE_BATCH == 0 {
+                notes = self.storage.get_notes_by_id(
+                    &batch_note_ids
+                        [index..(index + EMPTY_CARDS_NOTE_BATCH).min(batch_note_ids.len())],
+                )?;
+            }
+            let note = notes.get(&nid).unwrap();
+            let cards = ctx.new_cards_required(note, &[], false);
             let nonempty_ords: HashSet<_> = cards.into_iter().map(|c| c.ord).collect();
             let current_count = existing.len();
             let empty: Vec<_> = existing
