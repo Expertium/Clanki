@@ -295,7 +295,9 @@ impl SqliteStorage {
         self.db
             .prepare_cached(concat!(
                 include_str!("existing_cards.sql"),
-                " where c.nid in (select id from notes where mid=?)"
+                // grouped by note: group_generated_cards_by_note takes each
+                // note's cards as one run of rows
+                " where c.nid in (select id from notes where mid=?) order by c.nid, c.id"
             ))?
             .query_and_then([ntid], row_to_existing_card)?
             .collect()
