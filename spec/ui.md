@@ -1626,6 +1626,37 @@ to 9.5-18 ms.
 `test_a_corrupt_collection_is_not_backed_up_and_says_so`
 (`qt/tests/test_main.py`).
 
+## ui.close-stops-rwkv-work
+
+Given a close of the profile while RWKV background work runs (the start-up
+restore or build of the RWKV state, or the recording pass that writes the
+per-review rows for the graphs), the close work of `ui.close-off-main-thread`
+first stops that work, then optimizes, checks, backs up and closes the
+collection. Each pass stops at its next check, which comes after its current
+batch. The rows of an unfinished batch are dropped, not written, and are not
+counted in the saved resume point, so the next session writes them again
+(`sched.rwkv-recordings-progress`). The close waits at most 10 seconds for
+the passes; after that no write of theirs reaches the collection either. A
+pass that the close stopped logs no error and shows no message. Once the
+main thread has no collection (`mw.col` is None), a collection query
+(`QueryOp`) does not start, and one queued before that ends without a call
+and without a message; a query that does not use the collection still runs.
+A close with no RWKV work running does not wait.
+
+**Why:** B-032, Andrew 2026-09-26, about a smoke test of the rebuilt
+checkout that logged 35 `CollectionNotOpen` errors from the RWKV row writes
+and one deck list read after the close: "Yep, fix that too". The close took
+the collection from under passes that run on their own threads.
+
+**Pinned by:** `test_a_writer_drops_its_rows_once_the_close_begins`,
+`test_the_close_waits_for_the_recording_pass_to_stop`,
+`test_the_close_waits_for_background_rwkv_work`,
+`test_a_build_stopped_by_the_close_refreshes_nothing`
+(`qt/tests/test_rwkv_scheduler.py`),
+`test_the_close_stops_the_rwkv_passes_before_the_collection_closes`,
+`test_no_collection_query_starts_once_the_collection_is_gone`
+(`qt/tests/test_main.py`).
+
 ## ui.tooltip-style
 
 Given a short message over the current window (a finished sync, a

@@ -927,6 +927,92 @@ def test_a_corrupt_collection_is_not_backed_up_and_says_so(monkeypatch) -> None:
     assert done == ["unloaded"]
 
 
+# Pins spec/ui.md#ui.close-stops-rwkv-work
+def test_the_close_stops_the_rwkv_passes_before_the_collection_closes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(aqt.main, "dev_mode", False)
+    col = _ClosingCollection()
+    mw, progress, taskman, done = _closing_mw(col, optimize_due=True)
+    stopped: list[object] = []
+
+    def stop(closing: object) -> bool:
+        stopped.append(closing)
+        col.calls.append("stop RWKV passes")
+        return True
+
+    monkeypatch.setattr(aqt.rwkv_scheduler, "stop_background_work_for_close", stop)
+
+    mw._unloadCollection(lambda: done.append("unloaded"))
+    taskman.run()
+
+    assert stopped == [col]
+    # first, off the main thread, before the optimize, the check and the close
+    assert col.calls[:2] == ["stop RWKV passes", "optimize"]
+    assert "close" in col.calls
+    assert done == ["pm saved", "unloaded"]
+
+
+# Pins spec/ui.md#ui.close-stops-rwkv-work (the deck list read after close)
+def test_no_collection_query_starts_once_the_collection_is_gone(monkeypatch) -> None:
+    from concurrent.futures import Future
+
+    from aqt.operations import QueryOp
+
+    submitted: list[Callable[[], object]] = []
+    shown: list[str] = []
+    mw = SimpleNamespace(
+        col=None,
+        taskman=SimpleNamespace(
+            run_in_background=lambda op, on_done, uses_collection: submitted.append(
+                lambda: on_done(_run(op))
+            )
+        ),
+        _increase_background_ops=lambda: shown.append("started"),
+        _decrease_background_ops=lambda: shown.append("finished"),
+    )
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+    monkeypatch.setattr(
+        aqt.operations, "show_exception", lambda **kwargs: shown.append("error box")
+    )
+
+    def _run(op: Callable[[], object]) -> Future:
+        future: Future = Future()
+        try:
+            future.set_result(op())
+        except Exception as error:
+            future.set_exception(error)
+        return future
+
+    def read(col: object) -> str:
+        return col.sched  # type: ignore[attr-defined]
+
+    def query() -> QueryOp:
+        return QueryOp(
+            parent=None,  # type: ignore[arg-type]
+            op=read,
+            success=lambda result: shown.append("success"),
+        )
+
+    # a query asked for after the close began does not start
+    query().run_in_background()
+    assert submitted == [] and shown == []
+
+    # a query queued before the close ends quietly: no call, no error box
+    mw.col = SimpleNamespace(sched="scheduler")
+    query().run_in_background()
+    mw.col = None
+    submitted.pop()()
+    assert shown == ["started", "finished"]
+
+    # a query that does not use the collection still runs
+    op = query().without_collection()
+    op._op = lambda col: "network"
+    op.run_in_background()
+    submitted.pop()()
+    assert shown[-2:] == ["finished", "success"]
+
+
 def _rollover_mw(
     monkeypatch, state: str, cutoff: int
 ) -> tuple[AnkiQt, list[str], list[int]]:

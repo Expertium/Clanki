@@ -179,6 +179,11 @@ def on_op_finished(
 T = TypeVar("T")
 
 
+class _CollectionClosedBeforeOp(Exception):
+    """A QueryOp that needs the collection found it closed when it came to
+    run. It is dropped without a message (spec ui.close-stops-rwkv-work)."""
+
+
 class QueryOp(Generic[T]):
     """Helper to perform an operation on a background thread.
 
@@ -250,16 +255,26 @@ class QueryOp(Generic[T]):
 
         assert mw
 
+        if self._uses_collection and mw.col is None:
+            # the collection is closing or closed: an op that needs it does
+            # not start (spec ui.close-stops-rwkv-work)
+            return
+
         mw._increase_background_ops()
 
         def wrapped_op() -> T:
             assert mw
+            if self._uses_collection and mw.col is None:
+                # queued before the close began, run after it
+                raise _CollectionClosedBeforeOp
             return self._op(mw.col)
 
         def wrapped_done(future: Future) -> None:
             assert mw
 
             mw._decrease_background_ops()
+            if isinstance(future.exception(), _CollectionClosedBeforeOp):
+                return
             # did something go wrong?
             if exception := future.exception():
                 if isinstance(exception, Exception):

@@ -9217,6 +9217,9 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
         taskman=taskman,
         state="deckBrowser",
         onRefreshTimer=lambda: refreshes.append("refresh"),
+        # an open collection: a load that ends after the close refreshes
+        # nothing (spec ui.close-stops-rwkv-work)
+        col=SimpleNamespace(),
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -22503,3 +22506,147 @@ def test_the_rwkv_history_read_keeps_undo_answer_card(tmp_path: Path) -> None:
         assert col.undo_status().undo == undo
     finally:
         col.close(downgrade=False)
+
+
+# Pins spec/ui.md#ui.close-stops-rwkv-work
+
+
+class _ClosingCol:
+    """A collection that records the rows written to it."""
+
+    def __init__(self) -> None:
+        self.stored: list[int] = []
+        self._backend = SimpleNamespace(
+            set_rwkv_review_retrievability_cache_rows=lambda source, rows: (
+                self.stored.extend(row.revlog_id for row in rows)
+            )
+        )
+
+
+def test_a_writer_drops_its_rows_once_the_close_begins() -> None:
+    col = _ClosingCol()
+    writer = rwkv_scheduler._RwkvReviewRetrievabilityCacheWriter(
+        SimpleNamespace(mw=SimpleNamespace(col=col))
+    )
+    writer.record_many([(1, 0.5), (2, 0.5)])
+    writer.flush()
+    assert col.stored == [1, 2]
+
+    assert rwkv_scheduler.stop_background_work_for_close(col, timeout=0)
+    writer.record_many([(3, 0.5)])
+    # the rows of the unfinished batch are dropped, and the pass stops
+    with pytest.raises(rwkv_scheduler._CollectionClosing):
+        writer.flush()
+    assert col.stored == [1, 2]
+    # dropped rows are not counted as saved, so no resume point covers them
+    assert writer.written == 2
+
+
+def test_the_close_waits_for_the_recording_pass_to_stop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    col = _ClosingCol()
+    mw = SimpleNamespace(
+        col=col,
+        pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+        state="deckBrowser",
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_run_on_main", lambda mw, fn: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "recordings_pass_rest_seconds", lambda mw, seconds: 0.0
+    )
+    failures: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler.logger,
+        "exception",
+        lambda message, *args: failures.append(message),
+    )
+    batches: list[int] = []
+    running = threading.Event()
+
+    def recompute(mw: object, *, between_batches: Callable[[], None], **_: Any) -> bool:
+        writer = rwkv_scheduler._RwkvReviewRetrievabilityCacheWriter(
+            SimpleNamespace(mw=mw)
+        )
+        # batches of rows, each saved, until the close stops the pass
+        for review_id in range(1, 10_000):
+            writer.record_many([(review_id, 0.5)])
+            writer.flush()
+            batches.append(review_id)
+            running.set()
+            time.sleep(0.005)
+            between_batches()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    assert running.wait(5)
+    # the close marks the collection while mw.col still points at it
+    assert rwkv_scheduler.stop_background_work_for_close(col, timeout=5)
+
+    # the pass has ended, and no row reached the collection after the close
+    # began
+    assert not rwkv_scheduler.rwkv_recordings_pass_running()
+    assert rwkv_scheduler._background_passes == 0
+    written = list(col.stored)
+    time.sleep(0.05)
+    assert col.stored == written
+    assert written == batches[: len(written)]
+    # a pass the close stopped did not fail
+    assert failures == []
+
+
+def test_the_close_waits_for_background_rwkv_work() -> None:
+    col = _ClosingCol()
+    release = threading.Event()
+    done: list[str] = []
+
+    class Taskman:
+        def run_in_background(
+            self, task: Callable[[], object], on_done: Callable, uses_collection: bool
+        ) -> None:
+            def run() -> None:
+                future: Future[object] = Future()
+                future.set_result(task())
+                on_done(future)
+
+            threading.Thread(target=run, daemon=True).start()
+
+    def task() -> str:
+        release.wait(5)
+        done.append("task")
+        return "ok"
+
+    rwkv_scheduler._run_in_background(
+        SimpleNamespace(taskman=Taskman()), task, lambda future: None
+    )
+    # still running: a close that cannot wait says so
+    assert not rwkv_scheduler.stop_background_work_for_close(col, timeout=0.05)
+    release.set()
+    assert rwkv_scheduler.stop_background_work_for_close(col, timeout=5)
+    assert done == ["task"]
+    assert rwkv_scheduler._background_passes == 0
+
+
+def test_a_build_stopped_by_the_close_refreshes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refreshed: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_redraw_open_card_info",
+        lambda mw: refreshed.append("card info"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_active_rwkv_count_view",
+        lambda mw: refreshed.append("deck list") or True,
+    )
+    mw = SimpleNamespace(col=None)
+
+    rwkv_scheduler._finish_rwkv_state_cache_operation(
+        mw, ready=False, prewarm_reason="state cache build"
+    )
+
+    assert refreshed == []
