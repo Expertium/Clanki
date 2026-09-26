@@ -330,6 +330,8 @@ class DeckBrowser:
                 "js/deckbrowser.js",
             ],
             context=self,
+            # with the bottom bar, in one finished frame (spec ui.screen-one-frame)
+            held=True,
         )
         self._drawButtons()
         if offset is not None:

@@ -538,5 +538,7 @@ class BottomBar(Toolbar):
             self._centerBody % buf,
             css=["css/toolbar.css", "css/toolbar-bottom.css"],
             context=web_context,
+            # appears with the main page drawn with it (spec ui.screen-one-frame)
+            held=True,
         )
         self.web.adjustHeightToFit()

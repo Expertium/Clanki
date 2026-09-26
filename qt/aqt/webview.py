@@ -26,6 +26,14 @@ from anki.lang import is_rtl
 from anki.utils import hmr_mode, is_lin, is_mac, is_win, to_json_bytes
 from aqt import colors, gui_hooks
 from aqt.operations import OpChanges
+from aqt.page_reveal import (
+    HOLD_ATTRIBUTE,
+    HOLD_CLASS,
+    HOLD_CSS,
+    READY_COMMAND,
+    READY_JS,
+    page_reveal,
+)
 from aqt.qt import *
 from aqt.qt import sip
 from aqt.theme import theme_manager
@@ -110,6 +118,9 @@ def _create_bridge_script() -> QWebEngineScript:
                 return false;                   
             }
             pycmd("domDone");
+    """
+        + READY_JS
+        + """
         });
     """
     )
@@ -681,6 +692,7 @@ class AnkiWebView(QWebEngineView):
             oldFocus.setFocus()
 
     def load_url(self, url: QUrl) -> None:
+        page_reveal().load_started(self)
         # allow queuing actions when loading url directly
         self._domDone = False
         self.allow_drops = False
@@ -792,7 +804,11 @@ html {{ {font} }}
         head: str = "",
         context: Any | None = None,
         default_css: bool = True,
+        held: bool = False,
     ) -> None:
+        """`held`: the page stays hidden until it is ready and every other
+        held page is ready too; then they all appear in the same frame (spec
+        ui.screen-one-frame, aqt.page_reveal)."""
         css = (["css/webview.css"] if default_css else []) + (
             [] if css is None else css
         )
@@ -828,6 +844,11 @@ html {{ {font} }}
         else:
             doc_class = ""
             bs_theme = "light"
+        hold_attribute = ""
+        if held:
+            doc_class = f"{doc_class} {HOLD_CLASS}".strip()
+            hold_attribute = f' {HOLD_ATTRIBUTE}="{page_reveal().hold(self)}"'
+            head = HOLD_CSS + head
 
         if is_rtl(anki.lang.current_lang):
             lang_dir = "rtl"
@@ -836,7 +857,7 @@ html {{ {font} }}
 
         html = f"""
 <!doctype html>
-<html class="{doc_class}" dir="{lang_dir}" data-bs-theme="{bs_theme}">
+<html class="{doc_class}" dir="{lang_dir}" data-bs-theme="{bs_theme}"{hold_attribute}>
 <head>
     <title>{self.title}</title>
 {head}
@@ -956,6 +977,10 @@ html {{ {font} }}
             self._maybeRunActions()
         elif cmd == "close":
             self.onEsc()
+        elif cmd.startswith(READY_COMMAND):
+            # after domDone and so after the actions it ran: a held page is
+            # shown after them (a scroll to the old position, for one)
+            page_reveal().page_ready(self, cmd.removeprefix(READY_COMMAND))
         else:
             handled, result = gui_hooks.webview_did_receive_js_message(
                 (False, None), cmd, self._bridge_context
@@ -974,6 +999,10 @@ html {{ {font} }}
         self._bridge_context = None
 
     def adjustHeightToFit(self) -> None:
+        # a held page takes its height when it is shown, in the same frame
+        # as its content (spec ui.screen-one-frame)
+        if page_reveal().fit_height_when_shown(self):
+            return
         self.evalWithCallback("document.documentElement.offsetHeight", self._onHeight)
 
     def _onHeight(self, qvar: int | None) -> None:

@@ -258,6 +258,8 @@ class Overview:
             css=["css/overview.css"],
             js=["js/vendor/jquery.min.js"],
             context=self,
+            # with the bottom bar, in one finished frame (spec ui.screen-one-frame)
+            held=True,
         )
 
     def _rwkv_pending_notice(self) -> str:
