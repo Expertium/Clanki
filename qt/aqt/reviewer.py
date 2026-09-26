@@ -257,6 +257,10 @@ class Reviewer:
             return
         self.set_review_actions_blocked(False)
         self._set_review_answer_actions_blocked(False)
+        # the first card's pages may be drawn after work in the background;
+        # the toolbar waits for them (spec ui.toolbar-switch-one-frame)
+        page_reveal().expect(self.web)
+        page_reveal().expect(self.bottom.web)
         self.mw.setStateShortcuts(self._shortcutKeys())  # type: ignore
         self.web.set_bridge_command(self._linkHandler, self)
         self.bottom.web.set_bridge_command(self._linkHandler, ReviewerBottomBar(self))

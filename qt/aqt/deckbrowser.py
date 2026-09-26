@@ -28,6 +28,7 @@ from aqt.operations.deck import (
     set_current_deck,
     set_deck_collapsed,
 )
+from aqt.page_reveal import page_reveal
 from aqt.qt import *
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
@@ -106,6 +107,11 @@ class DeckBrowser:
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
+        # the page and the bottom bar are drawn after the counts are read;
+        # the toolbar and the bottom bar's height wait for them
+        # (spec ui.toolbar-switch-one-frame)
+        page_reveal().expect(self.web)
+        page_reveal().expect(self.bottom.web)
         self.web.set_bridge_command(self._linkHandler, self)
         # redraw top bar for theme change
         self.mw.toolbar.redraw()

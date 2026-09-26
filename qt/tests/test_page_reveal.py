@@ -38,7 +38,10 @@ class _Reveal(PageReveal):
 def _web() -> Any:
     page = SimpleNamespace(runJavaScript=MagicMock())
     return SimpleNamespace(
-        page=lambda: page, eval=MagicMock(), setFixedHeight=MagicMock()
+        page=lambda: page,
+        eval=MagicMock(),
+        setFixedHeight=MagicMock(),
+        _onHeight=MagicMock(),
     )
 
 
@@ -131,12 +134,12 @@ def test_a_held_bottom_bar_takes_its_new_height_when_it_is_shown() -> None:
     m, b = _load(reveal, main), _load(reveal, bottom)
     assert reveal.fit_height_when_shown(bottom)
     reveal.page_ready(bottom, f"{b}:64")
-    bottom.setFixedHeight.assert_not_called()
+    bottom._onHeight.assert_not_called()
 
     reveal.page_ready(main, f"{m}:700")
-    bottom.setFixedHeight.assert_called_once_with(64)
+    bottom._onHeight.assert_called_once_with(64)
     # the main view is not resized: nothing asked for its height
-    main.setFixedHeight.assert_not_called()
+    main._onHeight.assert_not_called()
     # a web view that holds nothing measures its page as before
     assert not reveal.fit_height_when_shown(bottom)
 

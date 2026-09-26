@@ -34,6 +34,7 @@ fills in, as every page did before.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aqt.qt import QTimer, sip
@@ -79,12 +80,12 @@ window.dispatchEvent(new Event("clanki-shown"));
 
 
 class _Held:
-    def __init__(self, web: AnkiWebView, token: str) -> None:
+    def __init__(self, web: AnkiWebView, token: str, load_pending: bool = True) -> None:
         self.web = web
         self.token = token
         self.ready_at_dom_done = True
         # the load that hold() announced has not started yet
-        self.load_pending = True
+        self.load_pending = load_pending
         self.dom_done = False
         self.ready = False
         # the page's height, sent with its ready message, and whether the
@@ -102,15 +103,71 @@ class PageReveal:
         self._released: dict[int, _Held] = {}
         self._count = 0
         self._timer: QTimer | None = None
+        # changes to other web views (the toolbar), made when the held pages
+        # are shown
+        self._at_show: list[Callable[[], None]] = []
+        # things the held pages wait for besides themselves
+        self._blockers = 0
 
     def hold(self, web: AnkiWebView) -> str:
         """`web` is about to load a held page. Returns the page's token."""
         self._count += 1
         entry = _Held(web, f"h{self._count}")
+        # a height asked for while the page was expected (the state change
+        # measures the bottom bar before the screen draws it)
+        if previous := self._held.get(id(web)) or self._released.get(id(web)):
+            entry.fit_height = previous.fit_height
         self._held[id(web)] = entry
         self._released.pop(id(web), None)
         self._restart_timer()
         return entry.token
+
+    def expect(self, web: AnkiWebView) -> None:
+        """A screen is about to draw a held page into `web`, after work in the
+        background: until then, pages held for the same screen change wait
+        for it too. A page that is not held, or none within HOLD_TIMEOUT_MS,
+        ends the wait."""
+        self._count += 1
+        self._held[id(web)] = _Held(web, f"e{self._count}", load_pending=False)
+        self._released.pop(id(web), None)
+        self._restart_timer()
+
+    def holding(self) -> bool:
+        return bool(self._held)
+
+    def at_show(self, fn: Callable[[], None]) -> None:
+        """Run `fn` when the pages held now are shown, just before them. Run
+        at the end of the current event if nothing is held, so that a screen
+        change that begins in the same event (a state change runs its
+        cleanup before it draws) can still take it."""
+
+        def attach() -> None:
+            if self._held:
+                self._at_show.append(fn)
+            else:
+                fn()
+
+        if self._held:
+            self._at_show.append(fn)
+        else:
+            QTimer.singleShot(0, attach)
+
+    def block(self) -> Callable[[], None]:
+        """The held pages also wait until the returned function is called
+        (or the timeout)."""
+        self._blockers += 1
+        done = False
+
+        def unblock() -> None:
+            nonlocal done
+            if done:
+                return
+            done = True
+            self._blockers = max(0, self._blockers - 1)
+            if self._held:
+                self._show_if_all_ready()
+
+        return unblock
 
     def wait_for_signal(self, web: AnkiWebView) -> None:
         """The held page of `web` is ready when mark_ready() is called, not
@@ -174,8 +231,12 @@ class PageReveal:
         """Show every held page now, or, where its DOM is not done yet, the
         moment it is."""
         held, self._held = list(self._held.values()), {}
+        at_show, self._at_show = self._at_show, []
+        self._blockers = 0
         if self._timer is not None:
             self._timer.stop()
+        for fn in at_show:
+            fn()
         for entry in held:
             if entry.dom_done:
                 self._show(entry)
@@ -188,16 +249,16 @@ class PageReveal:
         if _deleted(entry.web):
             return
         if entry.fit_height and entry.height is not None:
-            entry.web.setFixedHeight(entry.height)
+            entry.web._onHeight(entry.height)
         entry.web.page().runJavaScript(show_js(entry.token))
 
     def _show_if_all_ready(self) -> None:
-        if all(entry.ready for entry in self._held.values()):
+        if not self._blockers and all(entry.ready for entry in self._held.values()):
             self.show_all()
 
     def _restart_timer(self) -> None:
         """Show everything still held HOLD_TIMEOUT_MS from now."""
-        if self._timer is None:
+        if self._timer is None or sip.isdeleted(self._timer):
             self._timer = QTimer()
             self._timer.setSingleShot(True)
             self._timer.timeout.connect(self.show_all)

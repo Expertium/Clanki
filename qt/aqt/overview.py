@@ -22,6 +22,7 @@ from aqt.operations.scheduling import (
     rebuild_filtered_deck,
     unbury_deck,
 )
+from aqt.page_reveal import page_reveal
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import askUserDialog, openLink, shortcut, tooltip, tr
@@ -64,6 +65,11 @@ class Overview:
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
+        # the page and the bottom bar are drawn after the counts are read;
+        # the toolbar and the bottom bar's height wait for them
+        # (spec ui.toolbar-switch-one-frame)
+        page_reveal().expect(self.web)
+        page_reveal().expect(self.bottom.web)
         self.web.set_bridge_command(self._linkHandler, self)
         self.mw.setStateShortcuts(self._shortcutKeys())
         self.refresh()

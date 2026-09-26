@@ -10,6 +10,7 @@ from typing import Any, cast
 import aqt
 from anki.sync import SyncStatus
 from aqt import gui_hooks, props
+from aqt.page_reveal import page_reveal
 from aqt.qt import *
 from aqt.sync import get_sync_status
 from aqt.theme import theme_manager
@@ -60,7 +61,26 @@ class ToolbarWebView(AnkiWebView):
         self.hidden = False
 
 
+def _without_transition(js: str) -> str:
+    """`js` changes the toolbar's style with its CSS transitions off, so the
+    change shows in one frame instead of animating (spec
+    ui.toolbar-switch-one-frame)."""
+    return f"""(function() {{
+    const body = document.body;
+    body.classList.add("instant");
+    {js}
+    // apply the new style while transitions are off
+    for (const el of [body, document.querySelector(".toolbar")]) {{
+        if (el) getComputedStyle(el).backgroundColor;
+    }}
+    body.classList.remove("instant");
+}})();"""
+
+
 class TopWebView(ToolbarWebView):
+    # the switch scripts waiting for the next screen change
+    _switch_js: list[str] | None = None
+
     def __init__(self, mw: aqt.AnkiQt) -> None:
         super().__init__(mw, kind=AnkiWebViewKind.TOP_TOOLBAR)
         self.web_height = 0
@@ -137,15 +157,33 @@ class TopWebView(ToolbarWebView):
         self.eval("""document.body.classList.remove("hidden"); """)
 
     def flatten(self) -> None:
-        self.eval("""document.body.classList.add("flat"); """)
+        self._switch_with_the_screen("""document.body.classList.add("flat");""")
 
     def elevate(self) -> None:
-        self.eval(
+        self._switch_with_the_screen(
             """
             document.body.classList.remove("flat");
             document.body.style.removeProperty("background");
             """
         )
+
+    def _switch_with_the_screen(self, js: str) -> None:
+        """The toolbar's look for the Study screen (flat, in the card's
+        background) or for the other screens (raised): changed at once, with
+        no transition, in the same step as the pages of the screen it belongs
+        to are shown (spec ui.toolbar-switch-one-frame)."""
+        # the switches of one screen change go in one script, so that they
+        # cannot land in different frames
+        if self._switch_js is not None:
+            self._switch_js.append(js)
+            return
+        self._switch_js = [js]
+
+        def flush() -> None:
+            scripts, self._switch_js = self._switch_js or [], None
+            self.eval(_without_transition("\n".join(scripts)))
+
+        page_reveal().at_show(flush)
 
     def update_background_image(self) -> None:
         if self.mw.pm.minimalist_mode():
@@ -159,19 +197,33 @@ class TopWebView(ToolbarWebView):
             # change computedStyle px value back to 100vw
             background = re.sub(r"\d+px", "100vw", background)
 
-            self.eval(
-                f"""
+            set_background_js = f"""
                     document.body.style.setProperty("background", '{background}');
                 """
-            )
-            self.set_body_height(self.mw.web.height())
 
-            # offset reviewer background by toolbar height
-            if self.web_height:
-                self.mw.web.eval(
-                    f"""document.body.style.setProperty("background-position-y", "-{self.web_height}px"); """
-                )
+            def apply(set_background: bool = True) -> None:
+                if set_background:
+                    self.eval(_without_transition(set_background_js))
+                self.set_body_height(self.mw.web.height())
 
+                # offset reviewer background by toolbar height
+                if self.web_height:
+                    self.mw.web.eval(
+                        f"""document.body.style.setProperty("background-position-y", "-{self.web_height}px"); """
+                    )
+
+            if unblock is None:
+                apply()
+            else:
+                # the first card's background comes with the first card, in the
+                # same script as the toolbar's switch to flat
+                self._switch_with_the_screen(set_background_js)
+                page_reveal().at_show(lambda: apply(set_background=False))
+                unblock()
+
+        # a held reviewer page waits for its toolbar background
+        # (spec ui.toolbar-switch-one-frame)
+        unblock = page_reveal().block() if page_reveal().is_held(self.mw.web) else None
         self.mw.web.evalWithCallback(
             """window.getComputedStyle(document.body).background; """,
             set_background,
