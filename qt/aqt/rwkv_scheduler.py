@@ -18265,12 +18265,24 @@ def _write_int_map(out: _RwkvBinaryOutput, values: dict[int, int]) -> None:
     """The count, then each (key, value) as two little-endian i64, in key
     order: the bytes of `_write_u32` and pairs of `_write_i64`."""
     _write_u32(out, len(values))
-    items = sorted(values.items())
-    for start in range(0, len(items), _INT_MAP_CHUNK):
-        chunk = items[start : start + _INT_MAP_CHUNK]
+    # Sorted in blocks and merged in Python, so that no single call holds the
+    # GIL for long: one sorted() of the 120,000 items of a whole-history map
+    # took 74 ms, and the exact rebuild writes three such maps on its own
+    # thread while the user reviews (spec sched.rwkv-history-change-keeps-state).
+    keys = list(values)
+    ordered = heapq.merge(
+        *(
+            sorted(keys[start : start + _INT_MAP_CHUNK])
+            for start in range(0, len(keys), _INT_MAP_CHUNK)
+        )
+    )
+    while chunk := list(itertools.islice(ordered, _INT_MAP_CHUNK)):
         _write_raw(
             out,
-            struct.pack(f"<{2 * len(chunk)}q", *itertools.chain.from_iterable(chunk)),
+            struct.pack(
+                f"<{2 * len(chunk)}q",
+                *itertools.chain.from_iterable((key, values[key]) for key in chunk),
+            ),
         )
 
 
