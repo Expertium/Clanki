@@ -819,6 +819,14 @@ class AnkiQt(QMainWindow):
 
         def close() -> bool:
             """Returns whether the collection looks corrupt."""
+            # the RWKV passes stop before the collection closes (spec
+            # ui.close-stops-rwkv-work); a module not loaded runs none
+            rwkv = sys.modules.get("aqt.rwkv_scheduler")
+            if rwkv is not None:
+                try:
+                    rwkv.stop_background_work_for_close(col)
+                except Exception:
+                    print("stopping the RWKV passes for the close failed")
             corrupt = False
             try:
                 if optimize:

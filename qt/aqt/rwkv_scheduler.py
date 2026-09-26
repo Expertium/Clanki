@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 import zlib
 from array import array
 from collections import OrderedDict
@@ -892,6 +893,99 @@ class _ReviewerBackendTemporaryOperation:
 
 class _ReviewerBackendWarmupInvalidated(Exception):
     pass
+
+
+class _CollectionClosing(_ReviewerBackendWarmupInvalidated):
+    """The collection a background pass writes to has begun to close. The
+    pass stops as it does when its warm-up is invalidated (spec
+    ui.close-stops-rwkv-work)."""
+
+
+# The collections whose close has begun. A writer drops its rows for such a
+# collection, and a background pass stops at its next check (spec
+# ui.close-stops-rwkv-work). Weak, so a closed collection leaves the set.
+_closing_collections: weakref.WeakSet[Any] = weakref.WeakSet()
+# Held for each write of a background pass. The close takes it once after it
+# marks the collection, so a write that began before the mark ends before the
+# collection closes, and none begins after it.
+_background_write_lock = threading.Lock()
+# How many RWKV background passes that use the collection are running; the
+# close waits for them to stop.
+_background_passes = 0
+_background_passes_changed = threading.Condition()
+# How long a close waits for the passes to stop. A pass checks between two
+# batches of about a second, so this is only reached by a pass stuck in one
+# long call; its writes are dropped all the same.
+CLOSE_STOPS_PASSES_TIMEOUT_SECS = 10.0
+
+
+def _collection_is_closing(col: object | None) -> bool:
+    try:
+        return col is not None and col in _closing_collections
+    except TypeError:
+        # an object that cannot be weakly referenced is never marked
+        return False
+
+
+def _background_pass_started() -> None:
+    global _background_passes
+    with _background_passes_changed:
+        _background_passes += 1
+
+
+def _background_pass_finished() -> None:
+    global _background_passes
+    with _background_passes_changed:
+        _background_passes -= 1
+        _background_passes_changed.notify_all()
+
+
+def stop_background_work_for_close(
+    col: object,
+    timeout: float = CLOSE_STOPS_PASSES_TIMEOUT_SECS,
+) -> bool:
+    """Stops the RWKV background passes before `col` closes (spec
+    ui.close-stops-rwkv-work). Returns whether every pass stopped in time.
+
+    Called by the close, off the main thread, before the collection is
+    optimized, checked or closed. Each pass stops at its next check and
+    drops the rows of its unfinished batch; a stopped pass has saved how far
+    its rows reach, so the next session goes on from there.
+    """
+    try:
+        _closing_collections.add(col)
+    except TypeError:
+        return True
+    # a write already in flight ends before this returns; none starts after
+    with _background_write_lock:
+        pass
+    started = time.monotonic()
+    deadline = started + max(timeout, 0.0)
+    with _background_passes_changed:
+        while _background_passes > 0:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                logger.info(
+                    "the close did not wait longer for %s RWKV background pass(es)",
+                    _background_passes,
+                )
+                return False
+            _background_passes_changed.wait(left)
+    logger.debug(
+        "RWKV background passes stopped for the close: waited_ms=%.1f",
+        (time.monotonic() - started) * 1000,
+    )
+    return True
+
+
+def _write_unless_closing(col: object | None, write: Callable[[], object]) -> None:
+    """Runs one write of a background pass, or raises _CollectionClosing when
+    the collection's close has begun, so that the pass stops and does not
+    count the dropped rows as saved (spec ui.close-stops-rwkv-work)."""
+    with _background_write_lock:
+        if _collection_is_closing(col):
+            raise _CollectionClosing
+        write()
 
 
 class _RwkvGradeNowReconciliationUnavailable(Exception):
@@ -3437,18 +3531,23 @@ class _RwkvReviewRetrievabilityCacheWriter:
             return
 
         try:
-            store_rows(
-                source=self._source,
-                rows=[
-                    scheduler_pb2.RwkvReviewRetrievabilityCacheRowsRequest.Row(
-                        revlog_id=review_id,
-                        prediction=prediction,
-                        sample_role=sample_role,
-                        fold_index=fold_index,
-                    )
-                    for review_id, prediction, sample_role, fold_index in rows
-                ],
+            _write_unless_closing(
+                self._col,
+                lambda: store_rows(
+                    source=self._source,
+                    rows=[
+                        scheduler_pb2.RwkvReviewRetrievabilityCacheRowsRequest.Row(
+                            revlog_id=review_id,
+                            prediction=prediction,
+                            sample_role=sample_role,
+                            fold_index=fold_index,
+                        )
+                        for review_id, prediction, sample_role, fold_index in rows
+                    ],
+                ),
             )
+        except _CollectionClosing:
+            raise
         except Exception:
             logger.exception("failed to store RWKV review retrievability cache")
         else:
@@ -3519,19 +3618,24 @@ class _RwkvCurveReviewPredictionWriter:
             logger.debug("RWKV-Curve predictions skipped: backend unavailable")
             return
         try:
-            store_rows(
-                algorithm=_RWKV_CURVE_ALGORITHM,
-                source=self._source,
-                rows=[
-                    scheduler_pb2.ReviewPredictionRowsRequest.Row(
-                        revlog_id=review_id,
-                        prediction=prediction,
-                        sample_role=self._sample_role,
-                        fold_index=-1,
-                    )
-                    for review_id, prediction in rows
-                ],
+            _write_unless_closing(
+                self._col,
+                lambda: store_rows(
+                    algorithm=_RWKV_CURVE_ALGORITHM,
+                    source=self._source,
+                    rows=[
+                        scheduler_pb2.ReviewPredictionRowsRequest.Row(
+                            revlog_id=review_id,
+                            prediction=prediction,
+                            sample_role=self._sample_role,
+                            fold_index=-1,
+                        )
+                        for review_id, prediction in rows
+                    ],
+                ),
             )
+        except _CollectionClosing:
+            raise
         except Exception:
             logger.exception("failed to store RWKV-Curve predictions")
         else:
@@ -3585,16 +3689,21 @@ class _RwkvCurveSourceWriter:
         first = pending[0]
         review_ids = [review_id for batch in pending for review_id in batch.review_ids]
         try:
-            store(
-                scheduler_pb2.RwkvCurveSources(
-                    tag=scheduler_pb2.RwkvCurveSourceTag(
-                        model=self._model, format=first.format, kernel=first.kernel
-                    ),
-                    revlog_ids=review_ids,
-                    width=first.width,
-                    sources=b"".join(batch.sources for batch in pending),
-                )
+            _write_unless_closing(
+                self._col,
+                lambda: store(
+                    scheduler_pb2.RwkvCurveSources(
+                        tag=scheduler_pb2.RwkvCurveSourceTag(
+                            model=self._model, format=first.format, kernel=first.kernel
+                        ),
+                        revlog_ids=review_ids,
+                        width=first.width,
+                        sources=b"".join(batch.sources for batch in pending),
+                    )
+                ),
             )
+        except _CollectionClosing:
+            raise
         except Exception:
             logger.exception("failed to store RWKV curve sources")
         else:
@@ -11592,8 +11701,9 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
     started = time.monotonic()
 
     def collection_open() -> bool:
-        """False once the profile has closed under the pass."""
-        return getattr(mw, "col", None) is col
+        """False once the profile has closed under the pass, or its close
+        has begun (spec ui.close-stops-rwkv-work)."""
+        return getattr(mw, "col", None) is col and not _collection_is_closing(col)
 
     def progress(label: str, value: int | None, maximum: int | None) -> None:
         # the pass stops once the profile has closed under it
@@ -11700,7 +11810,11 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
                 recorded_through=recorded_through,
             )
         except Exception:
-            logger.exception("the RWKV recording pass failed")
+            if collection_open():
+                logger.exception("the RWKV recording pass failed")
+            else:
+                # the close stopped it; the next session goes on
+                logger.info("the RWKV recording pass stopped for the close")
         finally:
             _rwkv_recordings_pass_running = False
             # a stopped pass may be started again by the next screen that
@@ -11708,20 +11822,28 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
             # which the next screen reads once
             _rwkv_recordings_pass_started = False
             _forget_that_the_recordings_are_current()
+            _background_pass_finished()
         _run_on_main(mw, lambda: finish(recorded))
 
     _rwkv_recordings_pass_running = True
+    # the close waits for the pass to stop (spec ui.close-stops-rwkv-work)
+    _background_pass_started()
     # NOT the task manager's collection worker: there is one of those, and a
     # pass that walks the whole review history would hold it for tens of
     # minutes, with answering a card, clicking a deck, the deck list, the
     # Browser and the stats all queued behind it (spec
     # sched.rwkv-recordings-automatic). Its own thread, as the FSRS-7
     # prediction pass uses.
-    threading.Thread(
-        target=run,
-        name="rwkv-recordings-pass",
-        daemon=True,
-    ).start()
+    try:
+        threading.Thread(
+            target=run,
+            name="rwkv-recordings-pass",
+            daemon=True,
+        ).start()
+    except Exception:
+        _rwkv_recordings_pass_running = False
+        _background_pass_finished()
+        raise
 
 
 def recompute_rwkv_calibration_data_with_progress(mw: object) -> None:
@@ -12535,6 +12657,10 @@ def _finish_rwkv_state_cache_operation(
     prewarm_reason: str,
 ) -> None:
     _set_rwkv_state_cache_loading(mw, False)
+    if getattr(mw, "col", None) is None:
+        # the close took the collection: nothing may read it now (spec
+        # ui.close-stops-rwkv-work)
+        return
     _redraw_open_card_info(mw)
     if ready:
         start_rwkv_maintenance_if_needed(mw)
@@ -13196,6 +13322,7 @@ def _run_in_background(
 
     The collection-use count is kept by hand instead, so that a periodic backup
     still waits for this work as it did before (spec ui.periodic-backup-waits).
+    The close waits for it too (spec ui.close-stops-rwkv-work).
     """
     taskman = getattr(mw, "taskman", None)
     run_in_background = getattr(taskman, "run_in_background", None)
@@ -13206,6 +13333,13 @@ def _run_in_background(
     counted = callable(use_started) and callable(use_finished)
     if counted:
         use_started()
+    _background_pass_started()
+
+    def run() -> _T:
+        try:
+            return task()
+        finally:
+            _background_pass_finished()
 
     def finished(future: Future[_T]) -> None:
         if counted:
@@ -13213,8 +13347,9 @@ def _run_in_background(
         on_done(future)
 
     try:
-        run_in_background(task, finished, uses_collection=False)
+        run_in_background(run, finished, uses_collection=False)
     except Exception:
+        _background_pass_finished()
         if counted:
             use_finished()
         raise
@@ -13417,7 +13552,8 @@ def build_rwkv_state_cache_with_progress(
                 "RWKV state cache build finished: elapsed_ms=%.1f",
                 elapsed_ms,
             )
-        else:
+        elif getattr(mw, "col", None) is not None:
+            # a build that the close stopped did not fail
             tooltip(_tr().qt_misc_review_history_failed(), parent=parent)
         _finish_rwkv_state_cache_operation(
             mw,
