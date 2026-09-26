@@ -12008,6 +12008,68 @@ def recompute_rwkv_calibration_data(
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state.
 
+    See `_recompute_rwkv_calibration_data`. The replay inputs of the whole
+    history it reads are freed here afterwards, in steps
+    (`_free_review_inputs_in_steps`), whether the pass finished or stopped.
+    """
+    histories: list[RwkvHistoricalReviewInputs] = []
+    try:
+        return _recompute_rwkv_calibration_data(
+            mw,
+            progress=progress,
+            between_batches=between_batches,
+            resume_from=resume_from,
+            recorded_through=recorded_through,
+            read_history=histories.append,
+        )
+    finally:
+        _free_review_inputs_in_steps(histories)
+
+
+# Replay inputs freed at a time by `_free_review_inputs_in_steps`: about a
+# millisecond of work.
+_FREE_REVIEW_INPUTS_STEP = 4096
+
+
+def _free_review_inputs_in_steps(
+    histories: list[RwkvHistoricalReviewInputs],
+) -> None:
+    """Frees the replay inputs of these histories a step at a time.
+
+    One input is a handful of Python objects, and the history of a large
+    collection is about a million inputs. Freed with the list that holds
+    them, they are freed in one piece of C code that keeps the GIL for the
+    whole of it, about a second, and the main window cannot run a line of
+    Python meanwhile: a key pressed as the recording pass stops for a card
+    waited that long. Each step here frees one slice of them, and the main
+    thread can take the GIL between two steps.
+
+    Nothing is mutated: the slices are new lists that share the inputs, and
+    once the histories are dropped, each slice frees its inputs when it goes
+    (inputs that another holder still uses are not freed)."""
+    slices: list[list[RwkvReviewInput]] = []
+    while histories:
+        reviews = histories.pop().reviews
+        slices.extend(
+            reviews[start : start + _FREE_REVIEW_INPUTS_STEP]
+            for start in range(0, len(reviews), _FREE_REVIEW_INPUTS_STEP)
+        )
+        del reviews
+    while slices:
+        slices.pop()
+
+
+def _recompute_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None,
+    between_batches: Callable[[], None] | None,
+    resume_from: Callable[[Sequence[int]], RwkvRecordingsResumePoint | None] | None,
+    recorded_through: Callable[[int, int, RecordedRows], None] | None,
+    read_history: Callable[[RwkvHistoricalReviewInputs], None],
+) -> bool:
+    """Rewrite historical RWKV calibration rows without replacing active state.
+
     The replay runs in a model runtime of the pass's own, loaded from the
     same weights and released at the end, so the reviewer keeps the shared
     one and answers a card while the pass runs (spec
@@ -12084,6 +12146,7 @@ def recompute_rwkv_calibration_data(
             # several seconds and the machine for the preparation after it
             between_steps=between_batches,
         )
+        read_history(history)
         logger.debug(
             "RWKV calibration recompute inputs prepared: reviews=%s",
             len(history.reviews),
