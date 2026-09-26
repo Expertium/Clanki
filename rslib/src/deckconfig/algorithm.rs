@@ -202,6 +202,7 @@ impl Collection {
     /// no RWKV-Curve stability stays behind; due dates do not change (for the
     /// "Reschedule all cards now" answer, see
     /// [`Self::change_scheduling_algorithm_then`]).
+    #[cfg(test)]
     pub(crate) fn change_scheduling_algorithm(
         &mut self,
         algorithm: SchedulingAlgorithm,
@@ -903,12 +904,23 @@ mod test {
             "SELECT id, nid, did, ord, usn, type, queue, due, ivl, factor, reps, lapses, \
              left, odue, odid, flags, data FROM cards ORDER BY id",
             "SELECT id, name, usn, config FROM deck_config ORDER BY id",
-            "SELECT KEY, usn, val FROM config ORDER BY KEY",
+            // the history holds the wall clock: compared below without it
+            "SELECT KEY, usn, val FROM config WHERE KEY != 'schedulingAlgorithmHistory'              ORDER BY KEY",
             "SELECT * FROM revlog ORDER BY id",
         ];
         for sql in tables {
             assert_eq!(rows(&one_step, sql), rows(&two_steps, sql), "{sql}");
         }
+        let history_without_times = |col: &Collection| {
+            col.scheduling_algorithm_history()
+                .into_iter()
+                .map(|entry| (entry.algorithm, entry.source, entry.remote))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            history_without_times(&one_step),
+            history_without_times(&two_steps)
+        );
         // the save really rescheduled the cards, also those of the presets
         // whose desired retention did not change
         for &card_id in &cards {

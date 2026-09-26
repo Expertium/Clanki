@@ -2259,8 +2259,8 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
             let history = config.remove("schedulingAlgorithmHistory");
             Ok((config, history))
         };
-        let (config1, history1) = config_without_history(&col1)?;
-        let (config2, history2) = config_without_history(&col2)?;
+        let (config1, history1) = config_without_history(col1)?;
+        let (config2, history2) = config_without_history(col2)?;
         assert_eq!(config1, config2);
         for entry in history1.iter().flat_map(|h| h.as_array().unwrap()) {
             assert!(history2
