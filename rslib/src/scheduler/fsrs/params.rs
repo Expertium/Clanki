@@ -33,6 +33,7 @@ use prost::Message;
 use rayon::prelude::*;
 
 use crate::deckconfig::effective_fsrs7_params;
+use crate::deckconfig::DeckConfigInner;
 use crate::decks::immediate_parent_name;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
@@ -73,10 +74,37 @@ pub(crate) fn ignore_revlogs_before_ms_from_config(config: &DeckConfig) -> Resul
     ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date)
 }
 
-/// The "ignore reviews before" date of a card's preset for its memory state
-/// (card info, answering a card without one): an unparsable date counts as
-/// no date and is logged, so one bad preset field cannot fail the card
+/// The value a malformed "ignore reviews before" date is repaired to: the
+/// Unix epoch. It is 0 ms, so it ignores no review, as an empty date does,
+/// and it is the value the deck-options date field shows for an empty date
 /// (spec sched.fsrs7-bad-ignore-before-date).
+pub(crate) const IGNORE_NOTHING_DATE: &str = "1970-01-01";
+
+/// Replaces an "ignore reviews before" date that is not empty and not a
+/// valid `YYYY-MM-DD` date with [`IGNORE_NOTHING_DATE`], and logs it. True
+/// if it changed the preset (spec sched.fsrs7-bad-ignore-before-date).
+pub(crate) fn repair_ignore_revlogs_before_date(
+    inner: &mut DeckConfigInner,
+    preset_name: &str,
+) -> bool {
+    let Err(err) = ignore_revlogs_before_date_to_ms(&inner.ignore_revlogs_before_date) else {
+        return false;
+    };
+    tracing::warn!(
+        preset = preset_name,
+        date = %inner.ignore_revlogs_before_date,
+        ?err,
+        "malformed \"ignore reviews before\" date repaired to {IGNORE_NOTHING_DATE}"
+    );
+    inner.ignore_revlogs_before_date = IGNORE_NOTHING_DATE.into();
+    true
+}
+
+/// The "ignore reviews before" date of a card's preset for its memory state
+/// (card info, answering a card without one): a malformed date that no
+/// repair has reached yet reads as [`IGNORE_NOTHING_DATE`], the value the
+/// repair writes, and is logged, so one bad preset field cannot fail the
+/// card (spec sched.fsrs7-bad-ignore-before-date).
 pub(crate) fn ignore_revlogs_before_ms_or_none(
     ignore_revlogs_before_date: &String,
     preset_name: &str,
@@ -86,9 +114,10 @@ pub(crate) fn ignore_revlogs_before_ms_or_none(
             preset = preset_name,
             date = %ignore_revlogs_before_date,
             ?err,
-            "unparsable \"ignore reviews before\" date counts as no date"
+            "malformed \"ignore reviews before\" date read as {IGNORE_NOTHING_DATE}"
         );
-        0.into()
+        ignore_revlogs_before_date_to_ms(&IGNORE_NOTHING_DATE.to_string())
+            .expect("the epoch parses")
     })
 }
 

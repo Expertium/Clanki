@@ -8045,7 +8045,9 @@ def _prewarm_rwkv_review_scores_for_decks(
             total_scored += len(scores)
             continue
 
-        card_ids = _review_card_ids_in_deck_tree(reviewer, deck_id)
+        card_ids = _review_card_ids_in_deck_tree(
+            reviewer, deck_id, include_interday_learning=True
+        )
         if not card_ids:
             continue
 
@@ -8362,7 +8364,9 @@ def _prepare_rwkv_review_scores_for_deck(
             )
             return
         card_ids_start = time.monotonic()
-        card_ids = _review_card_ids_in_deck_tree(reviewer, deck_id)
+        card_ids = _review_card_ids_in_deck_tree(
+            reviewer, deck_id, include_interday_learning=True
+        )
         card_ids_elapsed_ms = (time.monotonic() - card_ids_start) * 1000
         scores_start = time.monotonic()
         score_result = _rwkv_review_queue_score_result(
@@ -20036,7 +20040,15 @@ def _rwkv_review_queue_context_epochs_are_current(
     )
 
 
-def _review_card_ids_in_deck_tree(reviewer: object, deck_id: int) -> list[int]:
+def _review_card_ids_in_deck_tree(
+    reviewer: object,
+    deck_id: int,
+    *,
+    include_interday_learning: bool = False,
+) -> list[int]:
+    """The review cards of the deck and its children; with
+    include_interday_learning, also the interday learning cards, which
+    RWKV-Instant scores like review cards (spec sched.rwkv-review-order)."""
     mw = getattr(reviewer, "mw", None)
     col = getattr(mw, "col", None)
     decks = getattr(col, "decks", None)
@@ -20050,14 +20062,17 @@ def _review_card_ids_in_deck_tree(reviewer: object, deck_id: int) -> list[int]:
     if not deck_ids:
         return []
 
-    return [
-        int(card_id)
-        for card_id in db_list(
+    if include_interday_learning:
+        rows = db_list(
+            f"select id from cards where did in {ids2str(deck_ids)} and queue in "
+            f"{ids2str([int(QUEUE_TYPE_REV), int(QUEUE_TYPE_DAY_LEARN_RELEARN)])}"
+        )
+    else:
+        rows = db_list(
             f"select id from cards where did in {ids2str(deck_ids)} and queue = ?",
             int(QUEUE_TYPE_REV),
         )
-        if isinstance(card_id, int)
-    ]
+    return [int(card_id) for card_id in rows if isinstance(card_id, int)]
 
 
 def _rwkv_review_input_build_inputs(

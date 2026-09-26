@@ -1,0 +1,1 @@
+- Clanki no longer asks at start-up about outdated FSRS-7 preview parameters (35 values). A preset that holds them is optimized automatically once you leave Clanki idle, without waiting for its "Optimize every N days" schedule.

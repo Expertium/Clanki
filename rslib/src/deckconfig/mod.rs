@@ -30,6 +30,8 @@ pub(crate) const INITIAL_EASE_FACTOR_THOUSANDS: u16 = (INITIAL_EASE_FACTOR * 100
 use crate::config::BoolKey;
 use crate::define_newtype;
 use crate::prelude::*;
+use crate::scheduler::fsrs::params::ignore_revlogs_before_date_to_ms;
+use crate::scheduler::fsrs::params::repair_ignore_revlogs_before_date;
 use crate::scheduler::states::review::INITIAL_EASE_FACTOR;
 
 define_newtype!(DeckConfigId, i64);
@@ -279,6 +281,7 @@ impl Collection {
             self.add_deck_config_inner(config, Some(usn))
         } else {
             self.apply_scheduling_algorithm(&mut config.inner);
+            repair_ignore_revlogs_before_date(&mut config.inner, &config.name);
             config.set_modified(usn);
             self.storage
                 .add_or_update_deck_config_with_existing_id(config)
@@ -293,6 +296,7 @@ impl Collection {
         usn: Option<Usn>,
     ) -> Result<()> {
         self.apply_scheduling_algorithm(&mut config.inner);
+        repair_ignore_revlogs_before_date(&mut config.inner, &config.name);
         if let Some(usn) = usn {
             config.set_modified(usn);
         }
@@ -309,6 +313,7 @@ impl Collection {
         usn: Option<Usn>,
     ) -> Result<()> {
         self.apply_scheduling_algorithm(&mut config.inner);
+        repair_ignore_revlogs_before_date(&mut config.inner, &config.name);
         if config == &original {
             return Ok(());
         }
@@ -339,6 +344,43 @@ impl Collection {
             col.set_config_bool_inner(BoolKey::FsrsLearningQueuesDisabled, false)?;
             Ok(())
         })
+    }
+
+    /// Repairs every stored preset whose "Ignore reviews before" date is
+    /// malformed to 1970-01-01 (the Unix epoch, which ignores no review), as
+    /// a normal preset change that syncs. Runs at open, after a normal sync,
+    /// after an .apkg import and in Check Database. Must run inside a
+    /// transaction. Returns the number of presets repaired (spec
+    /// sched.fsrs7-bad-ignore-before-date).
+    pub(crate) fn repair_ignore_revlogs_before_dates_inner(&mut self) -> Result<usize> {
+        let malformed: Vec<DeckConfig> = self
+            .storage
+            .all_deck_config()?
+            .into_iter()
+            .filter(|config| {
+                ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date).is_err()
+            })
+            .collect();
+        let usn = self.usn()?;
+        for original in &malformed {
+            let mut config = original.clone();
+            self.update_deck_config_inner(&mut config, original.clone(), Some(usn))?;
+        }
+        Ok(malformed.len())
+    }
+
+    /// [`Self::repair_ignore_revlogs_before_dates_inner`] in its own
+    /// transaction, started only when a preset needs the repair: a
+    /// transaction marks the collection modified, and a new, empty
+    /// collection must not need a full sync (upstream issue #5109).
+    pub(crate) fn repair_ignore_revlogs_before_dates(&mut self) -> Result<usize> {
+        let any_malformed = self.storage.all_deck_config()?.iter().any(|config| {
+            ignore_revlogs_before_date_to_ms(&config.inner.ignore_revlogs_before_date).is_err()
+        });
+        if !any_malformed {
+            return Ok(0);
+        }
+        self.transact_no_undo(|col| col.repair_ignore_revlogs_before_dates_inner())
     }
 
     /// Remove a deck configuration. This will force a full sync.

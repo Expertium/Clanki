@@ -33,9 +33,10 @@ impl QueueBuilder {
     pub(super) fn gather_cards(&mut self, col: &mut Collection) -> Result<()> {
         if self.context.sort_options.uses_rwkv_review_order() {
             self.gather_intraday_learning_cards(col)?;
-            self.gather_due_cards(col, DueCardKind::Learning)?;
-            // without scores, no review cards: the queue waits for RWKV
-            // instead of using FSRS-7's due dates (spec sched.rwkv-instant-waits)
+            // review and interday learning cards come from RWKV-Instant's
+            // scores (spec sched.rwkv-review-order); without scores, none:
+            // the queue waits for RWKV instead of using FSRS-7's due dates
+            // (spec sched.rwkv-instant-waits)
             if self.context.uses_rwkv_review_order() {
                 self.gather_review_cards_with_rwkv_scores(col)?;
             }
@@ -131,7 +132,7 @@ impl QueueBuilder {
             let chunk_card_ids: Vec<_> = score_chunk.iter().map(|(card_id, _)| *card_id).collect();
             let mut cards_by_id = HashMap::with_capacity(score_chunk.len());
             col.storage
-                .for_each_review_card_in_active_decks_with_ids(&chunk_card_ids, |card| {
+                .for_each_scored_card_in_active_decks_with_ids(&chunk_card_ids, |card| {
                     cards_by_id.insert(card.id, card);
                     Ok(true)
                 })?;
@@ -246,7 +247,7 @@ impl QueueBuilder {
         self.deferred_rwkv_reviews.extend(deferred_reviews);
         let mut cards = Vec::new();
 
-        col.storage.for_each_review_card_in_active_decks(
+        col.storage.for_each_scored_card_in_active_decks(
             self.context.timing,
             self.context.sort_options.review_order,
             self.context.fsrs,
@@ -296,7 +297,11 @@ impl QueueBuilder {
                     (None, None) => std::cmp::Ordering::Equal,
                 }
             });
-            for card in pull_candidates {
+            // the daily minimum pulls review cards only
+            for card in pull_candidates
+                .into_iter()
+                .filter(|card| matches!(card.kind, DueCardKind::Review))
+            {
                 if !self.limits.any_rwkv_review_minimum_remaining() {
                     break;
                 }
@@ -356,12 +361,14 @@ impl QueueBuilder {
             .enumerate()
             .map(|(position, card)| (card.id, position))
             .collect();
-        self.review.sort_by_key(|card| {
+        let position = |card: &DueCard| {
             configured_position
                 .get(&card.id)
                 .copied()
                 .unwrap_or(usize::MAX)
-        });
+        };
+        self.review.sort_by_key(position);
+        self.day_learning.sort_by_key(position);
         Ok(())
     }
 
@@ -392,8 +399,11 @@ impl QueueBuilder {
             let chunk_card_ids: Vec<_> = score_chunk.iter().map(|(card_id, _)| *card_id).collect();
             let mut cards_by_id = HashMap::with_capacity(score_chunk.len());
             col.storage
-                .for_each_review_card_in_active_decks_with_ids(&chunk_card_ids, |card| {
-                    cards_by_id.insert(card.id, card);
+                .for_each_scored_card_in_active_decks_with_ids(&chunk_card_ids, |card| {
+                    // the daily minimum pulls review cards only
+                    if matches!(card.kind, DueCardKind::Review) {
+                        cards_by_id.insert(card.id, card);
+                    }
                     Ok(true)
                 })?;
             let active_card_ids: Vec<_> = cards_by_id.keys().copied().collect();
@@ -469,16 +479,19 @@ impl QueueBuilder {
     }
 
     fn sort_review_cards_by_rwkv_priority(&mut self, priorities: &HashMap<CardId, f32>) {
-        self.review.sort_by(|card_a, card_b| {
-            match (priorities.get(&card_a.id), priorities.get(&card_b.id)) {
-                (Some(priority_a), Some(priority_b)) => priority_a
-                    .total_cmp(priority_b)
-                    .then_with(|| card_a.id.cmp(&card_b.id)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-        });
+        let by_priority = |card_a: &DueCard, card_b: &DueCard| match (
+            priorities.get(&card_a.id),
+            priorities.get(&card_b.id),
+        ) {
+            (Some(priority_a), Some(priority_b)) => priority_a
+                .total_cmp(priority_b)
+                .then_with(|| card_a.id.cmp(&card_b.id)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        self.review.sort_by(by_priority);
+        self.day_learning.sort_by(by_priority);
     }
 
     fn gather_due_non_new_cards_with_exact_retrievability(
@@ -572,7 +585,7 @@ impl QueueBuilder {
         }
         col.storage.for_each_due_card_in_active_decks(
             self.context.timing,
-            self.context.sort_options.due_card_order(),
+            self.context.sort_options.review_order,
             kind,
             self.context.fsrs,
             |card| {

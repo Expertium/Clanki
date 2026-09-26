@@ -5,10 +5,11 @@ SELECT id,
   cast(mod AS integer),
   did,
   odid,
-  reps
+  reps,
+  queue
 FROM cards
 WHERE did IN (
     SELECT id
     FROM active_decks
   )
-  AND queue = ?
+  AND queue IN (2, 3)

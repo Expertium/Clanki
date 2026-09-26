@@ -23,6 +23,11 @@ service StatsService {
 // Implicitly includes any of the above methods that are not listed in the
 // backend service.
 service BackendStatsService {
+  // fsrs-rs's recall of FSRS-7 memory states at the given elapsed days, so
+  // that card info draws the exact FSRS-7 curve at every point of its chart
+  // (spec sched.fsrs-rs-latest). It needs no collection, so it never waits
+  // for collection work.
+  rpc FsrsCurveRecall(FsrsCurveRecallRequest) returns (FsrsCurveRecallResponse);
   // The Stats page's Total Knowledge graph (spec ui.stats-total-knowledge).
   // It reads the collection, then replays FSRS-7 with the collection free,
   // so other collection work does not wait for the replay.
@@ -135,7 +140,8 @@ message CardStatsResponse {
   // an FSRS-7 memory state. From `fsrs7_revlog` when it is sent, else from
   // `revlog` under FSRS-7. Only in Advanced mode, where card info draws the
   // curve; card info has no copy of the FSRS-7 curve (spec
-  // sched.fsrs-rs-latest).
+  // sched.fsrs-rs-latest). The chart asks FsrsCurveRecall for the exact recall
+  // at each of its points; these points are its fallback.
   message Fsrs7Curves {
     repeated float elapsed_days = 1;
     message Segment {
@@ -144,8 +150,28 @@ message CardStatsResponse {
       repeated float recall = 2;
     }
     repeated Segment segments = 2;
+    // the preset's parameters the curves use, for FsrsCurveRecall
+    repeated float params = 3;
   }
   optional Fsrs7Curves fsrs7_curves = 31;
+}
+
+message FsrsCurveRecallRequest {
+  // FSRS-7 parameters; fsrs-rs clips them as it does everywhere
+  repeated float params = 1;
+  message Curve {
+    cards.FsrsMemoryState memory_state = 1;
+    repeated float elapsed_days = 2;
+  }
+  repeated Curve curves = 2;
+}
+
+message FsrsCurveRecallResponse {
+  message Curve {
+    // one per requested elapsed day, in the same order
+    repeated float recall = 1;
+  }
+  repeated Curve curves = 1;
 }
 
 message GraphsRequest {

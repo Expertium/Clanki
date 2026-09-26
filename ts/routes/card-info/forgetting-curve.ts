@@ -1,8 +1,12 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import type { PlainMessage } from "@bufbuild/protobuf";
+import type { FsrsMemoryState } from "@generated/anki/cards_pb";
 import {
     type CardStatsResponse_StatsRevlogEntry as RevlogEntry,
+    type FsrsCurveRecallRequest,
+    type FsrsCurveRecallResponse,
     RevlogEntry_ReviewKind,
 } from "@generated/anki/stats_pb";
 import * as tr from "@generated/ftl";
@@ -83,12 +87,69 @@ export function curveInputs(
 
 /**
  * FSRS-7's forgetting curves as the backend sends them: recall at shared
- * elapsed days after each review, computed by fsrs-rs. Card info keeps no copy
- * of the FSRS-7 curve (spec sched.fsrs-rs-latest).
+ * elapsed days after each review, computed by fsrs-rs, and the parameters it
+ * used. Card info keeps no copy of the FSRS-7 curve (spec
+ * sched.fsrs-rs-latest); the chart asks the backend for the exact recall at
+ * each of its points (`withExactFsrs7Recall`), and these points are only its
+ * fallback.
  */
 export interface Fsrs7Curves {
     elapsedDays: number[];
     segments: { reviewTime: bigint | number; recall: number[] }[];
+    params?: number[];
+}
+
+/** The backend's FsrsCurveRecall: fsrs-rs's recall at given elapsed days. */
+export type FsrsCurveRecall = (
+    input: PlainMessage<FsrsCurveRecallRequest>,
+) => Promise<FsrsCurveRecallResponse>;
+
+/**
+ * The chart's points with the recall fsrs-rs computes at each point's own
+ * elapsed time, from the memory state of the review whose curve the point is
+ * on: the drawn FSRS-7 curve is the crate's own at every point, with nothing
+ * joined in between (spec sched.fsrs-rs-latest). Points on no curve keep
+ * their value.
+ */
+export async function withExactFsrs7Recall(
+    data: DataPoint[],
+    revlog: RevlogEntry[],
+    params: number[],
+    recall: FsrsCurveRecall,
+): Promise<DataPoint[]> {
+    const states = new Map<number, FsrsMemoryState>();
+    for (const entry of revlog) {
+        if (entry.memoryState) {
+            states.set(Number(entry.time), entry.memoryState);
+        }
+    }
+    const exact = data.map((point) => ({ ...point }));
+    const curves = new Map<number, DataPoint[]>();
+    for (const point of exact) {
+        if (point.curveTime !== undefined && states.has(point.curveTime)) {
+            const points = curves.get(point.curveTime) ?? [];
+            points.push(point);
+            curves.set(point.curveTime, points);
+        }
+    }
+    const times = [...curves.keys()];
+    if (times.length === 0) {
+        return exact;
+    }
+    const response = await recall({
+        params,
+        curves: times.map((time) => ({
+            memoryState: states.get(time)!,
+            elapsedDays: curves.get(time)!.map((point) => point.elapsedDaysSinceLastReview),
+        })),
+    });
+    times.forEach((time, index) => {
+        const values = response.curves[index].recall;
+        curves.get(time)!.forEach((point, pointIndex) => {
+            point.retrievability = values[pointIndex] * 100;
+        });
+    });
+    return exact;
 }
 
 /**
@@ -155,6 +216,8 @@ export interface DataPoint {
     stabilityS90: number;
     /** A break in the line: the review before it has no curve to draw. */
     gap?: boolean;
+    /** The time (seconds) of the review whose curve the point is on. */
+    curveTime?: number;
 }
 
 export enum TimeRange {
@@ -286,6 +349,7 @@ export function prepareData(
     revlog: RevlogEntry[],
     maxDays: number,
     points: RwkvCurvePoints,
+    now: number = Date.now() / 1000,
 ): DataPoint[] {
     const reviews = revlog.slice().reverse();
     if (reviews.length === 0) {
@@ -301,6 +365,7 @@ export function prepareData(
         retrievability: number,
         s90: number,
         gap = false,
+        curveTime?: number,
     ) => {
         const point: DataPoint = {
             date: new Date(time * 1000),
@@ -312,6 +377,9 @@ export function prepareData(
         };
         if (gap) {
             point.gap = true;
+        }
+        if (curveTime !== undefined) {
+            point.curveTime = curveTime;
         }
         data.push(point);
     };
@@ -330,7 +398,7 @@ export function prepareData(
         if (segment) {
             s90 = segment.s90;
         }
-        push(reviewTime, sinceFirst, 0, 100, s90);
+        push(reviewTime, sinceFirst, 0, 100, s90, false, segment ? reviewTime : undefined);
         if (last) {
             if (!segment) {
                 return filterDataByTimeRange(data, maxDays);
@@ -353,6 +421,8 @@ export function prepareData(
                 elapsedDays,
                 rwkvRecallAt(curve, elapsedDays) * 100,
                 s90,
+                false,
+                reviewTime,
             );
         }
     }
@@ -360,7 +430,6 @@ export function prepareData(
     // after the last review, RWKV's curve after it: to now, then a preview
     const lastReviewTime = Number(reviews[reviews.length - 1].time);
     const sinceFirst = (lastReviewTime - firstTime) / 86400;
-    const now = Date.now() / 1000;
     const totalDaysSinceLastReview = (now - lastReviewTime) / 86400;
     let elapsedDays = 0;
     while (elapsedDays < totalDaysSinceLastReview - step) {
@@ -371,6 +440,8 @@ export function prepareData(
             elapsedDays,
             rwkvRecallAt(points, elapsedDays) * 100,
             s90,
+            false,
+            lastReviewTime,
         );
     }
     push(
@@ -379,6 +450,8 @@ export function prepareData(
         totalDaysSinceLastReview,
         rwkvRecallAt(points, totalDaysSinceLastReview) * 100,
         s90,
+        false,
+        lastReviewTime,
     );
     const previewDays = maxDays - totalDaysSinceLastReview;
     let previewDaysElapsed = 0;
@@ -390,6 +463,8 @@ export function prepareData(
             totalDaysSinceLastReview + previewDaysElapsed,
             rwkvRecallAt(points, elapsedDays + previewDaysElapsed) * 100,
             s90,
+            false,
+            lastReviewTime,
         );
     }
     return filterDataByTimeRange(data, maxDays);
@@ -423,6 +498,15 @@ export function forgettingCurveTooltip(d: DataPoint, maxDays: number): string {
     }%<br>${tr.cardStatsFsrsStability()} (S90): ${timeSpan(d.stabilityS90 * 86400)}`;
 }
 
+/** The latest render of each chart, so a late exact-recall answer for an
+ * older render draws nothing. */
+const latestRender = new WeakMap<SVGElement, number>();
+
+/**
+ * Draws the chart. With `exactRecall` (FSRS-7), it draws once the backend has
+ * sent the exact recall at every point, and returns the promise of that draw;
+ * if the request fails, it draws the joined points instead.
+ */
 export function renderForgettingCurve(
     filteredRevlog: RevlogEntry[],
     timeRange: TimeRange,
@@ -430,9 +514,13 @@ export function renderForgettingCurve(
     bounds: GraphBounds,
     desiredRetention: number,
     curve: RwkvCurvePoints | undefined,
-) {
+    exactRecall?: (data: DataPoint[]) => Promise<DataPoint[]>,
+): Promise<void> | void {
     const svg = select(svgElem);
-    const trans = svg.transition().duration(600) as any;
+    const render = (svgElem ? latestRender.get(svgElem) ?? 0 : 0) + 1;
+    if (svgElem) {
+        latestRender.set(svgElem, render);
+    }
     if (filteredRevlog.length === 0 || !curve || curve.elapsedDays.length === 0) {
         setDataAvailable(svg, false);
         return;
@@ -444,9 +532,33 @@ export function renderForgettingCurve(
     if (data.length === 0) {
         setDataAvailable(svg, false);
         return;
-    } else {
-        setDataAvailable(svg, true);
     }
+    if (!exactRecall || !svgElem) {
+        drawForgettingCurve(svgElem, bounds, desiredRetention, data, maxDays);
+        return;
+    }
+    return exactRecall(data)
+        .catch((error) => {
+            console.warn("exact FSRS-7 recall failed; drawing the joined points", error);
+            return data;
+        })
+        .then((exact) => {
+            if (latestRender.get(svgElem) === render) {
+                drawForgettingCurve(svgElem, bounds, desiredRetention, exact, maxDays);
+            }
+        });
+}
+
+function drawForgettingCurve(
+    svgElem: SVGElement,
+    bounds: GraphBounds,
+    desiredRetention: number,
+    data: DataPoint[],
+    maxDays: number,
+) {
+    const svg = select(svgElem);
+    const trans = svg.transition().duration(600) as any;
+    setDataAvailable(svg, true);
 
     svg.selectAll(".forgetting-curve-line").remove();
     svg.select(".hover-columns").remove();

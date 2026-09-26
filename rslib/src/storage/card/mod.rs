@@ -411,9 +411,10 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         Ok(())
     }
 
-    /// Call func() for each requested review card in the active decks,
-    /// including cards whose due day is in the future.
-    pub(crate) fn for_each_review_card_in_active_decks_with_ids<F>(
+    /// Call func() for each requested review or interday learning card in
+    /// the active decks, including cards whose due day is in the future: the
+    /// cards RWKV-Instant scores (spec sched.rwkv-review-order).
+    pub(crate) fn for_each_scored_card_in_active_decks_with_ids<F>(
         &self,
         card_ids: &[CardId],
         mut func: F,
@@ -430,9 +431,9 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         let sql =
             include_str!("review_cards_in_active_decks_with_ids.sql").replace("CARD_IDS", &ids);
         let mut stmt = self.db.prepare(&sql)?;
-        let mut rows = stmt.query(params![CardQueue::Review as i8])?;
+        let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            if !func(due_card_from_review_row(row, DueCardKind::Review)?)? {
+            if !func(due_card_from_scored_row(row)?)? {
                 break;
             }
         }
@@ -440,9 +441,10 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         Ok(())
     }
 
-    /// Call func() for each review card in the active decks, including cards
-    /// whose due day is in the future, in the configured review order.
-    pub(crate) fn for_each_review_card_in_active_decks<F>(
+    /// Call func() for each review or interday learning card in the active
+    /// decks, including cards whose due day is in the future, in the
+    /// configured review order: the cards RWKV-Instant scores.
+    pub(crate) fn for_each_scored_card_in_active_decks<F>(
         &self,
         timing: SchedTimingToday,
         order: ReviewCardOrder,
@@ -458,9 +460,9 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             include_str!("review_cards_in_active_decks.sql"),
             order_clause
         ))?;
-        let mut rows = stmt.query(params![CardQueue::Review as i8])?;
+        let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            if !func(due_card_from_review_row(row, DueCardKind::Review)?)? {
+            if !func(due_card_from_scored_row(row)?)? {
                 break;
             }
         }
@@ -863,6 +865,7 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         deck_ids: &[DeckId],
         enabled_deck_ids: Option<&HashSet<DeckId>>,
         include_new_cards: bool,
+        include_interday_learning: bool,
     ) -> Result<(u32, Vec<Card>)> {
         if deck_ids.is_empty() {
             return Ok((0, Vec::new()));
@@ -876,8 +879,10 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
         let searched_cards = self
             .db
             .prepare(&format!(
-                "select count() from cards where did in {deck_ids_sql} and queue in ({})",
-                if include_new_cards { "0, 2" } else { "2" }
+                "select count() from cards where did in {deck_ids_sql} and queue in ({}{}{})",
+                if include_new_cards { "0, " } else { "" },
+                CardQueue::Review as i8,
+                if include_interday_learning { ", 3" } else { "" },
             ))?
             .query_row([], |row| row.get(0))?;
 
@@ -901,6 +906,16 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             )
         };
 
+        let queue_filter = if include_interday_learning {
+            format!(
+                "({queue_filter} or (type in ({}, {}) and queue = {}))",
+                CardType::Learn as i8,
+                CardType::Relearn as i8,
+                CardQueue::DayLearn as i8,
+            )
+        } else {
+            queue_filter
+        };
         let mut sql = format!(
             "{} where did in {deck_ids_sql} and {queue_filter}",
             include_str!("get_card.sql"),
@@ -1247,6 +1262,16 @@ WHERE ease IS NOT NULL;",
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     }
+}
+
+/// A row of the scored-card queries: its last column is the queue.
+fn due_card_from_scored_row(row: &Row<'_>) -> Result<DueCard> {
+    let kind = if row.get::<_, i8>(8)? == CardQueue::DayLearn as i8 {
+        DueCardKind::Learning
+    } else {
+        DueCardKind::Review
+    };
+    due_card_from_review_row(row, kind)
 }
 
 fn due_card_from_review_row(row: &Row<'_>, kind: DueCardKind) -> Result<DueCard> {

@@ -351,4 +351,10 @@ message UpdateDeckConfigsRequest {
   optional float review_fuzz_factor_long = 19;
   // Absent: the collection's algorithm does not change.
   optional DeckConfigsForUpdate.SchedulingAlgorithm scheduling_algorithm = 20;
+  // The answer "Reschedule all cards now" to a change to FSRS-7: the save
+  // then also gives every card its FSRS-7 memory state and due date, in the
+  // same undo step and with one replay of the history (spec
+  // sched.algorithm-change-prompt). Ignored unless the collection runs
+  // FSRS-7 after the save.
+  bool reschedule_all_cards = 21;
 }

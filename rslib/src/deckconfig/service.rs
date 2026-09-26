@@ -87,7 +87,8 @@ impl crate::services::DeckConfigService for Collection {
             .scheduling_algorithm
             .is_some()
             .then(|| input.scheduling_algorithm().into());
-        self.update_deck_configs_and_algorithm(input.into(), algorithm)
+        let reschedule_all_cards = input.reschedule_all_cards;
+        self.update_deck_configs_and_algorithm(input.into(), algorithm, reschedule_all_cards)
             .map(Into::into)
     }
 

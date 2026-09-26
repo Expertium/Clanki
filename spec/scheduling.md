@@ -245,15 +245,18 @@ live state.
 
 Given a collection that runs RWKV-Instant:
 
-- the study queue takes review cards only from RWKV-Instant's scores for the
-  studied deck: a review card is gathered when its score makes it due, and a
-  review card without a score is not gathered, even when its FSRS-7 due date
-  has come. Until RWKV-Instant has scored the studied deck, the queue holds no
-  review cards (learning and new cards still come) and reports that the
-  scores are pending;
+- the study queue takes review cards and interday learning cards (queue 3)
+  only from RWKV-Instant's scores for the studied deck: such a card is
+  gathered when its score makes it due, and one without a score is not
+  gathered, even when its FSRS-7 due date or its due day has come. Until
+  RWKV-Instant has scored the studied deck, the queue holds no review and no
+  interday learning cards (intraday learning and new cards still come) and
+  reports that the scores are pending;
 - a normal deck's review count, in the deck list and in the overview, is the
-  number of its scored cards whose score makes them due, plus the
-  daily-minimum pulls; a card without a score counts nothing, and FSRS-7's
+  number of its scored review cards whose score makes them due, plus the
+  daily-minimum pulls (review cards only); the interday learning part of its
+  learn count is the number of its scored interday learning cards whose
+  score makes them due; a card without a score counts nothing, and FSRS-7's
   due count never stands in;
 - while the scores are pending, the deck list shows the review count as "…",
   also when the scoring fails, finds nothing it can score, or gives a stale
@@ -269,7 +272,9 @@ RWKV-Instant gathered FSRS-7-due cards when it had no scores for the deck or
 none for a card, and its counts fell back to FSRS-7's.
 
 **Pinned by:** `rwkv_instant_without_scores_gathers_no_reviews_and_reports_pending`,
-`rwkv_instant_unscored_due_reviews_wait_for_their_score`
+`rwkv_instant_unscored_due_reviews_wait_for_their_score`,
+`rwkv_instant_without_scores_gathers_no_interday_learning`,
+`rwkv_instant_scores_interday_learning_cards`
 (`rslib/src/scheduler/queue/builder/mod.rs`);
 `rwkv_deck_tree_counts_exclude_ineligible_scored_reviews`
 (`rslib/src/decks/tree.rs`);
@@ -1262,11 +1267,17 @@ daily limits in that order.
 
 Under RWKV-Instant with one of these orders, the review cards come only from
 RWKV-Instant's scores (`sched.rwkv-instant-waits`), ranked by them. Its
-interday learning cards (from another client's steps or an algorithm switch;
-RWKV-Instant itself puts no card in the learning queue,
-`sched.rwkv-instant-no-steps`) have no RWKV-Instant score, so they come by due
-day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
-interval and no FSRS-7 retrievability ranks them.
+interday learning and relearning cards (queue 3: from another client's steps
+or an algorithm switch; RWKV-Instant itself puts no card in the learning
+queue, `sched.rwkv-instant-no-steps`) are scored the same way: the study
+queue's candidate rows of an RWKV-Instant deck include them, the model gives
+each a recall probability from its review history up to now, and the same
+key and the same due threshold as for review cards decide whether it comes
+and where it ranks, with the review cards. Under any other review order they
+come, like the review cards, in that order when their score makes them due.
+They stay in the interday learning queue, so the "Interday learning/review
+order" setting still places them. The daily-minimum pulls take review cards
+only.
 
 Under RWKV-Curve a card's retrievability is its stored curve now
 (`ui.rwkv-curve-r-stored-curve`), computed when the queue is built: the
@@ -1313,16 +1324,20 @@ R of its own), and scored and unscored cards were compared on two measures.
 Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
 (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
 RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
-through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
-for them, so the due day, which every order without an algorithm uses, orders
-them.
+through FSRS-7's interval, which mixes algorithms. Andrew, 2026-09-25 (option
+B): RWKV-Instant scores them like review cards instead of taking them by due
+day; the RWKV session confirmed that the model predicts such a card the same
+way (the query row carries no card state) and that one scale fits both.
 
-**Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
+**Pinned by:** `rwkv_instant_scores_interday_learning_cards`,
 `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
 `rwkv_curve_retrievability_orders_use_rwkv`,
 `rwkv_curve_retrievability_order_computes_r_when_the_queue_is_built`
 (`rslib/src/scheduler/queue/builder/mod.rs`);
+`instant_deck_review_queue_rows_include_interday_learning_cards`
+(`rslib/src/scheduler/rwkv.rs`);
+`test_prewarm_reviewer_queue_score_cache_scores_parent_scope`,
 `test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names`,
 `test_rwkv_curve_queue_curves_only_for_its_retrievability_orders`,
 `test_rwkv_curve_queue_ranks_by_the_curves_handed_over`,
@@ -1591,11 +1606,16 @@ dependency follows the `main` branch of open-spaced-repetition/fsrs-rs, and
 `cargo update -p fsrs`. Every FSRS-7 value is the crate's own: Clanki keeps
 no copy of the FSRS-7 curve or interval solver (the retrievability of the
 Browser, Stats, searches, sorts, queue orders and Total Knowledge included).
-Card info's forgetting curve is the crate's too: in Advanced mode the
-backend sends, for each review with an FSRS-7 memory state, the crate's
-recall of that state (with the parameters the crate clips) at 0 and at 300
-elapsed times evenly spaced in log time from one minute to 100 years, and
-the page joins the points with straight lines (within 0.1% of the curve).
+Card info's forgetting curve is the crate's too, exactly: in Advanced mode
+the chart asks the backend (`FsrsCurveRecall`) for the crate's recall at
+every point it draws (one point per 1/1,000 of the time range, or per day
+when the range is longer than 1,000 days: more points than the chart's 460
+pixels of plot width), from the memory state of the review whose curve the point is on
+and with the parameters the crate clips, and draws only once those values
+arrive. No value on the line comes from joining points. The backend's
+curves at 0 and at 300 elapsed times evenly spaced in log time from one
+minute to 100 years, sent with card info, are only the fallback the chart
+joins with straight lines when that request fails.
 
 **Why:** Andrew, 2026-09-16: "don't pin to a specific commit, always use the
 latest version of fsrs-rs (there won't be FSRS-8 for years, if ever)"; the
@@ -1611,13 +1631,17 @@ memory states from the history 9.6x faster, next states 15.6x faster,
 optimization unchanged. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
 FSRS-7 review of that day: card info still drew the curve and solved the S90
 with a TypeScript copy, on the stored parameters rather than the ones the
-crate clips.
+crate clips. Andrew, 2026-09-25: "Exact FSRS-7 curve", not points joined by
+straight lines.
 
 **Pinned by:** `the_curve_is_the_crates_own`
 (`rslib/src/scheduler/fsrs/curve.rs`); `card_info_curves_are_the_crates_own`
 (`rslib/src/stats/card.rs`); "an FSRS-7 chart draws the backend's curve after
-each review, with its S90", "without the backend's FSRS-7 curve the chart
-has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`).
+each review, with its S90", "an FSRS-7 chart draws fsrs-rs's exact recall at
+every one of its points", "without the backend's FSRS-7 curve the chart
+has nothing to draw" (`ts/routes/card-info/forgetting-curve.test.ts`); "an
+FSRS-7 chart waits for the exact recall and ignores a stale answer"
+(`ts/routes/card-info/forgetting-curve-render.test.ts`).
 
 ## sched.fsrs7-sm2-conversion
 
@@ -1781,22 +1805,33 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 
 ## sched.fsrs7-bad-ignore-before-date
 
-Given a preset whose "Ignore reviews before" date is not a valid
-`YYYY-MM-DD` date (another client, an add-on or a damaged collection can
-write one), the collection still opens. The one-time FSRS-7 migration
-(`sched.fsrs7-only`) skips that preset, logs it, and still sets its done
-flag, so the next open does not try again. Card info and answering a card
-without a memory state read the date as no date (every review counts) and
-log it.
+Given a preset whose "Ignore reviews before" date is not empty and not a
+valid `YYYY-MM-DD` date (another client, an add-on or a damaged collection can
+write one), Clanki replaces the stored date with `1970-01-01`, the Unix epoch,
+and logs it. The repair is a normal preset change: it sets the preset's
+modification time and syncs. It runs when the collection opens (before the
+one-time FSRS-7 migration, `sched.fsrs7-only`, so that preset then migrates
+like every other preset), after a normal sync, after an `.apkg` import, in
+Check Database (which reports the number of presets it fixed), and on every
+write of a preset (Deck Options, add-ons, AnkiConnect `saveDeckConfig`). Card
+info and answering a card without a memory state do not write: they read a
+malformed date that no repair has reached yet as `1970-01-01`, and log it.
 
-**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
-that day: the migration propagated the date's parse error out of the
-collection open, so one bad date failed every open (the done flag was never
-set), and the same date failed card info for every card of the preset and
-the answer of a card that had no memory state.
+`1970-01-01` is 0 ms, the same cutoff as an empty date, so it ignores no
+review in every reader. It is also the value the Deck Options date field shows
+and saves for an empty date.
 
-**Pinned by:** `migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date`
+**Why:** Andrew, 2026-09-25: "set it to 1970 or whatever is the Unix
+beginning point". A malformed date must not fail the collection open, card
+info or answering (Andrew, 2026-09-24, "fix FSRS-7 bugs"), and must not keep
+its preset from moving to FSRS-7 or stay in the collection.
+
+**Pinned by:**
+`a_bad_ignore_before_date_is_repaired_at_open_and_the_preset_migrates`,
+`preset_writes_and_check_database_repair_a_bad_ignore_before_date`
 (`rslib/src/deckconfig/update.rs`),
+`sync_repairs_a_bad_ignore_before_date_from_another_client`
+(`rslib/src/sync/collection/tests.rs`),
 `card_stats_survive_a_bad_ignore_before_date` (`rslib/src/stats/card.rs`),
 `a_bad_ignore_before_date_does_not_stop_answering`
 (`rslib/src/scheduler/answering/mod.rs`).
@@ -2244,7 +2279,11 @@ a desired-retention change in the same save would start
 (`deck-options.reschedule-on-change`). "Reschedule all cards now"
 gives every card the new algorithm's due date after the change is saved:
 FSRS-7 computes every card's memory state and interval with its preset's
-parameters; RWKV-Curve runs its reschedule of all decks. Neither writes
+parameters; RWKV-Curve runs its reschedule of all decks. Under FSRS-7 the
+save and the reschedule are one operation and one undo step, and the review
+history is replayed once: the switch leaves the memory states to the
+reschedule, which computes all of them with the saved parameters. The result
+is the same as a save followed by a separate reschedule. Neither writes
 review-log rows (`sched.reschedule-no-revlog`). A change to RWKV-Instant
 asks nothing, since it has no intervals to reschedule; neither does a save
 without a change of the algorithm, or a change that arrives by sync. After
@@ -2253,17 +2292,22 @@ screens refresh.
 
 **Why:** Andrew, 2026-09-15: on a change of the algorithm, ask each time
 whether to reschedule all cards now or keep their due dates; the question
-appears only when the algorithm changes.
+appears only when the algorithm changes. Andrew, 2026-09-25: "make
+'Reschedule all cards now' one operation"; the second replay cost about 3 s
+on 159k cards, and the reschedule was a second undo step.
 
 **Pinned by:** `test_an_algorithm_change_asks_and_then_reschedules`,
 `test_no_question_without_an_algorithm_change`,
 `test_no_question_for_rwkv_instant`,
 `test_the_question_offers_reschedule_or_keep`,
-`test_after_an_algorithm_change_the_chosen_reschedule_runs`
+`test_after_an_algorithm_change_the_chosen_reschedule_runs`,
+`test_only_fsrs7s_reschedule_is_part_of_the_save`
 (`qt/tests/test_deckoptions.py`);
 `a_switch_to_fsrs7_recomputes_memory_states_and_the_reschedule_writes_no_review_log`
-(`rslib/src/deckconfig/algorithm.rs`, which also checks that the FSRS-7
-reschedule refuses to run under another algorithm).
+(which also checks that the FSRS-7 reschedule refuses to run under another
+algorithm),
+`a_switch_to_fsrs7_with_reschedule_is_one_undo_step_with_the_same_result`
+(`rslib/src/deckconfig/algorithm.rs`).
 
 ## sched.rwkv-r-freshness
 
