@@ -74,6 +74,7 @@ pub(crate) enum ConfigKey {
     SchedulerVersion,
     CustomColorPickerPalette,
     SchedulingAlgorithm,
+    SchedulingAlgorithmHistory,
 }
 
 #[derive(PartialEq, Eq, Serialize_repr, Deserialize_repr, Clone, Copy, Debug)]

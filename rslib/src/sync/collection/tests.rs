@@ -31,6 +31,7 @@ use crate::card::FsrsMemoryState;
 use crate::collection::Collection;
 use crate::collection::CollectionBuilder;
 use crate::config::BoolKey;
+use crate::deckconfig::algorithm::AlgorithmChangeSource;
 use crate::deckconfig::algorithm::SchedulingAlgorithm;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::FsrsVersion;
@@ -53,6 +54,7 @@ use crate::search::SearchNode;
 use crate::search::SortMode;
 use crate::sync::collection::graves::ApplyGravesRequest;
 use crate::sync::collection::meta::MetaRequest;
+use crate::sync::collection::normal::AlgorithmChangedBySync;
 use crate::sync::collection::normal::NormalSyncer;
 use crate::sync::collection::normal::SyncActionRequired;
 use crate::sync::collection::normal::SyncOutput;
@@ -838,6 +840,119 @@ async fn sync_reverts_a_preset_another_client_gave_another_algorithm() -> Result
         assert_eq!(out.required, SyncActionRequired::NoChanges);
         assert_eq!(preset_algorithm(&col2), SchedulingAlgorithm::RwkvCurve);
 
+        Ok(())
+    })
+    .await
+}
+
+/// Two devices with one reviewed card, both on FSRS-7 by the user's choice
+/// on the first, synced; then a pause, so later changes are newer by whole
+/// seconds.
+async fn two_devices_on_fsrs7(ctx: &SyncTestContext) -> Result<(Collection, Collection)> {
+    let mut col1 = ctx.col1();
+    add_reviewed_card(&mut col1, "algorithm", DeckId(1))?;
+    col1.transact_no_undo(|col| col.change_scheduling_algorithm(SchedulingAlgorithm::Fsrs7))?;
+    sync_fsrs_collections(ctx, col1).await?;
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    Ok((ctx.col1(), ctx.col2()))
+}
+
+/// The other device turns FSRS off (as Anki or AnkiDroid would) and syncs.
+async fn turn_fsrs_off_and_sync(ctx: &SyncTestContext, col: &mut Collection) -> Result<()> {
+    col.set_config_bool(BoolKey::Fsrs, false, false)?;
+    let out = ctx.normal_sync(col).await;
+    assert_eq!(out.required, SyncActionRequired::NoChanges);
+    Ok(())
+}
+
+// Pins spec/scheduling.md#sched.no-sm2 and
+// spec/sync.md#sync.algorithm-change-notice: another device turned FSRS
+// off after the user chose FSRS-7, so the sync that brings it moves the
+// collection to RWKV-Curve and says so.
+#[tokio::test]
+async fn a_sync_bringing_fsrs_off_newer_than_the_users_choice_moves_to_rwkv_curve() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        let (mut col1, mut col2) = two_devices_on_fsrs7(&ctx).await?;
+        turn_fsrs_off_and_sync(&ctx, &mut col2).await?;
+
+        let out = ctx.normal_sync(&mut col1).await;
+
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert!(col1.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(
+            col1.scheduling_algorithm(),
+            Some(SchedulingAlgorithm::RwkvCurve)
+        );
+        assert_eq!(
+            out.algorithm_changed,
+            Some(AlgorithmChangedBySync {
+                algorithm: SchedulingAlgorithm::RwkvCurve,
+                fsrs_turned_off: true,
+            })
+        );
+        // a sync that changes nothing says nothing
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.algorithm_changed, None);
+        Ok(())
+    })
+    .await
+}
+
+// Pins spec/scheduling.md#sched.no-sm2 and
+// spec/scheduling.md#sched.algorithm-history: the user chose an algorithm
+// on this device after another device turned FSRS off, and the other
+// device synced last, so its config (with its older algorithm) replaces
+// this device's. The user's choice stays, with FSRS on, and the history
+// keeps the entries of both devices.
+#[tokio::test]
+async fn a_users_choice_newer_than_another_devices_fsrs_off_stays_after_sync() -> Result<()> {
+    with_active_server(|client| async move {
+        for choice in [SchedulingAlgorithm::Fsrs7, SchedulingAlgorithm::RwkvInstant] {
+            let ctx = SyncTestContext::new(client.clone());
+            let (mut col1, mut col2) = two_devices_on_fsrs7(&ctx).await?;
+            col1.transact_no_undo(|col| {
+                col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)
+            })?;
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+
+            // the other device turns FSRS off, then the user chooses here
+            col2.set_config_bool(BoolKey::Fsrs, false, false)?;
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            col1.transact_no_undo(|col| col.change_scheduling_algorithm(choice))?;
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            let out = ctx.normal_sync(&mut col2).await;
+            assert_eq!(out.required, SyncActionRequired::NoChanges);
+
+            let out = ctx.normal_sync(&mut col1).await;
+
+            assert_eq!(out.required, SyncActionRequired::NoChanges);
+            assert!(col1.get_config_bool(BoolKey::Fsrs));
+            assert_eq!(col1.scheduling_algorithm(), Some(choice));
+            assert!(col1
+                .storage
+                .all_deck_config()?
+                .iter()
+                .all(|config| SchedulingAlgorithm::of_preset(&config.inner) == choice));
+            // unchanged for the user: no notice
+            assert_eq!(out.algorithm_changed, None);
+            let history: Vec<_> = col1
+                .scheduling_algorithm_history()
+                .into_iter()
+                .map(|entry| (entry.algorithm, entry.source))
+                .collect();
+            let mut expected = vec![
+                (SchedulingAlgorithm::Fsrs7, AlgorithmChangeSource::User),
+                (SchedulingAlgorithm::RwkvCurve, AlgorithmChangeSource::User),
+                (choice, AlgorithmChangeSource::User),
+            ];
+            if choice != SchedulingAlgorithm::Fsrs7 {
+                // the other device's config held FSRS-7; the sync put the
+                // choice back
+                expected.push((choice, AlgorithmChangeSource::Sync));
+            }
+            assert_eq!(history, expected);
+        }
         Ok(())
     })
     .await
@@ -2136,10 +2251,22 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
             col1.storage.get_revlog_entry(revlogid)?,
             col2.storage.get_revlog_entry(revlogid)?,
         );
-        assert_eq!(
-            col1.storage.get_all_config()?,
-            col2.storage.get_all_config()?
-        );
+        // the side that receives the config keeps its own algorithm history
+        // entries too (spec sched.algorithm-history); they reach the other
+        // side with its next upload
+        let config_without_history = |col: &Collection| -> Result<_> {
+            let mut config = col.storage.get_all_config()?;
+            let history = config.remove("schedulingAlgorithmHistory");
+            Ok((config, history))
+        };
+        let (config1, history1) = config_without_history(col1)?;
+        let (config2, history2) = config_without_history(col2)?;
+        assert_eq!(config1, config2);
+        for entry in history1.iter().flat_map(|h| h.as_array().unwrap()) {
+            assert!(history2
+                .as_ref()
+                .is_some_and(|h| h.as_array().unwrap().contains(entry)));
+        }
         assert_eq!(
             col1.storage.creation_stamp()?,
             col2.storage.creation_stamp()?

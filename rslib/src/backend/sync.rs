@@ -72,6 +72,13 @@ impl From<SyncOutput> for anki_proto::sync::SyncCollectionResponse {
             remote_collection_changed: o.remote_collection_changed,
             remote_review_ids: o.remote_review_ids.into_iter().map(|id| id.0).collect(),
             remote_non_review_collection_changed: (o.remote_non_review_collection_changed),
+            algorithm_changed_to: o
+                .algorithm_changed
+                .map(|change| change.algorithm.stored_name().to_string())
+                .unwrap_or_default(),
+            algorithm_changed_by_fsrs_off: o
+                .algorithm_changed
+                .is_some_and(|change| change.fsrs_turned_off),
         }
     }
 }

@@ -2221,12 +2221,29 @@ and `prop:s` then showed as FSRS-7's (never mix two algorithms).
 
 Given a collection that has cards and whose `fsrs` switch is off, when it
 opens (or after a normal sync or an .apkg import), SM-2 would schedule it,
-and Clanki has no SM-2: the switch goes on, and the collection's algorithm
-(the `schedulingAlgorithm` key, or without one the algorithm
-`sched.global-algorithm-migration` picks) becomes RWKV-Curve where it is
-FSRS-7; an RWKV-Curve or RWKV-Instant algorithm stays. Every preset takes
-it, and every card's memory state is computed from its review log, as a
-deck-options change of algorithm computes it
+and Clanki has no SM-2: the switch goes on, and the collection gets an
+algorithm by the time of the user's last choice in Clanki (the newest
+`user` entry of `sched.algorithm-history`):
+
+- The choice is newer than the time the switch went off: the chosen
+  algorithm stays. It becomes the `schedulingAlgorithm` key again where the
+  key holds another one (a sync that brought another device's older config
+  replaced it).
+- Otherwise, or with no choice in the history: the collection's algorithm
+  (the key, or without one the algorithm `sched.global-algorithm-migration`
+  picks) becomes RWKV-Curve where it is FSRS-7; an RWKV-Curve or
+  RWKV-Instant algorithm stays.
+
+The time the switch went off: at open and after an import, the time stored
+with the `fsrs` config key, which the program that turned it off wrote.
+After a normal sync whose config turned the switch off, that time is not
+known, because a sync carries config values without their times; the other
+device turned the switch off after the sync before this one, so the time of
+that sync stands in for it. Equal times (in whole seconds) count as newer
+for the switch.
+
+Every preset takes the algorithm, and every card's memory state is computed
+from its review log, as a deck-options change of algorithm computes it
 (`sched.one-global-algorithm`); no due date changes and no review-log row
 is written. A collection whose switch is on keeps its algorithm, FSRS-7
 included, and a collection without cards is left untouched.
@@ -2234,12 +2251,50 @@ included, and a collection without cards is left untouched.
 **Why:** Andrew, 2026-09-23: turn FSRS on when a collection opens, so that
 SM-2 never schedules ("Sure, but the default algo is RWKV-Curve though");
 asked which collections, he chose only the ones that run SM-2, so a
-collection that already runs FSRS in Anki keeps FSRS-7.
+collection that already runs FSRS in Anki keeps FSRS-7. The time rule:
+Andrew, 2026-09-25: another device that turned FSRS off must not undo an
+explicit choice the user made later in Clanki.
 
 **Pinned by:** `an_sm2_collection_opens_on_rwkv_curve_with_fsrs_on`,
 `an_sm2_collection_keeps_its_rwkv_algorithm`,
-`only_sm2_collections_with_cards_change`
-(`rslib/src/deckconfig/algorithm.rs`).
+`only_sm2_collections_with_cards_change`,
+`fsrs_off_newer_than_the_users_choice_moves_fsrs7_to_rwkv_curve`,
+`a_users_choice_newer_than_fsrs_off_stays`
+(`rslib/src/deckconfig/algorithm.rs`);
+`a_sync_bringing_fsrs_off_newer_than_the_users_choice_moves_to_rwkv_curve`,
+`a_users_choice_newer_than_another_devices_fsrs_off_stays_after_sync`
+(`rslib/src/sync/collection/tests.rs`).
+
+## sched.algorithm-history
+
+Given a change of the collection's algorithm (the `schedulingAlgorithm`
+key gets a new value), an entry is added to the
+`schedulingAlgorithmHistory` config key, which syncs with the rest of the
+config: `time` (seconds), `algorithm` (`fsrs7`, `rwkvCurve`,
+`rwkvInstant`), `source` (`user`: a choice in deck options; `sync`: the
+pass after a normal sync; `open`: the pass when the collection opens,
+including the first-open migration; `import`: the pass after an .apkg
+import) and, for a change another device or program caused, `remote`: what
+it sent (`fsrs off`). A value that does not change adds nothing. The
+history keeps the newest 20 entries, oldest first; an unreadable history
+counts as empty.
+
+A normal sync that replaces this collection's config with the server's
+(the side whose collection changed last sends its whole config) keeps the
+entries of both sides: the result holds every entry of either side once,
+in time order, cut to the newest 20. The other side gets the merged history
+with this side's next upload.
+
+**Why:** Andrew, 2026-09-25: store the history of the global algorithm, so
+the rule of `sched.no-sm2` can compare the times of the user's choice and
+another device's change, and so a later reader can tell why the algorithm
+changed.
+
+**Pinned by:** `the_history_records_every_change_of_the_algorithm`,
+`merged_histories_keep_both_sides_in_time_order`
+(`rslib/src/deckconfig/algorithm.rs`);
+`a_users_choice_newer_than_another_devices_fsrs_off_stays_after_sync`
+(`rslib/src/sync/collection/tests.rs`).
 
 ## sched.apkg-import-reads-the-package
 

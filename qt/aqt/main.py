@@ -1303,8 +1303,10 @@ title="{}" {}>{}</button>""".format(
         after_sync: Callable[[], None],
         *,
         refresh_rwkv_state: bool = True,
+        ask_for_full_sync: bool = True,
     ) -> None:
-        "Caller should ensure auth available."
+        """Caller should ensure auth available. With ask_for_full_sync False,
+        a sync that finds a full sync needed stops there without asking."""
 
         remote_collection_changes = RemoteCollectionChanges()
 
@@ -1337,11 +1339,19 @@ title="{}" {}>{}</button>""".format(
                 finish_sync()
 
         gui_hooks.sync_will_start()
-        sync_collection(
-            self,
-            on_done=on_collection_sync_finished,
-            on_remote_collection_changes=note_remote_collection_changes,
-        )
+        if ask_for_full_sync:
+            sync_collection(
+                self,
+                on_done=on_collection_sync_finished,
+                on_remote_collection_changes=note_remote_collection_changes,
+            )
+        else:
+            sync_collection(
+                self,
+                on_done=on_collection_sync_finished,
+                on_remote_collection_changes=note_remote_collection_changes,
+                ask_for_full_sync=False,
+            )
 
     def maybe_auto_sync_on_open_close(
         self,

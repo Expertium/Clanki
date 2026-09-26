@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use anki_proto::deck_config::deck_configs_for_update::SchedulingAlgorithm as SchedulingAlgorithmProto;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 
 use super::DeckConfigInner;
 use crate::config::ConfigKey;
@@ -58,6 +59,60 @@ impl SchedulingAlgorithm {
         inner.rwkv_review_enabled == (self == Self::RwkvCurve)
             && inner.rwkv_review_instant_order_enabled == (self == Self::RwkvInstant)
     }
+}
+
+/// Where a change of the collection's algorithm came from (spec
+/// sched.algorithm-history). The names are a stored format: never rename one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AlgorithmChangeSource {
+    /// The user's choice in Clanki's deck options.
+    User,
+    /// The pass after a normal sync.
+    Sync,
+    /// The pass when the collection opens: the first-open migration, or a
+    /// change another program made to the file.
+    Open,
+    /// The pass after an .apkg import.
+    Import,
+}
+
+/// One change of the collection's algorithm, kept in the
+/// `schedulingAlgorithmHistory` config key, which syncs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AlgorithmHistoryEntry {
+    pub time: TimestampSecs,
+    pub algorithm: SchedulingAlgorithm,
+    pub source: AlgorithmChangeSource,
+    /// What another device or program sent that caused the change, such as
+    /// "fsrs off".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+}
+
+/// The history keeps the newest entries only.
+const ALGORITHM_HISTORY_LIMIT: usize = 20;
+
+/// The `remote` of a change caused by a collection whose FSRS switch is off.
+const FSRS_OFF: &str = "fsrs off";
+
+/// The history with the entries of `other` that it lacks, oldest first, cut
+/// to the newest ALGORITHM_HISTORY_LIMIT.
+pub(crate) fn merge_algorithm_histories(
+    mut history: Vec<AlgorithmHistoryEntry>,
+    other: Vec<AlgorithmHistoryEntry>,
+) -> Vec<AlgorithmHistoryEntry> {
+    for entry in other {
+        if !history.contains(&entry) {
+            history.push(entry);
+        }
+    }
+    // stable: entries of one second keep their order
+    history.sort_by_key(|entry| entry.time);
+    let excess = history.len().saturating_sub(ALGORITHM_HISTORY_LIMIT);
+    history.drain(..excess);
+    history
 }
 
 impl From<SchedulingAlgorithm> for SchedulingAlgorithmProto {
@@ -108,14 +163,36 @@ impl Collection {
         }
     }
 
+    /// The changes of the collection's algorithm, oldest first (spec
+    /// sched.algorithm-history). An unreadable history counts as empty.
+    pub(crate) fn scheduling_algorithm_history(&self) -> Vec<AlgorithmHistoryEntry> {
+        self.get_config_optional(ConfigKey::SchedulingAlgorithmHistory)
+            .unwrap_or_default()
+    }
+
     /// Makes `algorithm` the collection's algorithm and mirrors it into every
-    /// preset. Returns the presets that changed, with the algorithm each ran
-    /// before.
+    /// preset; a new algorithm is added to the history. Returns the presets
+    /// that changed, with the algorithm each ran before.
     fn set_scheduling_algorithm_inner(
         &mut self,
         algorithm: SchedulingAlgorithm,
+        source: AlgorithmChangeSource,
+        remote: Option<&str>,
     ) -> Result<Vec<(DeckConfig, SchedulingAlgorithm)>> {
-        self.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
+        if self.scheduling_algorithm() != Some(algorithm) {
+            self.set_config(ConfigKey::SchedulingAlgorithm, &algorithm)?;
+            let entry = AlgorithmHistoryEntry {
+                time: TimestampSecs::now(),
+                algorithm,
+                source,
+                remote: remote.map(Into::into),
+            };
+            let mut history = self.scheduling_algorithm_history();
+            history.push(entry);
+            let excess = history.len().saturating_sub(ALGORITHM_HISTORY_LIMIT);
+            history.drain(..excess);
+            self.set_config(ConfigKey::SchedulingAlgorithmHistory, &history)?;
+        }
         self.mirror_scheduling_algorithm(algorithm)
     }
 
@@ -125,6 +202,7 @@ impl Collection {
     /// no RWKV-Curve stability stays behind; due dates do not change (for the
     /// "Reschedule all cards now" answer, see
     /// [`Self::change_scheduling_algorithm_then`]).
+    #[cfg(test)]
     pub(crate) fn change_scheduling_algorithm(
         &mut self,
         algorithm: SchedulingAlgorithm,
@@ -141,7 +219,24 @@ impl Collection {
         algorithm: SchedulingAlgorithm,
         reschedule_all_follows: bool,
     ) -> Result<()> {
-        self.set_scheduling_algorithm_inner(algorithm)?;
+        self.change_scheduling_algorithm_from(
+            algorithm,
+            AlgorithmChangeSource::User,
+            None,
+            reschedule_all_follows,
+        )
+    }
+
+    /// As change_scheduling_algorithm_then, for a change that `source` makes
+    /// (spec sched.algorithm-history).
+    fn change_scheduling_algorithm_from(
+        &mut self,
+        algorithm: SchedulingAlgorithm,
+        source: AlgorithmChangeSource,
+        remote: Option<&str>,
+        reschedule_all_follows: bool,
+    ) -> Result<()> {
+        self.set_scheduling_algorithm_inner(algorithm, source, remote)?;
         let fsrs_was_off = !self.get_config_bool(BoolKey::Fsrs);
         if fsrs_was_off {
             self.set_config_bool_inner(BoolKey::Fsrs, true)?;
@@ -215,10 +310,15 @@ impl Collection {
     ///
     /// A collection whose FSRS switch is off would be scheduled by SM-2,
     /// which Clanki does not use (spec sched.no-sm2): FSRS goes on, as a
-    /// deck-options choice would turn it on, and the collection runs
-    /// RWKV-Curve, the default, where it would have run FSRS-7; an RWKV
-    /// algorithm it already has stays.
-    pub(crate) fn enforce_scheduling_algorithm_inner(&mut self) -> Result<bool> {
+    /// deck-options choice would turn it on. When the user's last choice of
+    /// algorithm in Clanki is newer than the switch going off, the collection
+    /// keeps that choice. Otherwise it runs RWKV-Curve, the default, where it
+    /// would have run FSRS-7; an RWKV algorithm it already has stays.
+    pub(crate) fn enforce_scheduling_algorithm_inner(
+        &mut self,
+        source: AlgorithmChangeSource,
+    ) -> Result<bool> {
+        let fsrs_turned_off_after = self.state.fsrs_turned_off_by_sync_after.take();
         if !self.get_config_bool(BoolKey::Fsrs) {
             let algorithm = match self.scheduling_algorithm() {
                 Some(algorithm) => algorithm,
@@ -227,11 +327,14 @@ impl Collection {
                     None => return Ok(false),
                 },
             };
-            let algorithm = match algorithm {
-                SchedulingAlgorithm::Fsrs7 => SchedulingAlgorithm::RwkvCurve,
-                rwkv => rwkv,
+            let algorithm = match self.user_choice_newer_than_fsrs_off(fsrs_turned_off_after)? {
+                Some(choice) => choice,
+                None => match algorithm {
+                    SchedulingAlgorithm::Fsrs7 => SchedulingAlgorithm::RwkvCurve,
+                    rwkv => rwkv,
+                },
             };
-            self.change_scheduling_algorithm(algorithm)?;
+            self.change_scheduling_algorithm_from(algorithm, source, Some(FSRS_OFF), false)?;
             return Ok(true);
         }
         if let Some(algorithm) = self.scheduling_algorithm() {
@@ -242,9 +345,75 @@ impl Collection {
         let Some(algorithm) = self.most_used_scheduling_algorithm()? else {
             return Ok(false);
         };
-        let changed = self.set_scheduling_algorithm_inner(algorithm)?;
+        let changed = self.set_scheduling_algorithm_inner(algorithm, source, None)?;
         self.recompute_memory_states_left_by_rwkv_curve(algorithm, &changed)?;
         Ok(true)
+    }
+
+    /// A normal sync is about to replace this collection's config with the
+    /// server's (the sync sends config as a whole, newest side first). The
+    /// history keeps the entries of both sides (spec
+    /// sched.algorithm-history), and an FSRS switch that the server's config
+    /// turns off is noted for the pass after the sync (spec sched.no-sm2):
+    /// another device turned it off after the last sync.
+    pub(crate) fn prepare_for_remote_config(
+        &mut self,
+        config: &mut HashMap<String, Value>,
+    ) -> Result<()> {
+        let history_key: &str = ConfigKey::SchedulingAlgorithmHistory.into();
+        let remote: Vec<AlgorithmHistoryEntry> = config
+            .get(history_key)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        let merged = merge_algorithm_histories(remote.clone(), self.scheduling_algorithm_history());
+        if merged != remote {
+            config.insert(history_key.into(), serde_json::to_value(merged)?);
+        }
+        let fsrs_key: &str = BoolKey::Fsrs.into();
+        let remote_fsrs = config
+            .get(fsrs_key)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if self.get_config_bool(BoolKey::Fsrs) && !remote_fsrs {
+            self.state.fsrs_turned_off_by_sync_after = Some(
+                self.storage
+                    .get_collection_timestamps()?
+                    .last_sync
+                    .as_secs(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The algorithm of the user's last choice in Clanki (from the history),
+    /// when that choice is newer than the time the FSRS switch went off.
+    /// After a sync that brought the switch off, that time is not known: a
+    /// sync carries config values without their times. The other device
+    /// turned the switch off after the sync before this one, so that sync's
+    /// time, `turned_off_after`, stands in for it. Otherwise it is the time
+    /// stored with the switch, which the program that turned it off wrote.
+    /// Equal times count as newer for the switch.
+    fn user_choice_newer_than_fsrs_off(
+        &self,
+        turned_off_after: Option<TimestampSecs>,
+    ) -> Result<Option<SchedulingAlgorithm>> {
+        let history = self.scheduling_algorithm_history();
+        let Some(choice) = history
+            .iter()
+            .rev()
+            .find(|entry| entry.source == AlgorithmChangeSource::User)
+        else {
+            return Ok(None);
+        };
+        let turned_off = match turned_off_after {
+            Some(time) => time,
+            None => self
+                .storage
+                .get_config_entry(BoolKey::Fsrs.into())?
+                .map(|entry| entry.mtime)
+                .unwrap_or_default(),
+        };
+        Ok((choice.time > turned_off).then_some(choice.algorithm))
     }
 
     /// FSRS-7 memory states and due dates for every card, when the
@@ -272,7 +441,10 @@ impl Collection {
     /// so it starts only when there is something to write: a new, empty
     /// collection must not need a full sync (upstream issue #5109). True if
     /// anything changed.
-    pub(crate) fn enforce_scheduling_algorithm(&mut self) -> Result<bool> {
+    pub(crate) fn enforce_scheduling_algorithm(
+        &mut self,
+        source: AlgorithmChangeSource,
+    ) -> Result<bool> {
         let work_to_do = match self.scheduling_algorithm() {
             // SM-2 would schedule it (spec sched.no-sm2)
             Some(_) if !self.get_config_bool(BoolKey::Fsrs) => true,
@@ -287,9 +459,10 @@ impl Collection {
                 .query_row("SELECT EXISTS(SELECT 1 FROM cards)", [], |row| row.get(0))?,
         };
         if !work_to_do {
+            self.state.fsrs_turned_off_by_sync_after = None;
             return Ok(false);
         }
-        self.transact_no_undo(|col| col.enforce_scheduling_algorithm_inner())
+        self.transact_no_undo(|col| col.enforce_scheduling_algorithm_inner(source))
     }
 
     /// The algorithm of the presets that schedule the most review and
@@ -353,6 +526,7 @@ mod test {
     use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
     use anki_proto::deck_config::UpdateDeckConfigsMode;
 
+    use super::AlgorithmChangeSource::Open;
     use super::SchedulingAlgorithm::*;
     use super::*;
     use crate::card::FsrsMemoryState;
@@ -403,7 +577,7 @@ mod test {
         let before = col.get_first_card();
         assert!(before.memory_state.is_none());
 
-        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
 
         assert!(col.get_config_bool(BoolKey::Fsrs));
         assert_eq!(col.scheduling_algorithm(), Some(RwkvCurve));
@@ -416,7 +590,7 @@ mod test {
         // again
         assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
         // the next open has nothing to do
-        assert!(!col.enforce_scheduling_algorithm()?);
+        assert!(!col.enforce_scheduling_algorithm(Open)?);
         Ok(())
     }
 
@@ -428,7 +602,7 @@ mod test {
         col.set_config(ConfigKey::SchedulingAlgorithm, &RwkvInstant)?;
         col.set_config_bool(BoolKey::Fsrs, false, false)?;
 
-        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
 
         assert!(col.get_config_bool(BoolKey::Fsrs));
         assert_eq!(col.scheduling_algorithm(), Some(RwkvInstant));
@@ -442,12 +616,12 @@ mod test {
         let mut col = Collection::new();
         add_cards(&mut col, DeckId(1), 2, true);
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
-        col.enforce_scheduling_algorithm()?;
+        col.enforce_scheduling_algorithm(Open)?;
         assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
 
         let mut empty = Collection::new();
         empty.set_config_bool(BoolKey::Fsrs, false, false)?;
-        assert!(!empty.enforce_scheduling_algorithm()?);
+        assert!(!empty.enforce_scheduling_algorithm(Open)?);
         assert!(!empty.get_config_bool(BoolKey::Fsrs));
         assert_eq!(empty.scheduling_algorithm(), None);
         Ok(())
@@ -465,7 +639,7 @@ mod test {
         add_cards(&mut col, instant, 2, true);
         assert_eq!(col.scheduling_algorithm(), None);
 
-        col.enforce_scheduling_algorithm()?;
+        col.enforce_scheduling_algorithm(Open)?;
 
         assert_eq!(col.scheduling_algorithm(), Some(RwkvInstant));
         assert_eq!(preset_algorithms(&col), vec![RwkvInstant; 3]);
@@ -503,7 +677,7 @@ mod test {
     fn a_collection_without_cards_gets_no_algorithm() -> Result<()> {
         let mut col = Collection::new();
         let before = col.storage.get_collection_timestamps()?.collection_change;
-        col.enforce_scheduling_algorithm()?;
+        col.enforce_scheduling_algorithm(Open)?;
         assert_eq!(col.scheduling_algorithm(), None);
         assert_eq!(
             col.storage.get_collection_timestamps()?.collection_change,
@@ -543,7 +717,7 @@ mod test {
         let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
         RwkvInstant.apply_to(&mut config.inner);
         col.storage.update_deck_conf(&config)?;
-        assert!(col.enforce_scheduling_algorithm_inner()?);
+        assert!(col.enforce_scheduling_algorithm_inner(Open)?);
         assert_eq!(preset_algorithms(&col), vec![RwkvCurve; 2]);
         Ok(())
     }
@@ -730,12 +904,23 @@ mod test {
             "SELECT id, nid, did, ord, usn, type, queue, due, ivl, factor, reps, lapses, \
              left, odue, odid, flags, data FROM cards ORDER BY id",
             "SELECT id, name, usn, config FROM deck_config ORDER BY id",
-            "SELECT KEY, usn, val FROM config ORDER BY KEY",
+            // the history holds the wall clock: compared below without it
+            "SELECT KEY, usn, val FROM config WHERE KEY != 'schedulingAlgorithmHistory'              ORDER BY KEY",
             "SELECT * FROM revlog ORDER BY id",
         ];
         for sql in tables {
             assert_eq!(rows(&one_step, sql), rows(&two_steps, sql), "{sql}");
         }
+        let history_without_times = |col: &Collection| {
+            col.scheduling_algorithm_history()
+                .into_iter()
+                .map(|entry| (entry.algorithm, entry.source, entry.remote))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            history_without_times(&one_step),
+            history_without_times(&two_steps)
+        );
         // the save really rescheduled the cards, also those of the presets
         // whose desired retention did not change
         for &card_id in &cards {
@@ -807,7 +992,7 @@ mod test {
         let (curve_card, fsrs7) = add_answered_card(&mut col, "curve", RwkvCurve);
         let (fsrs7_card, _) = add_answered_card(&mut col, "fsrs7", Fsrs7);
         col.set_config(ConfigKey::SchedulingAlgorithm, &Fsrs7)?;
-        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
         assert!(preset_algorithms(&col).iter().all(|a| *a == Fsrs7));
         assert!((stability(&col, curve_card) - fsrs7.stability).abs() < 1e-3);
         assert_eq!(stability(&col, fsrs7_card), 123.0);
@@ -823,7 +1008,7 @@ mod test {
             .db
             .execute("update cards set type = 2, queue = 2", [])?;
         assert_eq!(col.scheduling_algorithm(), None);
-        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
         assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
         assert!((stability(&col, curve_card) - fsrs7.stability).abs() < 1e-3);
         assert_eq!(stability(&col, first), 123.0);
@@ -834,8 +1019,164 @@ mod test {
         col.set_config_bool(BoolKey::Fsrs, true, false)?;
         let (card, _) = add_answered_card(&mut col, "fsrs7", Fsrs7);
         col.set_config(ConfigKey::SchedulingAlgorithm, &RwkvCurve)?;
-        assert!(col.enforce_scheduling_algorithm()?);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
         assert_eq!(stability(&col, card), 123.0);
+        Ok(())
+    }
+
+    /// The history's entries as (algorithm, source, remote).
+    fn history(
+        col: &Collection,
+    ) -> Vec<(SchedulingAlgorithm, AlgorithmChangeSource, Option<String>)> {
+        col.scheduling_algorithm_history()
+            .into_iter()
+            .map(|entry| (entry.algorithm, entry.source, entry.remote))
+            .collect()
+    }
+
+    /// Moves the time of every history entry `secs` seconds back.
+    fn age_history(col: &mut Collection, secs: i64) {
+        let mut history = col.scheduling_algorithm_history();
+        for entry in &mut history {
+            entry.time = TimestampSecs(entry.time.0 - secs);
+        }
+        col.set_config(ConfigKey::SchedulingAlgorithmHistory, &history)
+            .unwrap();
+    }
+
+    /// Turns the FSRS switch off as another program would, `secs_ago`
+    /// seconds ago.
+    fn turn_fsrs_off(col: &Collection, secs_ago: i64) {
+        col.storage
+            .set_config_entry(&crate::config::ConfigEntry {
+                key: "fsrs".into(),
+                value: b"false".to_vec(),
+                usn: Usn(-1),
+                mtime: TimestampSecs(TimestampSecs::now().0 - secs_ago),
+            })
+            .unwrap();
+    }
+
+    // Pins spec/scheduling.md#sched.algorithm-history
+    #[test]
+    fn the_history_records_every_change_of_the_algorithm() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        add_cards(&mut col, DeckId(1), 1, true);
+        // the first-open migration
+        col.enforce_scheduling_algorithm(Open)?;
+        assert_eq!(history(&col), vec![(Fsrs7, Open, None)]);
+        // the user's choice; the same choice again adds nothing
+        col.change_scheduling_algorithm(RwkvInstant)?;
+        col.change_scheduling_algorithm(RwkvInstant)?;
+        age_history(&mut col, 10);
+        col.change_scheduling_algorithm(Fsrs7)?;
+        // a collection whose FSRS switch another program turned off
+        age_history(&mut col, 10);
+        turn_fsrs_off(&col, 0);
+        col.enforce_scheduling_algorithm(AlgorithmChangeSource::Import)?;
+        assert_eq!(
+            history(&col),
+            vec![
+                (Fsrs7, Open, None),
+                (RwkvInstant, AlgorithmChangeSource::User, None),
+                (Fsrs7, AlgorithmChangeSource::User, None),
+                (
+                    RwkvCurve,
+                    AlgorithmChangeSource::Import,
+                    Some(FSRS_OFF.into())
+                ),
+            ]
+        );
+
+        // the newest entries stay
+        for i in 0..ALGORITHM_HISTORY_LIMIT {
+            let algorithm = [RwkvInstant, Fsrs7][i % 2];
+            col.change_scheduling_algorithm(algorithm)?;
+        }
+        let history = history(&col);
+        assert_eq!(history.len(), ALGORITHM_HISTORY_LIMIT);
+        assert_eq!(history.last().unwrap().0, Fsrs7);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.algorithm-history
+    #[test]
+    fn merged_histories_keep_both_sides_in_time_order() {
+        let entry = |time, algorithm| AlgorithmHistoryEntry {
+            time: TimestampSecs(time),
+            algorithm,
+            source: AlgorithmChangeSource::User,
+            remote: None,
+        };
+        let merged = merge_algorithm_histories(
+            vec![entry(1, Fsrs7), entry(5, RwkvCurve)],
+            vec![entry(3, RwkvInstant), entry(5, RwkvCurve)],
+        );
+        assert_eq!(
+            merged,
+            vec![entry(1, Fsrs7), entry(3, RwkvInstant), entry(5, RwkvCurve)]
+        );
+        let long: Vec<_> = (0..30).map(|time| entry(time, Fsrs7)).collect();
+        let merged = merge_algorithm_histories(long, vec![]);
+        assert_eq!(merged.len(), ALGORITHM_HISTORY_LIMIT);
+        assert_eq!(merged[0].time, TimestampSecs(10));
+    }
+
+    // Pins spec/scheduling.md#sched.no-sm2: the FSRS switch went off after
+    // the user's last choice, so FSRS-7 becomes RWKV-Curve
+    #[test]
+    fn fsrs_off_newer_than_the_users_choice_moves_fsrs7_to_rwkv_curve() -> Result<()> {
+        let mut col = Collection::new();
+        add_cards(&mut col, DeckId(1), 1, true);
+        col.change_scheduling_algorithm(Fsrs7)?;
+        age_history(&mut col, 100);
+        turn_fsrs_off(&col, 50);
+
+        assert!(col.enforce_scheduling_algorithm(Open)?);
+
+        assert!(col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(col.scheduling_algorithm(), Some(RwkvCurve));
+        assert_eq!(
+            history(&col).last().unwrap(),
+            &(RwkvCurve, Open, Some(FSRS_OFF.into()))
+        );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.no-sm2: the user's last choice is newer
+    // than the FSRS switch going off, so the choice stays, even where the
+    // key no longer holds it
+    #[test]
+    fn a_users_choice_newer_than_fsrs_off_stays() -> Result<()> {
+        let mut col = Collection::new();
+        add_cards(&mut col, DeckId(1), 1, true);
+        col.change_scheduling_algorithm(Fsrs7)?;
+        age_history(&mut col, 10);
+        turn_fsrs_off(&col, 50);
+
+        assert!(col.enforce_scheduling_algorithm(Open)?);
+
+        assert!(col.get_config_bool(BoolKey::Fsrs));
+        assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
+        assert!(preset_algorithms(&col).iter().all(|a| *a == Fsrs7));
+        assert_eq!(history(&col).len(), 1);
+
+        // the key holds an older algorithm, as after a sync that brought
+        // another device's older config
+        col.set_config(ConfigKey::SchedulingAlgorithm, &RwkvInstant)?;
+        turn_fsrs_off(&col, 50);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
+        assert_eq!(col.scheduling_algorithm(), Some(Fsrs7));
+
+        // equal times count as newer for the switch
+        let mut col = Collection::new();
+        add_cards(&mut col, DeckId(1), 1, true);
+        col.change_scheduling_algorithm(Fsrs7)?;
+        age_history(&mut col, 50);
+        turn_fsrs_off(&col, 50);
+        assert!(col.enforce_scheduling_algorithm(Open)?);
+        assert_eq!(col.scheduling_algorithm(), Some(RwkvCurve));
         Ok(())
     }
 }

@@ -996,3 +996,23 @@ def test_no_rollover_changes_nothing(monkeypatch) -> None:
 
     assert calls == []
     assert timers == [4_000_000]
+
+
+def test_the_sync_after_an_algorithm_change_does_not_ask_for_a_full_sync(
+    monkeypatch,
+) -> None:
+    """Pins spec/sync.md#sync.algorithm-change-syncs: the sync button's own
+    sync, told not to ask for a full sync."""
+    seen: list[dict[str, object]] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", lambda: None)
+
+    def sync_collection(_mw: object, **kwargs: object) -> None:
+        seen.append(kwargs)
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    mw._sync_collection_and_media(lambda: None, ask_for_full_sync=False)
+    mw._sync_collection_and_media(lambda: None)
+
+    assert seen[0]["ask_for_full_sync"] is False
+    assert "ask_for_full_sync" not in seen[1]

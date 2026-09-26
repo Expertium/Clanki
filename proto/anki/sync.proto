@@ -75,6 +75,11 @@ message SyncCollectionResponse {
   repeated int64 remote_review_ids = 7;
   // True when downloaded collection changes included anything besides reviews.
   bool remote_non_review_collection_changed = 8;
+  // The collection's scheduling algorithm when the pass after a normal sync
+  // changed it (fsrs7, rwkv_curve or rwkv_instant); empty when it did not.
+  string algorithm_changed_to = 9;
+  // True when that change came from another device turning FSRS off.
+  bool algorithm_changed_by_fsrs_off = 10;
 }
 
 message MediaSyncStatusResponse {

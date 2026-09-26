@@ -22,6 +22,7 @@ use super::super::meta::MetaExt;
 use crate::card::CardType;
 use crate::collection::CollectionBuilder;
 use crate::config::ConfigKey;
+use crate::deckconfig::algorithm::AlgorithmChangeSource;
 use crate::import_export::gather::ExchangeData;
 use crate::import_export::package::ImportAnkiPackageOptions;
 use crate::import_export::package::Meta;
@@ -135,7 +136,10 @@ impl<'a> Context<'a> {
         }
         // imported presets take the collection's algorithm, and a collection
         // without one gets it now (spec sched.one-global-algorithm)
-        if let Err(err) = self.target_col.enforce_scheduling_algorithm_inner() {
+        if let Err(err) = self
+            .target_col
+            .enforce_scheduling_algorithm_inner(AlgorithmChangeSource::Import)
+        {
             tracing::warn!(?err, "enforcing the scheduling algorithm failed");
         }
         self.copy_media(&mut media_map)?;

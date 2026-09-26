@@ -249,7 +249,10 @@ impl Collection {
         if let Some(crt) = remote.creation_stamp {
             self.set_creation_stamp(crt)?;
         }
-        if let Some(config) = remote.config {
+        if let Some(mut config) = remote.config {
+            if !self.server {
+                self.prepare_for_remote_config(&mut config)?;
+            }
             self.storage
                 .set_all_config(config, latest_usn, TimestampSecs::now())?;
         }
