@@ -198,8 +198,10 @@ def no_exact_rebuild_thread(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_thread", None)
     request = rwkv_scheduler.request_exact_rwkv_rebuild
 
-    def request_and_wait(mw: object, *, forced: bool = False) -> None:
-        request(mw, forced=forced)
+    def request_and_wait(
+        mw: object, *, forced: bool = False, history_moved: bool = True
+    ) -> None:
+        request(mw, forced=forced, history_moved=history_moved)
         thread = rwkv_scheduler._rwkv_exact_rebuild_thread
         if (
             rwkv_scheduler._run_exact_rwkv_rebuilds == started.append
@@ -23290,6 +23292,56 @@ def test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild(
     assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
     assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+def test_waiting_answer_buttons_do_not_start_a_running_rebuild_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    waiting answer buttons ask for the rebuild of a cold state about once a
+    second. A rebuild that already runs reads the same history, so a repeat
+    request does not start it again, and it swaps in. Before, each request
+    started it again after its history read, and it never finished while the
+    buttons waited."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    reviewer = SimpleNamespace(mw=mw)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    # the state is cold, and the stored cache already failed to restore it
+    rwkv_scheduler._reviewer_backend_warmup_states.pop(key, None)
+    rwkv_scheduler._reviewer_backend_cold_fallback_generations[key] = (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(key, 0)
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_review", lambda _r: False
+    )
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    asked: list[bool] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def buttons_ask_again() -> None:
+            asked.append(
+                rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+            )
+
+        own.during_replay = buttons_ask_again
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    assert rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    # once during the replay, once during the replay of the answers given
+    # meanwhile, at the swap
+    assert asked == [False, False]
+    assert rwkv_scheduler._reviewer_backend is not old
+    assert old.released
+    assert "buttons ask again" in log
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
 def test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild(

@@ -1043,7 +1043,9 @@ throws the state away as before.
 
 When the answer buttons wait for a cold state and the stored state cache has
 already failed to restore it, the same rebuild builds it
-(`sched.rwkv-curve-buttons-wait`).
+(`sched.rwkv-curve-buttons-wait`). The buttons ask for it about once a second
+while they wait. Such a request carries no history change, so it does not
+start a running rebuild again, and the rebuild finishes while they wait.
 
 **Why:** Andrew, 2026-09-26 (B-034): "I got "Processing..." after deleting a
 card, and then the next card wasn't ready". A delete threw the resident
@@ -1085,6 +1087,7 @@ are thousands of days long, on the flat tail of the curve.
 `test_the_exact_rebuild_replays_into_its_own_runtime_and_swaps_it_in`,
 `test_the_exact_rebuild_starts_again_when_the_history_moves`,
 `test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild`,
+`test_waiting_answer_buttons_do_not_start_a_running_rebuild_again`,
 `test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild`,
 `test_a_state_published_from_the_current_history_ends_the_rebuild`,
 `test_a_request_while_the_rebuild_thread_ends_starts_another`,

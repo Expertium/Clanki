@@ -5181,11 +5181,17 @@ def _record_history_change_undo_or_redo(changes: object, *, redo: bool) -> bool:
     return True
 
 
-def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
+def request_exact_rwkv_rebuild(
+    mw: object, *, forced: bool = False, history_moved: bool = True
+) -> None:
     """Ask for the exact rebuild of the RWKV state, in the background (spec
     sched.rwkv-history-change-keeps-state). It runs while the collection's
     routing differs from the resident state's; `forced` asks for a rebuild
-    that difference cannot express."""
+    that difference cannot express.
+
+    A request says the history moved, so a running rebuild starts again from
+    the history as it is now. `history_moved=False` asks for a rebuild of the
+    same history: a running rebuild already reads it, and goes on."""
 
     global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
     global _rwkv_exact_rebuild_thread
@@ -5194,7 +5200,8 @@ def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
         return
     with _rwkv_exact_rebuild_lock:
         _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
-        _rwkv_exact_rebuild_generation += 1
+        if history_moved:
+            _rwkv_exact_rebuild_generation += 1
         if not _rwkv_exact_rebuild_wanted_locked():
             logger.debug("RWKV exact rebuild no longer needed")
             return
@@ -7527,7 +7534,14 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     it in the background (spec sched.rwkv-history-change-keeps-state)."""
     ready = _prepare_reviewer_backend_for_review(reviewer)
     if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
-        request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
+        # The buttons ask about once a second while they wait. The request
+        # carries no change of the history (a change that throws the state
+        # away starts a running rebuild again by itself), so it must not
+        # start the rebuild again: that restarted it after every history
+        # read, and it never finished while the buttons waited.
+        request_exact_rwkv_rebuild(
+            getattr(reviewer, "mw", None), forced=True, history_moved=False
+        )
     return ready
 
 
