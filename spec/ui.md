@@ -2441,3 +2441,29 @@ the hook a second time. Found in speed hunt round 5 (2026-09-25). Upstream
 **Pinned by:** `test_the_day_rollover_fires_day_did_change_in_the_reviewer`,
 `test_the_day_rollover_fires_day_did_change_once_outside_the_reviewer`,
 `test_no_rollover_changes_nothing` (`qt/tests/test_main.py`).
+
+## ui.deleted-widget-callbacks-are-skipped
+
+Given a callback that runs after a delay (a screen-boundary retry timer, or
+an operation's success or failure handler) and a widget it was built for
+that has since closed, Clanki skips the work on that widget instead of
+raising. The operation or callback itself still completes: `tooltip()` and
+`showInfo()` (so `showWarning()` and `showCritical()` too) fall back to the
+active window, or the main window, in place of the closed one instead of
+using it; `ensureWidgetInScreenBoundaries()` does nothing for a widget that
+is already gone.
+
+**Why:** found in speed hunt round 7 (2026-09-27): a Card Info dialog closed
+while `ensureWidgetInScreenBoundaries()`'s own 50 ms retry timer was still
+pending raised "wrapped C/C++ object ... has been deleted"; a Browser
+suspend's success tooltip did the same when the Browser closed before the
+40-second-late operation finished. Every operation in `qt/aqt/operations/`
+that reports its result with `tooltip()` or `showInfo()` on the widget that
+started it shares the same shape, since nothing stops the widget from
+closing while the operation is still running. Upstream `ankitects/anki`
+main has the same code in all three functions.
+
+**Pinned by:** `test_ensure_widget_in_screen_boundaries_does_nothing_for_a_deleted_widget`
+(`qt/tests/test_utils.py`), `test_a_tooltip_on_a_deleted_parent_falls_back_to_the_main_window`
+(`qt/tests/test_tooltip.py`), `test_show_info_on_a_deleted_parent_falls_back_to_the_main_window`
+(`qt/tests/test_utils.py`).
