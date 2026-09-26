@@ -20,7 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { leechChoices } from "./choices";
     import type { DeckOptionsState } from "./lib";
-    import { intervalSettingsApply, stepsTooLargeWarning } from "./scheduler-choice";
+    import { intervalSettingsApply, stepsNotEmptyWarning } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -38,13 +38,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // (spec sched.rwkv-instant-no-steps)
     $: intervalSettings = intervalSettingsApply($config);
 
-    let stepsTooLarge: string;
-    $: {
-        const lastRelearnStepInDays = $config.relearnSteps.length
-            ? $config.relearnSteps[$config.relearnSteps.length - 1] / 60 / 24
-            : 0;
-        stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastRelearnStepInDays);
-    }
+    // spec deck-options.steps-warning-when-not-empty
+    $: stepsNotEmpty = stepsNotEmptyWarning($config.relearnSteps);
 
     const settings = {
         relearningSteps: {
@@ -110,7 +105,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item>
-                <Warning warning={stepsTooLarge} />
+                <Warning warning={stepsNotEmpty} />
             </Item>
         {/if}
 

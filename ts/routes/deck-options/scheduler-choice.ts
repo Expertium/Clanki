@@ -65,31 +65,14 @@ export function runsRwkvInstant(config: AlgorithmSwitches): boolean {
     return config.rwkvReviewInstantOrderEnabled && !config.rwkvReviewEnabled;
 }
 
-/** The name of the algorithm that schedules this preset, as the Algorithm list shows it. */
-export function schedulerLabel(config: AlgorithmSwitches): string {
-    if (config.rwkvReviewEnabled) {
-        return tr.deckConfigSchedulerChoiceRwkvCurve();
-    }
-    if (runsRwkvInstant(config)) {
-        return tr.deckConfigSchedulerChoiceRwkvInstant();
-    }
-    return tr.deckConfigSchedulerChoiceFsrs();
-}
-
 /**
- * The warning under a steps field whose last step is a day or more, or "".
- * FSRS stays on under every algorithm, so the warning shows under each of
- * them, and it names the one that schedules the preset (spec/deck-options.md,
- * `deck-options.steps-warning-names-the-algorithm`).
+ * The warning under a learning or relearning steps field that is not empty,
+ * or "". Every algorithm (FSRS-7, RWKV-Curve, RWKV-Instant) schedules
+ * same-day reviews itself, so the advice is the same for all of them and
+ * names none (spec/deck-options.md, `deck-options.steps-warning-when-not-empty`).
  */
-export function stepsTooLargeWarning(
-    config: AlgorithmSwitches,
-    fsrs: boolean,
-    lastStepInDays: number,
-): string {
-    return fsrs && lastStepInDays >= 1
-        ? tr.deckConfigStepsTooLargeForAlgorithm({ algorithm: schedulerLabel(config) })
-        : "";
+export function stepsNotEmptyWarning(steps: readonly number[]): string {
+    return steps.length > 0 ? tr.deckConfigStepsFieldNotEmpty() : "";
 }
 
 /**

@@ -871,14 +871,13 @@ def english_message(key: str, path: Path = DECK_CONFIG_FTL) -> str:
     raise AssertionError(f"{key} is not in {path.name}")
 
 
-# Pins spec/deck-options.md#deck-options.steps-warning-names-the-algorithm
-def test_the_long_steps_warning_names_the_algorithm_not_fsrs() -> None:
-    warning = english_message("deck-config-steps-too-large-for-algorithm")
-    assert warning == (
-        "When { $algorithm } is enabled, steps of 1 day or more are not recommended."
-    )
-    # the algorithm's own name goes in; FSRS is only one of them
-    assert "FSRS" not in warning
+# Pins spec/deck-options.md#deck-options.steps-warning-when-not-empty
+def test_the_steps_warning_names_no_algorithm() -> None:
+    warning = english_message("deck-config-steps-field-not-empty")
+    assert warning == "It's recommended to keep the (re)learning steps field empty."
+    # one text for all three algorithms
+    for name in ("FSRS", "RWKV", "{ $algorithm }"):
+        assert name not in warning
 
 
 # Pins spec/ui.md#ui.stats-model-metrics (the one line under each graph)
