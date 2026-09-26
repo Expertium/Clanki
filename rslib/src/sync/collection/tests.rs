@@ -757,6 +757,50 @@ async fn fsrs7_state_of_a_foreign_card_is_rebuilt_on_open() -> Result<()> {
     .await
 }
 
+// Pins spec/sync.md#sync.fsrs7-state-of-foreign-cards: the open-time scan
+// is skipped while the collection's change time is the one saved after the
+// last scan; a changed collection is scanned again.
+#[tokio::test]
+async fn the_open_scan_for_foreign_cards_waits_for_a_change() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        let mut col1 = ctx.col1();
+        col1.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let card_id = add_reviewed_card(&mut col1, "foreign-scan", DeckId(1))?;
+        col1.close(None)?;
+        // this open scans and saves the change time
+        let col1 = ctx.col1();
+        let changed = col1.storage.get_collection_timestamps()?.collection_change;
+        assert_eq!(col1.storage.foreign_card_scan_stamp()?, Some(changed));
+        col1.close(None)?;
+
+        // another program writes the card without changing the collection's
+        // change time: the next open does not scan
+        let raw = |sql: &str| -> Result<()> {
+            let db = rusqlite::Connection::open(ctx.folder.path().join("col1.anki2"))?;
+            db.execute_batch(sql)?;
+            Ok(())
+        };
+        let foreign = json!({"s": 3.0, "d": 7.5, "dr": 0.9, "decay": 0.1542}).to_string();
+        raw(&format!(
+            "update cards set data = '{foreign}' where id = {}",
+            card_id.0
+        ))?;
+        let col1 = ctx.col1();
+        assert!(!card_data(&col1, card_id)?.contains("\"s_int\""));
+        col1.close(None)?;
+
+        // the same with a new change time: scanned and repaired
+        raw("update col set mod = mod + 1")?;
+        let col1 = ctx.col1();
+        assert!(card_data(&col1, card_id)?.contains("\"s_int\""));
+        let changed = col1.storage.get_collection_timestamps()?.collection_change;
+        assert_eq!(col1.storage.foreign_card_scan_stamp()?, Some(changed));
+        Ok(())
+    })
+    .await
+}
+
 // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a malformed
 // "ignore reviews before" date that another client uploads is repaired to
 // 1970-01-01 after the sync that brings it.

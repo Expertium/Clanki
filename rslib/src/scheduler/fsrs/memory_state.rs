@@ -1023,13 +1023,28 @@ impl Collection {
 
     /// `repair_fsrs7_state_of_foreign_cards_inner` in its own transaction,
     /// without an undo entry; nothing is written when no card needs it.
+    ///
+    /// At open: the scan reads every card, so it is skipped when the
+    /// collection has not changed since the last scan (its change time is
+    /// the one saved then). Another program that edits the file without
+    /// changing that time is seen at the first change after it.
     pub(crate) fn repair_fsrs7_state_of_foreign_cards(&mut self) -> Result<usize> {
-        if !self.get_config_bool(BoolKey::Fsrs)
-            || self.storage.card_ids_with_foreign_fsrs_state()?.is_empty()
-        {
+        if !self.get_config_bool(BoolKey::Fsrs) {
             return Ok(0);
         }
-        self.transact_no_undo(|col| col.repair_fsrs7_state_of_foreign_cards_inner())
+        let changed = self.storage.get_collection_timestamps()?.collection_change;
+        if self.storage.foreign_card_scan_stamp()? == Some(changed) {
+            return Ok(0);
+        }
+        let repaired = if self.storage.card_ids_with_foreign_fsrs_state()?.is_empty() {
+            0
+        } else {
+            self.transact_no_undo(|col| col.repair_fsrs7_state_of_foreign_cards_inner())?
+        };
+        // after the repair's own writes
+        let changed = self.storage.get_collection_timestamps()?.collection_change;
+        self.storage.set_foreign_card_scan_stamp(changed)?;
+        Ok(repaired)
     }
 
     /// Marks the card as changed locally so the running sync uploads it. No

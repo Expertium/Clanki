@@ -22,6 +22,7 @@ use rusqlite::Row;
 use self::data::CardData;
 use super::ids_to_string;
 use super::sqlite::SqlSortOrder;
+use super::sqlite::RETRIEVABILITY_CACHE_DB_SCHEMA;
 use crate::card::Card;
 use crate::card::CardId;
 use crate::card::CardQueue;
@@ -43,6 +44,9 @@ use crate::scheduler::timing::SchedTimingToday;
 use crate::timestamp::TimestampMillis;
 use crate::timestamp::TimestampSecs;
 use crate::types::Usn;
+
+/// The sidecar table of foreign_card_scan_stamp: one row.
+const FOREIGN_CARD_SCAN_TABLE: &str = "foreign_card_scan";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CardFixStats {
@@ -141,6 +145,56 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             })?
             .filter_map(Result::transpose)
             .collect()
+    }
+
+    /// The collection's change time when the open-time scan for cards
+    /// another client wrote last ran (spec sync.fsrs7-state-of-foreign-cards).
+    /// Kept in the retrievability-cache sidecar, which is local and does not
+    /// sync; writing it does not change the collection. None before the first
+    /// scan, and for a sidecar that was removed or is kept in memory.
+    pub(crate) fn foreign_card_scan_stamp(&self) -> Result<Option<TimestampMillis>> {
+        let exists: bool = self.db.query_row(
+            &format!(
+                "select exists(select 1 from {RETRIEVABILITY_CACHE_DB_SCHEMA}.sqlite_master \
+                 where type = 'table' and name = '{FOREIGN_CARD_SCAN_TABLE}')"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        self.db
+            .query_row(
+                &format!(
+                    "select collection_change from \
+                     {RETRIEVABILITY_CACHE_DB_SCHEMA}.{FOREIGN_CARD_SCAN_TABLE} where id = 0"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn set_foreign_card_scan_stamp(
+        &self,
+        collection_change: TimestampMillis,
+    ) -> Result<()> {
+        self.db.execute_batch(&format!(
+            "create table if not exists {RETRIEVABILITY_CACHE_DB_SCHEMA}.{FOREIGN_CARD_SCAN_TABLE} (
+                id integer primary key check (id = 0),
+                collection_change integer not null
+            )"
+        ))?;
+        self.db.execute(
+            &format!(
+                "insert or replace into {RETRIEVABILITY_CACHE_DB_SCHEMA}.{FOREIGN_CARD_SCAN_TABLE} \
+                 (id, collection_change) values (0, ?)"
+            ),
+            [collection_change],
+        )?;
+        Ok(())
     }
 
     pub fn get_card(&self, cid: CardId) -> Result<Option<Card>> {
