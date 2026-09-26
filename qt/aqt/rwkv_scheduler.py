@@ -20077,15 +20077,21 @@ def _remember_backend_preset_ids(
     presets itself."""
     cache = _resolved_preset_id_cache.setdefault(_preset_id_cache_key(reviewer), {})
     # a card that is gone has no preset, which the backend sends as ""
-    pairs = [
-        (card_id, preset_id)
+    presets = {
+        card_id: preset_id
         for card_id, preset_id in zip(card_ids, preset_ids, strict=True)
         if preset_id
-    ]
-    if any(cache.get(card_id, preset_id) != preset_id for card_id, preset_id in pairs):
+    }
+    # every preset kept already, as in every read after the first: nothing
+    # to check card by card
+    if presets.items() <= cache.items():
+        return True
+    if any(
+        cache[card_id] != presets[card_id] for card_id in presets.keys() & cache.keys()
+    ):
         return False
-    for card_id, preset_id in pairs:
-        cache.setdefault(card_id, preset_id)
+    # no card kept with another preset: keep the new ones, in their order
+    cache.update(presets)
     return True
 
 
@@ -20201,17 +20207,15 @@ def _history_from_replay_response(
         prefix: str,
         card_count: int | None = None,
     ) -> list[dict[int, int]]:
+        def updated(previous: Mapping[int, int] | None, name: str) -> dict[int, int]:
+            state = dict(previous or {})
+            state.update(
+                zip(cards[:card_count], int64s(f"{prefix}{name}").tolist(), strict=True)
+            )
+            return state
+
         return [
-            {
-                **(previous or {}),
-                **dict(
-                    zip(
-                        cards[:card_count],
-                        int64s(f"{prefix}{name}").tolist(),
-                        strict=True,
-                    )
-                ),
-            }
+            updated(previous, name)
             for name, previous in (
                 ("card_previous_review_ids", previous_review_id_by_card),
                 ("card_previous_interval_days", previous_interval_days_by_card),

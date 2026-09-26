@@ -1027,3 +1027,35 @@ def _reference_inputs(  # noqa: PLR0912, PLR0913, PLR0915
         ignored_review_ids=active_ignored_review_ids,
         prepared_checkpoint_histories=prepared_checkpoint_histories,
     )
+
+
+def test_the_backend_presets_are_kept_as_the_python_read_keeps_them() -> None:
+    """`_remember_backend_preset_ids` keeps the presets it is given in
+    `_resolved_preset_id_cache`, after the ones kept already and in the given
+    order, and keeps nothing when a card is kept with another preset."""
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(path="presets")))
+    key = rs._preset_id_cache_key(reviewer)
+    try:
+        rs._resolved_preset_id_cache[key] = {2: "20", 9: "90"}
+        # a card that is gone has no preset ("")
+        assert rs._remember_backend_preset_ids(
+            reviewer, [3, 2, 7, 1], ["30", "20", "", "10"]
+        )
+        assert list(rs._resolved_preset_id_cache[key].items()) == [
+            (2, "20"),
+            (9, "90"),
+            (3, "30"),
+            (1, "10"),
+        ]
+        # all kept already
+        assert rs._remember_backend_preset_ids(reviewer, [1, 9], ["10", "90"])
+        assert len(rs._resolved_preset_id_cache[key]) == 4
+        # card 9 kept with another preset: nothing is kept
+        assert not rs._remember_backend_preset_ids(reviewer, [4, 9], ["40", "91"])
+        assert list(rs._resolved_preset_id_cache[key]) == [2, 9, 3, 1]
+        # nothing kept yet
+        rs._resolved_preset_id_cache[key] = {}
+        assert rs._remember_backend_preset_ids(reviewer, [5, 6], ["50", "60"])
+        assert rs._resolved_preset_id_cache[key] == {5: "50", 6: "60"}
+    finally:
+        rs._resolved_preset_id_cache.pop(key, None)
