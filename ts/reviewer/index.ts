@@ -236,6 +236,12 @@ export async function _updateQA(
         return;
     }
 
+    await waitUntilShown(updateContext);
+
+    if (!updateIsCurrent()) {
+        return;
+    }
+
     await waitForNextPaint(
         () => bridgeCommand(`qaPaintPending:${updateContext}`),
         () => bridgeCommand(`qaPaintRetry:${updateContext}`),
@@ -246,6 +252,32 @@ export async function _updateQA(
         await _runHook(onShownHook);
         bridgeCommand(`qaPresented:${updateContext}`);
     }
+}
+
+const HELD_CLASS = "clanki-held";
+const HELD_TIMEOUT_MS = 1000;
+
+/** A new reviewer page is drawn hidden (aqt.page_reveal): its first card and
+the bottom bar's buttons appear in one frame (spec
+review.first-card-one-frame). Tell Python the card is in, and wait until the
+page is shown, so that the paint wait below waits for a frame the user sees. */
+function waitUntilShown(updateContext: string): Promise<void> {
+    const root = document.documentElement;
+    if (!root.classList.contains(HELD_CLASS)) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        const timer = window.setTimeout(() => {
+            // Python did not answer: show the page anyway
+            root.classList.remove(HELD_CLASS);
+            resolve();
+        }, HELD_TIMEOUT_MS);
+        window.addEventListener("clanki-shown", () => {
+            window.clearTimeout(timer);
+            resolve();
+        }, { once: true });
+        bridgeCommand(`qaHeld:${updateContext}`);
+    });
 }
 
 export function _showQuestion(
