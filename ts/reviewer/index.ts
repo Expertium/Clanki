@@ -179,6 +179,7 @@ export async function _updateQA(
     onupdate: Callback,
     onshown: Callback,
     updateContext?: string,
+    bodyclass?: string | null,
 ): Promise<void> {
     const updateIsCurrent = (): boolean => !updateContext || updateContext === latestUpdateContext;
 
@@ -202,6 +203,13 @@ export async function _updateQA(
 
     if (!updateIsCurrent()) {
         return;
+    }
+
+    // The card's classes go on the body in the same task as its content, so
+    // no frame shows the content without them: while a card's script loads,
+    // Chromium paints what is there (spec review.card-style-with-content).
+    if (bodyclass) {
+        document.body.className = bodyclass;
     }
 
     try {
@@ -312,6 +320,7 @@ export function _showQuestion(
                 allImagesLoaded().then(() => preloadAnswerImages(a));
             },
             updateContext,
+            bodyclass,
         )
     );
 }
@@ -346,6 +355,7 @@ export function _showAnswer(
                 /* noop */
             },
             updateContext,
+            bodyclass,
         )
     );
 }
