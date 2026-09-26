@@ -960,7 +960,26 @@ pub mod test_helpers {
             self.answer(|states| states.easy, Rating::Easy).unwrap()
         }
 
+        /// Answers Good as if at `answered_at`, which also names the
+        /// review-log id the answer asks for.
+        pub(crate) fn answer_good_at(&mut self, answered_at: TimestampMillis) -> PostAnswerState {
+            self.answer_at(|states| states.good, Rating::Good, answered_at)
+                .unwrap()
+        }
+
         fn answer<F>(&mut self, get_state: F, rating: Rating) -> Result<PostAnswerState>
+        where
+            F: FnOnce(&SchedulingStates) -> CardState,
+        {
+            self.answer_at(get_state, rating, TimestampMillis::now())
+        }
+
+        fn answer_at<F>(
+            &mut self,
+            get_state: F,
+            rating: Rating,
+            answered_at: TimestampMillis,
+        ) -> Result<PostAnswerState>
         where
             F: FnOnce(&SchedulingStates) -> CardState,
         {
@@ -972,7 +991,7 @@ pub mod test_helpers {
                 current_state: states.current,
                 new_state,
                 rating,
-                answered_at: TimestampMillis::now(),
+                answered_at,
                 milliseconds_taken: 0,
                 custom_data: None,
                 desired_retention_override: None,
@@ -3128,37 +3147,40 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// Pins spec/scheduling.md#sched.review-scheduler-record
+    /// Pins spec/scheduling.md#sched.review-scheduler-record: an answer
+    /// that takes the review-log id an undone answer freed records its own
+    /// algorithm, in both files.
     #[test]
-    fn a_review_keeps_the_algorithm_it_was_first_recorded_with() -> Result<()> {
+    fn an_answer_that_takes_a_freed_review_id_records_its_own_algorithm() -> Result<()> {
         let (mut col, _cids) = v3_test_collection(1)?;
         col.change_scheduling_algorithm(SchedulingAlgorithm::Fsrs7)?;
-        col.answer_good();
+        let at = TimestampMillis::now();
+        col.answer_good_at(at);
+        col.undo()?;
+        col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)?;
+        // the same millisecond: the review log gives the same id again
+        col.answer_good_at(at);
 
-        let revlog_id = col
+        let revlog_id: i64 = col
             .storage
             .db
-            .query_row(
-                "select revlog_id from retrievability_cache.review_scheduler",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
-
-        // a second write of the same review, as a replay or an import might
-        // attempt, does not overwrite the first
-        col.storage
-            .set_review_scheduler(RevlogId(revlog_id), "rwkv_curve")?;
-        let stored: String = col
-            .storage
-            .db
-            .query_row(
-                "select algorithm from retrievability_cache.review_scheduler",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored, "fsrs7");
+            .query_row("select id from revlog", [], |row| row.get(0))?;
+        assert_eq!(revlog_id, at.0, "the freed id was taken again");
+        for schema in ["scheduler_record", "retrievability_cache"] {
+            let stored: Vec<(i64, String)> = col
+                .storage
+                .db
+                .prepare(&format!(
+                    "select revlog_id, algorithm from {schema}.review_scheduler"
+                ))?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            assert_eq!(
+                stored,
+                vec![(revlog_id, "rwkv_curve".to_string())],
+                "{schema}"
+            );
+        }
         Ok(())
     }
 }

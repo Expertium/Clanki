@@ -130,7 +130,7 @@ damaged file that cannot be moved is replaced by a memory database for that
 session. The collection always opens. Then the two `review_scheduler` tables
 are brought into step: when their row counts or largest review ids differ,
 each gets the rows it lacks, plus any rows that can still be read from a
-damaged file. A row already present keeps its first answer.
+damaged file. In that step a row a file already holds keeps its value.
 
 After the open, nothing is shown unless records were lost; a replaced file is
 written to the log. The records count as lost when a damaged file gave
