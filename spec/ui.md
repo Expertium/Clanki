@@ -2048,7 +2048,11 @@ The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
 day, and again whenever a preset's FSRS-7 parameters change. A later open on
 the same day writes predictions only when a preset is due for optimization
-(`deck-options.fsrs-auto-optimize`).
+(`deck-options.fsrs-auto-optimize`). A request that comes while a pass runs
+or waits for a pause is not lost: a parameter change, a replaced prediction
+cache or a day with no pass yet gets a full pass after the one that runs,
+and a profile that opened meanwhile gets its own pass, also when the old
+pass stops during its wait.
 
 It waits for a pause in what the user does **before it begins**. It asks
 which presets are stale only once ten seconds have passed without a key
@@ -2244,6 +2248,8 @@ of every preset every day: about 76 s of CPU on his collection.
 `test_a_pass_cut_short_by_a_profile_switch_stops_quietly`,
 `test_a_pass_cut_short_by_a_full_sync_stops_quietly`,
 `test_the_next_profile_gets_its_pass_when_the_old_one_stops_late`,
+`test_the_next_profile_gets_its_pass_when_the_old_one_was_waiting`,
+`test_a_parameter_change_while_a_same_day_pass_waits_still_writes`,
 `test_a_failure_with_the_collection_still_open_still_says_so`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,
