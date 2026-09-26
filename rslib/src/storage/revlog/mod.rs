@@ -45,6 +45,9 @@ const FSRS_PREDICTION_COVERAGE_TABLE: &str = "fsrs_prediction_coverage";
 /// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
+/// How many rows of an older tag's curve sources one write of new sources
+/// deletes (`set_rwkv_curve_sources`): about 17 ms of the collection.
+const STALE_CURVE_SOURCES_PER_WRITE: i64 = 5_000;
 const RWKV_CURVE_SOURCE_TAGS_TABLE: &str = "rwkv_curve_source_tags";
 /// Lets the check that the recordings are all still there count a tag's
 /// sources without reading them: every row of the table holds a 256-byte
@@ -899,17 +902,22 @@ impl SqliteStorage {
                     self.db.last_insert_rowid()
                 }
             };
-            let other_tags: bool = self.db.query_row(
-                &format!("select exists(select 1 from {tags} where id != ?)"),
-                [tag_id],
-                |row| row.get(0),
+            // An older tag's sources are unreachable once the tag is gone:
+            // every reader asks for the sources by tag id, and a tag id is
+            // never given again (a new tag takes the largest id plus one).
+            // Their rows go STALE_CURVE_SOURCES_PER_WRITE at a time, here and
+            // in the writes after this one: in one statement, the 656k rows
+            // of Andrew's old model held the collection for 2.3 s.
+            self.db
+                .execute(&format!("delete from {tags} where id != ?"), [tag_id])?;
+            self.db.execute(
+                &format!(
+                    "delete from {table} where revlog_id in (
+                       select revlog_id from {table} where tag < ?1 or tag > ?1 limit ?2
+                     )"
+                ),
+                params![tag_id, STALE_CURVE_SOURCES_PER_WRITE],
             )?;
-            if other_tags {
-                self.db
-                    .execute(&format!("delete from {table} where tag != ?"), [tag_id])?;
-                self.db
-                    .execute(&format!("delete from {tags} where id != ?"), [tag_id])?;
-            }
             let mut stmt = self.db.prepare_cached(&format!(
                 "insert or replace into {table} (revlog_id, tag, source) values (?, ?, ?)"
             ))?;
@@ -2028,6 +2036,68 @@ mod tests {
                 .rwkv_curve_sources_for_card(CardId(2), &curve_tag("model-b"))?,
             (vec![20], 3, vec![9, 9, 9])
         );
+        Ok(())
+    }
+
+    /// An older tag's sources are unreachable at once when a new tag saves
+    /// its first sources, and their rows go a part per write, so that no
+    /// write deletes a whole history's rows while it holds the collection.
+    #[test]
+    fn an_older_tags_curve_sources_go_a_part_per_write() -> Result<()> {
+        let (col, _tempdir, _path) = temp_collection("curve_sources_parts")?;
+        let old_rows = 2 * STALE_CURVE_SOURCES_PER_WRITE + 1_000;
+        let count = |col: &Collection| -> Result<i64> {
+            Ok(col.storage.db.query_row(
+                &format!(
+                    "select count() from {RETRIEVABILITY_CACHE_DB_SCHEMA}.{RWKV_CURVE_SOURCES_TABLE}"
+                ),
+                [],
+                |row| row.get(0),
+            )?)
+        };
+        for id in 1..=old_rows {
+            col.storage.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
+                 values (?, 1, 0, 3, 1, 0, 2500, 1000, 1)",
+                [id],
+            )?;
+        }
+        let old_ids: Vec<i64> = (1..=old_rows).collect();
+        let tag_a = curve_tag("model-a");
+        col.storage
+            .set_rwkv_curve_sources(&tag_a, &old_ids, &vec![7; old_ids.len()], 1)?;
+        assert_eq!(count(&col)?, old_rows);
+
+        // model B saves one source: A's are gone for every reader at once,
+        // and one part of their rows is deleted
+        let tag_b = curve_tag("model-b");
+        col.storage
+            .set_rwkv_curve_sources(&tag_b, &[old_rows], &[9], 1)?;
+        let empty = (vec![], 0, vec![]);
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag_a)?,
+            empty
+        );
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag_b)?,
+            (vec![old_rows], 1, vec![9])
+        );
+        assert_eq!(count(&col)?, old_rows - STALE_CURVE_SOURCES_PER_WRITE);
+
+        // back to model A: its old rows do not come back
+        col.storage.set_rwkv_curve_sources(&tag_a, &[1], &[5], 1)?;
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag_a)?,
+            (vec![1], 1, vec![5])
+        );
+        assert_eq!(
+            col.storage.rwkv_curve_sources_for_card(CardId(1), &tag_b)?,
+            empty
+        );
+
+        // the writes after it delete the rest
+        col.storage.set_rwkv_curve_sources(&tag_a, &[2], &[5], 1)?;
+        assert_eq!(count(&col)?, 2);
         Ok(())
     }
 
