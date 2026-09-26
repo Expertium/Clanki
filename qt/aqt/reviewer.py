@@ -52,6 +52,7 @@ from aqt.operations.scheduling import (
     suspend_note,
 )
 from aqt.operations.tag import add_tags_to_notes, remove_tags_from_notes
+from aqt.page_reveal import page_reveal
 from aqt.profiles import VideoDriver
 from aqt.qt import *
 from aqt.sound import av_player, play_clicked_audio, record_audio
@@ -243,6 +244,7 @@ class Reviewer:
         self._states_mutated = True
         self._state_mutation_js = None
         self._reps: int | None = None
+        self._answer_button_update_id: int | None = None
         self._show_question_timer: QTimer | None = None
         self._show_answer_timer: QTimer | None = None
         self.auto_advance_enabled = False
@@ -803,7 +805,10 @@ class Reviewer:
 
     def _initWeb(self) -> None:
         self._reps = 0
-        # main window
+        # The page and the bottom bar appear together with the first card,
+        # its buttons included (spec review.first-card-one-frame): the page
+        # is shown when its first card is in (qaHeld), not when its DOM is
+        # done.
         self.web.stdHtml(
             self.revHtml(),
             css=["css/reviewer.css"],
@@ -811,7 +816,9 @@ class Reviewer:
                 "js/reviewer.js",
             ],
             context=self,
+            held=True,
         )
+        page_reveal().wait_for_signal(self.web)
         # block default drag & drop behavior while allowing drop events to be received by JS handlers
         self.web.allow_drops = True
         self.web.eval("_blockDefaultDragDropBehavior();")
@@ -821,6 +828,7 @@ class Reviewer:
             css=["css/toolbar-bottom.css", "css/reviewer-bottom.css"],
             js=["js/vendor/jquery.min.js", "js/reviewer-bottom.js"],
             context=ReviewerBottomBar(self),
+            held=True,
         )
 
     # Showing the question
@@ -901,7 +909,9 @@ class Reviewer:
 
         self._question_rendered = True
         self._finish_qa_transition()
-        self._showAnswerButton()
+        # a first card already got it before it was shown (_on_qa_held)
+        if getattr(self, "_answer_button_update_id", None) != update_id:
+            self._showAnswerButton()
         self.mw.web.setFocus()
         gui_hooks.reviewer_did_show_question(self.card)
         self._auto_advance_to_answer_if_enabled()
@@ -1768,6 +1778,21 @@ class Reviewer:
         if callable(repaint := getattr(self.web, "repaint", None)):
             repaint()
 
+    def _on_qa_held(
+        self,
+        kind: Literal["question", "answer"],
+        update_id: int,
+        card_id: CardId,
+    ) -> None:
+        """The first card of a new reviewer page is in, and the page waits,
+        hidden, to be shown. The bottom bar gets its Show Answer button now,
+        so that it appears in the same frame as the card; then both are shown
+        (spec review.first-card-one-frame)."""
+        if kind == "question" and self._qa_context_is_current(kind, update_id, card_id):
+            self._showAnswerButton()
+            self._answer_button_update_id = update_id
+        page_reveal().mark_ready(self.web)
+
     def _on_qa_paint_retry(
         self,
         kind: Literal["question", "answer"],
@@ -1813,6 +1838,9 @@ class Reviewer:
         elif url.startswith("qaPaintRetry:"):
             if context := self._qa_bridge_context(url, "qaPaintRetry"):
                 self._on_qa_paint_retry(*context)
+        elif url.startswith("qaHeld:"):
+            if context := self._qa_bridge_context(url, "qaHeld"):
+                self._on_qa_held(*context)
         elif url.startswith("qaPresented:"):
             if context := self._qa_bridge_context(url, "qaPresented"):
                 kind, update_id, card_id = context

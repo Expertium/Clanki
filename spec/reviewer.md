@@ -38,3 +38,32 @@ no "Partly on" caption.
 
 **Pinned by:** `test_on_screen_timer_keeps_running_when_the_answer_shows`
 (`qt/tests/test_reviewer.py`).
+
+## review.first-card-one-frame
+
+Given Study Now (or any start of the Study screen that loads the reviewer
+page), Clanki loads the reviewer page and its bottom bar hidden (spec
+ui.screen-one-frame) and shows them together once the first card is in the
+page: its content, its styling and its scripts done. The bottom bar is shown
+with the card's Show Answer button and the remaining counts already in it.
+Until then the screen keeps showing the deck's overview. The reviewer's wait
+for the frame that shows the card (the paint wait before Show Answer and the
+answer keys work) starts only once the page is shown, so it still waits for
+a frame the user sees. A first card not in within 0.5 s is shown as it
+fills in, as before. Later cards are drawn as before.
+
+**Why:** Andrew, 2026-09-26, from a screen recording taken frame by frame:
+"when I click "Study Now" for one frame "Options", "Custom Study" and
+"Description" disappear and are replaced with "Edit" and "More"." The
+bottom bar's page was ready before the main view's first card, and its Show
+Answer button came a frame or more after the card. Measured offscreen on a
+copy of Andrew's collection: the bottom bar changed twice (Edit and More
+alone, then Show Answer) and the main view up to three times; now each
+changes once, within one frame of each other.
+
+**Pinned by:** `qt/tests/test_reviewer_first_frame.py`
+(`test_the_first_card_gets_its_answer_button_before_both_pages_show`,
+`test_a_later_card_draws_its_answer_button_when_presented`,
+`test_a_stale_first_card_only_shows_the_pages`,
+`test_study_now_draws_the_page_and_the_bottom_bar_held`);
+`ts/reviewer/held_page.test.ts`.
