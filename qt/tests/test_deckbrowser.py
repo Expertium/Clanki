@@ -471,6 +471,9 @@ def refreshable(browser, monkeypatch):
     page = _Page()
     state = SimpleNamespace(tree=_tree(), studied_today="studied today")
     browser.web = page
+    browser.bottom = SimpleNamespace(web=SimpleNamespace())
+    reveal = SimpleNamespace(expect=lambda web: None)
+    monkeypatch.setattr(deckbrowser, "page_reveal", lambda: reveal)
     browser.mw = SimpleNamespace(
         state="deckBrowser",
         advanced_ui=lambda: True,

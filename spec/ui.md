@@ -762,6 +762,28 @@ through 1.
 `test_the_deck_list_is_drawn_hidden_and_shown_with_its_bottom_bar`
 (`qt/tests/test_deckbrowser.py`).
 
+## ui.toolbar-switch-one-frame
+
+Given a switch to the Study screen or from it to the deck list or a deck's
+overview, the top toolbar changes its look (flat in the card's background
+on the Study screen, raised on the other screens) at once, with no
+animation, in the same step as the new screen's pages are shown (spec
+ui.screen-one-frame). On the Study screen the first card's pages also wait
+for the toolbar's new background. The screen's pages are expected from the
+moment the screen opens, so the toolbar and the bottom bar wait for pages
+that are drawn after work in the background (the deck list's and the
+overview's counts, the Study screen's queue). The bottom bar changes height
+once, when its new page is shown. The toolbar's hover shadow and its
+sliding away on the Study screen (Preferences > "Hide top bar during
+review") still animate.
+
+**Why:** Andrew, 2026-09-26, after the frame-by-frame recording of the
+Study screen: "Fix both": the toolbar's animation (about 300 ms, 8 to 10
+frames on every switch) and the two height changes of the bottom bar on
+the way back to the deck list, each before the deck list itself appeared.
+
+**Pinned by:** `qt/tests/test_toolbar_switch.py`.
+
 ## ui.review-heatmap-kept-counts
 
 Given a collection whose heatmap was drawn in an earlier session, the next

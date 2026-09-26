@@ -39,6 +39,11 @@
     .fancy & {
         transition: all var(--transition) ease-in-out;
     }
+    // a switch between the Study screen and the others is one frame, not an
+    // animation (spec ui.toolbar-switch-one-frame)
+    .fancy.instant & {
+        transition: none;
+    }
 }
 
 .hitem {
