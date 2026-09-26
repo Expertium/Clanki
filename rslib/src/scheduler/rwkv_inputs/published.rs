@@ -2,23 +2,26 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 //! (b) The feature encoder of today's published model (92 input features,
-//! `rslib/src/rwkv`): turns the event stream into the model's per-review
-//! input records, the records Python's `_historical_rwkv_review_inputs`
-//! builds, field for field. The model turns a record into its feature
-//! vector itself.
+//! `rslib/src/rwkv`; layout `RwkvFeatureLayout::Published92`): turns the
+//! event stream into the model's per-review input records, the records
+//! Python's `RwkvReviewInput` holds, field for field, and their packed
+//! warm-up rows. The model turns a record into its feature vector itself.
 
 use std::collections::HashMap;
 
-use fnv::FnvHashMap;
 use sha2::Digest;
 use sha2::Sha256;
 
 use super::stream::RwkvReviewEvent;
+use super::RwkvReplayCard;
+use super::RwkvReplayEncoder;
+use super::RwkvReplayRecord;
 use crate::card::CardQueue;
 use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::decks::Deck;
 use crate::decks::DeckId;
+use crate::prelude::*;
 use crate::scheduler::timing::SchedTimingToday;
 
 const RWKV_HISTORY_HASH_DOMAIN: &[u8] = b"anki-rwkv-state-cache-history-v1\0";
@@ -39,6 +42,10 @@ pub(crate) enum RwkvFirstReviewElapsed<'a> {
     },
     CardCreation,
     Missing,
+    /// From the card's creation where the caller says so for its home deck
+    /// (Python's build of the rows it read itself); never for a deleted
+    /// card or a deck the map lacks.
+    ByDeck(&'a HashMap<i64, bool>),
 }
 
 /// One review as today's model reads it: Python's `RwkvReviewInput` of a
@@ -147,53 +154,51 @@ impl PublishedReviewInput {
     }
 }
 
-/// What the encoder remembers about one card.
+/// The days the replay measures reviews in: the collection's scheduler day
+/// today and when the next one starts (`SchedTimingToday`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PublishedCardState {
-    pub(crate) card_id: i64,
-    pub(crate) previous_review_id: i64,
-    pub(crate) previous_interval_days: i64,
-    pub(crate) review_count: i64,
+pub(crate) struct RwkvReplayDays {
+    pub(crate) days_elapsed: i64,
+    /// Epoch seconds.
+    pub(crate) next_day_at: i64,
 }
 
-/// Encodes a replay's events in order. The cards it has seen stay in the
-/// order it first saw them.
+impl From<&SchedTimingToday> for RwkvReplayDays {
+    fn from(timing: &SchedTimingToday) -> Self {
+        Self {
+            days_elapsed: timing.days_elapsed.into(),
+            next_day_at: timing.next_day_at.0,
+        }
+    }
+}
+
+/// Encodes a replay's events in order, for today's published model. What it
+/// knows of a card's earlier reviews, the replay hands it with each event
+/// (`super::RwkvReplayCard`).
 pub(crate) struct PublishedEncoder<'a> {
-    timing: SchedTimingToday,
+    days: RwkvReplayDays,
     first_review: RwkvFirstReviewElapsed<'a>,
-    index_by_card: FnvHashMap<i64, usize>,
-    cards: Vec<PublishedCardState>,
 }
 
 impl<'a> PublishedEncoder<'a> {
-    pub(crate) fn new(timing: SchedTimingToday, first_review: RwkvFirstReviewElapsed<'a>) -> Self {
-        Self {
-            timing,
-            first_review,
-            index_by_card: FnvHashMap::default(),
-            cards: Vec::new(),
-        }
+    pub(crate) fn new(days: RwkvReplayDays, first_review: RwkvFirstReviewElapsed<'a>) -> Self {
+        Self { days, first_review }
     }
 
-    pub(crate) fn encode(&mut self, event: &RwkvReviewEvent) -> PublishedReviewInput {
-        let day_offset = rwkv_historical_day_offset(event.review_id, &self.timing);
-        let cards = &mut self.cards;
-        let index = *self.index_by_card.entry(event.card_id).or_insert_with(|| {
-            cards.push(PublishedCardState {
-                card_id: event.card_id,
-                previous_review_id: 0,
-                previous_interval_days: 0,
-                review_count: 0,
-            });
-            cards.len() - 1
-        });
-        let first_review = &self.first_review;
-        let card = &mut cards[index];
-        let (elapsed_days, elapsed_seconds) = if card.review_count > 0 {
+    /// The record of `event`, whose card's previous review in the replay
+    /// (or in the state it continues) is `previous_review_id`.
+    pub(crate) fn encode_review(
+        &self,
+        event: &RwkvReviewEvent,
+        previous_review_id: Option<i64>,
+    ) -> PublishedReviewInput {
+        let day_offset = rwkv_historical_day_offset(event.review_id, &self.days);
+        let (elapsed_days, elapsed_seconds) = if let Some(previous_review_id) = previous_review_id {
             (
-                (day_offset - rwkv_historical_day_offset(card.previous_review_id, &self.timing))
+                (day_offset - rwkv_historical_day_offset(previous_review_id, &self.days)).max(0),
+                (event.review_id - previous_review_id)
+                    .div_euclid(1000)
                     .max(0),
-                ((event.review_id - card.previous_review_id) / 1000).max(0),
             )
         } else if event.replay_start
             // Only a real Learning start may measure elapsed from the card's
@@ -201,16 +206,13 @@ impl<'a> PublishedEncoder<'a> {
             // is only the first row we hold, not the card's known first
             // review, so its creation age would invent an interval.
             && event.review_kind == 0
-            && first_review_uses_card_creation(first_review, event.deck_id)
+            && first_review_uses_card_creation(&self.first_review, event.deck_id)
         {
-            let elapsed_seconds = ((event.review_id - event.card_id) / 1000).max(0);
+            let elapsed_seconds = (event.review_id - event.card_id).div_euclid(1000).max(0);
             (elapsed_seconds / 86_400, elapsed_seconds)
         } else {
             (-1, -1)
         };
-        card.previous_review_id = event.review_id;
-        card.previous_interval_days = event.interval_days;
-        card.review_count += 1;
         PublishedReviewInput {
             review_id: event.review_id,
             card_id: event.card_id,
@@ -232,10 +234,27 @@ impl<'a> PublishedEncoder<'a> {
             elapsed_seconds,
         }
     }
+}
 
-    /// Every card seen so far, in the order the encoder first saw them.
-    pub(crate) fn cards(&self) -> &[PublishedCardState] {
-        &self.cards
+impl RwkvReplayEncoder for PublishedEncoder<'_> {
+    type Record = PublishedReviewInput;
+
+    fn encode(&mut self, event: &RwkvReviewEvent, card: &RwkvReplayCard) -> PublishedReviewInput {
+        self.encode_review(event, card.previous_review_id)
+    }
+}
+
+impl RwkvReplayRecord for PublishedReviewInput {
+    fn review_id(&self) -> i64 {
+        self.review_id
+    }
+
+    fn write_delta_record(&self, out: &mut Vec<u8>) {
+        PublishedReviewInput::write_delta_record(self, out)
+    }
+
+    fn write_packed_row(&self, out: &mut Vec<u8>) {
+        PublishedReviewInput::write_packed_row(self, out)
     }
 }
 
@@ -246,6 +265,9 @@ fn first_review_uses_card_creation(
     deck_id: Option<i64>,
 ) -> bool {
     match first_review {
+        RwkvFirstReviewElapsed::ByDeck(by_deck) => deck_id
+            .and_then(|deck_id| by_deck.get(&deck_id).copied())
+            .unwrap_or(false),
         RwkvFirstReviewElapsed::DeckConfig {
             decks_by_id,
             configs_by_id,
@@ -271,10 +293,11 @@ fn first_review_uses_card_creation(
     }
 }
 
-pub(crate) fn rwkv_historical_day_offset(review_id: i64, timing: &SchedTimingToday) -> i64 {
-    let review_secs = review_id / 1000;
-    let days_before_today = (timing.next_day_at.0 - 1 - review_secs).max(0) / 86_400;
-    (timing.days_elapsed as i64 - days_before_today).max(0)
+/// Python's `_historical_review_day_offset`, with its floor division.
+pub(crate) fn rwkv_historical_day_offset(review_id: i64, days: &RwkvReplayDays) -> i64 {
+    let review_secs = review_id.div_euclid(1000);
+    let days_before_today = (days.next_day_at - 1 - review_secs).max(0) / 86_400;
+    (days.days_elapsed - days_before_today).max(0)
 }
 
 /// The history hash: a SHA-256 chain over the reviews' delta records, the
@@ -295,7 +318,28 @@ impl RwkvHistoryHashChain {
         }
     }
 
-    pub(crate) fn update(&mut self, review: &PublishedReviewInput) {
+    /// The chain that goes on from `hex`, the hash of an earlier history
+    /// (Python's `_rwkv_history_hash_is_valid`: 64 lowercase hex digits).
+    pub(crate) fn from_hex(hex: &str) -> Result<Self> {
+        require!(
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+            "invalid previous RWKV history identity"
+        );
+        let mut hash = [0u8; 32];
+        for (index, byte) in hash.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+                .or_invalid("invalid previous RWKV history identity")?;
+        }
+        Ok(Self {
+            hash,
+            record: Vec::with_capacity(256),
+        })
+    }
+
+    pub(crate) fn update(&mut self, review: &impl RwkvReplayRecord) {
         self.record.clear();
         review.write_delta_record(&mut self.record);
         let mut digest = Sha256::new();

@@ -43,6 +43,7 @@ from typing import (
     TypedDict,
     TypeVar,
     cast,
+    overload,
 )
 
 from typing_extensions import NotRequired
@@ -511,6 +512,198 @@ def _rwkv_state_update_input(review_input: RwkvReviewInput) -> RwkvReviewInput:
     )
 
 
+# One packed warm-up row of today's published layout (the rows the backend's
+# replay builder writes, `rslib/src/scheduler/rwkv_inputs/published.rs`, and
+# `rwkv_srs_benchmark._PACKED_PREDICTION_REQUEST_ROW`): presence bits, card,
+# note, deck and preset ids, is_query, ease, duration, card type, day, elapsed
+# days and seconds, four target retentions, enforce_grade_order. Bit n of the
+# presence bits says the n-th optional value (note id first) is there.
+_RWKV_PACKED_REVIEW_ROW = struct.Struct("<IqqqqBBqqqqqffffB")
+# 1 for a presence byte without the ease's bit, else 0 (bytes.translate)
+_RWKV_PRESENCE_WITHOUT_EASE = bytes(0 if bits & 0b1000 else 1 for bits in range(256))
+
+
+class RwkvReplayReviews(Sequence[RwkvReviewInput]):
+    """The replay inputs of a history as the backend's builder wrote them:
+    one packed warm-up row per review, and the review-log values the row does
+    not hold. An input is made only where one is asked for, so that a whole
+    history of ~900,000 reviews costs no Python object per review: the
+    replay's warm-up hands the packed rows to the model as they are
+    (`packed_warm_up_rows`), and making every input held the GIL for about
+    6 s on Andrew's collection.
+
+    A slice is another view of the same rows. Equal to any sequence of the
+    same inputs, a list included."""
+
+    __slots__ = (
+        "_rows",
+        "_review_kinds",
+        "_interval_days",
+        "_ease_factors",
+        "_start",
+        "_stop",
+    )
+
+    def __init__(
+        self,
+        rows: memoryview,
+        review_kinds: memoryview,
+        interval_days: memoryview,
+        ease_factors: memoryview,
+        start: int = 0,
+        stop: int | None = None,
+    ) -> None:
+        width = _RWKV_PACKED_REVIEW_ROW.size
+        count = len(review_kinds)
+        if (
+            len(rows) != count * width
+            or len(interval_days) != count
+            or len(ease_factors) != count
+        ):
+            raise ValueError("the RWKV replay columns differ in length")
+        self._rows = rows
+        self._review_kinds = review_kinds
+        self._interval_days = interval_days
+        self._ease_factors = ease_factors
+        self._start = start
+        self._stop = count if stop is None else stop
+
+    def __len__(self) -> int:
+        return self._stop - self._start
+
+    @overload
+    def __getitem__(self, index: int) -> RwkvReviewInput: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[RwkvReviewInput]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> RwkvReviewInput | Sequence[RwkvReviewInput]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            if step != 1:
+                return [self[position] for position in range(start, stop, step)]
+            stop = max(start, stop)
+            return RwkvReplayReviews(
+                self._rows,
+                self._review_kinds,
+                self._interval_days,
+                self._ease_factors,
+                self._start + start,
+                self._start + stop,
+            )
+        count = len(self)
+        position = index + count if index < 0 else index
+        if not 0 <= position < count:
+            raise IndexError("RWKV replay input index out of range")
+        return self._review_input(self._start + position)
+
+    def _review_input(self, row: int) -> RwkvReviewInput:
+        (
+            presence,
+            card_id,
+            note_id,
+            deck_id,
+            preset_id,
+            is_query,
+            ease,
+            duration_millis,
+            card_type,
+            day_offset,
+            elapsed_days,
+            elapsed_seconds,
+            again,
+            hard,
+            good,
+            easy,
+            enforce_grade_order,
+        ) = _RWKV_PACKED_REVIEW_ROW.unpack_from(
+            self._rows, row * _RWKV_PACKED_REVIEW_ROW.size
+        )
+        review_kind = self._review_kinds[row]
+        state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
+
+        def present(bit: int, value: _T) -> _T | None:
+            return value if presence & (1 << bit) else None
+
+        return RwkvReviewInput(
+            identity=RwkvReviewIdentity(
+                card_id=card_id,
+                note_id=present(0, note_id),
+                deck_id=present(1, deck_id),
+                preset_id=present(2, preset_id),
+            ),
+            is_query=bool(is_query),
+            ease=present(3, ease),
+            duration_millis=present(4, duration_millis),
+            card_type=present(5, card_type),
+            card_queue=_historical_review_queue(review_kind),
+            card_due=None,
+            interval_days=self._interval_days[row],
+            ease_factor=self._ease_factors[row],
+            reps=None,
+            lapses=None,
+            day_offset=present(6, day_offset),
+            current_state_kind=state_kind,
+            current_normal_state_kind=normal_state_kind,
+            current_elapsed_days=present(7, elapsed_days),
+            current_elapsed_seconds=present(8, elapsed_seconds),
+            target_retentions=(
+                present(9, again),
+                present(10, hard),
+                present(11, good),
+                present(12, easy),
+            ),
+            enforce_grade_order=bool(enforce_grade_order),
+        )
+
+    def packed_warm_up_rows(self) -> memoryview:
+        """The packed warm-up rows of these reviews, one after another."""
+        width = _RWKV_PACKED_REVIEW_ROW.size
+        return self._rows[self._start * width : self._stop * width]
+
+    def answered_review_ids(self, review_ids: Sequence[int]) -> list[int]:
+        """The ids (`review_ids`, one per review) of the reviews with an
+        ease, read off the rows' presence bits without making an input."""
+        width = _RWKV_PACKED_REVIEW_ROW.size
+        # the low byte of each row's presence bits; bit 3 is the ease's
+        presence = bytes(self._rows[self._start * width : self._stop * width : width])
+        if len(review_ids) != len(presence):
+            raise ValueError("one review id per RWKV replay input")
+        if not presence.translate(_RWKV_PRESENCE_WITHOUT_EASE).count(1):
+            return list(review_ids)
+        return [
+            review_id
+            for review_id, bits in zip(review_ids, presence, strict=True)
+            if bits & 0b1000
+        ]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence) or isinstance(other, (str, bytes)):
+            return NotImplemented
+        if len(other) != len(self):
+            return False
+        if isinstance(other, RwkvReplayReviews):
+            return bytes(self.packed_warm_up_rows()) == bytes(
+                other.packed_warm_up_rows()
+            ) and all(
+                column[self._start : self._stop].tolist()
+                == other_column[other._start : other._stop].tolist()
+                for column, other_column in (
+                    (self._review_kinds, other._review_kinds),
+                    (self._interval_days, other._interval_days),
+                    (self._ease_factors, other._ease_factors),
+                )
+            )
+        return all(mine == theirs for mine, theirs in zip(self, other, strict=True))
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"RwkvReplayReviews({len(self)} reviews)"
+
+
 @dataclass(frozen=True)
 class RwkvReviewCandidate:
     reviewer: object
@@ -754,7 +947,8 @@ class RwkvBackendCacheSnapshot:
 
 @dataclass(frozen=True)
 class RwkvHistoricalReviewInputs:
-    reviews: list[RwkvReviewInput]
+    # an `RwkvReplayReviews` where the backend built them
+    reviews: Sequence[RwkvReviewInput]
     review_ids: list[int]
     previous_review_id_by_card: dict[int, int]
     previous_interval_days_by_card: dict[int, int]
@@ -12943,15 +13137,22 @@ def _rwkv_calibration_fold_role_maps(
     reviewer: object,
     history: RwkvHistoricalReviewInputs,
 ) -> tuple[dict[int, str], dict[int, int]]:
-    review_ids = [
-        review_id
-        for review_id, review_input in zip(
-            history.review_ids,
-            history.reviews,
-            strict=True,
-        )
-        if review_input.ease is not None
-    ]
+    reviews = history.reviews
+    review_ids = (
+        # read off the backend's rows: making an input of every review of
+        # the whole history held the GIL for seconds
+        reviews.answered_review_ids(history.review_ids)
+        if isinstance(reviews, RwkvReplayReviews)
+        else [
+            review_id
+            for review_id, review_input in zip(
+                history.review_ids,
+                reviews,
+                strict=True,
+            )
+            if review_input.ease is not None
+        ]
+    )
     if len(review_ids) < 2:
         return {}, {}
 
@@ -18631,46 +18832,6 @@ def _rwkv_history_hash_after_review(
     return digest.hexdigest()
 
 
-class _RwkvHistoryHasher:
-    """`_rwkv_history_hash_after_review` applied review after review.
-
-    The chain is the same chain. What differs is that the digest stays bytes
-    between reviews, so a history of 656,000 reviews is not validated with a
-    regular expression, hex-decoded and hex-encoded once per review.
-    """
-
-    __slots__ = ("_digest",)
-
-    def __init__(self, history_hash: str) -> None:
-        if not _rwkv_history_hash_is_valid(history_hash):
-            raise ValueError("invalid RWKV history hash")
-        self._digest = bytes.fromhex(history_hash)
-
-    def update(self, review_id: int, review_input: RwkvReviewInput) -> None:
-        self._digest = hashlib.sha256(
-            _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
-            + self._digest
-            + _encode_rwkv_delta_record(review_id, review_input)
-        ).digest()
-
-    def hexdigest(self) -> str:
-        return self._digest.hex()
-
-
-class _NoHistoryHasher:
-    """Stands in for `_RwkvHistoryHasher` where nothing reads the hash: it
-    hashes nothing, and its digest is the empty string, which no state cache
-    accepts."""
-
-    __slots__ = ()
-
-    def update(self, review_id: int, review_input: RwkvReviewInput) -> None:
-        pass
-
-    def hexdigest(self) -> str:
-        return ""
-
-
 def _write_rwkv_delta_record_frame(
     out: bytearray,
     review_id: int,
@@ -19053,25 +19214,6 @@ class _RwkvPreparationSteps:
             self.step()
 
 
-def _recovery_cutoff_review_id(
-    raw_rows: Sequence[Sequence[object]],
-    after_review_id: int | None,
-) -> int | None:
-    """The review id before which a recovery checkpoint may be taken: one
-    checkpoint age before the newest replayed review."""
-    for raw_row_index in range(len(raw_rows) - 1, -1, -1):
-        row = raw_rows[raw_row_index]
-        if (
-            _retained_historical_review_state(row) is None
-            or len(row) < 9
-            or not isinstance(row[0], int)
-            or (after_review_id is not None and row[0] <= after_review_id)
-        ):
-            continue
-        return row[0] - _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-    return None
-
-
 def _active_ignored_review_ids(
     reviewer: object,
     ignored_review_ids: AbstractSet[int],
@@ -19221,10 +19363,12 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             replay_key=replay_key,
         )
 
-    # The whole history from nothing is built by the backend
-    # (rslib/src/scheduler/rwkv_inputs): the same inputs, without holding
-    # the GIL for every review. A read after a cutoff, of a deck, from a
-    # previous state or with dynamic preset replay stays here.
+    # The backend builds the inputs (rslib/src/scheduler/rwkv_inputs), the
+    # one builder of them. The whole history from nothing it reads itself;
+    # every other read (after a cutoff, of a deck, from a previous state, with
+    # dynamic preset replay, or of a collection the backend reads another
+    # way) reads the rows and the presets here and hands them to the same
+    # encoder.
     if (
         after_review_id is None
         and deck_id is None
@@ -19257,64 +19401,42 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
     # The ignored reviews leave the rows before each card's start row is
     # found, as the backend fingerprint drops them (spec
     # sched.rwkv-replay-start-row): an ignored Learning start is no start.
-    # a copy of its own: the loop below empties the rows as it goes, and the
-    # query may hand back a list something else still holds
-    raw_rows = list(
-        _historical_rwkv_review_rows(
-            reviewer,
-            after_review_id=after_review_id if incremental else None,
-            deck_id=deck_id,
-            between_parts=between_steps,
-            ignored_review_ids=ignored_review_ids,
-        )
+    raw_rows = _historical_rwkv_review_rows(
+        reviewer,
+        after_review_id=after_review_id if incremental else None,
+        deck_id=deck_id,
+        between_parts=between_steps,
+        ignored_review_ids=ignored_review_ids,
     )
     active_ignored_review_ids = _active_ignored_review_ids(reviewer, ignored_review_ids)
-    recovery_cutoff_review_id = (
-        _recovery_cutoff_review_id(raw_rows, after_review_id)
-        if prepare_recovery_checkpoint
-        else None
+    rows = _RwkvReplayRows()
+    for block in steps.blocks(raw_rows):
+        for row in block:
+            rows.add(row, after_review_id)
+    rows_elapsed_ms = (time.monotonic() - rows_start) * 1000
+    row_count = len(rows.replayed_rows)
+    _report_rwkv_review_input_prepare_progress(
+        progress, processed=0, total=row_count, started_at=rows_start
     )
 
-    # each row's state, worked out once: the passes below walk the rows five
-    # times, and the state of a row does not change between them
-    retained_states = [
-        _retained_historical_review_state(row)
-        for block in steps.blocks(raw_rows)
-        for row in block
-    ]
-
-    def retained_rows() -> Iterator[tuple[int, Sequence[object], int]]:
-        for index, row in enumerate(raw_rows):
-            steps.row()
-            historical_state = retained_states[index]
-            if historical_state is None:
-                continue
-            if after_review_id is not None and (
-                not isinstance(row[0], int) or row[0] <= after_review_id
-            ):
-                continue
-            yield index, row, historical_state
-
-    row_count = sum(1 for _ in retained_rows())
-    rows_elapsed_ms = (time.monotonic() - rows_start) * 1000
     dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
-    historical_preset_rules_start = time.monotonic()
     historical_preset_rules = (
         _historical_preset_rules(reviewer) if dynamic_preset_replay else []
     )
-    historical_preset_rules_elapsed_ms = (
-        time.monotonic() - historical_preset_rules_start
-    ) * 1000
-    deck_config_start = time.monotonic()
-    deck_configs_by_deck_id = _historical_deck_configs_by_deck_id(
-        reviewer,
-        (row for _index, row, _state in retained_rows()),
-    )
-    deck_config_elapsed_ms = (time.monotonic() - deck_config_start) * 1000
     preset_start = time.monotonic()
+
+    def replayed_rows() -> Iterator[Sequence[object]]:
+        # a walk over the rows is bounded in steps too
+        for row in rows.replayed_rows:
+            steps.row()
+            yield row
+
+    deck_configs_by_deck_id = _historical_deck_configs_by_deck_id(
+        reviewer, replayed_rows()
+    )
     preset_id_by_card = _historical_deck_config_ids_by_card(
         reviewer,
-        (row for _index, row, _state in retained_rows()),
+        replayed_rows(),
         deck_configs_by_deck_id=deck_configs_by_deck_id,
     )
     preset_id_by_card.update(
@@ -19322,60 +19444,154 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             reviewer,
             # a card that is gone has no preset to resolve
             _historical_rwkv_review_card_ids(
-                row
-                for _index, row, _state in retained_rows()
-                if len(row) >= 4 and row[3] is not None
+                row for row in replayed_rows() if len(row) >= 4 and row[3] is not None
             ),
         )
     )
     preset_elapsed_ms = (time.monotonic() - preset_start) * 1000
-    reviews: list[RwkvReviewInput] = []
-    review_ids: list[int] = []
-    last_review_id = after_review_id or 0
-    # An incremental read does not see the rows before the cutoff, so the
-    # count they would have produced comes from the stored per-card counts.
-    # The two agree: the counts were written by the read that stopped at this
-    # cutoff.
-    retained_review_count = sum(review_counts.values()) if incremental else 0
-    review_count = retained_review_count
-    historical_preset_rule_matches = 0
-    prepared_checkpoint_histories: dict[int, RwkvHistoricalReviewInputs] = {}
-    prepare_started_at = time.monotonic()
-    prepare_report_every = _rwkv_warmup_progress_interval(row_count)
-    _report_rwkv_review_input_prepare_progress(
-        progress,
-        processed=0,
-        total=row_count,
-        started_at=prepare_started_at,
-    )
+    steps.step()
 
-    prepared_row_count = 0
-    # the hash chain keeps its digest as bytes through the loop; `history_hash`
-    # is read from it where the loop hands a hash out
-    history_hasher: _RwkvHistoryHasher | _NoHistoryHasher = (
-        _RwkvHistoryHasher(history_hash) if hash_history else _NoHistoryHasher()
+    preset_card_ids = array("q")
+    preset_ids = array("q")
+    has_preset = bytearray()
+    for card_id, base_preset_id in preset_id_by_card.items():
+        preset_card_ids.append(card_id)
+        preset_ids.append(
+            _stable_preset_id(str(base_preset_id)) if base_preset_id is not None else 0
+        )
+        has_preset.append(base_preset_id is not None)
+    message = scheduler_pb2.RwkvReplayInputsFromRowsRequest(
+        review_ids=rows.review_ids.tobytes(),
+        card_ids=rows.card_ids.tobytes(),
+        note_ids=rows.note_ids.tobytes(),
+        deck_ids=rows.deck_ids.tobytes(),
+        eases=rows.eases.tobytes(),
+        durations_millis=rows.durations_millis.tobytes(),
+        review_kinds=rows.review_kinds.tobytes(),
+        interval_days=rows.interval_days.tobytes(),
+        ease_factors=rows.ease_factors.tobytes(),
+        learning_starts=bytes(rows.learning_starts),
+        has_note=bytes(rows.has_note),
+        has_deck=bytes(rows.has_deck),
+        encodable=bytes(rows.encodable),
+        preset_card_ids=preset_card_ids.tobytes(),
+        preset_ids=preset_ids.tobytes(),
+        has_preset=bytes(has_preset),
+        first_review_elapsed_source=(
+            _BACKEND_FIRST_REVIEW_ELAPSED_SOURCES[first_review_elapsed_source]
+        ),
+        # whether a card's first review measures from its creation, by its
+        # home deck: only where the deck has a config that says so
+        first_review_uses_creation_by_deck_id={
+            deck_id_value: isinstance(deck_config, dict)
+            and _rwkv_review_first_review_elapsed_from_card_creation(deck_config)
+            for deck_id_value, deck_config in deck_configs_by_deck_id.items()
+        },
+        routes=[
+            scheduler_pb2.RwkvReplayInputsFromRowsRequest.Route(
+                stable_preset_id=_stable_preset_id(str(rule.preset_id)),
+                has_card_ids=rule.card_ids is not None,
+                card_ids=array("q", sorted(rule.card_ids or ())).tobytes(),
+                min_reps=rule.min_reps,
+                max_reps=rule.max_reps,
+                min_interval_days=rule.min_interval_days,
+                max_interval_days=rule.max_interval_days,
+            )
+            for rule in historical_preset_rules
+        ],
+        days_elapsed=days_elapsed,
+        next_day_at=next_day_at,
+        after_review_id=after_review_id,
+        seed_previous_review_id_cards=array("q", previous_ids).tobytes(),
+        seed_previous_review_ids=array("q", previous_ids.values()).tobytes(),
+        seed_previous_interval_cards=array("q", previous_intervals).tobytes(),
+        seed_previous_interval_days=array("q", previous_intervals.values()).tobytes(),
+        seed_review_count_cards=array("q", review_counts).tobytes(),
+        seed_review_counts=array("q", review_counts.values()).tobytes(),
+        counts_before_cutoff=incremental,
+        previous_history_hash=(
+            previous_history_hash if previous_history_hash is not None else ""
+        ),
+        hash_history=hash_history,
+        recovery_checkpoint_max_age_millis=(
+            _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+            if prepare_recovery_checkpoint
+            else 0
+        ),
+        feature_layout=_RWKV_FEATURE_LAYOUT,
     )
-    for raw_row_index, row in enumerate(raw_rows):
-        historical_state = retained_states[raw_row_index]
-        if historical_state is None:
-            raw_rows[raw_row_index] = ()
-            continue
-        review_id_value = row[0] if row else None
-        if isinstance(review_id_value, int):
-            retained_review_count += 1
-            if review_id_value <= last_review_id:
-                review_count = retained_review_count
-        if after_review_id is not None and (
-            not isinstance(review_id_value, int) or review_id_value <= after_review_id
-        ):
-            raw_rows[raw_row_index] = ()
-            continue
-        prepared_row_count += 1
-        raw_rows[raw_row_index] = ()
-        if len(row) < 9:
-            continue
+    encode_start = time.monotonic()
+    response, columns = _rwkv_replay_response_columns(
+        _rsbridge.rwkv_replay_inputs_from_rows(message.SerializeToString())
+    )
+    encode_elapsed_ms = (time.monotonic() - encode_start) * 1000
+    steps.step()
+    history = _history_from_replay_response(
+        response,
+        columns,
+        steps=steps,
+        previous_review_id_by_card=previous_ids,
+        previous_interval_days_by_card=previous_intervals,
+        review_count_by_card=review_counts,
+        deck_id=deck_id,
+        replay_key=replay_key,
+        ignored_review_ids=active_ignored_review_ids,
+    )
+    _report_rwkv_review_input_prepare_progress(
+        progress, processed=row_count, total=row_count, started_at=rows_start
+    )
+    logger.debug(
+        "RWKV historical review inputs built: rows=%s reviews=%s "
+        "dynamic_preset_replay=%s historical_preset_rules=%s "
+        "rows_elapsed_ms=%.1f preset_elapsed_ms=%.1f encode_elapsed_ms=%.1f "
+        "elapsed_ms=%.1f deck_id=%s",
+        row_count,
+        len(history.reviews),
+        dynamic_preset_replay,
+        len(historical_preset_rules),
+        rows_elapsed_ms,
+        preset_elapsed_ms,
+        encode_elapsed_ms,
+        (time.monotonic() - start) * 1000,
+        deck_id,
+    )
+    return history
+
+
+class _RwkvReplayRows:
+    """The row columns of `RwkvReplayInputsFromRowsRequest`, filled one row
+    of `_historical_rwkv_review_rows` at a time: every row with a start state
+    and a whole review id, since the replay counts each of them."""
+
+    def __init__(self) -> None:
+        self.review_ids = array("q")
+        self.card_ids = array("q")
+        self.note_ids = array("q")
+        self.deck_ids = array("q")
+        self.eases = array("q")
+        self.durations_millis = array("q")
+        self.review_kinds = array("q")
+        self.interval_days = array("q")
+        self.ease_factors = array("q")
+        self.learning_starts = bytearray()
+        self.has_note = bytearray()
+        self.has_deck = bytearray()
+        self.encodable = bytearray()
+        # the rows after the cutoff: the ones whose decks and presets the
+        # replay reads
+        self.replayed_rows: list[Sequence[object]] = []
+
+    def add(self, row: Sequence[object], after_review_id: int | None) -> None:
+        if _retained_historical_review_state(row) is None:
+            return
+        review_id = row[0]
+        if not isinstance(review_id, int):
+            # neither counted nor replayed
+            return
+        if after_review_id is None or review_id > after_review_id:
+            self.replayed_rows.append(row)
         (
-            review_id,
+            _review_id,
             card_id,
             note_id,
             row_deck_id,
@@ -19386,10 +19602,10 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             ease_factor,
         ) = row[:9]
         # a deleted card's review has no note and no deck (spec
-        # sched.rwkv-replay-deleted-cards)
-        if not (
-            isinstance(review_id, int)
-            and isinstance(card_id, int)
+        # sched.rwkv-replay-deleted-cards); a row with another value that is
+        # not a whole number is counted and not replayed
+        encodable = (
+            isinstance(card_id, int)
             and (note_id is None or isinstance(note_id, int))
             and (row_deck_id is None or isinstance(row_deck_id, int))
             and isinstance(ease, int)
@@ -19397,177 +19613,24 @@ def _historical_rwkv_review_inputs(  # noqa: PLR0913
             and isinstance(review_kind, int)
             and isinstance(interval_days, int)
             and isinstance(ease_factor, int)
-        ):
-            continue
+        )
 
-        if (
-            recovery_cutoff_review_id is not None
-            and review_id > recovery_cutoff_review_id
-            and reviews
-            and not prepared_checkpoint_histories
-        ):
-            checkpoint_review_count = len(reviews)
-            prepared_checkpoint_histories[checkpoint_review_count] = (
-                RwkvHistoricalReviewInputs(
-                    reviews=[],
-                    review_ids=[],
-                    previous_review_id_by_card=dict(previous_ids),
-                    previous_interval_days_by_card=dict(previous_intervals),
-                    review_count_by_card=dict(review_counts),
-                    last_review_id=review_ids[-1],
-                    review_count=checkpoint_review_count,
-                    deck_id=deck_id,
-                    history_hash=history_hasher.hexdigest(),
-                    replay_key=replay_key,
-                    ignored_review_ids=active_ignored_review_ids,
-                )
-            )
+        def whole(value: object) -> int:
+            return value if isinstance(value, int) else 0
 
-        day_offset = _historical_review_day_offset(
-            review_id,
-            days_elapsed=days_elapsed,
-            next_day_at=next_day_at,
-        )
-        previous_review_id = previous_ids.get(card_id)
-        if previous_review_id is not None:
-            elapsed_seconds = max(0, (review_id - previous_review_id) // 1000)
-            elapsed_days = max(
-                0,
-                day_offset
-                - _historical_review_day_offset(
-                    previous_review_id,
-                    days_elapsed=days_elapsed,
-                    next_day_at=next_day_at,
-                ),
-            )
-        else:
-            deck_config = deck_configs_by_deck_id.get(row_deck_id)
-            elapsed_source = first_review_elapsed_source
-            if elapsed_source == RwkvFirstReviewElapsedSource.DECK_CONFIG:
-                elapsed_source = (
-                    RwkvFirstReviewElapsedSource.CARD_CREATION
-                    if isinstance(deck_config, dict)
-                    and _rwkv_review_first_review_elapsed_from_card_creation(
-                        deck_config
-                    )
-                    else RwkvFirstReviewElapsedSource.MISSING
-                )
-            # Only a real Learning start may measure elapsed from the card's
-            # creation. A fallback start row (`sched.rwkv-replay-start-row`) is
-            # only the first row we hold, not the card's known first review, so
-            # its creation age would invent an interval.
-            elapsed_seconds = (
-                max(0, (review_id - card_id) // 1000)
-                if elapsed_source == RwkvFirstReviewElapsedSource.CARD_CREATION
-                and historical_state == int(RwkvReviewState.LEARN_START)
-                and review_kind == 0
-                else -1
-            )
-            elapsed_days = elapsed_seconds // 86_400 if elapsed_seconds >= 0 else -1
-        review_count_so_far = review_counts.get(card_id, 0)
-        historical_interval_days = previous_intervals.get(card_id, 0)
-        historical_preset_id = _historical_preset_id_for_review(
-            historical_preset_rules,
-            card_id=card_id,
-            interval_days=historical_interval_days,
-            review_count=review_count_so_far,
-        )
-        if row_deck_id is None:
-            # a card that is gone has no deck, so no preset
-            base_preset_id: int | str | None = None
-        elif historical_preset_id is not None:
-            base_preset_id = historical_preset_id
-            historical_preset_rule_matches += 1
-        else:
-            base_preset_id = preset_id_by_card[card_id]
-        preset_id = (
-            _stable_preset_id(str(base_preset_id))
-            if base_preset_id is not None
-            else None
-        )
-        previous_ids[card_id] = review_id
-        previous_intervals[card_id] = interval_days
-        review_counts[card_id] = review_count_so_far + 1
-        last_review_id = max(last_review_id, review_id)
-        review_count = retained_review_count
-
-        state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
-        review_input = RwkvReviewInput(
-            identity=RwkvReviewIdentity(
-                card_id=card_id,
-                note_id=note_id,
-                deck_id=row_deck_id,
-                preset_id=preset_id,
-            ),
-            is_query=False,
-            ease=ease,
-            duration_millis=duration_millis,
-            card_type=historical_state,
-            card_queue=_historical_review_queue(review_kind),
-            card_due=None,
-            interval_days=interval_days,
-            ease_factor=ease_factor,
-            reps=None,
-            lapses=None,
-            day_offset=day_offset,
-            current_state_kind=state_kind,
-            current_normal_state_kind=normal_state_kind,
-            current_elapsed_days=elapsed_days,
-            current_elapsed_seconds=elapsed_seconds,
-        )
-        review_ids.append(review_id)
-        reviews.append(review_input)
-        history_hasher.update(review_id, review_input)
-        if (
-            prepared_row_count == row_count
-            or prepared_row_count % prepare_report_every == 0
-        ):
-            _report_rwkv_review_input_prepare_progress(
-                progress,
-                processed=prepared_row_count,
-                total=row_count,
-                started_at=prepare_started_at,
-            )
-            # the loop over the rows is the longest part of the preparation
-            # (9.9 s of 15.8 s, measured): it ends a step too. Counted here
-            # rather than per row, so a caller that passes nothing pays
-            # nothing.
-            steps.rows(prepare_report_every)
-    logger.debug(
-        "RWKV historical review inputs built: rows=%s reviews=%s "
-        "dynamic_preset_replay=%s historical_preset_rules=%s "
-        "historical_preset_rule_matches=%s "
-        "rows_elapsed_ms=%.1f historical_preset_rules_elapsed_ms=%.1f "
-        "deck_config_elapsed_ms=%.1f "
-        "preset_elapsed_ms=%.1f elapsed_ms=%.1f "
-        "deck_id=%s",
-        row_count,
-        len(reviews),
-        dynamic_preset_replay,
-        len(historical_preset_rules),
-        historical_preset_rule_matches,
-        rows_elapsed_ms,
-        historical_preset_rules_elapsed_ms,
-        deck_config_elapsed_ms,
-        preset_elapsed_ms,
-        (time.monotonic() - start) * 1000,
-        deck_id,
-    )
-    history_hash = history_hasher.hexdigest()
-    return RwkvHistoricalReviewInputs(
-        reviews=reviews,
-        review_ids=review_ids,
-        previous_review_id_by_card=previous_ids,
-        previous_interval_days_by_card=previous_intervals,
-        review_count_by_card=review_counts,
-        last_review_id=last_review_id,
-        review_count=review_count,
-        deck_id=deck_id,
-        history_hash=history_hash,
-        replay_key=replay_key,
-        ignored_review_ids=active_ignored_review_ids,
-        prepared_checkpoint_histories=prepared_checkpoint_histories,
-    )
+        self.review_ids.append(review_id)
+        self.card_ids.append(whole(card_id))
+        self.note_ids.append(whole(note_id))
+        self.deck_ids.append(whole(row_deck_id))
+        self.eases.append(whole(ease))
+        self.durations_millis.append(whole(duration_millis))
+        self.review_kinds.append(whole(review_kind))
+        self.interval_days.append(whole(interval_days))
+        self.ease_factors.append(whole(ease_factor))
+        self.learning_starts.append(1 if row[9] else 0)
+        self.has_note.append(isinstance(note_id, int))
+        self.has_deck.append(isinstance(row_deck_id, int))
+        self.encodable.append(encodable)
 
 
 def _report_rwkv_review_input_prepare_progress(
@@ -19746,36 +19809,6 @@ def _historical_preset_rule_card_ids(
     return frozenset(card_id for card_id in card_ids if isinstance(card_id, int))
 
 
-def _historical_preset_id_for_review(
-    rules: Sequence[RwkvHistoricalPresetRule],
-    *,
-    card_id: int,
-    interval_days: int,
-    review_count: int,
-) -> str | None:
-    for rule in rules:
-        if rule.card_ids is not None and card_id not in rule.card_ids:
-            continue
-        if rule.min_reps is not None and review_count < rule.min_reps:
-            continue
-        if rule.max_reps is not None and review_count > rule.max_reps:
-            continue
-        if (
-            rule.min_interval_days is not None
-            and interval_days < rule.min_interval_days
-        ):
-            continue
-        if (
-            rule.max_interval_days is not None
-            and interval_days > rule.max_interval_days
-        ):
-            continue
-
-        return rule.preset_id
-
-    return None
-
-
 def _rwkv_card_history_rows(
     reviewer: object, card_ids: Sequence[int]
 ) -> list[Sequence[object]]:
@@ -19940,24 +19973,6 @@ def _backend_historical_rwkv_review_rows(
     return whole
 
 
-# the backend's per-review int64 columns (RwkvHistoricalReviewInputsResponse),
-# in the order `_backend_historical_rwkv_review_inputs` unpacks them
-_BACKEND_INPUT_COLUMNS = (
-    "review_ids",
-    "card_ids",
-    "note_ids",
-    "deck_ids",
-    "preset_ids",
-    "eases",
-    "durations_millis",
-    "card_types",
-    "review_kinds",
-    "interval_days",
-    "ease_factors",
-    "day_offsets",
-    "elapsed_days",
-    "elapsed_seconds",
-)
 _BACKEND_FIRST_REVIEW_ELAPSED_SOURCES = {
     RwkvFirstReviewElapsedSource.DECK_CONFIG: (
         scheduler_pb2.RwkvHistoricalReviewInputsRequest.DECK_CONFIG
@@ -19983,14 +19998,14 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
     progress: RwkvStateCacheProgressCallback | None,
 ) -> RwkvHistoricalReviewInputs | None:
     """`_historical_rwkv_review_inputs` of the whole history from nothing,
-    built by the backend (rslib/src/scheduler/rwkv_inputs): the same inputs,
-    value for value. Python only turns the backend's columns into review
-    inputs, in chunks. None where the backend does not build them -- dynamic
-    preset replay, or a collection it would read another way than Python
-    does; the caller then builds them itself."""
+    read and built by the backend (rslib/src/scheduler/rwkv_inputs). None
+    where the backend does not read it -- dynamic preset replay, or a
+    collection it would read another way than Python does; the caller then
+    reads the rows and the presets itself and hands them to the same
+    encoder."""
     col = _collection(reviewer)
     build = getattr(
-        getattr(col, "_backend", None), "rwkv_historical_review_inputs", None
+        getattr(col, "_backend", None), "rwkv_historical_review_inputs_raw", None
     )
     if (
         not callable(build)
@@ -20001,109 +20016,52 @@ def _backend_historical_rwkv_review_inputs(  # noqa: PLR0913
     # a caller that has already stopped does not start the build
     steps.step()
     try:
-        response = build(
-            ignored_review_ids=sorted(ignored_review_ids),
-            stable_preset_ids=_rwkv_stable_preset_ids(reviewer),
-            first_review_uses_creation_by_config_id=(
-                _rwkv_first_review_uses_creation_by_config_id(reviewer)
-            ),
-            first_review_elapsed_source=(
-                _BACKEND_FIRST_REVIEW_ELAPSED_SOURCES[first_review_elapsed_source]
-            ),
-            hash_history=hash_history,
-            recovery_checkpoint_max_age_millis=(
-                _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
-                if prepare_recovery_checkpoint
-                else 0
-            ),
+        response, columns = _rwkv_replay_response_columns(
+            build(
+                scheduler_pb2.RwkvHistoricalReviewInputsRequest(
+                    ignored_review_ids=sorted(ignored_review_ids),
+                    stable_preset_ids=_rwkv_stable_preset_ids(reviewer),
+                    first_review_uses_creation_by_config_id=(
+                        _rwkv_first_review_uses_creation_by_config_id(reviewer)
+                    ),
+                    first_review_elapsed_source=(
+                        _BACKEND_FIRST_REVIEW_ELAPSED_SOURCES[
+                            first_review_elapsed_source
+                        ]
+                    ),
+                    hash_history=hash_history,
+                    recovery_checkpoint_max_age_millis=(
+                        _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS
+                        if prepare_recovery_checkpoint
+                        else 0
+                    ),
+                    feature_layout=_RWKV_FEATURE_LAYOUT,
+                ).SerializeToString()
+            )
         )
-        columns = [
-            memoryview(getattr(response, name)).cast("q")
-            for name in _BACKEND_INPUT_COLUMNS
-        ]
-        deleted = memoryview(response.deleted_cards).cast("B")
-        cards = memoryview(response.cards).cast("q").tolist()
+        cards = columns["cards"].cast("q").tolist()
     except Exception:
         logger.debug("the backend did not build the RWKV replay inputs", exc_info=True)
         return None
     if not _remember_backend_preset_ids(reviewer, cards, response.card_fsrs_preset_ids):
         return None
     steps.step()
-
-    total = len(columns[0])
-    if len(deleted) != total:
-        logger.error("the backend's RWKV replay input columns differ in length")
-        return None
     started_at = time.monotonic()
+    total = len(columns["review_ids"]) // 8
     _report_rwkv_review_input_prepare_progress(
         progress, processed=0, total=total, started_at=started_at
     )
-    reviews: list[RwkvReviewInput] = []
-    review_ids: list[int] = []
-    for start in range(0, total, BACKEND_ROWS_CHUNK):
-        end = start + BACKEND_ROWS_CHUNK
-        chunk = [column[start:end].tolist() for column in columns]
-        review_ids.extend(chunk[0])
-        reviews.extend(_review_inputs_from_backend_columns(chunk, deleted[start:end]))
-        _report_rwkv_review_input_prepare_progress(
-            progress,
-            processed=min(end, total),
-            total=total,
-            started_at=started_at,
-        )
-        steps.rows(len(chunk[0]))
-
-    def per_card(prefix: str, card_count: int | None = None) -> list[dict[int, int]]:
-        return [
-            dict(
-                zip(
-                    cards[:card_count],
-                    memoryview(getattr(response, f"{prefix}{name}")).cast("q").tolist(),
-                    strict=True,
-                )
-            )
-            for name in (
-                "card_previous_review_ids",
-                "card_previous_interval_days",
-                "card_review_counts",
-            )
-        ]
-
-    active_ignored_review_ids = tuple(response.active_ignored_review_ids)
-    prepared_checkpoint_histories: dict[int, RwkvHistoricalReviewInputs] = {}
-    if checkpoint_review_count := response.checkpoint_review_count:
-        checkpoint_ids, checkpoint_intervals, checkpoint_counts = per_card(
-            "checkpoint_",
-            len(response.checkpoint_card_review_counts) // 8,
-        )
-        prepared_checkpoint_histories[checkpoint_review_count] = (
-            RwkvHistoricalReviewInputs(
-                reviews=[],
-                review_ids=[],
-                previous_review_id_by_card=checkpoint_ids,
-                previous_interval_days_by_card=checkpoint_intervals,
-                review_count_by_card=checkpoint_counts,
-                last_review_id=response.checkpoint_last_review_id,
-                review_count=checkpoint_review_count,
-                history_hash=response.checkpoint_history_hash,
-                replay_key=replay_key,
-                ignored_review_ids=active_ignored_review_ids,
-            )
-        )
-    previous_ids, previous_intervals, review_counts = per_card("")
-    return RwkvHistoricalReviewInputs(
-        reviews=reviews,
-        review_ids=review_ids,
-        previous_review_id_by_card=previous_ids,
-        previous_interval_days_by_card=previous_intervals,
-        review_count_by_card=review_counts,
-        last_review_id=response.last_review_id,
-        review_count=response.review_count,
-        history_hash=response.history_hash,
+    history = _history_from_replay_response(
+        response,
+        columns,
+        steps=steps,
         replay_key=replay_key,
-        ignored_review_ids=active_ignored_review_ids,
-        prepared_checkpoint_histories=prepared_checkpoint_histories,
+        ignored_review_ids=tuple(response.active_ignored_review_ids),
     )
+    _report_rwkv_review_input_prepare_progress(
+        progress, processed=total, total=total, started_at=started_at
+    )
+    return history
 
 
 def _remember_backend_preset_ids(
@@ -20112,11 +20070,11 @@ def _remember_backend_preset_ids(
     preset_ids: Sequence[str],
 ) -> bool:
     """Keep the cards' presets the backend read in `_resolved_preset_id_cache`,
-    as the Python build of the inputs does through `_resolved_fsrs_preset_ids`
+    as the Python read of the presets does through `_resolved_fsrs_preset_ids`
     (the preset-routing check of a changed card reads them). False, keeping
-    nothing, when the cache holds another preset for one of the cards: the
-    Python build would have used that one, so the caller builds the inputs
-    itself."""
+    nothing, when the cache holds another preset for one of the cards: a
+    replay of the presets Python keeps would differ, so the caller reads the
+    presets itself."""
     cache = _resolved_preset_id_cache.setdefault(_preset_id_cache_key(reviewer), {})
     # a card that is gone has no preset, which the backend sends as ""
     pairs = [
@@ -20131,63 +20089,171 @@ def _remember_backend_preset_ids(
     return True
 
 
-def _review_inputs_from_backend_columns(
-    chunk: Sequence[Sequence[int]],
-    deleted: Sequence[int],
-) -> list[RwkvReviewInput]:
-    """The review inputs of one chunk of the backend's columns (all of
-    `_BACKEND_INPUT_COLUMNS`, the review ids included). `deleted` holds 1
-    for a review of a card that is gone, which has no note, deck or preset
-    (spec sched.rwkv-replay-deleted-cards)."""
-    inputs: list[RwkvReviewInput] = []
-    for (
-        _review_id,
-        card_id,
-        note_id,
-        deck_id,
-        preset_id,
-        ease,
-        duration_millis,
-        card_type,
-        review_kind,
-        interval_days,
-        ease_factor,
-        day_offset,
-        elapsed_days,
-        elapsed_seconds,
-        card_is_deleted,
-    ) in zip(*chunk, deleted, strict=True):
-        state_kind, normal_state_kind = _historical_review_state_kinds(review_kind)
-        inputs.append(
-            RwkvReviewInput(
-                identity=(
-                    RwkvReviewIdentity(card_id=card_id)
-                    if card_is_deleted
-                    else RwkvReviewIdentity(
-                        card_id=card_id,
-                        note_id=note_id,
-                        deck_id=deck_id,
-                        preset_id=preset_id,
+# `RwkvHistoricalReviewInputsResponse`'s byte columns, by field number. They
+# are numbered one after the other, between the fields before and after them
+# (see `_rwkv_replay_response_columns`).
+_REPLAY_RESPONSE_COLUMNS = {
+    field.number: field.name
+    for field in scheduler_pb2.RwkvHistoricalReviewInputsResponse.DESCRIPTOR.fields
+    if field.type == field.TYPE_BYTES
+}
+
+
+def _rwkv_replay_response_columns(
+    raw: bytes,
+) -> tuple[scheduler_pb2.RwkvHistoricalReviewInputsResponse, dict[str, memoryview]]:
+    """The replay builder's response without its byte columns, and the
+    columns as views of `raw`, without a copy: the packed rows alone are
+    ~80 MB on Andrew's collection, and parsing the response copied them, and
+    reading the field copied them again, each copy one call that held the
+    GIL while the main thread waited.
+
+    The backend (prost) writes the fields in number order, and the columns'
+    numbers follow one another, so the columns lie between the fields before
+    them and the fields after them. Those two parts are parsed as usual; the
+    columns are found by their tags. A column the backend left out (an empty
+    one) is an empty view."""
+    view = memoryview(raw)
+    columns = dict.fromkeys(_REPLAY_RESPONSE_COLUMNS.values(), memoryview(b""))
+    first_column, last_column = (
+        min(_REPLAY_RESPONSE_COLUMNS),
+        max(_REPLAY_RESPONSE_COLUMNS),
+    )
+    head_end = None
+    offset = 0
+    while offset < len(view):
+        field_start = offset
+        tag, offset = _protobuf_varint(view, offset)
+        number, wire_type = tag >> 3, tag & 7
+        if number > last_column:
+            offset = field_start
+            break
+        if number >= first_column and head_end is None:
+            head_end = field_start
+        if wire_type == 0:
+            _, offset = _protobuf_varint(view, offset)
+        elif wire_type == 2:
+            length, start = _protobuf_varint(view, offset)
+            offset = start + length
+            if number in _REPLAY_RESPONSE_COLUMNS:
+                columns[_REPLAY_RESPONSE_COLUMNS[number]] = view[start:offset]
+            elif number >= first_column:
+                raise ValueError(f"unexpected field {number} among the columns")
+        else:
+            raise ValueError(f"unexpected wire type {wire_type}")
+    response = scheduler_pb2.RwkvHistoricalReviewInputsResponse()
+    response.ParseFromString(view[: offset if head_end is None else head_end])
+    response.MergeFromString(view[offset:])
+    return response, columns
+
+
+def _protobuf_varint(view: memoryview, offset: int) -> tuple[int, int]:
+    """The protobuf varint at `offset`, and the offset after it."""
+    value = shift = 0
+    while True:
+        byte = view[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, offset
+        shift += 7
+
+
+def _history_from_replay_response(
+    response: scheduler_pb2.RwkvHistoricalReviewInputsResponse,
+    columns: Mapping[str, memoryview],
+    *,
+    steps: _RwkvPreparationSteps,
+    replay_key: str,
+    ignored_review_ids: tuple[int, ...],
+    previous_review_id_by_card: Mapping[int, int] | None = None,
+    previous_interval_days_by_card: Mapping[int, int] | None = None,
+    review_count_by_card: Mapping[int, int] | None = None,
+    deck_id: int | None = None,
+) -> RwkvHistoricalReviewInputs:
+    """The history the replay builder's response holds. The reviews stay the
+    packed rows it wrote (`RwkvReplayReviews`); the per-card state is the
+    state the read went on from (`previous_*`, `review_count_by_card`),
+    updated with the cards it replayed, in the order it reached them, as a
+    dict the replay updated card by card would be."""
+
+    def int64s(name: str) -> memoryview:
+        return columns[name].cast("q")
+
+    review_ids_column = int64s("review_ids")
+    review_ids: list[int] = []
+    for start in range(0, len(review_ids_column), BACKEND_ROWS_CHUNK):
+        review_ids.extend(
+            review_ids_column[start : start + BACKEND_ROWS_CHUNK].tolist()
+        )
+        steps.rows(min(BACKEND_ROWS_CHUNK, len(review_ids_column) - start))
+    reviews = RwkvReplayReviews(
+        columns["packed_rows"],
+        int64s("review_kinds"),
+        int64s("interval_days"),
+        int64s("ease_factors"),
+    )
+    if len(reviews) != len(review_ids):
+        raise ValueError("the RWKV replay columns differ in length")
+    cards = int64s("cards").tolist()
+
+    def per_card(
+        prefix: str,
+        card_count: int | None = None,
+    ) -> list[dict[int, int]]:
+        return [
+            {
+                **(previous or {}),
+                **dict(
+                    zip(
+                        cards[:card_count],
+                        int64s(f"{prefix}{name}").tolist(),
+                        strict=True,
                     )
                 ),
-                is_query=False,
-                ease=ease,
-                duration_millis=duration_millis,
-                card_type=card_type,
-                card_queue=_historical_review_queue(review_kind),
-                card_due=None,
-                interval_days=interval_days,
-                ease_factor=ease_factor,
-                reps=None,
-                lapses=None,
-                day_offset=day_offset,
-                current_state_kind=state_kind,
-                current_normal_state_kind=normal_state_kind,
-                current_elapsed_days=elapsed_days,
-                current_elapsed_seconds=elapsed_seconds,
+            }
+            for name, previous in (
+                ("card_previous_review_ids", previous_review_id_by_card),
+                ("card_previous_interval_days", previous_interval_days_by_card),
+                ("card_review_counts", review_count_by_card),
+            )
+        ]
+
+    prepared_checkpoint_histories: dict[int, RwkvHistoricalReviewInputs] = {}
+    if checkpoint_review_count := response.checkpoint_review_count:
+        checkpoint_ids, checkpoint_intervals, checkpoint_counts = per_card(
+            "checkpoint_", response.checkpoint_card_count
+        )
+        prepared_checkpoint_histories[checkpoint_review_count] = (
+            RwkvHistoricalReviewInputs(
+                reviews=[],
+                review_ids=[],
+                previous_review_id_by_card=checkpoint_ids,
+                previous_interval_days_by_card=checkpoint_intervals,
+                review_count_by_card=checkpoint_counts,
+                last_review_id=response.checkpoint_last_review_id,
+                review_count=checkpoint_review_count,
+                deck_id=deck_id,
+                history_hash=response.checkpoint_history_hash,
+                replay_key=replay_key,
+                ignored_review_ids=ignored_review_ids,
             )
         )
-    return inputs
+    previous_ids, previous_intervals, review_counts = per_card("")
+    return RwkvHistoricalReviewInputs(
+        reviews=reviews,
+        review_ids=review_ids,
+        previous_review_id_by_card=previous_ids,
+        previous_interval_days_by_card=previous_intervals,
+        review_count_by_card=review_counts,
+        last_review_id=response.last_review_id,
+        review_count=response.review_count,
+        deck_id=deck_id,
+        history_hash=response.history_hash,
+        replay_key=replay_key,
+        ignored_review_ids=ignored_review_ids,
+        prepared_checkpoint_histories=prepared_checkpoint_histories,
+    )
 
 
 # how many card-id ranges a stoppable whole-history query runs in. Each range

@@ -100,34 +100,24 @@ def test_the_record_encoding_is_byte_for_byte_the_buffer_writers() -> None:
         ) == _reference_record(review_id, review_input)
 
 
-def test_the_hash_kept_as_bytes_is_the_hash_chain() -> None:
+def test_the_hash_chain_is_pinned() -> None:
     reviews = _random_reviews(3000, seed=2)
-    start = rwkv._RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
-
-    expected = start
-    hasher = rwkv._RwkvHistoryHasher(start)
-    for index, (review_id, review_input) in enumerate(reviews):
+    expected = rwkv._RWKV_STATE_CACHE_EMPTY_HISTORY_HASH
+    for review_id, review_input in reviews:
         expected = rwkv._rwkv_history_hash_after_review(
             expected, review_id, review_input
         )
-        hasher.update(review_id, review_input)
-        # a hash read out in the middle is the chain's hash at that point
-        if index % 500 == 0:
-            assert hasher.hexdigest() == expected
-    assert hasher.hexdigest() == expected
-    # computed with the encoder and hash function as they were before this
-    # speedup (origin/main 2e6ac3b88), so the pin does not rest on the code
-    # it checks
+    # computed with the encoder and hash function as they were before the
+    # builder kept the digest as bytes (origin/main 2e6ac3b88), so the pin
+    # does not rest on the code it checks
     assert expected == GOLDEN_HASH_SEED_2
 
 
-def test_the_hasher_refuses_an_invalid_starting_hash() -> None:
+def test_the_hash_chain_refuses_an_invalid_starting_hash() -> None:
+    review_id, review_input = _random_reviews(1, seed=3)[0]
     for bad in ["", "0" * 63, "G" * 64, "A" * 64, " " + "0" * 63]:
-        try:
-            rwkv._RwkvHistoryHasher(bad)
-        except ValueError:
-            continue
-        raise AssertionError(f"accepted {bad!r}")
+        with pytest.raises(ValueError):
+            rwkv._rwkv_history_hash_after_review(bad, review_id, review_input)
 
 
 def _collection_with_history(path: Path) -> Collection:
