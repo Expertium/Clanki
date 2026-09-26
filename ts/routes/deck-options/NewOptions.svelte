@@ -26,7 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         maxSameDayReviewsShown,
     } from "./same-day-reviews";
     import type { DeckOptionsState } from "./lib";
-    import { intervalSettingsApply, stepsTooLargeWarning } from "./scheduler-choice";
+    import { intervalSettingsApply, stepsNotEmptyWarning } from "./scheduler-choice";
     import SpinBoxRow from "./SpinBoxRow.svelte";
     import StepsInputRow from "./StepsInputRow.svelte";
     import Warning from "./Warning.svelte";
@@ -40,13 +40,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const defaults = state.defaults;
     const fsrs = state.fsrs;
 
-    let stepsTooLarge: string;
-    $: {
-        const lastLearnStepInDays = $config.learnSteps.length
-            ? $config.learnSteps[$config.learnSteps.length - 1] / 60 / 24
-            : 0;
-        stepsTooLarge = stepsTooLargeWarning($config, $fsrs, lastLearnStepInDays);
-    }
+    // spec deck-options.steps-warning-when-not-empty
+    $: stepsNotEmpty = stepsNotEmptyWarning($config.learnSteps);
 
     $: insertionOrderRandom =
         $config.newCardInsertOrder == DeckConfig_Config_NewCardInsertOrder.RANDOM
@@ -126,7 +121,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </Item>
 
             <Item>
-                <Warning warning={stepsTooLarge} />
+                <Warning warning={stepsNotEmpty} />
             </Item>
         {/if}
 

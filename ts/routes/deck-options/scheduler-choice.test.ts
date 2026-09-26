@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 
 import * as tr from "@generated/ftl";
 
-import { intervalSettingsApply, runsRwkvInstant, schedulerLabel, stepsTooLargeWarning } from "./scheduler-choice";
+import { intervalSettingsApply, runsRwkvInstant, stepsNotEmptyWarning } from "./scheduler-choice";
 
 // Pins spec/scheduling.md#sched.rwkv-instant-no-steps (the settings side)
 
@@ -29,24 +29,16 @@ test("the interval settings apply to every algorithm except RWKV-Instant", () =>
     expect(intervalSettingsApply(preset(false, true))).toBe(false);
 });
 
-// Pins spec/deck-options.md#deck-options.steps-warning-names-the-algorithm.
+// Pins spec/deck-options.md#deck-options.steps-warning-when-not-empty.
 // vitest loads no Fluent bundle, so a string is its key: what is pinned here
-// is which name the warning takes and when it shows. The English sentence is
-// pinned in qt/tests/test_ui_split.py.
+// is when the warning shows. The English sentence is pinned in
+// qt/tests/test_ui_split.py.
 
-test("the long-steps warning names the algorithm that schedules the preset", () => {
-    expect(schedulerLabel(preset(false, false))).toBe(tr.deckConfigSchedulerChoiceFsrs());
-    expect(schedulerLabel(preset(true, false))).toBe(tr.deckConfigSchedulerChoiceRwkvCurve());
-    expect(schedulerLabel(preset(false, true))).toBe(tr.deckConfigSchedulerChoiceRwkvInstant());
-    // RWKV-Curve wins when a preset from an older version carries both
-    expect(schedulerLabel(preset(true, true))).toBe(tr.deckConfigSchedulerChoiceRwkvCurve());
-});
-
-test("the long-steps warning shows from a last step of one day", () => {
-    const curve = preset(true, false);
-    expect(stepsTooLargeWarning(curve, true, 1)).not.toBe("");
-    expect(stepsTooLargeWarning(curve, true, 3)).not.toBe("");
-    expect(stepsTooLargeWarning(curve, true, 23 / 24)).toBe("");
-    expect(stepsTooLargeWarning(curve, true, 0)).toBe("");
-    expect(stepsTooLargeWarning(curve, false, 3)).toBe("");
+test("the steps warning shows for any step and only for a non-empty field", () => {
+    const warning = tr.deckConfigStepsFieldNotEmpty();
+    // a relearning step of 1 minute (Andrew's case), a learning step, a long step
+    expect(stepsNotEmptyWarning([1])).toBe(warning);
+    expect(stepsNotEmptyWarning([1, 10])).toBe(warning);
+    expect(stepsNotEmptyWarning([3 * 24 * 60])).toBe(warning);
+    expect(stepsNotEmptyWarning([])).toBe("");
 });
