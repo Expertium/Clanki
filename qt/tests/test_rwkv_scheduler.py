@@ -22955,10 +22955,9 @@ def test_the_move_and_preset_operations_keep_the_rwkv_state(
     monkeypatch.setattr(
         rwkv_scheduler,
         "run_collection_mutation_preserving_rwkv_state",
-        lambda col, mutation, **kwargs: calls.append(
-            f"cards {sorted(kwargs.get('card_ids', ()))}"
-        )
-        or mutation(),
+        lambda col, mutation, **kwargs: (
+            calls.append(f"cards {sorted(kwargs.get('card_ids', ()))}") or mutation()
+        ),
     )
     monkeypatch.setattr(
         rwkv_scheduler,
