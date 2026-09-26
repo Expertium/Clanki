@@ -1811,6 +1811,8 @@ exposed_backend_list = [
     "get_graph_preferences",
     "set_graph_preferences",
     "total_knowledge",
+    # card info's exact FSRS-7 curve (spec sched.fsrs-rs-latest)
+    "fsrs_curve_recall",
     # TagsService
     "complete_tag",
     # ImageOcclusionService

@@ -297,7 +297,37 @@ fn fsrs7_curves(
     Ok(Some(anki_proto::stats::card_stats_response::Fsrs7Curves {
         elapsed_days,
         segments,
+        params: params.to_vec(),
     }))
+}
+
+/// fsrs-rs's recall of each memory state at each of its elapsed days, with
+/// the parameters it clips: the values card info's chart draws, one per
+/// point, so the drawn FSRS-7 curve is the crate's own everywhere (spec
+/// sched.fsrs-rs-latest).
+pub(crate) fn fsrs_curve_recall(
+    input: anki_proto::stats::FsrsCurveRecallRequest,
+) -> Result<anki_proto::stats::FsrsCurveRecallResponse> {
+    use anki_proto::stats::fsrs_curve_recall_response::Curve;
+    let fsrs = FSRS::new(&input.params)?;
+    let curves = input
+        .curves
+        .into_iter()
+        .map(|curve| {
+            let state = curve
+                .memory_state
+                .or_invalid("an FSRS-7 curve needs a memory state")?;
+            let state = MemoryState::from(FsrsMemoryState::from(state));
+            Ok(Curve {
+                recall: curve
+                    .elapsed_days
+                    .iter()
+                    .map(|&days| fsrs.current_retrievability(state, days))
+                    .collect(),
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(anki_proto::stats::FsrsCurveRecallResponse { curves })
 }
 
 fn with_current_memory_state_on_latest_review(
@@ -535,18 +565,22 @@ mod test {
             for (&days, &recall) in curves.elapsed_days.iter().zip(&segment.recall) {
                 assert_eq!(recall, fsrs.current_retrievability(state, days));
             }
-            // the page joins the points with straight lines: within 0.1% of
-            // the crate's curve in between
-            for step in 1..2000 {
-                let days = step as f32 * 0.05;
-                let high = curves.elapsed_days.iter().position(|&x| x >= days).unwrap();
-                let (x0, x1) = (curves.elapsed_days[high - 1], curves.elapsed_days[high]);
-                let (y0, y1) = (segment.recall[high - 1], segment.recall[high]);
-                let joined = y0 + (y1 - y0) * (days - x0) / (x1 - x0);
-                let exact = fsrs.current_retrievability(state, days);
-                assert!((joined - exact).abs() < 1e-3, "{days}: {joined} vs {exact}");
+            // the chart's own points, between and beyond the grid: the
+            // crate's value at each one, nothing joined by straight lines
+            let chart_days: Vec<f32> = (1..2000).map(|step| step as f32 * 0.0537).collect();
+            let recall = fsrs_curve_recall(anki_proto::stats::FsrsCurveRecallRequest {
+                params: curves.params.clone(),
+                curves: vec![anki_proto::stats::fsrs_curve_recall_request::Curve {
+                    memory_state: entry.memory_state,
+                    elapsed_days: chart_days.clone(),
+                }],
+            })?;
+            assert_eq!(recall.curves.len(), 1);
+            for (&days, &recall) in chart_days.iter().zip(&recall.curves[0].recall) {
+                assert_eq!(recall, fsrs.current_retrievability(state, days));
             }
         }
+        assert_eq!(curves.params, stats.fsrs_params);
 
         // an RWKV-Curve card: from FSRS-7's own states, not the stored S90
         col.update_default_deck_config(|config| config.rwkv_review_enabled = true);

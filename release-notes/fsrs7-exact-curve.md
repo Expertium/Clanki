@@ -1,0 +1,1 @@
+- Card Info's FSRS-7 forgetting curve is now exact: every point of the line is FSRS-7's own recall at that time, not a straight line between computed points.
