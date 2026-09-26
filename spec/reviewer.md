@@ -23,6 +23,27 @@ and Easy shortcuts must be ignored (key 2 used to answer Good).
 `test_two_button_mode_maps_answer_keys` (`qt/tests/test_reviewer.py`),
 `answer_button_options_default_to_on` (`rslib/src/config/bool.rs`).
 
+## review.card-style-with-content
+
+Given a card on the Study screen (or in the card preview), its body classes
+(`card`, `cardN`, the night-mode classes) are set in the same step as its
+content goes into the page, before the card's own scripts load. No frame
+shows a card's content without its note type's styling: its background,
+its alignment and its text colours come with the first frame of the card,
+also while a script the card loads (`<script src="...">`) is still loading.
+Hooks that add-ons put in `onUpdateHook` still run after the content and
+its scripts, as before, and the classes are set again there.
+
+**Why:** Andrew, 2026-09-26, from a screen recording taken frame by frame:
+"the card's front is not fully loaded on the first frame". His Japanese
+note type loads two scripts from the media folder and styles `.card` (dark
+background, centred content). The classes were set only after the scripts
+had loaded, and Chromium painted the card in between: a light background,
+light grey text on it, the picture on the left; the next frame had the
+card's dark background and the centred picture.
+
+**Pinned by:** `ts/reviewer/card_style.test.ts`.
+
 ## review.timer-keeps-running
 
 Given the on-screen timer shown on the Study screen (the preset's "Show
