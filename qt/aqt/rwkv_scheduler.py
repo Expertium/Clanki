@@ -13606,8 +13606,11 @@ def reschedule_rwkv_review_cards_with_progress(
     mw: object,
     *,
     deck_id: int | None = None,
+    on_done: Callable[[], None] | None = None,
 ) -> None:
-    """Reschedule RWKV-enabled review cards and persist current RWKV S90."""
+    """Reschedule RWKV-enabled review cards and persist current RWKV S90.
+    `on_done` runs on the main thread once the reschedule has finished or
+    failed."""
 
     from aqt.operations import on_op_finished
     from aqt.utils import tooltip
@@ -13618,6 +13621,8 @@ def reschedule_rwkv_review_cards_with_progress(
         result = reschedule_rwkv_review_cards(mw, deck_id=deck_id)
         if result.changes is not None:
             on_op_finished(cast(Any, mw), cast(Any, result.changes), None)
+        if on_done is not None:
+            on_done()
         return
 
     def start_reschedule() -> None:
@@ -13645,6 +13650,13 @@ def reschedule_rwkv_review_cards_with_progress(
             )
 
         def done(future: Future[RwkvReviewRescheduleResult]) -> None:
+            try:
+                finish_reschedule(future)
+            finally:
+                if on_done is not None:
+                    on_done()
+
+        def finish_reschedule(future: Future[RwkvReviewRescheduleResult]) -> None:
             try:
                 result = future.result()
             except Exception:

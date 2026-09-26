@@ -12,6 +12,7 @@ import aqt.main
 from anki.cards import Card
 from anki.decks import DeckConfigsForUpdate, DeckDict, DeckId
 from anki.lang import without_unicode_isolation
+from anki.sync import SyncStatus
 from aqt import gui_hooks
 from aqt.branding import APP_NAME
 from aqt.qt import *
@@ -364,11 +365,37 @@ def after_algorithm_change(
     from aqt.operations import CollectionOp
 
     rwkv_scheduler.rwkv_instant_retention_did_change(mw)
-    if not reschedule:
-        return
-    if algorithm == SchedulingAlgorithm.FSRS7:
+    # the sync waits for the reschedule, which holds the collection
+    if reschedule and algorithm == SchedulingAlgorithm.FSRS7:
         CollectionOp(
             mw, lambda col: col._backend.reschedule_all_cards_with_fsrs7()
-        ).run_in_background()
-    elif algorithm == SchedulingAlgorithm.RWKV_CURVE:
-        rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(mw)
+        ).success(lambda _: sync_after_algorithm_change(mw)).run_in_background()
+    elif reschedule and algorithm == SchedulingAlgorithm.RWKV_CURVE:
+        rwkv_scheduler.reschedule_rwkv_review_cards_with_progress(
+            mw, on_done=lambda: sync_after_algorithm_change(mw)
+        )
+    else:
+        sync_after_algorithm_change(mw)
+
+
+def sync_after_algorithm_change(mw: aqt.main.AnkiQt) -> None:
+    """Send a new algorithm at once (spec sync.algorithm-change-syncs): the
+    config syncs as one block and the side that changed last wins, so an
+    unsynced choice could be replaced by another device's newer settings.
+
+    The same sync as the sync button, when the profile has a sync account
+    and a normal sync is what the collection needs. A full sync is never
+    started or asked for here; the sync button still offers it. No account,
+    a media sync in progress or no answer from the server: nothing."""
+    from aqt.sync import get_sync_status
+
+    if not mw._can_sync_unattended() or mw.media_syncer.is_syncing():
+        return
+
+    def on_status(status: SyncStatus) -> None:
+        if status.required == SyncStatus.NORMAL_SYNC:
+            mw._sync_collection_and_media(
+                mw._refresh_after_sync, ask_for_full_sync=False
+            )
+
+    get_sync_status(mw, on_status)

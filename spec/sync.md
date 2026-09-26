@@ -200,6 +200,33 @@ change.
 `a_move_to_fsrs7_recomputes_the_cards_of_rwkv_curve_presets`
 (`rslib/src/deckconfig/algorithm.rs`).
 
+## sync.algorithm-change-syncs
+
+Given the user saves deck options with a new algorithm (the Algorithm
+dropdown, `sched.one-global-algorithm`) in a profile with a sync account,
+Clanki starts a normal sync once the save, and the reschedule the user chose
+with it (`sched.algorithm-change-prompt`), have finished. It is the sync of
+the sync button (the same progress window, errors and post-sync work), and
+it runs only when the collection needs a normal sync: with a full sync
+needed (on this side, or found only when the server answers) it starts
+none and asks nothing, and the sync button offers the full sync as before.
+Without a sync account, while a media sync runs, or when the sync status
+check gets no answer from the server, nothing happens. A failed sync shows
+what a failed sync from the button shows.
+
+**Why:** Andrew, 2026-09-25: the config syncs as one block and the side that
+changed last replaces the other side's, so an algorithm choice that waits
+for the next sync can be replaced by another device's newer settings.
+Sending it at once closes most of that window.
+
+**Pinned by:** `test_an_algorithm_change_syncs_at_once`,
+`test_after_an_algorithm_change_the_chosen_reschedule_runs`
+(`qt/tests/test_deckoptions.py`);
+`test_the_sync_after_an_algorithm_change_does_not_ask_for_a_full_sync`
+(`qt/tests/test_main.py`);
+`test_a_sync_that_must_not_ask_leaves_a_full_sync_to_the_user`
+(`qt/tests/test_sync.py`).
+
 ## sync.algorithm-change-notice
 
 Given a normal sync after which the collection's algorithm (the one deck

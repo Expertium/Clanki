@@ -129,6 +129,7 @@ def sync_collection(
     on_remote_collection_changes: (
         Callable[[RemoteCollectionChanges], None] | None
     ) = None,
+    ask_for_full_sync: bool = True,
 ) -> None:
     auth = mw.pm.sync_auth()
     if not auth:
@@ -179,6 +180,10 @@ def sync_collection(
                     ),
                 )
             )
+        elif not ask_for_full_sync:
+            # left to the user, as the sync button offers it (spec
+            # sync.algorithm-change-syncs)
+            return finish(RemoteCollectionChanges())
         else:
             full_sync(
                 mw,

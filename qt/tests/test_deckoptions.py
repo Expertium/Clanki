@@ -12,12 +12,14 @@ import pytest
 import aqt.mediasrv
 from anki.collection import OpChanges
 from anki.decks import UpdateDeckConfigs
+from anki.sync import SyncStatus
 from aqt.deckoptions import (
     SchedulingAlgorithm,
     _DeckOptionsWebViews,
     after_algorithm_change,
     ask_reschedule_after_algorithm_change,
     on_deck_options_page_ready,
+    sync_after_algorithm_change,
 )
 
 
@@ -120,12 +122,18 @@ def test_the_question_offers_reschedule_or_keep(
     )
 
 
-# Pins spec/scheduling.md#sched.algorithm-change-prompt
+# Pins spec/scheduling.md#sched.algorithm-change-prompt and
+# spec/sync.md#sync.algorithm-change-syncs: the sync waits for the chosen
+# reschedule
+@patch("aqt.deckoptions.sync_after_algorithm_change")
 @patch("aqt.operations.CollectionOp")
 @patch("aqt.rwkv_scheduler.reschedule_rwkv_review_cards_with_progress")
 @patch("aqt.rwkv_scheduler.rwkv_instant_retention_did_change")
 def test_after_an_algorithm_change_the_chosen_reschedule_runs(
-    mock_refresh: MagicMock, mock_rwkv_reschedule: MagicMock, mock_op: MagicMock
+    mock_refresh: MagicMock,
+    mock_rwkv_reschedule: MagicMock,
+    mock_op: MagicMock,
+    mock_sync: MagicMock,
 ) -> None:
     mw = MagicMock()
 
@@ -133,15 +141,65 @@ def test_after_an_algorithm_change_the_chosen_reschedule_runs(
     mock_refresh.assert_called_once_with(mw)
     mock_rwkv_reschedule.assert_not_called()
     mock_op.assert_not_called()
+    mock_sync.assert_called_once_with(mw)
 
+    mock_sync.reset_mock()
     after_algorithm_change(mw, SchedulingAlgorithm.RWKV_CURVE, True)
-    mock_rwkv_reschedule.assert_called_once_with(mw)
+    mock_rwkv_reschedule.assert_called_once()
+    assert mock_rwkv_reschedule.call_args.args == (mw,)
+    mock_sync.assert_not_called()
+    mock_rwkv_reschedule.call_args.kwargs["on_done"]()
+    mock_sync.assert_called_once_with(mw)
 
+    mock_sync.reset_mock()
     after_algorithm_change(mw, SchedulingAlgorithm.FSRS7, True)
     col = MagicMock()
     mock_op.call_args.args[1](col)
     col._backend.reschedule_all_cards_with_fsrs7.assert_called_once_with()
-    mock_op.return_value.run_in_background.assert_called_once()
+    chained = mock_op.return_value.success
+    chained.return_value.run_in_background.assert_called_once()
+    mock_sync.assert_not_called()
+    chained.call_args.args[0](OpChanges())
+    mock_sync.assert_called_once_with(mw)
+
+
+def _sync_mw(*, account: bool, required: int, media_syncing: bool = False):
+    mw = MagicMock()
+    mw._can_sync_unattended.return_value = account
+    mw.media_syncer.is_syncing.return_value = media_syncing
+    return mw, SyncStatus(required=required)
+
+
+# Pins spec/sync.md#sync.algorithm-change-syncs: a new algorithm goes to
+# AnkiWeb at once, through the sync button's own sync; a full sync is never
+# started or asked for, and without an account nothing happens
+@pytest.mark.parametrize(
+    "account, required, media_syncing, syncs",
+    [
+        (True, SyncStatus.NORMAL_SYNC, False, True),
+        (True, SyncStatus.FULL_SYNC, False, False),
+        (True, SyncStatus.NO_CHANGES, False, False),
+        (True, SyncStatus.NORMAL_SYNC, True, False),
+        (False, SyncStatus.NORMAL_SYNC, False, False),
+    ],
+)
+def test_an_algorithm_change_syncs_at_once(
+    account: bool, required: int, media_syncing: bool, syncs: bool
+) -> None:
+    mw, status = _sync_mw(
+        account=account, required=required, media_syncing=media_syncing
+    )
+    with patch("aqt.sync.get_sync_status") as get_status:
+        get_status.side_effect = lambda _mw, callback: callback(status)
+        sync_after_algorithm_change(mw)
+    if syncs:
+        mw._sync_collection_and_media.assert_called_once_with(
+            mw._refresh_after_sync, ask_for_full_sync=False
+        )
+    else:
+        mw._sync_collection_and_media.assert_not_called()
+    if not account or media_syncing:
+        get_status.assert_not_called()
 
 
 # The spare deck-options web view (qt/aqt/deckoptions.py, _DeckOptionsWebViews)

@@ -4,3 +4,6 @@
   with the other device's change: the newer one wins. When a sync changes the
   algorithm, a short notice says so ("A sync from another device turned FSRS
   off, so Clanki now uses RWKV-Curve.").
+- When you change the algorithm in Deck Options and your profile syncs with
+  AnkiWeb, Clanki syncs right away, so another device cannot overwrite your
+  choice. It never starts a full sync by itself.

@@ -153,3 +153,35 @@ def test_a_sync_that_changed_the_algorithm_says_so_once(monkeypatch) -> None:
     assert [without_unicode_isolation(t["msg"]) for t in tooltips] == [
         tr.sync_collection_complete()
     ]
+
+
+def test_a_sync_that_must_not_ask_leaves_a_full_sync_to_the_user(
+    monkeypatch,
+) -> None:
+    """Pins spec/sync.md#sync.algorithm-change-syncs: the sync after an
+    algorithm change does not ask for a full sync; the sync button still
+    does."""
+    from anki.sync import SyncOutput
+
+    asked: list[object] = []
+    monkeypatch.setattr(aqt.sync, "full_sync", lambda *args: asked.append(args))
+    done: list[object] = []
+    mw = _mw()
+    mw.taskman = SimpleNamespace(
+        with_progress=lambda _task, on_done, **_kwargs: done.append(on_done)
+    )
+    mw.col._load_scheduler = lambda: None
+    mw.pm.set_host_number = lambda _number: None
+    monkeypatch.setattr(aqt.sync, "QTimer", _Timer)
+    monkeypatch.setattr(aqt.sync, "qconnect", lambda _signal, _handler: None)
+    out = SyncOutput(required=SyncOutput.FULL_SYNC)
+    finished: list[bool] = []
+
+    aqt.sync.sync_collection(mw, lambda: finished.append(True), ask_for_full_sync=False)
+    done[0](SimpleNamespace(result=lambda: out))
+    assert asked == []
+    assert finished == [True]
+
+    aqt.sync.sync_collection(mw, lambda: finished.append(True))
+    done[1](SimpleNamespace(result=lambda: out))
+    assert len(asked) == 1
