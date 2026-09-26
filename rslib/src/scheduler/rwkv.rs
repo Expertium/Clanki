@@ -679,35 +679,37 @@ impl Collection {
         };
         let deck_ids = self.storage.deck_id_with_children(&deck)?;
         let today = self.timing_today()?.days_elapsed;
-        let card_ids: Vec<CardId> = self
+        // only each card's id and last review time: this runs on every
+        // answer, and reading the whole card rows was most of its cost
+        let mut cards = self
             .storage
-            .db
-            .prepare(&format!(
-                "select id from cards where did in ({}) and queue in ({}, {}) and due <= ?",
-                deck_ids
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                CardQueue::Review as i8,
-                CardQueue::DayLearn as i8,
-            ))?
-            .query_and_then([today], |row| row.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
-        let mut cards = self.all_cards_for_ids(&card_ids, false)?;
-        self.populate_rwkv_last_review_times(&mut cards)?;
+            .due_review_card_last_review_times(&deck_ids, today)?;
+        // a card whose data holds no last review time: the review log's
+        let missing: Vec<CardId> = cards
+            .iter()
+            .filter(|(_, last_review_time)| last_review_time.is_none())
+            .map(|(card_id, _)| *card_id)
+            .collect();
+        if !missing.is_empty() {
+            let review_times = self.storage.times_of_last_review(&missing)?;
+            for (card_id, last_review_time) in &mut cards {
+                if last_review_time.is_none() {
+                    *last_review_time = review_times.get(card_id).copied();
+                }
+            }
+        }
         let kept = self.state.rwkv_queue_curves.as_mut().unwrap();
-        let due: HashSet<CardId> = card_ids.iter().copied().collect();
+        let due: HashSet<CardId> = cards.iter().map(|(card_id, _)| *card_id).collect();
         kept.curves.retain(|card_id, _| due.contains(card_id));
         Ok(cards
-            .iter()
-            .filter_map(|card| {
-                let last_review_time = card.last_review_time?;
+            .into_iter()
+            .filter_map(|(card_id, last_review_time)| {
+                let last_review_time = last_review_time?;
                 let held = kept
                     .curves
-                    .get(&card.id)
+                    .get(&card_id)
                     .is_some_and(|entry| entry.last_review_time == last_review_time);
-                (!held).then_some((card.id, last_review_time))
+                (!held).then_some((card_id, last_review_time))
             })
             .collect())
     }

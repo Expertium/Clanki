@@ -1472,6 +1472,91 @@ mod test {
         Ok(())
     }
 
+    // The cards the reviewer hands curves over for: the due review and
+    // interday learning cards of the deck and its children, in card id
+    // order, each with its last review time, from the card or else from the
+    // review log; a card with neither, and cards not due, in another queue or
+    // in another deck, are left out.
+    #[test]
+    fn rwkv_queue_curve_cards_are_the_due_cards_in_id_order() -> Result<()> {
+        let mut col = Collection::new();
+        let (deck_id, ids) = rwkv_curve_deck(
+            &mut col,
+            ReviewCardOrder::RetrievabilityAscending,
+            &[
+                (10, 30, 1.0),
+                (10, 3, 1.0),
+                (10, 5, 1.0),
+                (10, 7, 1.0),
+                (10, 9, 1.0),
+            ],
+        )?;
+        let today = col.timing_today()?.days_elapsed as i32;
+        let child = col.get_or_create_normal_deck("RWKV::Child")?;
+        let child_card = add_memory_state_card(
+            &mut col,
+            child.id,
+            CardQueue::DayLearn,
+            CardType::Relearn,
+            today,
+            2 * 86_400,
+            1.0,
+        )?;
+        let other = col.get_or_create_normal_deck("Other")?;
+        add_memory_state_card(
+            &mut col,
+            other.id,
+            CardQueue::Review,
+            CardType::Review,
+            today,
+            86_400,
+            1.0,
+        )?;
+        let change = |card_id: CardId, change: &dyn Fn(&mut Card)| -> Result<()> {
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            change(&mut card);
+            col.storage.update_card(&card)
+        };
+        // an interday learning card: the index gives it after the review
+        // cards of its deck, the id order before them
+        change(ids[0], &|card| {
+            card.queue = CardQueue::DayLearn;
+            card.ctype = CardType::Relearn;
+        })?;
+        change(ids[1], &|card| card.due = today + 1)?;
+        change(ids[2], &|card| card.queue = CardQueue::Suspended)?;
+        change(ids[3], &|card| card.last_review_time = None)?;
+        change(ids[4], &|card| card.last_review_time = None)?;
+        let logged = RevlogId(TimestampMillis::now().0 - 4 * 86_400_000);
+        col.storage.add_revlog_entry(
+            &crate::revlog::RevlogEntry {
+                id: logged,
+                cid: ids[3],
+                button_chosen: 3,
+                review_kind: crate::revlog::RevlogReviewKind::Review,
+                interval: 10,
+                ease_factor: 2500,
+                ..Default::default()
+            },
+            false,
+        )?;
+        let card_time = |card_id: CardId| {
+            col.storage
+                .get_card(card_id)
+                .unwrap()
+                .unwrap()
+                .last_review_time
+                .unwrap()
+        };
+        let expected = vec![
+            (ids[0], card_time(ids[0])),
+            (ids[3], TimestampSecs(logged.0 / 1000)),
+            (child_card, card_time(child_card)),
+        ];
+        assert_eq!(col.rwkv_review_queue_curve_cards(deck_id, 1)?, expected);
+        Ok(())
+    }
+
     fn set_card_difficulty(col: &mut Collection, card_id: CardId, difficulty: f32) {
         let mut card = col.storage.get_card(card_id).unwrap().unwrap();
         card.memory_state.as_mut().unwrap().difficulty = difficulty;
