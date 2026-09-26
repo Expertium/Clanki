@@ -2132,6 +2132,9 @@ beside the collection.
 - The table lives in the sidecar, not in the collection, so the collection
   schema and the sync wire protocol are untouched. It does not sync: a review
   answered on another client has no row here.
+- A copy of the table lives in `collection.scheduler-record.sqlite`, so a
+  damaged sidecar does not take the record along
+  (`database.sidecar-recovery`).
 
 **Why:** Andrew, 2026-09-20: "for every review, record whether it was
 scheduled using FSRS-7, RWKV-Curve or RWKV-Instant. We'll later add another

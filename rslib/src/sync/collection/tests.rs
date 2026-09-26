@@ -2191,6 +2191,61 @@ async fn upload_download(ctx: &SyncTestContext) -> Result<()> {
     Ok(())
 }
 
+/// Both copies of the review scheduler record, as (review id, algorithm).
+fn scheduler_records_in_step(col: &Collection) -> Vec<(i64, String)> {
+    let read = |schema: &str| -> Vec<(i64, String)> {
+        col.storage
+            .db
+            .prepare(&format!(
+                "select revlog_id, algorithm from {schema}.review_scheduler order by revlog_id"
+            ))
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    let copy = read("scheduler_record");
+    assert_eq!(copy, read("retrievability_cache"));
+    copy
+}
+
+/// Pins spec/database.md#database.sidecar-recovery: no sync writes either
+/// copy of the review scheduler record, so the two stay alike on both
+/// devices, through normal syncs and a full download.
+#[tokio::test]
+async fn the_scheduler_record_copy_stays_in_step_through_syncs() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        upload_download(&ctx).await?;
+
+        let mut col1 = ctx.col1();
+        col1.answer_good();
+        let card_id = col1.search_cards("", SortMode::NoOrder)?[0];
+        ctx.normal_sync(&mut col1).await;
+        let recorded1 = scheduler_records_in_step(&col1);
+        assert_eq!(recorded1.len(), 1);
+
+        let mut col2 = ctx.col2();
+        ctx.normal_sync(&mut col2).await;
+        // the review answered on the other device has no record here
+        assert!(scheduler_records_in_step(&col2).is_empty());
+        review_card_again(&mut col2, card_id, DeckId(1))?;
+        ctx.normal_sync(&mut col2).await;
+        assert_eq!(scheduler_records_in_step(&col2).len(), 1);
+
+        ctx.normal_sync(&mut col1).await;
+        assert_eq!(scheduler_records_in_step(&col1), recorded1);
+
+        // a full download replaces the collection file, not the records
+        ctx.full_download(col1).await;
+        let col1 = ctx.col1();
+        assert_eq!(scheduler_records_in_step(&col1), recorded1);
+        Ok(())
+    })
+    .await
+}
+
 // Regular syncs
 /////////////////////
 

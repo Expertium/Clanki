@@ -96,6 +96,83 @@ drop the unsynced reviews of one side.
 `legacy_main_retrievability_cache_tables_migrate_to_sidecar`
 (`rslib/src/storage/revlog/mod.rs`).
 
+## database.sidecar-recovery
+
+Given a collection, Clanki attaches two local databases that sit beside it.
+Neither syncs, neither is part of the collection file, and so neither is
+seen by a full sync, a backup, official Anki or AnkiDroid:
+
+- `collection.retrievability-cache.sqlite`, the retrievability cache. Every
+  table in it but one is computed again from the review log:
+  `search_stats_fsrs_review_retrievability` and `fsrs_prediction_coverage`
+  by the FSRS-7 prediction pass (`ui.stats-fsrs-predictions-ready`);
+  `search_stats_rwkv_review_retrievability`, `review_predictions`,
+  `rwkv_curve_sources` and `rwkv_curve_source_tags` by the RWKV recording
+  pass (`sched.rwkv-recordings-automatic`); `foreign_card_scan` is a stamp
+  whose absence only makes the next open scan once. The one exception is
+  `review_scheduler` (`sched.review-scheduler-record`).
+- `collection.scheduler-record.sqlite`, the scheduler record: a copy of
+  `review_scheduler` and nothing else.
+
+Each answer writes its record into both files in the answer's transaction,
+the copy first; a failed write into one does not stop the other. The copy is
+attached first, and SQLite commits the attached WAL databases in the order
+they were attached, so a crash between the two commits leaves the copy
+ahead of the cache, never behind it.
+
+When the collection opens, each file gets a cheap check: its 100-byte header
+must be an SQLite header, the file must not be shorter than the page count in
+that header (judged only when no WAL holds pages), and it must attach and
+give its schema. A file that fails is renamed to
+`<name>.damaged-YYYY-MM-DD-HHMMSS.sqlite`, with its `-wal`, `-journal` and
+`-shm` files, and a new empty file takes its place; nothing is deleted. A
+damaged file that cannot be moved is replaced by a memory database for that
+session. The collection always opens. Then the two `review_scheduler` tables
+are brought into step: when their row counts or largest review ids differ,
+each gets the rows it lacks, plus any rows that can still be read from a
+damaged file. A row already present keeps its first answer.
+
+After the open, nothing is shown unless records were lost; a replaced file is
+written to the log. The records count as lost when a damaged file gave
+nothing back and the other file cannot stand in for it: it did not exist
+before this open, or it was damaged too. Clanki then shows a tooltip for 10
+seconds. A replaced cache makes the FSRS-7 prediction pass forget that it
+finished today and the RWKV recording pass count its rows again; both then
+refill the cache in the background at their usual moments, with no window.
+
+Check Database runs quick_check on the collection, the copy and the cache
+separately. A damaged collection stops the check with "collection corrupt",
+as before. A damaged copy or cache is replaced as at the open, the check goes
+on, and its report says so, and also says when records were lost; a replaced
+cache starts the FSRS-7 prediction pass at once. The check keeps VACUUM of the
+collection and REINDEX and ANALYZE of all three databases.
+
+**Why:** Andrew, 2026-09-26: "keep a copy + build a new one if the old is
+damaged". A retrievability cache that was not a valid database stopped the
+collection from opening, and nothing rebuilt it. The open check reads 100
+bytes and the file length per file, so it adds no visible time at start-up;
+damage inside a page is left to Check Database, whose quick_check of the
+cache costs 2.3 s on Andrew's 636 MB cache.
+
+**Pinned by:** `a_garbage_cache_is_replaced_and_keeps_the_record`,
+`a_truncated_cache_is_replaced_and_keeps_the_record`,
+`a_missing_cache_gets_the_record_back`,
+`a_damaged_copy_is_made_again_from_the_cache`,
+`records_are_lost_only_when_neither_file_holds_them`,
+`a_new_copy_is_filled_from_the_cache`,
+`the_two_files_are_brought_into_step_at_open`,
+`the_copy_is_attached_before_the_cache`,
+`check_database_replaces_a_damaged_cache_and_keeps_the_record`
+(`rslib/src/storage/sidecar.rs`);
+`the_record_copy_stays_in_step_after_answers_and_undo`
+(`rslib/src/scheduler/answering/mod.rs`);
+`the_scheduler_record_copy_stays_in_step_through_syncs`
+(`rslib/src/sync/collection/tests.rs`);
+`test_a_replaced_cache_restarts_the_passes`,
+`test_a_replaced_copy_leaves_the_passes_alone`,
+`test_lost_records_are_said_only_when_lost`
+(`qt/tests/test_sidecar_recovery.py`).
+
 ## database.collection-file-locked
 
 While Clanki has a collection open, the collection file itself is locked

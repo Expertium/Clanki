@@ -14,6 +14,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::Row;
 
 use super::ids_to_string;
+use super::sidecar::SCHEDULER_RECORD_DB_SCHEMA;
 use super::sqlite::RETRIEVABILITY_CACHE_DB_SCHEMA;
 use super::write_comma_separated_ids;
 use super::SqliteStorage;
@@ -565,34 +566,41 @@ impl SqliteStorage {
         })
     }
 
-    fn ensure_review_scheduler_schema(&self) -> Result<()> {
-        let table = Self::qualified_retrievability_cache_table(REVIEW_SCHEDULER_TABLE);
-        self.db.execute_batch(&format!(
-            "
-            CREATE TABLE IF NOT EXISTS {table} (
-                revlog_id INTEGER NOT NULL PRIMARY KEY,
-                algorithm TEXT NOT NULL,
-                recorded_at INTEGER NOT NULL
-            );
-            "
-        ))?;
-        Ok(())
-    }
-
     /// Records which algorithm scheduled the review, once, at the moment it
-    /// is answered (spec sched.review-scheduler-record). A review already
-    /// recorded keeps its first answer, because the algorithm that scheduled
-    /// it cannot change afterwards.
+    /// is answered (spec sched.review-scheduler-record), in the scheduler
+    /// record and in the retrievability cache (spec
+    /// database.sidecar-recovery). A review already recorded keeps its first
+    /// answer, because the algorithm that scheduled it cannot change
+    /// afterwards.
+    ///
+    /// The copy is written first and a failure of one write does not stop
+    /// the other, so a damaged cache never costs the copy its row.
     pub(crate) fn set_review_scheduler(&self, revlog_id: RevlogId, algorithm: &str) -> Result<()> {
-        self.ensure_review_scheduler_schema()?;
-        let table = Self::qualified_retrievability_cache_table(REVIEW_SCHEDULER_TABLE);
-        self.db
-            .prepare_cached(&format!(
-                "insert or ignore into {table} (revlog_id, algorithm, recorded_at)
-                 values (?1, ?2, ?3)"
-            ))?
-            .execute(params![revlog_id.0, algorithm, TimestampSecs::now().0])?;
-        Ok(())
+        let recorded_at = TimestampSecs::now().0;
+        let mut first_error = None;
+        for schema in [SCHEDULER_RECORD_DB_SCHEMA, RETRIEVABILITY_CACHE_DB_SCHEMA] {
+            let written = self
+                .db
+                .execute_batch(&format!(
+                    "CREATE TABLE IF NOT EXISTS {schema}.{REVIEW_SCHEDULER_TABLE} (
+                        revlog_id INTEGER NOT NULL PRIMARY KEY,
+                        algorithm TEXT NOT NULL,
+                        recorded_at INTEGER NOT NULL
+                    );"
+                ))
+                .and_then(|()| {
+                    self.db
+                        .prepare_cached(&format!(
+                            "insert or ignore into {schema}.{REVIEW_SCHEDULER_TABLE}
+                             (revlog_id, algorithm, recorded_at) values (?1, ?2, ?3)"
+                        ))?
+                        .execute(params![revlog_id.0, algorithm, recorded_at])
+                });
+            if let Err(err) = written {
+                first_error.get_or_insert(err);
+            }
+        }
+        first_error.map_or(Ok(()), |err| Err(err.into()))
     }
 
     fn ensure_rwkv_review_retrievability_cache_schema(&self) -> Result<()> {

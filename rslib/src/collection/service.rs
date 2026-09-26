@@ -73,4 +73,20 @@ impl crate::services::CollectionService for Collection {
             .unwrap_or_default();
         Ok(GetCustomColoursResponse { colours })
     }
+
+    fn take_sidecar_recovery(
+        &mut self,
+    ) -> error::Result<anki_proto::collection::SidecarRecoveryResponse> {
+        let recovery = std::mem::take(&mut self.storage.sidecar_recovery);
+        Ok(anki_proto::collection::SidecarRecoveryResponse {
+            cache_replaced: recovery.cache_replaced,
+            record_copy_replaced: recovery.record_copy_replaced,
+            records_lost: recovery.records_lost,
+            moved_aside: recovery
+                .moved_aside
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+        })
+    }
 }
