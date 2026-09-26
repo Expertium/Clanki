@@ -3029,6 +3029,7 @@ def _record_collection_undo_or_redo_with_backend(
                     backend,
                     reason="review redone" if redo else "review undone",
                 )
+                _exact_rwkv_rebuild_history_moved()
                 return restored_card_ids
 
     if _record_history_change_undo_or_redo(changes, redo=redo):
@@ -3036,6 +3037,17 @@ def _record_collection_undo_or_redo_with_backend(
     if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
         _rebuild_after_undo_of_an_answer_before_the_swap(changes)
     return []
+
+
+def _exact_rwkv_rebuild_history_moved() -> None:
+    """An answer went out of the review log or came back into it (an undo or
+    a redo). A running exact rebuild may already hold the history before
+    that; it starts again from the history as it is now, instead of
+    swapping in a state with a review the collection no longer has, or
+    without one it has again (spec sched.rwkv-history-change-keeps-state)."""
+    global _rwkv_exact_rebuild_generation
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_generation += 1
 
 
 def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
