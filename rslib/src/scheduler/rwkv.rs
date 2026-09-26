@@ -1165,7 +1165,7 @@ impl RwkvHistoricalFingerprintJob {
 
 /// Review-log rows per part of the fingerprint's read: about 25 ms of the
 /// collection on a fast machine.
-pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 32_768;
+pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 16_384;
 /// Reads in parts that a write may interrupt before the fingerprint reads
 /// the collection in one piece instead.
 const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
