@@ -8565,7 +8565,7 @@ def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_active_fsrs_validation_fold_indices",
-        lambda _reviewer, *, last_review_id: {first_review: 3},
+        lambda _reviewer, *, last_review_id, **_kwargs: {first_review: 3},
     )
 
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
@@ -8599,7 +8599,7 @@ def test_rwkv_calibration_fold_roles_fall_back_to_chronological_split(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_active_fsrs_validation_fold_indices",
-        lambda _reviewer, *, last_review_id: None,
+        lambda _reviewer, *, last_review_id, **_kwargs: None,
     )
 
     sample_roles, fold_indices = rwkv_scheduler._rwkv_calibration_fold_role_maps(
@@ -8681,6 +8681,144 @@ values (?, 0.5, 'test', ?, ?, ?)
         reviewer,
         last_review_id=3_000,
     ) == {1_000: 2, 3_000: 4}
+
+
+def _fold_cache_connection() -> sqlite3.Connection:
+    """An FSRS prediction cache with every case of the fold read: reviews
+    whose newest row is a validation fold, a final fit or a post-optimization
+    row, reviews with an older validation row, reviews past the last one,
+    and reviews without rows."""
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        """
+create table search_stats_fsrs_review_retrievability (
+  revlog_id integer not null,
+  prediction real not null,
+  source text not null,
+  updated_at integer not null,
+  sample_role text not null,
+  fold_index integer not null
+)
+"""
+    )
+    rows = []
+    for review in range(1, 400):
+        review_id = review * 1_000
+        kind = review % 5
+        if kind == 0:
+            continue
+        rows.append((review_id, 10, "final_fit", -1))
+        if kind in (1, 2):
+            rows.append((review_id, 10 + kind, "validation_fold", review % 4))
+        if kind == 2:
+            rows.append((review_id, 13, "post_optimization", -1))
+        if kind == 3:
+            rows.append((review_id, 9, "validation_fold", 3))
+        if kind == 4:
+            rows.append((review_id, 20, "validation_fold", 1))
+            rows.append((review_id, 15, "validation_fold", 2))
+    connection.executemany(
+        """
+insert into search_stats_fsrs_review_retrievability
+  (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+values (?, 0.5, 'test', ?, ?, ?)
+""",
+        rows,
+    )
+    return connection
+
+
+class _FoldCacheDB:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.queries = 0
+        self.sqls: list[str] = []
+        self.before_query: Callable[[int], None] = lambda _query: None
+
+    def all(self, sql: str, *args: object) -> list[tuple[int, int]]:
+        self.queries += 1
+        self.sqls.append(sql)
+        self.before_query(self.queries)
+        return cast(
+            list[tuple[int, int]], self.connection.execute(sql, args).fetchall()
+        )
+
+    def scalar(self, sql: str, *args: object) -> object:
+        return self.connection.execute(sql, args).fetchone()[0]
+
+
+def _fold_reviewer(db: object) -> SimpleNamespace:
+    return SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=db)))
+
+
+def test_fsrs_validation_folds_read_in_parts_are_the_one_query() -> None:
+    """The folds read in ranges of review ids are those of the one query, in
+    the same order, whatever the review ids the ranges are cut at."""
+    db = _FoldCacheDB(_fold_cache_connection())
+    reviewer = _fold_reviewer(db)
+    last_review_id = 350_000
+    one_query = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=last_review_id
+    )
+    assert db.queries == 1
+    assert one_query and len(one_query) > 100
+    review_id_sets = [
+        [review * 1_000 for review in range(1, 351)],
+        [review * 1_000 for review in range(351, 0, -1)],
+        [review * 1_000 for review in range(100, 200)],
+        [7_000] * 64,
+    ]
+    for review_ids in review_id_sets:
+        db.queries = 0
+        in_parts = rwkv_scheduler._active_fsrs_validation_fold_indices(
+            reviewer, last_review_id=last_review_id, review_ids=review_ids
+        )
+        assert list(in_parts.items()) == list(one_query.items())
+        assert db.queries > 1
+
+
+def test_fsrs_validation_folds_read_again_after_a_write_between_parts() -> None:
+    """A write between two ranges makes the read start again, so the folds
+    are those of one moment; writes that keep coming make it one query."""
+    connection = _fold_cache_connection()
+    db = _FoldCacheDB(connection)
+    reviewer = _fold_reviewer(db)
+    review_ids = [review * 1_000 for review in range(1, 400)]
+
+    def write_once(query: int) -> None:
+        if query == 3:
+            connection.execute(
+                "update search_stats_fsrs_review_retrievability "
+                "set updated_at = 30 where revlog_id = 4000 and fold_index = 2"
+            )
+
+    db.before_query = write_once
+    in_parts = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000, review_ids=review_ids
+    )
+    db.before_query = lambda _query: None
+    after_the_write = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000
+    )
+    assert in_parts == after_the_write
+    assert in_parts[4_000] == 2
+
+    def write_always(_query: int) -> None:
+        connection.execute(
+            "update search_stats_fsrs_review_retrievability set prediction = 0.5"
+        )
+
+    db.before_query = write_always
+    db.sqls.clear()
+    kept_writing = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000, review_ids=review_ids
+    )
+    part_queries = sum("?2" in sql for sql in db.sqls)
+    attempts = rwkv_scheduler._FSRS_VALIDATION_FOLD_READ_ATTEMPTS
+    assert part_queries > attempts and part_queries % attempts == 0
+    # then the one query
+    assert len(db.sqls) == part_queries + 1 and "?2" not in db.sqls[-1]
+    assert kept_writing == after_the_write
 
 
 def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(

@@ -12958,6 +12958,7 @@ def _rwkv_calibration_fold_role_maps(
     fsrs_validation_folds = _active_fsrs_validation_fold_indices(
         reviewer,
         last_review_id=history.last_review_id,
+        review_ids=review_ids,
     )
     if fsrs_validation_folds:
         sample_role_by_review_id = {
@@ -13002,12 +13003,31 @@ def _rwkv_calibration_fold_role_maps(
     return sample_role_by_review_id, fold_index_by_review_id
 
 
+# How many parts `_active_fsrs_validation_fold_indices` reads a whole
+# history's folds in: the one query over the FSRS prediction cache held the
+# collection for about 1.1 s on 868k reviews (965k cached rows), and a click
+# in that second waited for it.
+FSRS_VALIDATION_FOLD_PARTS = 64
+# Reads in parts that a write may interrupt before the folds are read in one
+# query instead.
+_FSRS_VALIDATION_FOLD_READ_ATTEMPTS = 3
+
+
 def _active_fsrs_validation_fold_indices(
     reviewer: object,
     *,
     last_review_id: int,
+    review_ids: Sequence[int] = (),
 ) -> dict[int, int] | None:
-    """Return the FSRS validation rows currently visible to calibration graphs."""
+    """Return the FSRS validation rows currently visible to calibration graphs.
+
+    With the history's `review_ids` the cache is read in
+    FSRS_VALIDATION_FOLD_PARTS ranges of review ids, one query each, so the
+    collection is held for one range at a time. The ranges are one read:
+    SQLite's count of changed rows is the same before the first range and
+    after the last one, or the read starts again; after
+    _FSRS_VALIDATION_FOLD_READ_ATTEMPTS interrupted reads it runs as one
+    query. The rows and their order are those of the one query."""
 
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -13016,8 +13036,12 @@ def _active_fsrs_validation_fold_indices(
         return None
 
     try:
-        rows = all_rows(
-            f"""
+        rows = _fsrs_validation_fold_rows_in_parts(
+            db, last_review_id=last_review_id, review_ids=review_ids
+        )
+        if rows is None:
+            rows = all_rows(
+                f"""
 with latest as (
   select revlog_id, max(updated_at) as updated_at
   from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
@@ -13033,8 +13057,8 @@ join latest
 where cache.sample_role = 'validation_fold'
 order by cache.revlog_id
 """,
-            last_review_id,
-        )
+                last_review_id,
+            )
     except Exception:
         logger.debug(
             "FSRS validation folds unavailable for RWKV calibration alignment",
@@ -13057,6 +13081,69 @@ order by cache.revlog_id
         ):
             validation_folds[review_id] = fold_index
     return validation_folds
+
+
+def _fsrs_validation_fold_rows_in_parts(
+    db: Any,
+    *,
+    last_review_id: int,
+    review_ids: Sequence[int],
+) -> list[Sequence[object]] | None:
+    """The rows of `_active_fsrs_validation_fold_indices`'s one query, read in
+    ranges of review ids; None when there is nothing to split the read by, or
+    when writes kept interrupting it.
+
+    A range's rows are those the one query gives for the reviews in the
+    range: `latest` takes each review's newest row among that review's own
+    rows. The ranges are cut at a sample of `review_ids` (without sorting a
+    whole history's ids, which would hold the GIL), and the first and the
+    last range are open, so together they cover every review id."""
+
+    scalar = getattr(db, "scalar", None)
+    if not callable(scalar) or len(review_ids) < FSRS_VALIDATION_FOLD_PARTS:
+        return None
+    step = -(-len(review_ids) // FSRS_VALIDATION_FOLD_PARTS)
+    # the reviews up to the last one only; a range's own bounds are then the
+    # only bounds of its query, which SQLite can search the index by (with
+    # `revlog_id <= last` beside them it scanned on to the last review)
+    end = last_review_id + 1
+    cuts = sorted(
+        {min(review_ids[index], end) for index in range(step, len(review_ids), step)}
+    )
+    lows = [-(2**63), *cuts]
+    highs = [*cuts, end]
+    for _ in range(_FSRS_VALIDATION_FOLD_READ_ATTEMPTS):
+        stamp = scalar("select total_changes()")
+        rows: list[Sequence[object]] = []
+        for low, high in zip(lows, highs, strict=True):
+            if low >= high:
+                continue
+            rows.extend(
+                db.all(
+                    f"""
+with latest as (
+  select revlog_id, max(updated_at) as updated_at
+  from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+  where revlog_id >= ?1 and revlog_id < ?2
+    and sample_role in ('final_fit', 'validation_fold', 'post_optimization')
+  group by revlog_id
+)
+select cache.revlog_id, cache.fold_index
+from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
+join latest
+  on latest.revlog_id = cache.revlog_id
+ and latest.updated_at = cache.updated_at
+where cache.sample_role = 'validation_fold'
+  and cache.revlog_id >= ?1 and cache.revlog_id < ?2
+order by cache.revlog_id
+""",
+                    low,
+                    high,
+                )
+            )
+        if scalar("select total_changes()") == stamp:
+            return rows
+    return None
 
 
 def _rwkv_calibration_test_folds_match_fsrs(
