@@ -2570,6 +2570,10 @@ timeboxReps = 0;
 
     def toggle_mark_on_current_note(self) -> None:
         def redraw_mark(out: OpChangesWithCount) -> None:
+            # the tag change can finish after the card has left the screen
+            # (a busy collection), and then there is no mark to redraw
+            if self.card is None:
+                return
             self.card.load()
             self._update_mark_icon()
 
