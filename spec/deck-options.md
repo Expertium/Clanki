@@ -172,7 +172,9 @@ days" (Advanced mode, in the FSRS advanced section; unset means 7, 0 means
 never). Once a day, after the collection opens and once the user has left
 Clanki alone, the background pass of `ui.stats-fsrs-predictions-ready`
 first optimizes every preset whose N days have passed since its last
-optimization (a preset never optimized is due at once), one preset per
+optimization (a preset never optimized is due at once, and so is a preset
+that holds FSRS-7 parameters FSRS-7 cannot run, such as an outdated 35-value
+preview, whatever its last optimization), one preset per
 call and resting between two of them rather than waiting for the user to
 stop, with the same reviews and settings as "Optimize All Presets". It
 holds the collection only to read the reviews and to save; a preset saved
@@ -185,7 +187,13 @@ them: the cards' memory states follow them (their due dates too when
 stored per-review predictions go and are written again by the same pass.
 The save is not undoable, so Undo keeps undoing the user's own last action.
 The day is recorded even when the parameters did not change, and "Optimize
-All Presets" records it for every preset. The screens refresh after a
+All Presets" records it for every preset. Unusable FSRS-7 parameters that
+training did not replace (too few reviews) are cleared: the preset ran the
+FSRS-7 defaults with them and runs them without. A preset that becomes due
+after the day's pass (for example, unusable parameters that a sync or an
+add-on brought) is optimized after the same pause at the next opening of the
+collection, not the next day. Clanki asks nothing about such parameters: no
+message at start-up, and no button to clear them. The screens refresh after a
 change. "Time to optimize" shows only for a preset with 0 days. Under
 RWKV-Curve and RWKV-Instant the preset is optimized all the same, because
 the Stats graphs compare RWKV with FSRS-7 and FSRS-7 needs current
@@ -193,7 +201,9 @@ parameters there; the new parameters then change FSRS-7's memory states and
 predictions only, and never a card's due date, whatever the reschedule
 choice.
 
-**Why:** Andrew, 2026-09-19: "neither FSRS nor RWKV should make the user
+**Why:** Andrew, 2026-09-25, on the start-up message about 35-value
+FSRS-7 preview parameters: "just optimize without asking the user".
+Andrew, 2026-09-19: "neither FSRS nor RWKV should make the user
 decide to optimize parameters/rebuild states. That should be done
 automatically. For FSRS-7 that means automatic optimization every N days as
 a new Deck Options setting." (CLAUDE.md, Planned direction 9.) Every 7
@@ -202,10 +212,12 @@ optimized when Stats opens, but not at the cost of lag, so the idle
 background pass does it instead.
 
 **Pinned by:** `a_preset_is_optimized_again_after_its_days`,
+`a_preset_with_unusable_params_is_optimized_at_the_next_pass`,
 `under_rwkv_it_optimizes_but_never_reschedules`, `a_save_during_training_drops_the_result`,
 `a_job_never_saves_into_another_collection`
 (rslib/src/scheduler/fsrs/auto_optimize.rs);
 `test_due_presets_are_optimized_before_the_predictions`,
+`test_a_preset_due_after_todays_pass_is_optimized_at_the_next_open`,
 `test_a_started_pass_never_waits_for_the_user_to_stop`,
 `test_the_fake_auto_optimize_matches_the_real_backend`
 (qt/tests/test_fsrs_predictions.py); `auto-optimize.test.ts`.
