@@ -23282,6 +23282,52 @@ def test_a_state_published_from_the_current_history_ends_the_rebuild(
     assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
+def test_a_request_while_the_rebuild_thread_ends_starts_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    history change that comes while the rebuild thread is ending, after it
+    found nothing more to rebuild, starts a new rebuild. The ending thread
+    does not take the request with it."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    rebuilds: list[str] = []
+    all_done = threading.Event()
+
+    def rebuild(mw_: object, col: object, generation: int) -> bool:
+        rebuilds.append(threading.current_thread().name)
+        # the swap: the resident state is the history as it is now
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._clear_rwkv_exact_rebuild_wants_locked()
+        if len(rebuilds) == 2:
+            all_done.set()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_rebuild_exact_rwkv_state", rebuild)
+    finished = rwkv_scheduler._background_pass_finished
+    requested_while_ending: list[bool] = []
+
+    def pass_finished() -> None:
+        # the first thread is still alive here: another card is deleted now
+        if not requested_while_ending:
+            requested_while_ending.append(True)
+            rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+        finished()
+
+    monkeypatch.setattr(rwkv_scheduler, "_background_pass_finished", pass_finished)
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+
+    assert all_done.wait(timeout=5), f"rebuilds: {rebuilds}"
+    assert requested_while_ending == [True]
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
 def test_the_close_stops_the_exact_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pins spec/ui.md#ui.close-stops-rwkv-work and
     spec/scheduling.md#sched.rwkv-history-change-keeps-state: the exact rebuild is a

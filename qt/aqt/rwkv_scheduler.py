@@ -5250,7 +5250,19 @@ def _run_exact_rwkv_rebuilds(mw: object) -> None:
     try:
         _run_exact_rwkv_rebuilds_until_done(mw)
     finally:
+        with _rwkv_exact_rebuild_lock:
+            _rwkv_exact_rebuild_thread_ends_locked()
         _background_pass_finished()
+
+
+def _rwkv_exact_rebuild_thread_ends_locked() -> None:
+    """The rebuild thread has decided to end: a request from now on starts a
+    new one. It is decided under the lock, so a request that comes while the
+    thread is still ending is not left to it."""
+    global _rwkv_exact_rebuild_thread
+
+    if _rwkv_exact_rebuild_thread is threading.current_thread():
+        _rwkv_exact_rebuild_thread = None
 
 
 def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
@@ -5264,6 +5276,7 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         with _rwkv_exact_rebuild_lock:
             generation = _rwkv_exact_rebuild_generation
             if not _rwkv_exact_rebuild_wanted_locked():
+                _rwkv_exact_rebuild_thread_ends_locked()
                 return
         if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
             return
@@ -5289,6 +5302,8 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         failures += 1
         if failures > _RWKV_EXACT_REBUILD_MAX_FAILURES:
             logger.warning("RWKV exact rebuild stopped after %s tries", failures)
+            with _rwkv_exact_rebuild_lock:
+                _rwkv_exact_rebuild_thread_ends_locked()
             return
         retry_at = time.monotonic() + _RWKV_EXACT_REBUILD_RETRY_SECS * 2 ** (
             failures - 1
