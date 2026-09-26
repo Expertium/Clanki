@@ -644,3 +644,64 @@ def test_the_fake_auto_optimize_matches_the_real_backend() -> None:
     assert list(optimize.parameters) == list(
         inspect.signature(_Backend.auto_optimize_fsrs_preset).parameters
     )
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready: a parameter change while a
+# same-day pass waits for a pause (the pass of a later open that only asks
+# whether a preset is due) still writes the predictions again at once; the
+# waiting pass does not swallow the request.
+def test_a_parameter_change_while_a_same_day_pass_waits_still_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = _quiet()
+    backend = _Backend(started, release, presets=[1])
+    mw = _mw(backend)
+    predictions.ensure_ready(mw)
+    started.wait(5)
+    while predictions.is_running():
+        pass
+    assert backend.calls == 1
+
+    # a later open the same day: the pass waits while the user works in
+    # deck options
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic())
+    predictions.ensure_ready(mw)
+    assert predictions.is_running()
+    # the deck-options save changed a preset's parameters
+    predictions.ensure_ready(mw, force=True)
+
+    deadline = time.monotonic() + 5
+    while backend.calls < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    while predictions.is_running():
+        pass
+    assert backend.calls == 2
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+def test_the_next_profile_gets_its_pass_when_the_old_one_was_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old pass may still wait for a pause when the profile switches.
+    The new profile's request then finds a pass running and does nothing;
+    the old pass stops at once and starts the new one, as it does when it
+    stops late inside a backend call."""
+    monkeypatch.setattr(predictions, "USER_IDLE_SECS", 0.3)
+    old_started, old_release = _quiet()
+    old_backend = _Backend(old_started, old_release)
+    mw = _mw(old_backend)
+    mw.app = SimpleNamespace(last_input_at=time.monotonic())
+    predictions.ensure_ready(mw)
+    assert predictions.is_running()
+
+    started, release = _quiet()
+    new_backend = _Backend(started, release)
+    mw.col = _mw(new_backend).col
+    predictions.ensure_ready(mw)
+
+    assert started.wait(5)
+    while predictions.is_running():
+        time.sleep(0.01)
+    assert old_backend.calls == 0
+    assert new_backend.refreshed == [1]
