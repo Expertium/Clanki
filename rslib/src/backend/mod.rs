@@ -133,7 +133,12 @@ impl Backend {
         self.col_waiters.fetch_add(1, Ordering::SeqCst);
         let guard = self.col.lock();
         self.col_waiters.fetch_sub(1, Ordering::SeqCst);
-        func(guard.unwrap().as_mut().ok_or(AnkiError::CollectionNotOpen)?)
+        func(
+            guard
+                .unwrap()
+                .as_mut()
+                .ok_or(AnkiError::CollectionNotOpen)?,
+        )
     }
 
     /// `with_col` for one step of a read in parts: a `with_col` call that
@@ -275,7 +280,11 @@ mod test {
         let before = parts_done.load(Ordering::SeqCst);
         let at_call = backend.with_col(|_| Ok(parts_done.load(Ordering::SeqCst)))?;
         read.join().unwrap()?;
-        assert!(at_call - before <= 2, "the call waited for {} parts", at_call - before);
+        assert!(
+            at_call - before <= 2,
+            "the call waited for {} parts",
+            at_call - before
+        );
         assert!(at_call < PARTS);
         assert_eq!(backend.col_waiters.load(Ordering::SeqCst), 0);
         Ok(())
