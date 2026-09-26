@@ -188,9 +188,27 @@ _REAL_RUN_EXACT_REBUILDS = rwkv_scheduler._run_exact_rwkv_rebuilds
 @pytest.fixture(autouse=True)
 def no_exact_rebuild_thread(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """The exact rebuild runs on a thread of its own; a test that asks for it
-    records the request instead, and a test of the rebuild calls it."""
+    records the request instead, and a test of the rebuild calls it.
+
+    The request returns once the recording thread has recorded it: the
+    thread may not have run yet when Thread.start() returns, and a check
+    made then failed on a busy machine."""
     started: list[object] = []
     monkeypatch.setattr(rwkv_scheduler, "_run_exact_rwkv_rebuilds", started.append)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_thread", None)
+    request = rwkv_scheduler.request_exact_rwkv_rebuild
+
+    def request_and_wait(mw: object, *, forced: bool = False) -> None:
+        request(mw, forced=forced)
+        thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+        if (
+            rwkv_scheduler._run_exact_rwkv_rebuilds == started.append
+            and thread is not None
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=5)
+
+    monkeypatch.setattr(rwkv_scheduler, "request_exact_rwkv_rebuild", request_and_wait)
     return started
 
 
