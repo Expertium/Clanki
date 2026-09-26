@@ -1,4 +1,4 @@
-- A preset with an invalid "Ignore reviews before" date no longer stops the collection from opening, and no longer breaks Card Info or answering its cards.
+- A preset with an invalid "Ignore reviews before" date gets the date 1970-01-01 (ignore no reviews) when the collection opens, after a sync, after an import, in Check Database and when the preset is saved. The collection opens, Card Info and answering work, and the preset moves to FSRS-7 like the others.
 - A card whose home deck or preset is missing no longer breaks `prop:r`/`prop:s` searches, the FSRS-7 Stats graphs, the retrievability review orders or its Browser row: FSRS-7 reads it with the Default preset.
 - The add-on functions `fsrs_current_retrievability` and `fsrs_interval_at_retrievability*` now read the stability they get as the card's S90 (the stability Clanki shows), like `fsrs_next_interval`.
 - When an add-on changes a card's FSRS-7 stability, the card's retrievability and next intervals now follow the new stability.

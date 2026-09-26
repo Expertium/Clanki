@@ -119,6 +119,16 @@ impl Collection {
             .unwrap();
     }
 
+    /// Stores a preset's "ignore reviews before" date as given, past the
+    /// write paths that repair a malformed one, as another client, an
+    /// add-on writing SQL or a damaged file can (spec
+    /// sched.fsrs7-bad-ignore-before-date).
+    pub(crate) fn store_raw_ignore_before_date(&self, dcid: DeckConfigId, date: &str) {
+        let mut config = self.storage.get_deck_config(dcid).unwrap().unwrap();
+        config.inner.ignore_revlogs_before_date = date.into();
+        self.storage.update_deck_conf(&config).unwrap();
+    }
+
     pub(crate) fn basic_notetype(&self) -> Notetype {
         let ntid = self.storage.get_notetype_id("Basic").unwrap().unwrap();
         self.storage.get_notetype(ntid).unwrap().unwrap()

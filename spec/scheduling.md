@@ -1781,22 +1781,33 @@ script) (`rslib/src/scheduler/answering/mod.rs`);
 
 ## sched.fsrs7-bad-ignore-before-date
 
-Given a preset whose "Ignore reviews before" date is not a valid
-`YYYY-MM-DD` date (another client, an add-on or a damaged collection can
-write one), the collection still opens. The one-time FSRS-7 migration
-(`sched.fsrs7-only`) skips that preset, logs it, and still sets its done
-flag, so the next open does not try again. Card info and answering a card
-without a memory state read the date as no date (every review counts) and
-log it.
+Given a preset whose "Ignore reviews before" date is not empty and not a
+valid `YYYY-MM-DD` date (another client, an add-on or a damaged collection can
+write one), Clanki replaces the stored date with `1970-01-01`, the Unix epoch,
+and logs it. The repair is a normal preset change: it sets the preset's
+modification time and syncs. It runs when the collection opens (before the
+one-time FSRS-7 migration, `sched.fsrs7-only`, so that preset then migrates
+like every other preset), after a normal sync, after an `.apkg` import, in
+Check Database (which reports the number of presets it fixed), and on every
+write of a preset (Deck Options, add-ons, AnkiConnect `saveDeckConfig`). Card
+info and answering a card without a memory state do not write: they read a
+malformed date that no repair has reached yet as `1970-01-01`, and log it.
 
-**Why:** Andrew, 2026-09-24, "fix FSRS-7 bugs", for the FSRS-7 review of
-that day: the migration propagated the date's parse error out of the
-collection open, so one bad date failed every open (the done flag was never
-set), and the same date failed card info for every card of the preset and
-the answer of a card that had no memory state.
+`1970-01-01` is 0 ms, the same cutoff as an empty date, so it ignores no
+review in every reader. It is also the value the Deck Options date field shows
+and saves for an empty date.
 
-**Pinned by:** `migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date`
+**Why:** Andrew, 2026-09-25: "set it to 1970 or whatever is the Unix
+beginning point". A malformed date must not fail the collection open, card
+info or answering (Andrew, 2026-09-24, "fix FSRS-7 bugs"), and must not keep
+its preset from moving to FSRS-7 or stay in the collection.
+
+**Pinned by:**
+`a_bad_ignore_before_date_is_repaired_at_open_and_the_preset_migrates`,
+`preset_writes_and_check_database_repair_a_bad_ignore_before_date`
 (`rslib/src/deckconfig/update.rs`),
+`sync_repairs_a_bad_ignore_before_date_from_another_client`
+(`rslib/src/sync/collection/tests.rs`),
 `card_stats_survive_a_bad_ignore_before_date` (`rslib/src/stats/card.rs`),
 `a_bad_ignore_before_date_does_not_stop_answering`
 (`rslib/src/scheduler/answering/mod.rs`).
