@@ -726,9 +726,14 @@ intervals for this showing of the card. Until then the button area shows
 "Waiting for RWKV-Curve…" and answer keys and clicks do nothing. While it
 waits, the reviewer both asks RWKV-Curve again (after 50 ms, doubling up to
 once a second) and restores RWKV-Curve's resident state off the main thread,
-one restore at a time; leaving the card ends the wait. Asking again alone
+one restore at a time; leaving the card ends the wait. A restore that did
+not make the state ready does not ask again at once: the next ask waits for
+that backed-off retry. Asking again alone
 would never end the wait: the other review-time restore of the state runs
-after an answer, and an answer is blocked while the buttons wait.
+after an answer, and an answer is blocked while the buttons wait. When the
+stored state cache cannot restore the state either, the exact rebuild builds
+it in the background (`sched.rwkv-delete-keeps-state`), and the buttons ask
+again as soon as it is in place, also after the wait has timed out.
 
 The wait covers every reason RWKV-Curve has no intervals yet:
 
@@ -787,6 +792,8 @@ config bool; the replay cannot see it.
 
 **Pinned by:** `test_answer_buttons_wait_for_rwkv_curve_intervals`,
 `test_the_waiting_answer_buttons_restore_the_rwkv_curve_state`,
+`test_a_failed_state_preparation_leaves_the_next_ask_to_the_backed_off_retry`,
+`test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`,
 `test_answer_buttons_stop_waiting_for_rwkv_curve_after_a_minute`,
 `test_answer_buttons_say_rwkv_curve_has_no_interval_for_the_card`,
 `test_answers_are_ignored_while_rwkv_curve_intervals_are_pending`
@@ -974,6 +981,78 @@ later prediction a state training never produced.
 (`qt/tests/test_rwkv_replay_inputs_backend.py`) and
 `test_the_backend_reads_the_same_whole_history_rows_as_the_query`
 (`qt/tests/test_rwkv_replay_sql_drift.py`).
+
+## sched.rwkv-delete-keeps-state
+
+Given a collection that runs RWKV-Curve or RWKV-Instant with its RWKV state
+loaded, when a note or card with reviews is deleted (Delete Note in the
+reviewer, the Browser, AnkiConnect), and that is the only change the
+operation makes to the routing of past reviews:
+
+- the resident RWKV state stays in use. The next card's intervals are ready
+  at once. Until the rebuild below swaps in, the deleted card's past reviews
+  stay in the note, deck and preset streams they went through, instead of
+  the placeholder ones (`sched.rwkv-replay-deleted-cards`). The card's own
+  stream and the per-user counts are the same either way;
+- the state is marked as no longer matching the history, so it is never
+  saved, and never marks the stored state cache as current, under the new
+  history;
+- an exact rebuild starts on a thread of its own. It waits until the user has
+  left Clanki alone for 3 seconds, reads the whole history in short steps,
+  and replays it into a model runtime of its own, with the replay the
+  start-up build runs for the loaded model. It then waits for another
+  3-second pause and, on the collection worker (so no answer is half
+  recorded),
+  replays the answers given meanwhile, puts that runtime in place of the
+  kept one, releases the kept one, and saves the stored state cache for the
+  new history. Answer buttons that wait for RWKV-Curve ask again at once;
+- an undo of the delete before the swap brings back the history the kept
+  state has, and the rebuild is not needed any more. An undo after the swap,
+  a redo, another delete, and a state thrown away for another reason start
+  the rebuild again, from the history as it is then. An undo that reaches an
+  operation from before the swap keeps the state and asks for another
+  rebuild, because the new runtime has no rollback for an answer from before
+  it. A state published from the current history by any other restore or
+  build ends the rebuild.
+
+A mutation that deletes cards and also changes the routing of another card
+with reviews (for example moves it to another deck), or changes the review
+log, throws the state away as before.
+
+When the answer buttons wait for a cold state and the stored state cache has
+already failed to restore it, the same rebuild builds it
+(`sched.rwkv-curve-buttons-wait`).
+
+**Why:** Andrew, 2026-09-26 (B-034): "I got "Processing..." after deleting a
+card, and then the next card wasn't ready". A delete threw the resident
+state away. The review-time restore then read the stored cache for 13 s on
+the collection worker and failed, because the history hash changes from the
+deleted card's first review on, and the only stored checkpoints are the
+newest and the one 8 days before it. No rebuild followed: every card showed
+"Getting this card ready…" for 60 s and then timed out, until Clanki was
+restarted, and a second click during the 13 s restore opened the
+"Processing..." window. The RWKV session accepted the kept state on
+2026-09-26, on the conditions above: the rebuild always runs, an undo before
+the swap cancels it, and the same replay as the start-up build.
+Measured on a copy of his collection (868,333 reviews): the next card's
+buttons are ready 60 ms after Space; the rebuild takes 107 s in the
+background (6 s to read, 100 s to replay, 37 ms on the collection worker);
+for the 139 review cards of the deleted card's deck, R from the kept state
+differs from R after the swap by 0.00024 on average and 0.0025 at most.
+
+**Pinned by:**
+`test_a_card_deletion_keeps_the_resident_state_and_starts_the_exact_rebuild`,
+`test_a_deletion_that_also_changes_other_routing_still_discards_the_state`,
+`test_undo_of_a_deletion_before_the_rebuild_needs_no_rebuild`,
+`test_the_exact_rebuild_replays_into_its_own_runtime_and_swaps_it_in`,
+`test_the_exact_rebuild_starts_again_when_the_history_moves`,
+`test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild`,
+`test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild`,
+`test_a_state_published_from_the_current_history_ends_the_rebuild`,
+`test_the_close_stops_the_exact_rebuild`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`
+(`qt/tests/test_reviewer.py`).
 
 ## sched.rwkv-id-codes
 

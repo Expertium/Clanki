@@ -128,9 +128,11 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._rwkv_startup_build_started = False
     rwkv_scheduler._rwkv_model_cache_signature = None
     rwkv_scheduler._rwkv_model_cache_value = None
+    rwkv_scheduler._reset_rwkv_exact_rebuild()
     try:
         yield
     finally:
+        rwkv_scheduler._reset_rwkv_exact_rebuild()
         rwkv_scheduler._rwkv_model_cache_signature = previous_model_cache_signature
         rwkv_scheduler._rwkv_model_cache_value = previous_model_cache_value
         set_reviewer_backend(previous)
@@ -178,6 +180,18 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._rwkv_score_prewarm_in_flight.clear()
         rwkv_scheduler._rwkv_score_prewarm_in_flight.update(previous_score_prewarm)
         rwkv_scheduler._rwkv_startup_build_started = previous_startup_build_started
+
+
+_REAL_RUN_EXACT_REBUILDS = rwkv_scheduler._run_exact_rwkv_rebuilds
+
+
+@pytest.fixture(autouse=True)
+def no_exact_rebuild_thread(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """The exact rebuild runs on a thread of its own; a test that asks for it
+    records the request instead, and a test of the rebuild calls it."""
+    started: list[object] = []
+    monkeypatch.setattr(rwkv_scheduler, "_run_exact_rwkv_rebuilds", started.append)
+    return started
 
 
 def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
@@ -22650,3 +22664,443 @@ def test_a_build_stopped_by_the_close_refreshes_nothing(
     )
 
     assert refreshed == []
+
+
+class _DeletionDB:
+    """A collection with one reviewed card (1, note 10, deck 100) and a second
+    one (2, note 20, deck 100); `deleted` and `moved` change it."""
+
+    def __init__(self) -> None:
+        self.deleted: set[int] = set()
+        self.moved: dict[int, int] = {}
+        self.reviewed: tuple[int, ...] = (1, 2)
+
+    def _cards(self, card_ids: list[int]) -> list[tuple[int, int, int]]:
+        rows = {1: (1, 10, 100), 2: (2, 20, 100)}
+        return [
+            (card_id, rows[card_id][1], self.moved.get(card_id, rows[card_id][2]))
+            for card_id in card_ids
+            if card_id in rows and card_id not in self.deleted
+        ]
+
+    @staticmethod
+    def _ids(sql: str) -> list[int]:
+        return [int(value) for value in re.findall(r"\d+", sql.rpartition(" in ")[2])]
+
+    def list(self, sql: str, *args: object) -> list[int]:
+        if "select distinct cid" in sql:
+            # the review log keeps the reviews of a deleted card
+            asked = self._ids(sql.partition("where cid in")[2].partition("and")[0])
+            return [card_id for card_id in self.reviewed if card_id in asked]
+        assert "select id from cards where id in" in sql
+        return [row[0] for row in self._cards(self._ids(sql))]
+
+    def all(self, sql: str, *args: object) -> list[tuple[int, int, int]]:
+        assert "select id, nid" in sql
+        return self._cards(self._ids(sql.rpartition("where id in")[2]))
+
+    def scalar(self, sql: str, *args: object) -> int:
+        assert sql == "select mod from col"
+        return 123
+
+
+def _deletion_reviewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[SimpleNamespace, _DeletionDB, tuple[int, int], _UndoCounter]:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    db = _DeletionDB()
+    reviewer.mw.col.db = db
+    reviewer.mw.col.get_config = lambda _key: None
+    counter = _UndoCounter(reviewer)
+    counter.set(4)
+    monkeypatch.setattr("aqt.mw", reviewer.mw)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_resolved_fsrs_preset_ids",
+        lambda _reviewer, card_ids: {card_id: "preset" for card_id in card_ids},
+    )
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity()
+    )
+    return reviewer, db, warmup_key, counter
+
+
+def test_a_card_deletion_keeps_the_resident_state_and_starts_the_exact_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: deleting a card
+    with reviews keeps the resident state, so the next card's intervals are
+    ready at once, and starts the exact rebuild. Before, the state was thrown
+    away and the stored cache could not restore it (B-034)."""
+    reviewer, db, warmup_key, counter = _deletion_reviewer(monkeypatch)
+    refreshed_markers: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_rwkv_state_cache_collection_mod",
+        lambda _reviewer, identity: refreshed_markers.append(identity),
+    )
+    changes = collection_pb2.OpChanges(card=True, note=True, study_queues=True)
+
+    def delete() -> collection_pb2.OpChanges:
+        db.deleted.add(1)
+        counter.set(5)
+        return changes
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col, delete, card_ids=[1]
+    )
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+
+    # the state stays, and still predicts
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_ready_for_review(reviewer)
+    # it no longer matches the history, so it never marks the stored cache
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] is None
+    assert refreshed_markers == []
+    assert rwkv_scheduler._rwkv_exact_rebuild_divergent_card_ids == {1}
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+@pytest.mark.parametrize("second_change", ["moved", "review log"])
+def test_a_deletion_that_also_changes_other_routing_still_discards_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+    second_change: str,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: only a delete
+    keeps the state; a mutation that also moves a reviewed card, or changes
+    the review log, throws it away as before."""
+    reviewer, db, warmup_key, counter = _deletion_reviewer(monkeypatch)
+
+    def delete() -> collection_pb2.OpChanges:
+        db.deleted.add(1)
+        if second_change == "moved":
+            db.moved[2] = 200
+        else:
+            db.reviewed = (2,)
+        counter.set(5)
+        return collection_pb2.OpChanges(card=True, study_queues=True)
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col, delete, card_ids=[1, 2]
+    )
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == []
+
+
+def test_undo_of_a_deletion_before_the_rebuild_needs_no_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: an undo of the
+    delete brings the history back to the one the kept state has, so the
+    rebuild is no longer needed; a redo needs it again. The state stays
+    through both."""
+    reviewer, db, warmup_key, counter = _deletion_reviewer(monkeypatch)
+    changes = collection_pb2.OpChanges(card=True, note=True, study_queues=True)
+
+    def delete() -> collection_pb2.OpChanges:
+        db.deleted.add(1)
+        counter.set(5)
+        return changes
+
+    rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+        reviewer.mw.col, delete, card_ids=[1]
+    )
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+    db.deleted.clear()
+    assert record_collection_undo(_undo_result(counter=5, next_counter=6)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+    db.deleted.add(1)
+    assert record_collection_redo(_undo_result(counter=6, next_counter=7)) == []
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._rwkv_exact_rebuild_divergent_card_ids == {1}
+
+
+class _RebuildRuntime:
+    """A model runtime the exact rebuild replays into."""
+
+    def __init__(self, log: list[object]) -> None:
+        self.log = log
+        self.warm_ups: list[tuple[list[object], dict[str, object]]] = []
+        self.released = False
+        self.during_replay: Callable[[], None] | None = None
+
+    def new_runtime(self) -> _RebuildRuntime:
+        own = _RebuildRuntime(self.log)
+        self.log.append(("new runtime", own))
+        return own
+
+    def warm_up(self, reviews: list[object], **kwargs: object) -> None:
+        self.warm_ups.append((list(reviews), kwargs))
+        if self.during_replay is not None:
+            self.during_replay()
+        progress = kwargs.get("progress")
+        if callable(progress):
+            progress(RwkvWarmUpProgress(processed_reviews=1, total_reviews=1))
+
+    def release_runtime(self) -> None:
+        self.released = True
+
+
+def _rebuild_mw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[SimpleNamespace, _RebuildRuntime, list[object]]:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    mw = reviewer.mw
+    mw.col.db = SimpleNamespace(scalar=lambda sql: 123)
+    mw.col.undo_status = lambda: SimpleNamespace(last_step=9)
+    log: list[object] = []
+
+    def run_in_background(
+        task: Callable[[], object],
+        on_done: object,
+        uses_collection: bool = True,
+    ) -> None:
+        log.append(("collection worker", uses_collection))
+        task()
+
+    mw.taskman = SimpleNamespace(
+        run_on_main=lambda callback: callback(),
+        run_in_background=run_in_background,
+    )
+    mw.reviewer = SimpleNamespace(
+        mw=mw, rwkv_curve_state_ready=lambda: log.append("buttons ask again")
+    )
+    monkeypatch.setattr("aqt.mw", mw)
+    history = rwkv_scheduler.RwkvHistoricalReviewInputs(
+        reviews=cast(Any, ["r1", "r2"]),
+        review_ids=[1000, 2000],
+        previous_review_id_by_card={1: 2000},
+        previous_interval_days_by_card={},
+        review_count_by_card={1: 2},
+        last_review_id=2000,
+        review_count=2,
+        history_hash="a" * 64,
+        replay_key="canonical-replay",
+    )
+    tail = replace(
+        history,
+        reviews=cast(Any, ["r3"]),
+        review_ids=[3000],
+        last_review_id=3000,
+        review_count=3,
+        history_hash="b" * 64,
+    )
+
+    def history_inputs(_reviewer: object, **kwargs: object) -> object:
+        if kwargs.get("after_review_id") is not None:
+            assert kwargs["after_review_id"] == 2000
+            assert kwargs["previous_history_hash"] == "a" * 64
+            log.append("tail read")
+            return tail
+        log.append("whole history read")
+        between = kwargs.get("between_steps")
+        assert callable(between), "the whole-history read runs in short steps"
+        between()
+        return history
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_historical_rwkv_review_inputs", history_inputs
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_state_cache_dir", lambda _r: None)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_save_reviewer_backend_cache",
+        lambda _r, saved, **kwargs: log.append(("saved", saved.last_review_id)),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_EXACT_REBUILD_REST_SECS", 0.0)
+    backend = _RebuildRuntime(log)
+    set_reviewer_backend(cast(Any, backend))
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[key] = None
+    return mw, backend, log
+
+
+def test_the_exact_rebuild_replays_into_its_own_runtime_and_swaps_it_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: the rebuild
+    reads the whole history in short steps, replays it into a runtime of its
+    own while the kept state serves the reviewer, and on the collection
+    worker replays the answers given meanwhile, swaps the runtime in, saves
+    the stored cache and releases the old runtime. Waiting answer buttons ask
+    again."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, toggle_card_ids=[1])
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+
+    assert rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    own = rwkv_scheduler._reviewer_backend
+    assert isinstance(own, _RebuildRuntime) and own is not old
+    assert old.warm_ups == [], "the kept state was never replayed into"
+    assert old.released
+    assert [reviews for reviews, _kwargs in own.warm_ups] == [["r1", "r2"], ["r3"]]
+    assert own.warm_ups[0][1]["review_ids"] == [1000, 2000]
+    assert ("collection worker", True) in log
+    assert log.index("tail read") > log.index("whole history read")
+    assert ("saved", 2000) in log
+    assert "buttons ask again" in log
+    key = rwkv_scheduler._reviewer_backend_warmup_key(SimpleNamespace(mw=mw))
+    assert key is not None
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[key]
+    assert identity is not None
+    assert (
+        identity.last_review_id,
+        identity.review_count,
+        identity.history_hash,
+    ) == (3000, 3, "b" * 64)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+@pytest.mark.parametrize("change", ["state thrown away", "another delete"])
+def test_the_exact_rebuild_starts_again_when_the_history_moves(
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: a change the
+    rebuild did not read (a state thrown away, another delete) stops it; its
+    runtime is released and the kept state stays in use."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, toggle_card_ids=[1])
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    replayed: list[_RebuildRuntime] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def move() -> None:
+            if change == "state thrown away":
+                rwkv_scheduler._invalidate_reviewer_backend_state(
+                    SimpleNamespace(mw=mw), reason="test"
+                )
+            else:
+                rwkv_scheduler.request_exact_rwkv_rebuild(mw, toggle_card_ids=[2])
+
+        own.during_replay = move
+        replayed.append(own)
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    with pytest.raises(rwkv_scheduler._RwkvExactRebuildStale):
+        rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    assert rwkv_scheduler._reviewer_backend is old
+    assert not old.released
+    assert replayed and replayed[0].released
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: when the
+    answer buttons wait for a state that the stored cache failed to restore,
+    the exact rebuild builds it, instead of the buttons waiting until Clanki
+    restarts."""
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda sql: 123)
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_review", lambda _r: False
+    )
+
+    # the stored cache was not tried yet: no rebuild
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+    rwkv_scheduler._reviewer_backend_cold_fallback_generations[key] = 0
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+def test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: the rebuilt
+    runtime has no rollback for an answer given before it swapped in, so an
+    undo of one keeps the state and asks for another rebuild."""
+    reviewer, _db, warmup_key, _counter = _deletion_reviewer(monkeypatch)
+    rwkv_scheduler._rwkv_exact_rebuild_swap_undo_counter = 9
+
+    # an answer given after the swap is not this case
+    assert record_collection_undo(_undo_result(counter=10, next_counter=11)) == []
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+    assert record_collection_undo(_undo_result(counter=8, next_counter=11)) == []
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+def test_a_state_published_from_the_current_history_ends_the_rebuild(
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: a restore or
+    build that publishes a state of the history as it is now leaves no
+    rebuild due."""
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    mw = SimpleNamespace(col=SimpleNamespace(db=SimpleNamespace()))
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, toggle_card_ids=[1])
+    key = (id(backend), id(mw.col))
+
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        key, _rwkv_resident_identity(), expected_generation=0
+    )
+
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_the_close_stops_the_exact_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins spec/ui.md#ui.close-stops-rwkv-work and
+    spec/scheduling.md#sched.rwkv-delete-keeps-state: the exact rebuild is a
+    background pass the close waits for, and it stops at its next check."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    col = _ClosingCol()
+    setattr(col, "db", SimpleNamespace(scalar=lambda sql: 123))
+    # the user is at work, so the rebuild waits for a pause before it reads
+    app = SimpleNamespace(last_input_at=time.monotonic() + 3600)
+    mw = SimpleNamespace(col=col, app=app)
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    passes_before = rwkv_scheduler._background_passes
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, toggle_card_ids=[1])
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    assert thread is not None
+    deadline = time.monotonic() + 5
+    while rwkv_scheduler._background_passes == passes_before:
+        assert time.monotonic() < deadline, "the rebuild never counted as a pass"
+        time.sleep(0.01)
+
+    assert rwkv_scheduler.stop_background_work_for_close(col, timeout=5)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert rwkv_scheduler._background_passes == passes_before
+    assert rwkv_scheduler._reviewer_backend is backend

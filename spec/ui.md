@@ -1579,8 +1579,9 @@ Given the path a user takes from starting Clanki to answering a card
 (start-up, the deck list, expanding or collapsing a deck, clicking a deck,
 the overview, answering), Clanki opens no progress or waiting window, however
 long an operation waits for something else. The operations of that path run
-without one: expanding or collapsing a deck, clicking a deck, and answering a
-card.
+without one: expanding or collapsing a deck, clicking a deck, answering a
+card, and Delete Note in the reviewer. Until that delete is done, the card it
+deletes takes no answer and no other action.
 
 A window is shown only for the waits the user asked for and expects:
 optimizing FSRS-7 parameters, creating a backup, checking the database,
@@ -1597,8 +1598,14 @@ to reviewing a card should be seamless." A window that appears because
 something else is busy tells the user nothing and takes the app away from
 them.
 
+Andrew, 2026-09-26 (B-034): "I got "Processing..." after deleting a card".
+Delete Note in the reviewer opened the window whenever the delete waited more
+than 0.6 s for other work on the collection worker.
+
 **Pinned by:** `test_the_click_path_operations_open_no_waiting_window`
-(`qt/tests/test_operations_no_waiting_window.py`).
+(`qt/tests/test_operations_no_waiting_window.py`),
+`test_deleting_the_note_in_the_reviewer_opens_no_waiting_window`
+(`qt/tests/test_reviewer.py`).
 
 ## ui.close-says-what-it-waits-for
 
@@ -1689,8 +1696,9 @@ to 9.5-18 ms.
 ## ui.close-stops-rwkv-work
 
 Given a close of the profile while RWKV background work runs (the start-up
-restore or build of the RWKV state, or the recording pass that writes the
-per-review rows for the graphs), the close work of `ui.close-off-main-thread`
+restore or build of the RWKV state, the recording pass that writes the
+per-review rows for the graphs, or the exact rebuild after a delete,
+`sched.rwkv-delete-keeps-state`), the close work of `ui.close-off-main-thread`
 first stops that work, then optimizes, checks, backs up and closes the
 collection. Each pass stops at its next check, which comes after its current
 batch. The rows of an unfinished batch are dropped, not written, and are not
@@ -1711,6 +1719,7 @@ the collection from under passes that run on their own threads.
 **Pinned by:** `test_a_writer_drops_its_rows_once_the_close_begins`,
 `test_the_close_waits_for_the_recording_pass_to_stop`,
 `test_the_close_waits_for_background_rwkv_work`,
+`test_the_close_stops_the_exact_rebuild`,
 `test_a_build_stopped_by_the_close_refreshes_nothing`
 (`qt/tests/test_rwkv_scheduler.py`),
 `test_the_close_stops_the_rwkv_passes_before_the_collection_closes`,
