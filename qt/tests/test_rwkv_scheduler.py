@@ -12356,15 +12356,17 @@ def test_prewarm_reviewer_queue_score_cache_scores_parent_scope() -> None:
 
     class DB:
         def list(self, sql: str, *args: object) -> list[int]:
-            assert "queue = ?" in sql
-            assert args == (2,)
+            # RWKV-Instant scores review and interday learning cards (spec
+            # sched.rwkv-review-order)
+            assert "queue in (2,3)" in sql
+            assert args == ()
             did_start = sql.index("did in (") + len("did in (")
             did_end = sql.index(")", did_start)
             deck_ids = {int(deck_id) for deck_id in sql[did_start:did_end].split(",")}
             return [
                 card.id
                 for card in cards.values()
-                if card.did in deck_ids and card.queue == 2
+                if card.did in deck_ids and card.queue in (2, 3)
             ]
 
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:
@@ -17343,8 +17345,13 @@ def _rwkv_queue_reviewer(
     class DB:
         def list(self, sql: str, *args: object) -> list[int]:
             assert "did in (100,101)" in sql
-            assert "queue = ?" in sql
-            assert args == (2,)
+            if "queue = ?" in sql:
+                # the RWKV-Curve reschedule: review cards
+                assert args == (2,)
+            else:
+                # RWKV-Instant's scores: review and interday learning cards
+                assert "queue in (2,3)" in sql
+                assert args == ()
             return list(cards)
 
         def all(self, sql: str, *args: object) -> list[tuple[object, ...]]:

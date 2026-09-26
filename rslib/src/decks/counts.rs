@@ -44,10 +44,11 @@ impl Deck {
     }
 }
 
-/// RWKV-Instant counts only the reviews its scores make due, never FSRS-7's
-/// due cards: the review count of every normal deck with an RWKV-Instant
-/// preset starts at 0, and only scores add to it (spec
-/// sched.rwkv-instant-waits).
+/// RWKV-Instant counts only the review and interday learning cards its
+/// scores make due, never FSRS-7's due cards: the review and interday
+/// learning counts of every normal deck with an RWKV-Instant preset start at
+/// 0, and only scores add to them (spec sched.rwkv-instant-waits,
+/// sched.rwkv-review-order).
 pub(crate) fn clear_rwkv_instant_review_counts(
     counts: &mut HashMap<DeckId, DueCounts>,
     decks: &HashMap<DeckId, Deck>,
@@ -62,6 +63,8 @@ pub(crate) fn clear_rwkv_instant_review_counts(
             .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
         {
             deck_counts.review = 0;
+            deck_counts.learning = deck_counts.intraday_learning;
+            deck_counts.interday_learning = 0;
         }
     }
 }
@@ -178,11 +181,18 @@ impl Collection {
             );
             if matches!(eligibility, RwkvReviewScoreEligibility::Eligible) {
                 if let Some(counts) = counts.get_mut(&metadata.current_deck_id) {
-                    counts.review = counts.review.saturating_add(1);
+                    if metadata.interday_learning {
+                        counts.interday_learning = counts.interday_learning.saturating_add(1);
+                        counts.learning = counts.learning.saturating_add(1);
+                    } else {
+                        counts.review = counts.review.saturating_add(1);
+                    }
                 }
             }
 
-            if matches!(eligibility, RwkvReviewScoreEligibility::Blocked)
+            // the daily minimum pulls review cards only
+            if !metadata.interday_learning
+                && matches!(eligibility, RwkvReviewScoreEligibility::Blocked)
                 && matches!(
                     rwkv_review_score_eligibility_ignoring_retention(
                         score.retrievability,

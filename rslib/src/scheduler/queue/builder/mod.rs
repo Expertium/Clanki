@@ -440,21 +440,6 @@ impl QueueSortOptions {
     fn review_order_from_rwkv_keys(&self) -> bool {
         self.rwkv_review_enabled && self.review_order_ranks_by_retrievability()
     }
-
-    /// The order the due cards of `gather_due_cards` come in. RWKV-Instant
-    /// scores no learning card, and no other algorithm may rank its cards, so
-    /// under a retrievability order its interday learning cards come by due
-    /// day (spec sched.rwkv-review-order).
-    fn due_card_order(&self) -> ReviewCardOrder {
-        if self.rwkv_review_instant_order_enabled
-            && !self.rwkv_review_enabled
-            && self.review_order_ranks_by_retrievability()
-        {
-            ReviewCardOrder::Day
-        } else {
-            self.review_order
-        }
-    }
 }
 
 /// The review order the queue gathers a preset's cards in. "Easy cards
@@ -1294,59 +1279,82 @@ mod test {
     }
 
     // Pins spec/scheduling.md#sched.rwkv-review-order: under RWKV-Instant,
-    // interday learning cards (which it does not score) come by due day
-    // under the retrievability orders, not by RWKV-Curve's score, the
-    // fallback curve through FSRS-7's interval or FSRS-7's retrievability
+    // interday learning cards come from its scores like review cards: a
+    // scored one comes when its score makes it due, ranked with the review
+    // cards by the same key; one without a score, or not due by its score,
+    // does not come, whatever its due day. The learn count follows.
     #[test]
-    fn rwkv_instant_interday_learning_cards_come_by_due_day() -> Result<()> {
+    fn rwkv_instant_scores_interday_learning_cards() -> Result<()> {
         for order in [
             ReviewCardOrder::RetrievabilityAscending,
-            ReviewCardOrder::RetrievabilityDescending,
             ReviewCardOrder::RelativeOverdueness,
+            ReviewCardOrder::Day,
         ] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, true)?;
             let mut deck = col.get_or_create_normal_deck("Default")?;
             col.set_deck_rwkv_instant_order(&mut deck, order);
             let today = col.timing_today()?.days_elapsed as i32;
-            // every other algorithm's value puts `later` first in this order
-            let descending = order == ReviewCardOrder::RetrievabilityDescending;
-            let (low, high) = ((0.1, 0.01), (0.95, 100.0));
-            let (earlier_r, later_r) = if descending { (low, high) } else { (high, low) };
-            let mut add = |due, elapsed_days: i64, (_, stability): (f32, f32)| {
-                add_memory_state_card(
-                    &mut col,
-                    deck.id,
-                    CardQueue::DayLearn,
-                    CardType::Relearn,
-                    due,
-                    elapsed_days * 86_400,
-                    stability,
-                )
+            let mut add = |queue, ctype, due| {
+                add_memory_state_card(&mut col, deck.id, queue, ctype, due, 3 * 86_400, 10.0)
             };
-            let earlier = add(today - 2, 3, earlier_r)?;
-            let later = add(today, 1, later_r)?;
-            col.set_rwkv_stats_graph_score_entries(
-                String::new(),
-                [(earlier, earlier_r.0), (later, later_r.0)]
-                    .into_iter()
-                    .map(|(id, r)| {
-                        (
-                            id,
-                            crate::collection::RwkvStatsGraphScoreEntry {
-                                retrievability: Some(r),
-                                curve_retrievability: Some(r),
-                                intervening_reviews: None,
-                                target_retention: None,
-                                curve_due: true,
-                            },
-                        )
-                    })
-                    .collect(),
+            let learn_low = add(CardQueue::DayLearn, CardType::Relearn, today + 5)?;
+            let learn_mid = add(CardQueue::DayLearn, CardType::Learn, today + 5)?;
+            let learn_not_due = add(CardQueue::DayLearn, CardType::Relearn, today - 5)?;
+            let learn_unscored = add(CardQueue::DayLearn, CardType::Relearn, today - 5)?;
+            let review = add(CardQueue::Review, CardType::Review, today + 5)?;
+            col.set_rwkv_review_queue_scores(
+                deck.id,
+                HashMap::from([
+                    (learn_low, 0.30),
+                    (learn_mid, 0.60),
+                    (learn_not_due, 0.99),
+                    (review, 0.40),
+                ]),
             )?;
 
-            assert_eq!(col.queue_as_ids(deck.id), vec![earlier, later], "{order:?}");
+            let queue = col.queue_as_ids(deck.id);
+            let mut gathered = queue.clone();
+            gathered.sort();
+            let mut expected = vec![learn_low, learn_mid, review];
+            expected.sort();
+            assert_eq!(gathered, expected, "{order:?}");
+            if order != ReviewCardOrder::Day {
+                let position = |id| queue.iter().position(|q| *q == id).unwrap();
+                assert!(position(learn_low) < position(learn_mid), "{order:?}");
+            }
+            assert!(!queue.contains(&learn_unscored));
+
+            let counts = col.deck_tree(Some(TimestampSecs::now()))?;
+            let node = counts
+                .children
+                .iter()
+                .find(|node| node.deck_id == deck.id.0)
+                .unwrap();
+            assert_eq!((node.learn_count, node.review_count), (2, 1), "{order:?}");
         }
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.rwkv-instant-waits: until RWKV-Instant
+    // has scored the deck, no interday learning card comes either
+    #[test]
+    fn rwkv_instant_without_scores_gathers_no_interday_learning() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::Day);
+        let today = col.timing_today()?.days_elapsed as i32;
+        add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::DayLearn,
+            CardType::Relearn,
+            today - 1,
+            86_400,
+            10.0,
+        )?;
+        assert!(col.queue_as_ids(deck.id).is_empty());
         Ok(())
     }
 
