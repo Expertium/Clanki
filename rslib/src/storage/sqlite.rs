@@ -866,6 +866,55 @@ mod test {
     use super::*;
     use crate::scheduler::answering::test::v3_test_collection;
     use crate::storage::card::ReviewOrderSubclause;
+    use crate::tests::NoteAdder;
+
+    /// SQLite is built without STAT4 (LIBSQLITE3_FLAGS in .cargo/config.toml):
+    /// with sqlite_stat4 rows, every query on an indexed column was planned
+    /// again for each new bound value.
+    #[test]
+    fn sqlite_is_built_without_stat4() -> Result<()> {
+        let col = Collection::new();
+        let db = &col.storage.db;
+        let options: Vec<String> = db
+            .prepare("pragma compile_options")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert!(options
+            .iter()
+            .any(|option| option.starts_with("ENABLE_FTS5")));
+        assert!(!options.iter().any(|option| option.contains("STAT4")));
+        // ANALYZE keeps no samples
+        db.execute_batch("analyze")?;
+        let stat4: bool = db.query_row(
+            "select exists(select 1 from sqlite_master where name = 'sqlite_stat4')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!stat4);
+        Ok(())
+    }
+
+    /// Card generation takes each note's cards as one run of rows, also when
+    /// a note's cards are not next to each other in card id order.
+    #[test]
+    fn existing_cards_of_a_notetype_come_grouped_by_note() -> Result<()> {
+        let mut col = Collection::new();
+        let first = NoteAdder::basic(&mut col).add(&mut col);
+        let second = NoteAdder::basic(&mut col).add(&mut col);
+        // a later card of the first note, after the second note's card
+        let mut card = col.storage.all_cards_of_note(first.id)?.remove(0);
+        card.id = CardId(0);
+        card.template_idx = 1;
+        col.add_card(&mut card)?;
+        let nids: Vec<NoteId> = col
+            .storage
+            .existing_cards_for_notetype(first.notetype_id)?
+            .iter()
+            .map(|card| card.nid)
+            .collect();
+        assert_eq!(nids, vec![first.id, first.id, second.id]);
+        Ok(())
+    }
 
     #[test]
     fn missing_memory_state_falls_back_to_sm2() -> Result<()> {

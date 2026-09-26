@@ -7,6 +7,11 @@ PROTOC = { value = "out/extracted/protoc/bin/protoc", relative = true }
 PYO3_NO_PYTHON = "1"
 MACOSX_DEPLOYMENT_TARGET = "11"
 PYTHONDONTWRITEBYTECODE = "1" # prevent junk files on Windows
+# SQLite without STAT4: with sqlite_stat4 rows (any collection after Check
+# Database) SQLite plans every query on an indexed column again for each new
+# bound value, which made a card lookup cost 21 us instead of 6. Plans come
+# from sqlite_stat1 only, and ANALYZE writes no sqlite_stat4.
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_STAT4"
 
 [term]
 color = "always"

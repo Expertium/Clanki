@@ -245,15 +245,18 @@ live state.
 
 Given a collection that runs RWKV-Instant:
 
-- the study queue takes review cards only from RWKV-Instant's scores for the
-  studied deck: a review card is gathered when its score makes it due, and a
-  review card without a score is not gathered, even when its FSRS-7 due date
-  has come. Until RWKV-Instant has scored the studied deck, the queue holds no
-  review cards (learning and new cards still come) and reports that the
-  scores are pending;
+- the study queue takes review cards and interday learning cards (queue 3)
+  only from RWKV-Instant's scores for the studied deck: such a card is
+  gathered when its score makes it due, and one without a score is not
+  gathered, even when its FSRS-7 due date or its due day has come. Until
+  RWKV-Instant has scored the studied deck, the queue holds no review and no
+  interday learning cards (intraday learning and new cards still come) and
+  reports that the scores are pending;
 - a normal deck's review count, in the deck list and in the overview, is the
-  number of its scored cards whose score makes them due, plus the
-  daily-minimum pulls; a card without a score counts nothing, and FSRS-7's
+  number of its scored review cards whose score makes them due, plus the
+  daily-minimum pulls (review cards only); the interday learning part of its
+  learn count is the number of its scored interday learning cards whose
+  score makes them due; a card without a score counts nothing, and FSRS-7's
   due count never stands in;
 - while the scores are pending, the deck list shows the review count as "…",
   also when the scoring fails, finds nothing it can score, or gives a stale
@@ -269,7 +272,9 @@ RWKV-Instant gathered FSRS-7-due cards when it had no scores for the deck or
 none for a card, and its counts fell back to FSRS-7's.
 
 **Pinned by:** `rwkv_instant_without_scores_gathers_no_reviews_and_reports_pending`,
-`rwkv_instant_unscored_due_reviews_wait_for_their_score`
+`rwkv_instant_unscored_due_reviews_wait_for_their_score`,
+`rwkv_instant_without_scores_gathers_no_interday_learning`,
+`rwkv_instant_scores_interday_learning_cards`
 (`rslib/src/scheduler/queue/builder/mod.rs`);
 `rwkv_deck_tree_counts_exclude_ineligible_scored_reviews`
 (`rslib/src/decks/tree.rs`);
@@ -1262,11 +1267,17 @@ daily limits in that order.
 
 Under RWKV-Instant with one of these orders, the review cards come only from
 RWKV-Instant's scores (`sched.rwkv-instant-waits`), ranked by them. Its
-interday learning cards (from another client's steps or an algorithm switch;
-RWKV-Instant itself puts no card in the learning queue,
-`sched.rwkv-instant-no-steps`) have no RWKV-Instant score, so they come by due
-day, as in the "Due date" order: no RWKV-Curve value, no curve through FSRS-7's
-interval and no FSRS-7 retrievability ranks them.
+interday learning and relearning cards (queue 3: from another client's steps
+or an algorithm switch; RWKV-Instant itself puts no card in the learning
+queue, `sched.rwkv-instant-no-steps`) are scored the same way: the study
+queue's candidate rows of an RWKV-Instant deck include them, the model gives
+each a recall probability from its review history up to now, and the same
+key and the same due threshold as for review cards decide whether it comes
+and where it ranks, with the review cards. Under any other review order they
+come, like the review cards, in that order when their score makes them due.
+They stay in the interday learning queue, so the "Interday learning/review
+order" setting still places them. The daily-minimum pulls take review cards
+only.
 
 Under RWKV-Curve a card's retrievability is its stored curve now
 (`ui.rwkv-curve-r-stored-curve`), computed when the queue is built: the
@@ -1313,16 +1324,20 @@ R of its own), and scored and unscored cards were compared on two measures.
 Andrew, 2026-09-24 ("fix the bugs on our side"), on the RWKV-Instant review
 (`reviews/algo-2026-09-24/rwkv-instant.md`, section 3): this entry gave
 RWKV-Instant's interday learning cards RWKV-Curve's value, or the curve
-through FSRS-7's interval, which mixes algorithms. RWKV-Instant has no value
-for them, so the due day, which every order without an algorithm uses, orders
-them.
+through FSRS-7's interval, which mixes algorithms. Andrew, 2026-09-25 (option
+B): RWKV-Instant scores them like review cards instead of taking them by due
+day; the RWKV session confirmed that the model predicts such a card the same
+way (the query row carries no card state) and that one scale fits both.
 
-**Pinned by:** `rwkv_instant_interday_learning_cards_come_by_due_day`,
+**Pinned by:** `rwkv_instant_scores_interday_learning_cards`,
 `rwkv_curve_relative_overdueness_uses_rwkv_not_fsrs`,
 `rwkv_curve_relative_overdueness_without_scores_uses_the_rwkv_interval`,
 `rwkv_curve_retrievability_orders_use_rwkv`,
 `rwkv_curve_retrievability_order_computes_r_when_the_queue_is_built`
 (`rslib/src/scheduler/queue/builder/mod.rs`);
+`instant_deck_review_queue_rows_include_interday_learning_cards`
+(`rslib/src/scheduler/rwkv.rs`);
+`test_prewarm_reviewer_queue_score_cache_scores_parent_scope`,
 `test_rwkv_curve_queue_gets_the_stored_curves_of_the_cards_it_names`,
 `test_rwkv_curve_queue_curves_only_for_its_retrievability_orders`,
 `test_rwkv_curve_queue_ranks_by_the_curves_handed_over`,
