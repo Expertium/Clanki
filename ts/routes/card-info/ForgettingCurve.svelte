@@ -20,9 +20,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         curveInputs,
         forgettingCurveMessage,
         offersCurveToggle,
+        type DataPoint,
         type Fsrs7Curves,
         type RwkvCurvePoints,
+        withExactFsrs7Recall,
     } from "./forgetting-curve";
+    import { fsrsCurveRecall } from "@generated/backend";
     import { defaultGraphBounds } from "../graphs/graph-helpers";
     import HoverColumns from "../graphs/HoverColumns.svelte";
 
@@ -64,6 +67,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: $timeRange = defaultTimeRange;
 
+    // FSRS-7: the exact recall at every point of the chart, from fsrs-rs
+    // (spec sched.fsrs-rs-latest)
+    $: exactRecall =
+        drawn.rwkvCurve || !fsrs7Curves?.params?.length
+            ? undefined
+            : (data: DataPoint[]) =>
+                  withExactFsrs7Recall(
+                      data,
+                      filteredRevlog,
+                      fsrs7Curves!.params!,
+                      (input) => fsrsCurveRecall(input, { alertOnError: false }),
+                  );
+
     $: renderForgettingCurve(
         filteredRevlog,
         $timeRange,
@@ -71,6 +87,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         bounds,
         desiredRetention,
         curve,
+        exactRecall,
     );
 </script>
 

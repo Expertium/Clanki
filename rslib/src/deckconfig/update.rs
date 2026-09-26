@@ -78,21 +78,6 @@ impl Collection {
             .all_deck_config()?
             .into_iter()
             .filter(|config| legacy_fsrs_params(config) != config.fsrs_params())
-            // a malformed "ignore reviews before" date skips its preset: the
-            // flag below is still set, so it cannot fail every open (spec
-            // sched.fsrs7-bad-ignore-before-date)
-            .filter(|config| match ignore_revlogs_before_ms_from_config(config) {
-                Ok(_) => true,
-                Err(err) => {
-                    warn!(
-                        preset = config.name,
-                        date = config.inner.ignore_revlogs_before_date,
-                        ?err,
-                        "FSRS-7 migration skips a preset with an unparsable \"ignore reviews before\" date"
-                    );
-                    false
-                }
-            })
             .map(|config| (config.id, config))
             .collect();
         let entries = self.memory_state_entries_for_presets(&changed, false)?;
@@ -241,24 +226,36 @@ impl Collection {
 
     /// Information required for the deck options screen.
     pub fn update_deck_configs(&mut self, input: UpdateDeckConfigsRequest) -> Result<OpOutput<()>> {
-        self.update_deck_configs_and_algorithm(input, None)
+        self.update_deck_configs_and_algorithm(input, None, false)
     }
 
     /// A deck-options save that can also change the collection's algorithm
     /// (spec sched.one-global-algorithm). The new algorithm is set first, so
-    /// the saved presets take it.
+    /// the saved presets take it. With `reschedule_all_cards` and FSRS-7
+    /// after the save, the save also reschedules every card, in the same
+    /// undo step; the switch then leaves the memory states to that
+    /// reschedule, which computes them all again with the saved parameters,
+    /// so the history is replayed once (spec sched.algorithm-change-prompt).
     pub fn update_deck_configs_and_algorithm(
         &mut self,
         input: UpdateDeckConfigsRequest,
         algorithm: Option<SchedulingAlgorithm>,
+        reschedule_all_cards: bool,
     ) -> Result<OpOutput<()>> {
         self.transact(Op::UpdateDeckConfig, |col| {
+            let reschedule_all_cards = reschedule_all_cards
+                && algorithm.unwrap_or(col.effective_scheduling_algorithm()?)
+                    == SchedulingAlgorithm::Fsrs7;
             if let Some(algorithm) = algorithm {
                 if algorithm != col.effective_scheduling_algorithm()? {
-                    col.change_scheduling_algorithm(algorithm)?;
+                    col.change_scheduling_algorithm_then(algorithm, reschedule_all_cards)?;
                 }
             }
-            col.update_deck_configs_inner(input)
+            col.update_deck_configs_inner(input)?;
+            if reschedule_all_cards {
+                col.reschedule_all_cards_with_fsrs7_inner()?;
+            }
+            Ok(())
         })
     }
 }
@@ -962,11 +959,11 @@ mod test {
         Ok(())
     }
 
-    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a preset
-    // with an unparsable "ignore reviews before" date is skipped, the other
-    // presets migrate, the flag is set, and the collection still opens.
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: at open, a
+    // preset with a malformed "ignore reviews before" date gets 1970-01-01 as
+    // a preset change that syncs, and then migrates like every other preset.
     #[test]
-    fn migrate_to_fsrs7_only_skips_a_preset_with_a_bad_ignore_before_date() -> Result<()> {
+    fn a_bad_ignore_before_date_is_repaired_at_open_and_the_preset_migrates() -> Result<()> {
         let (mut col, dir) = crate::tests::open_fs_test_collection("migrate");
         col.set_config_bool_inner(BoolKey::Fsrs, true)?;
         let fsrs6 = |config: &mut DeckConfig| {
@@ -976,28 +973,55 @@ mod test {
             config.inner.fsrs_params_7.clear();
         };
         let good_deck = DeckAdder::new("good").with_config(fsrs6).add(&mut col);
-        let bad_deck = DeckAdder::new("bad")
-            .with_config(|config| {
-                fsrs6(config);
-                config.inner.ignore_revlogs_before_date = "2024/13/45".into();
-            })
-            .add(&mut col);
+        let bad_deck = DeckAdder::new("bad").with_config(fsrs6).add(&mut col);
+        let bad_dcid = DeckConfigId(bad_deck.normal()?.config_id);
+        col.store_raw_ignore_before_date(bad_dcid, "2024/13/45");
         let good_card =
             reviewed_card_with_memory_state(&mut col, good_deck.id, &FSRS6_DEFAULT_PARAMETERS)?;
         let bad_card =
             reviewed_card_with_memory_state(&mut col, bad_deck.id, &FSRS6_DEFAULT_PARAMETERS)?;
-        // storage rounds the memory state, so compare the stored forms
         let bad_card = col.storage.get_card(bad_card.id)?.unwrap();
-        // before the fix, the next open failed here, and on every open after
         col.close(None)?;
         let path = dir.path().join("migrate.anki2");
         let col = crate::collection::CollectionBuilder::new(&path).build()?;
 
+        let repaired = col.storage.get_deck_config(bad_dcid)?.unwrap();
+        assert_eq!(repaired.inner.ignore_revlogs_before_date, "1970-01-01");
+        assert_eq!(repaired.usn, Usn(-1));
         assert!(col.get_config_bool(BoolKey::Fsrs7OnlyMigrated));
         let migrated = col.storage.get_card(good_card.id)?.unwrap();
         assert_ne!(migrated.memory_state, good_card.memory_state);
-        let skipped = col.storage.get_card(bad_card.id)?.unwrap();
-        assert_eq!(skipped.memory_state, bad_card.memory_state);
+        let migrated = col.storage.get_card(bad_card.id)?.unwrap();
+        assert_ne!(migrated.memory_state, bad_card.memory_state);
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: every write
+    // of a preset (deck options, add-ons, AnkiConnect saveDeckConfig) and
+    // Check Database repair a malformed date; a valid or empty one stays.
+    #[test]
+    fn preset_writes_and_check_database_repair_a_bad_ignore_before_date() -> Result<()> {
+        let mut col = Collection::new();
+        for (written, stored) in [
+            ("not a date", "1970-01-01"),
+            ("2024-02-30", "1970-01-01"),
+            ("2024-02-03", "2024-02-03"),
+            ("", ""),
+        ] {
+            let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+            config.inner.ignore_revlogs_before_date = written.into();
+            col.add_or_update_deck_config_legacy(&mut config)?;
+            let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+            assert_eq!(config.inner.ignore_revlogs_before_date, stored);
+        }
+        col.store_raw_ignore_before_date(DeckConfigId(1), "garbage");
+        let out = col.check_database()?;
+        let config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(config.inner.ignore_revlogs_before_date, "1970-01-01");
+        assert!(out
+            .to_i18n_strings(&col.tr)
+            .iter()
+            .any(|problem| problem.contains("Ignore reviews before")));
         Ok(())
     }
 

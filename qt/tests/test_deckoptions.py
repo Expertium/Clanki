@@ -23,7 +23,9 @@ from aqt.deckoptions import (
 )
 
 
-def save_from_deck_options(input: UpdateDeckConfigs) -> dict[str, MagicMock]:
+def save_from_deck_options(
+    input: UpdateDeckConfigs, answer: bool | None = None
+) -> dict[str, MagicMock]:
     """Run the deck-options save handler with its collaborators mocked; the
     save op itself is not run, its success callback is returned."""
     with ExitStack() as stack:
@@ -48,6 +50,8 @@ def save_from_deck_options(input: UpdateDeckConfigs) -> dict[str, MagicMock]:
                 new=SimpleNamespace(data=input.SerializeToString()),
             )
         )
+        if answer is not None:
+            mocks["ask"].return_value = answer
         mocks["mw"].taskman.run_on_main.side_effect = lambda fn: fn()
         aqt.mediasrv.update_deck_configs_and_close()
         mocks["on_success"] = mocks["op"].return_value.success.call_args.args[0]
@@ -71,6 +75,27 @@ def test_an_algorithm_change_asks_and_then_reschedules() -> None:
     mocks["after"].assert_called_once_with(
         mw, SchedulingAlgorithm.FSRS7, mocks["ask"].return_value
     )
+    # FSRS-7's reschedule is part of the save itself
+    saved_input = mocks["op"].call_args.kwargs["input"]
+    assert saved_input.reschedule_all_cards
+
+
+# Pins spec/scheduling.md#sched.algorithm-change-prompt
+@pytest.mark.parametrize(
+    "algorithm, answer",
+    [
+        (SchedulingAlgorithm.FSRS7, False),
+        (SchedulingAlgorithm.RWKV_CURVE, True),
+        (SchedulingAlgorithm.RWKV_CURVE, False),
+    ],
+)
+def test_only_fsrs7s_reschedule_is_part_of_the_save(
+    algorithm: SchedulingAlgorithm.V, answer: bool
+) -> None:
+    mocks = save_from_deck_options(
+        UpdateDeckConfigs(scheduling_algorithm=algorithm), answer
+    )
+    assert not mocks["op"].call_args.kwargs["input"].reschedule_all_cards
 
 
 # Pins spec/scheduling.md#sched.algorithm-change-prompt
@@ -151,15 +176,12 @@ def test_after_an_algorithm_change_the_chosen_reschedule_runs(
     mock_rwkv_reschedule.call_args.kwargs["on_done"]()
     mock_sync.assert_called_once_with(mw)
 
+    # FSRS-7's reschedule ran inside the save: nothing more to run, and the
+    # sync starts at once
     mock_sync.reset_mock()
     after_algorithm_change(mw, SchedulingAlgorithm.FSRS7, True)
-    col = MagicMock()
-    mock_op.call_args.args[1](col)
-    col._backend.reschedule_all_cards_with_fsrs7.assert_called_once_with()
-    chained = mock_op.return_value.success
-    chained.return_value.run_in_background.assert_called_once()
-    mock_sync.assert_not_called()
-    chained.call_args.args[0](OpChanges())
+    mock_op.assert_not_called()
+    mock_rwkv_reschedule.assert_called_once()
     mock_sync.assert_called_once_with(mw)
 
 

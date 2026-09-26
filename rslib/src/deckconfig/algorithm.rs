@@ -199,22 +199,41 @@ impl Collection {
     /// The user's choice in deck options. FSRS goes on (every algorithm needs
     /// the FSRS memory states). Under FSRS-7, and whenever FSRS was off,
     /// every card's memory state is computed again from its review log, so
-    /// no RWKV-Curve stability stays behind; due dates do not change (the
-    /// "Reschedule all cards now" answer runs reschedule_all_cards_with_fsrs7
-    /// after this).
+    /// no RWKV-Curve stability stays behind; due dates do not change (for the
+    /// "Reschedule all cards now" answer, see
+    /// [`Self::change_scheduling_algorithm_then`]).
     pub(crate) fn change_scheduling_algorithm(
         &mut self,
         algorithm: SchedulingAlgorithm,
     ) -> Result<()> {
-        self.change_scheduling_algorithm_from(algorithm, AlgorithmChangeSource::User, None)
+        self.change_scheduling_algorithm_then(algorithm, false)
     }
 
-    /// As change_scheduling_algorithm, for a change that `source` makes.
+    /// [`Self::change_scheduling_algorithm`]; with `reschedule_all_follows`
+    /// the caller runs [`Self::reschedule_all_cards_with_fsrs7_inner`] later
+    /// in the same transaction, which computes every memory state again, so
+    /// the switch computes none (spec sched.algorithm-change-prompt).
+    pub(crate) fn change_scheduling_algorithm_then(
+        &mut self,
+        algorithm: SchedulingAlgorithm,
+        reschedule_all_follows: bool,
+    ) -> Result<()> {
+        self.change_scheduling_algorithm_from(
+            algorithm,
+            AlgorithmChangeSource::User,
+            None,
+            reschedule_all_follows,
+        )
+    }
+
+    /// As change_scheduling_algorithm_then, for a change that `source` makes
+    /// (spec sched.algorithm-history).
     fn change_scheduling_algorithm_from(
         &mut self,
         algorithm: SchedulingAlgorithm,
         source: AlgorithmChangeSource,
         remote: Option<&str>,
+        reschedule_all_follows: bool,
     ) -> Result<()> {
         self.set_scheduling_algorithm_inner(algorithm, source, remote)?;
         let fsrs_was_off = !self.get_config_bool(BoolKey::Fsrs);
@@ -222,9 +241,11 @@ impl Collection {
             self.set_config_bool_inner(BoolKey::Fsrs, true)?;
         }
         if fsrs_was_off || algorithm == SchedulingAlgorithm::Fsrs7 {
-            let configs = self.storage.get_deck_config_map()?;
-            let entries = self.memory_state_entries_for_presets(&configs, false)?;
-            self.update_memory_state(entries)?;
+            if !reschedule_all_follows {
+                let configs = self.storage.get_deck_config_map()?;
+                let entries = self.memory_state_entries_for_presets(&configs, false)?;
+                self.update_memory_state(entries)?;
+            }
             // every memory state now comes from the FSRS-7 parameters, which
             // is all the one-time FSRS-7 migration would compute again
             // (spec sched.fsrs7-only)
@@ -312,7 +333,7 @@ impl Collection {
                     rwkv => rwkv,
                 },
             };
-            self.change_scheduling_algorithm_from(algorithm, source, Some(FSRS_OFF))?;
+            self.change_scheduling_algorithm_from(algorithm, source, Some(FSRS_OFF), false)?;
             return Ok(true);
         }
         if let Some(algorithm) = self.scheduling_algorithm() {
@@ -399,14 +420,20 @@ impl Collection {
     /// (spec sched.algorithm-change-prompt). Writes no review-log rows.
     pub fn reschedule_all_cards_with_fsrs7(&mut self) -> Result<OpOutput<()>> {
         self.transact(Op::UpdateDeckConfig, |col| {
-            require!(
-                col.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7,
-                "the collection does not run FSRS-7"
-            );
-            let configs = col.storage.get_deck_config_map()?;
-            let entries = col.memory_state_entries_for_presets(&configs, true)?;
-            col.update_memory_state(entries)
+            col.reschedule_all_cards_with_fsrs7_inner()
         })
+    }
+
+    /// [`Self::reschedule_all_cards_with_fsrs7`] inside the caller's
+    /// transaction.
+    pub(crate) fn reschedule_all_cards_with_fsrs7_inner(&mut self) -> Result<()> {
+        require!(
+            self.effective_scheduling_algorithm()? == SchedulingAlgorithm::Fsrs7,
+            "the collection does not run FSRS-7"
+        );
+        let configs = self.storage.get_deck_config_map()?;
+        let entries = self.memory_state_entries_for_presets(&configs, true)?;
+        self.update_memory_state(entries)
     }
 
     /// At open and after a sync. A transaction marks the collection modified,
@@ -790,6 +817,119 @@ mod test {
             col.storage.get_all_revlog_entries(TimestampSecs(0))?.len(),
             revlog_rows
         );
+        Ok(())
+    }
+
+    // Pins spec/scheduling.md#sched.algorithm-change-prompt: a deck-options
+    // save that switches to FSRS-7 with "Reschedule all cards now" is one
+    // operation and one undo step, and leaves the collection exactly as the
+    // switch followed by the separate reschedule did (cards, presets, config
+    // and review log; only modification times may differ).
+    #[test]
+    fn a_switch_to_fsrs7_with_reschedule_is_one_undo_step_with_the_same_result() -> Result<()> {
+        let (mut col, dir) = crate::tests::open_fs_test_collection("switch");
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        col.set_config_bool(BoolKey::FsrsReschedule, true, false)?;
+        col.transact_no_undo(|col| col.change_scheduling_algorithm(RwkvCurve))?;
+        let mut cards = vec![];
+        for (name, days) in [("a", 17), ("b", 29), ("c", 41)] {
+            let (card_id, _) = add_answered_card(&mut col, name, RwkvCurve);
+            // RWKV-Curve's own interval, not FSRS-7's
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            card.interval = days;
+            card.due += days as i32;
+            col.storage.update_card(&card)?;
+            cards.push(card_id);
+        }
+        // more review cards without history, and a new card
+        let deck = col.get_first_card().deck_id;
+        add_cards(&mut col, deck, 3, true);
+        add_cards(&mut col, deck, 1, false);
+        col.close(None)?;
+        let path = dir.path().join("switch.anki2");
+        let copy = dir.path().join("switch-copy.anki2");
+        std::fs::copy(&path, &copy)?;
+        let mut two_steps = crate::collection::CollectionBuilder::new(&path).build()?;
+        let mut one_step = crate::collection::CollectionBuilder::new(&copy).build()?;
+
+        // the save switches to FSRS-7 and changes a preset's desired
+        // retention, which reschedules that preset's cards by itself too
+        let save = |col: &mut Collection, reschedule_all_cards: bool| {
+            let card = col.storage.get_card(cards[0]).unwrap().unwrap();
+            let config_id = col
+                .get_deck(card.deck_id)
+                .unwrap()
+                .unwrap()
+                .config_id()
+                .unwrap();
+            let mut config = col.get_deck_config(config_id, false).unwrap().unwrap();
+            config.inner.desired_retention = 0.85;
+            let _changes = crate::services::DeckConfigService::update_deck_configs(
+                col,
+                anki_proto::deck_config::UpdateDeckConfigsRequest {
+                    target_deck_id: card.deck_id.0,
+                    configs: vec![config.into()],
+                    scheduling_algorithm: Some(SchedulingAlgorithmProto::Fsrs7 as i32),
+                    reschedule_all_cards,
+                    fsrs: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
+        let before = one_step.storage.get_card(cards[0])?.unwrap();
+        let two_steps_before: Vec<Card> = cards
+            .iter()
+            .map(|&id| two_steps.storage.get_card(id).unwrap().unwrap())
+            .collect();
+        save(&mut two_steps, false);
+        two_steps.reschedule_all_cards_with_fsrs7()?;
+        save(&mut one_step, true);
+
+        let rows = |col: &Collection, sql: &str| -> Vec<String> {
+            let mut stmt = col.storage.db.prepare(sql).unwrap();
+            let columns = stmt.column_count();
+            stmt.query_map([], |row| {
+                Ok((0..columns)
+                    .map(|i| format!("{:?}", row.get_ref(i).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("|"))
+            })
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+        };
+        let tables = [
+            "SELECT id, nid, did, ord, usn, type, queue, due, ivl, factor, reps, lapses, \
+             left, odue, odid, flags, data FROM cards ORDER BY id",
+            "SELECT id, name, usn, config FROM deck_config ORDER BY id",
+            "SELECT KEY, usn, val FROM config ORDER BY KEY",
+            "SELECT * FROM revlog ORDER BY id",
+        ];
+        for sql in tables {
+            assert_eq!(rows(&one_step, sql), rows(&two_steps, sql), "{sql}");
+        }
+        // the save really rescheduled the cards, also those of the presets
+        // whose desired retention did not change
+        for &card_id in &cards {
+            let rescheduled = one_step.storage.get_card(card_id)?.unwrap();
+            let original = two_steps_before
+                .iter()
+                .find(|card| card.id == card_id)
+                .unwrap();
+            assert_ne!(rescheduled.due, original.due);
+        }
+
+        // one undo step undoes the whole save
+        assert_eq!(one_step.undo_status().undo, Some(Op::UpdateDeckConfig));
+        one_step.undo()?;
+        assert_eq!(one_step.scheduling_algorithm(), Some(RwkvCurve));
+        let undone = one_step.storage.get_card(cards[0])?.unwrap();
+        assert_eq!(
+            (undone.due, undone.memory_state),
+            (before.due, before.memory_state)
+        );
+        assert_eq!(one_step.undo_status().undo, None);
         Ok(())
     }
 

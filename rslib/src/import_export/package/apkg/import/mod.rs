@@ -120,6 +120,12 @@ impl<'a> Context<'a> {
             &note_imports.remapped_templates,
             &imported_decks,
         )?;
+        // imported presets with a malformed "ignore reviews before" date
+        // (spec sched.fsrs7-bad-ignore-before-date); a failure must not stop
+        // the import
+        if let Err(err) = self.target_col.repair_ignore_revlogs_before_dates_inner() {
+            tracing::warn!(?err, "repairing \"ignore reviews before\" dates failed");
+        }
         // spec sync.fsrs7-state-of-foreign-cards; a failure leaves the cards
         // as they came and must not stop the import
         if let Err(err) = self

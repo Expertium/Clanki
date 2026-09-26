@@ -44,6 +44,7 @@ pub struct CheckDatabaseOutput {
     invalid_utf8: usize,
     invalid_ids: usize,
     card_last_review_time_empty: usize,
+    ignore_before_dates_invalid: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -98,6 +99,9 @@ impl CheckDatabaseOutput {
         }
         if self.invalid_utf8 > 0 {
             probs.push(tr.database_check_notes_with_invalid_utf8(self.invalid_utf8));
+        }
+        if self.ignore_before_dates_invalid > 0 {
+            probs.push(tr.database_check_ignore_before_dates(self.ignore_before_dates_invalid));
         }
         if self.invalid_ids > 0 {
             probs.push(tr.database_check_fixed_invalid_ids(self.invalid_ids));
@@ -156,6 +160,10 @@ impl Collection {
         self.check_missing_deck_names(&mut out)?;
 
         self.update_next_new_position()?;
+
+        debug!("ignore reviews before dates");
+        // spec sched.fsrs7-bad-ignore-before-date
+        out.ignore_before_dates_invalid = self.repair_ignore_revlogs_before_dates_inner()?;
 
         debug!("invalid ids");
         out.invalid_ids = self.maybe_fix_invalid_ids()?;

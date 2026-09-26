@@ -91,13 +91,19 @@ impl CollectionBuilder {
         };
         if !server && !self.as_package {
             col.migrate_learning_queues_switch()?;
+            // before anything reads the presets' dates; a failure must not
+            // stop the collection from opening (spec
+            // sched.fsrs7-bad-ignore-before-date)
+            if let Err(err) = col.repair_ignore_revlogs_before_dates() {
+                tracing::warn!(?err, "repairing \"ignore reviews before\" dates failed");
+            }
             // one algorithm for every preset (spec sched.one-global-algorithm);
             // a failure must not stop the collection from opening
             if let Err(err) = col.enforce_scheduling_algorithm(AlgorithmChangeSource::Open) {
                 tracing::warn!(?err, "enforcing the scheduling algorithm failed");
             }
-            // a failure must not stop the collection from opening (spec
-            // sched.fsrs7-bad-ignore-before-date)
+            // a failure must not stop the collection from opening; the
+            // done flag stays unset, so the next open tries again
             if let Err(err) = col.migrate_to_fsrs7_only() {
                 tracing::warn!(?err, "migrating to FSRS-7 only failed");
             }

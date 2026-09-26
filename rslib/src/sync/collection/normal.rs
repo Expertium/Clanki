@@ -104,6 +104,18 @@ impl NormalSyncer<'_> {
                 match self.normal_sync_inner(state).await {
                     Ok(mut success) => {
                         self.col.storage.commit_trx()?;
+                        // a malformed "ignore reviews before" date another
+                        // client wrote (spec sched.fsrs7-bad-ignore-before-date);
+                        // the repaired presets upload with the next sync
+                        match self.col.repair_ignore_revlogs_before_dates() {
+                            Ok(repaired) => {
+                                success.remote_non_review_collection_changed |= repaired > 0
+                            }
+                            Err(err) => tracing::warn!(
+                                ?err,
+                                "repairing \"ignore reviews before\" dates failed"
+                            ),
+                        }
                         // presets another client gave another algorithm, a
                         // collection that arrived without one, or one whose
                         // FSRS switch another client turned off (spec

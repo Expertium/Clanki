@@ -1361,3 +1361,22 @@ def test_the_stats_prefetch_starts_on_the_main_thread(monkeypatch) -> None:
     launchers[0](lambda: None)
     assert on_main == ["main"]
     assert in_background == ["background"]
+
+
+# Pins spec/scheduling.md#sched.fsrs-rs-latest: the card info page can ask
+# the backend for fsrs-rs's recall at the points of its FSRS-7 chart.
+def test_card_info_can_ask_for_the_exact_fsrs7_recall() -> None:
+    from anki._backend import RustBackend
+    from anki.cards_pb2 import FsrsMemoryState
+    from anki.stats_pb2 import FsrsCurveRecallRequest
+    from aqt.mediasrv import post_handlers
+
+    assert "fsrsCurveRecall" in post_handlers
+    curve = FsrsCurveRecallRequest.Curve(
+        memory_state=FsrsMemoryState(stability=10, difficulty=5),
+        elapsed_days=[0, 10, 100],
+    )
+    curves = RustBackend().fsrs_curve_recall(params=[], curves=[curve])
+    recall = list(curves[0].recall)
+    assert recall[0] == pytest.approx(1.0, abs=1e-4)
+    assert 1 > recall[1] > recall[2] > 0

@@ -757,6 +757,40 @@ async fn fsrs7_state_of_a_foreign_card_is_rebuilt_on_open() -> Result<()> {
     .await
 }
 
+// Pins spec/scheduling.md#sched.fsrs7-bad-ignore-before-date: a malformed
+// "ignore reviews before" date that another client uploads is repaired to
+// 1970-01-01 after the sync that brings it.
+#[tokio::test]
+async fn sync_repairs_a_bad_ignore_before_date_from_another_client() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+
+        let mut col1 = ctx.col1();
+        add_reviewed_card(&mut col1, "date", DeckId(1))?;
+        sync_fsrs_collections(&ctx, col1).await?;
+
+        let mut col1 = ctx.col1();
+        let mut col2 = ctx.col2();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let mut config = col2.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        config.inner.ignore_revlogs_before_date = "2024/13/45".into();
+        config.set_modified(Usn(-1));
+        // past the write paths that repair it, as another client writes it
+        col2.transact_no_undo(|col| col.storage.update_deck_conf(&config))?;
+        let out = ctx.normal_sync(&mut col2).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        let config = col1.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        assert_eq!(config.inner.ignore_revlogs_before_date, "1970-01-01");
+        assert_eq!(config.usn, Usn(-1));
+
+        Ok(())
+    })
+    .await
+}
+
 // Pins spec/sync.md#sync.global-algorithm-mirror: a preset that another
 // client (one that knows only the preset flags) switched to another
 // algorithm comes back to the collection's algorithm after the sync that
@@ -2217,10 +2251,22 @@ async fn regular_sync(ctx: &SyncTestContext) -> Result<()> {
             col1.storage.get_revlog_entry(revlogid)?,
             col2.storage.get_revlog_entry(revlogid)?,
         );
-        assert_eq!(
-            col1.storage.get_all_config()?,
-            col2.storage.get_all_config()?
-        );
+        // the side that receives the config keeps its own algorithm history
+        // entries too (spec sched.algorithm-history); they reach the other
+        // side with its next upload
+        let config_without_history = |col: &Collection| -> Result<_> {
+            let mut config = col.storage.get_all_config()?;
+            let history = config.remove("schedulingAlgorithmHistory");
+            Ok((config, history))
+        };
+        let (config1, history1) = config_without_history(&col1)?;
+        let (config2, history2) = config_without_history(&col2)?;
+        assert_eq!(config1, config2);
+        for entry in history1.iter().flat_map(|h| h.as_array().unwrap()) {
+            assert!(history2
+                .as_ref()
+                .is_some_and(|h| h.as_array().unwrap().contains(entry)));
+        }
         assert_eq!(
             col1.storage.creation_stamp()?,
             col2.storage.creation_stamp()?

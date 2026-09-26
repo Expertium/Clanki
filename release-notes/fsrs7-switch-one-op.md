@@ -1,0 +1,1 @@
+- Switching to FSRS-7 with "Reschedule all cards now" is one operation: one Undo step undoes both the switch and the reschedule, and it is faster (the review history is read once instead of twice).

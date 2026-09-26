@@ -40,6 +40,13 @@ impl crate::services::StatsService for Collection {
 }
 
 impl crate::services::BackendStatsService for Backend {
+    fn fsrs_curve_recall(
+        &self,
+        input: anki_proto::stats::FsrsCurveRecallRequest,
+    ) -> error::Result<anki_proto::stats::FsrsCurveRecallResponse> {
+        super::card::fsrs_curve_recall(input)
+    }
+
     /// Reads the collection under its lock, then computes with the
     /// collection free (spec ui.stats-total-knowledge).
     fn total_knowledge(

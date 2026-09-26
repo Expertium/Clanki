@@ -88,3 +88,32 @@ test("the forgetting curve draws the backend's FSRS-7 curve, and nothing without
         vi.useRealTimers();
     }
 });
+
+// The chart draws the exact recall once the backend sends it, and a late
+// answer for an older render draws nothing (spec sched.fsrs-rs-latest).
+test("an FSRS-7 chart waits for the exact recall and ignores a stale answer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-16T00:00:00Z"));
+    try {
+        const revlog = chartRevlog(twoReviews());
+        const svg = svgWithNoDataOverlay();
+        const flat = (value: number) => async (data: any[]) =>
+            data.map((point) => ({ ...point, retrievability: value }));
+        let releaseStale: (() => void) | undefined;
+        const stale = (data: any[]) =>
+            new Promise<any[]>((resolve) => {
+                releaseStale = () => resolve(data.map((point) => ({ ...point, retrievability: 1 })));
+            });
+        const curve = chartCurve(revlog, undefined, fsrs7Curves());
+        const first = renderForgettingCurve(revlog, TimeRange.AllTime, svg, defaultGraphBounds(), 0.9, curve, stale);
+        // nothing is drawn before the exact values arrive
+        expect(svg.querySelectorAll(".forgetting-curve-line")).toHaveLength(0);
+        await renderForgettingCurve(revlog, TimeRange.AllTime, svg, defaultGraphBounds(), 0.9, curve, flat(50));
+        const drawn = svg.querySelectorAll(".forgetting-curve-line")[0].getAttribute("d");
+        releaseStale!();
+        await first;
+        expect(svg.querySelectorAll(".forgetting-curve-line")[0].getAttribute("d")).toBe(drawn);
+    } finally {
+        vi.useRealTimers();
+    }
+});
