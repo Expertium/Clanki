@@ -698,10 +698,11 @@ the report arrives, without counting the deck tree or the deck's cards a
 second time. A report that cannot be computed leaves the screen as it is,
 rather than being drawn again with nothing new. Once a report is cached,
 the screen draws it at once and starts no background step. Nothing warms
-a heatmap up ahead of the screen that shows it. Everything else about the
-heatmap is unchanged (spec ui.review-heatmap): the same report, the same
-cache, the same figures. The congratulations screen has no heatmap and
-computes none.
+a heatmap up ahead of the screen that shows it. Each of the two draws
+appears in one finished frame (spec ui.screen-one-frame). Everything else
+about the heatmap is unchanged (spec ui.review-heatmap): the same report,
+the same cache, the same figures. The congratulations screen has no heatmap
+and computes none.
 
 **Why:** Andrew, 2026-09-21: "the first click on a deck has a MASSIVE
 delay, like 1-3 seconds. After that everything is fine." The first click
@@ -723,6 +724,43 @@ after it.
 `test_the_background_step_fills_the_cache_and_reports_an_error`,
 `test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s`
 (`qt/tests/test_review_heatmap.py`).
+
+## ui.screen-one-frame
+
+Given a click that draws the deck list or a deck's overview, where the main
+view and the bottom bar each load a new page, Clanki loads both pages
+hidden and shows them together once each page's DOM is done. Until then
+the screen keeps showing what it showed before the click. The screen then
+goes in one step to the finished new screen: the review heatmap with its
+squares, its stats line and its controls in one row, and the bottom bar
+with its new buttons at its new height. A page drawn again in place (the
+heatmap arriving later, spec ui.review-heatmap-fills-in) also appears in one
+step. A page that is not done 0.5 s after it began is shown as it fills
+in, as every page was before; a page never stays hidden (its own style
+shows it after 2 s). Other pages (the toolbar, dialogs, add-on pages) are
+drawn as before.
+
+**Why:** Andrew, 2026-09-26, from a screen recording taken frame by frame:
+"When I click on a deck, it takes several frames for the Heatmap (colored
+squares, THEN numbers below) to fully load." Chromium painted the overview
+while its parser waited between the heatmap's scripts: first the heatmap's
+buttons stacked in a column with no calendar, then the calendar, then the
+stats line. The bottom bar, a separate web view with a smaller page,
+changed about 90 ms before the main view. Measured offscreen on a copy of
+Andrew's collection: the main view went through 2 to 3 frames and now goes
+through 1.
+
+**Pinned by:** `qt/tests/test_page_reveal.py`
+(`test_held_pages_are_shown_together_once_each_dom_is_done`,
+`test_a_late_message_from_the_previous_page_does_not_show_the_new_one`,
+`test_a_page_loaded_again_without_a_hold_stops_holding_the_others`,
+`test_the_timeout_shows_what_is_ready_and_the_rest_when_it_is`,
+`test_a_held_bottom_bar_takes_its_new_height_when_it_is_shown`,
+`test_the_hold_hides_without_removing_the_layout_and_ends_by_itself`,
+`test_a_held_page_carries_the_class_and_its_style_and_is_registered`,
+`test_the_overview_is_drawn_hidden`, `test_the_bottom_bar_is_drawn_hidden`);
+`test_the_deck_list_is_drawn_hidden_and_shown_with_its_bottom_bar`
+(`qt/tests/test_deckbrowser.py`).
 
 ## ui.review-heatmap-kept-counts
 

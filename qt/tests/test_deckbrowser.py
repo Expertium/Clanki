@@ -390,9 +390,11 @@ class _Page:
         self.scripts: list[str] = []
         self.offset_requests: list = []
         self.buttons = 0
+        self.held: list[bool] = []
 
-    def stdHtml(self, html, css=None, js=None, context=None):
+    def stdHtml(self, html, css=None, js=None, context=None, held=False):
         self.html.append(html)
+        self.held.append(held)
 
     def eval(self, script):
         self.scripts.append(script)
@@ -501,6 +503,15 @@ def refreshable(browser, monkeypatch):
     page.html.clear()
     page.scripts.clear()
     return SimpleNamespace(browser=browser, page=page, state=state, deliver=deliver)
+
+
+def test_the_deck_list_is_drawn_hidden_and_shown_with_its_bottom_bar(refreshable):
+    # spec ui.screen-one-frame
+    refreshable.page.held.clear()
+    refreshable.browser.show()
+    refreshable.deliver()
+
+    assert refreshable.page.held == [True]
 
 
 def test_show_draws_the_deck_list_at_the_top(refreshable):
