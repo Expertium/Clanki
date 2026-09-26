@@ -72,15 +72,30 @@ def remove_notes(
     *,
     parent: QWidget,
     note_ids: Sequence[NoteId],
+    waiting_window: bool = True,
+    on_success: Callable[[], None] | None = None,
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(
+    """Delete the notes and their cards.
+
+    `waiting_window=False` for a delete the reviewer starts: it is a click
+    on the way to the next card and never opens the "Processing..." window
+    (spec ui.no-waiting-windows). `on_success` runs before the tooltip and
+    before the screens hear of the change."""
+
+    def succeeded(out: OpChangesWithCount) -> None:
+        if on_success is not None:
+            on_success()
+        tooltip(tr.browsing_cards_deleted(count=out.count))
+
+    op = CollectionOp(
         parent,
         lambda col: _run_preserving_rwkv_state(
             col,
             lambda: col.remove_notes(note_ids),
             note_ids=note_ids,
         ),
-    ).success(lambda out: tooltip(tr.browsing_cards_deleted(count=out.count)))
+    ).success(succeeded)
+    return op if waiting_window else op.without_waiting_window()
 
 
 def find_and_replace(

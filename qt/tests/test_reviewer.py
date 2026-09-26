@@ -3068,3 +3068,154 @@ def test_show_does_not_load_a_stored_custom_scheduling_script(
     reviewer.show()
 
     assert reviewer._state_mutation_js is None
+
+
+def test_a_failed_state_preparation_leaves_the_next_ask_to_the_backed_off_retry(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a preparation
+    that did not make the state ready does not ask again at once. Asking at
+    once started the next preparation at once, a busy loop on the main thread
+    (B-034: 39,142 log lines in three minutes)."""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "answer_intervals_pending", lambda reviewer, card: True
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: False,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_reviewer_backend_for_answer_buttons",
+        lambda target: False,
+    )
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
+
+    reviewer._showEaseButtons()
+    assert len(tasks) == 1
+    retries = len(shots)
+    drawn = len(evals)
+
+    task, on_done = tasks[0]
+    on_done(_done_future(task()))
+
+    # no new preparation and no redraw at once: the backed-off retry asks
+    assert len(tasks) == 1
+    assert len(evals) == drawn
+    assert len(shots) == retries
+    delay, retry = shots[-1]
+    assert delay >= reviewer_module.RWKV_INTERVALS_FIRST_RETRY_MS
+    retry()
+    assert len(tasks) == 2
+
+
+def test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: when the exact
+    rebuild swaps in, buttons that wait for RWKV-Curve, or gave up waiting,
+    ask again at once."""
+    shots: list[tuple[int, Callable[[], None]]] = []
+    evals: list[str] = []
+    tasks: list[tuple[Callable[[], object], Callable[[Any], None]]] = []
+    pending = [True]
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_pending",
+        lambda reviewer, card: pending[0],
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "answer_intervals_unavailable",
+        lambda reviewer, card: False,
+    )
+    reviewer = _rwkv_curve_waiting_reviewer(evals, shots, tasks)
+    reviewer._rwkv_intervals_wait_started = 0.0
+    reviewer._rwkv_intervals_retry_ms = 1000
+
+    def answer_buttons() -> str:
+        # drawing the buttons asks RWKV-Curve, which now has the state
+        pending[0] = False
+        return "BUTTONS 1d 3d"
+
+    reviewer._answerButtons = answer_buttons
+    reviewer.rwkv_curve_state_ready()
+
+    assert evals[-1] == 'showAnswer("BUTTONS 1d 3d");'
+
+    # a question side, or buttons already drawn, are left alone
+    drawn = len(evals)
+    reviewer.state = "question"
+    reviewer.rwkv_curve_state_ready()
+    assert len(evals) == drawn
+
+
+def test_deleting_the_note_in_the_reviewer_opens_no_waiting_window(
+    monkeypatch,
+) -> None:
+    """Pins spec/ui.md#ui.no-waiting-windows: Delete Note in the reviewer
+    runs without the "Processing..." window, however long it waits (B-034),
+    and the card it deletes takes no answer until the delete is done."""
+    import aqt
+
+    windowed: list[object] = []
+    windowless: list[tuple[Callable[[], object], Callable[[Future[Any]], None]]] = []
+    tooltips: list[str] = []
+
+    class Taskman:
+        def with_progress(self, *args: object, **kwargs: object) -> None:
+            windowed.append(args)
+
+        def with_backend_progress(self, *args: object, **kwargs: object) -> None:
+            windowed.append(args)
+
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[Any]], None],
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            windowless.append((task, on_done))
+
+    mw: Any = SimpleNamespace(
+        state="review",
+        taskman=Taskman(),
+        col=SimpleNamespace(remove_notes=lambda note_ids: None),
+        _increase_background_ops=lambda: None,
+        _decrease_background_ops=lambda: None,
+        update_undo_actions=lambda: None,
+    )
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+    import aqt.operations.note as note_ops
+
+    monkeypatch.setattr(note_ops, "tooltip", tooltips.append)
+    monkeypatch.setattr(
+        note_ops.tr, "browsing_cards_deleted", lambda count: f"{count} deleted"
+    )
+    monkeypatch.setattr(
+        "aqt.operations.on_op_finished", lambda mw, result, initiator: None
+    )
+
+    reviewer: Any = Reviewer.__new__(Reviewer)
+    reviewer.mw = mw
+    reviewer.card = SimpleNamespace(id=1, nid=10)
+
+    reviewer.delete_current_note()
+
+    assert windowed == [], "Delete Note opened a waiting window"
+    assert len(windowless) == 1
+    assert reviewer._review_actions_are_blocked()
+
+    _task, on_done = windowless[0]
+    result = SimpleNamespace(count=1, changes=OpChanges())
+    on_done(_done_future(result))
+
+    assert not reviewer._review_actions_are_blocked()
+    assert tooltips == ["1 deleted"]

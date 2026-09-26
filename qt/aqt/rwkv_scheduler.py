@@ -30,6 +30,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -3030,8 +3031,31 @@ def _record_collection_undo_or_redo_with_backend(
                 )
                 return restored_card_ids
 
-    _record_collection_mutation_undo_or_redo(changes, redo=redo)
+    if _record_deleted_cards_undo_or_redo(changes, redo=redo):
+        return []
+    if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
+        _rebuild_after_undo_of_an_answer_before_the_swap(changes)
     return []
+
+
+def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
+    """An undo or redo of an answer given before the exact rebuild swapped
+    in: the rebuilt runtime has no rollback frame for it, so its state keeps
+    that answer. It stays in use, and another exact rebuild follows (spec
+    sched.rwkv-delete-keeps-state)."""
+    counter = _undo_result_counter(changes)
+    with _rwkv_exact_rebuild_lock:
+        swap_counter = _rwkv_exact_rebuild_swap_undo_counter
+    if counter is None or swap_counter is None or counter > swap_counter:
+        return
+    import aqt
+
+    mw = aqt.mw
+    reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+    _mark_reviewer_backend_identity_unknown(
+        reviewer, reason="undo reached before the exact rebuild"
+    )
+    request_exact_rwkv_rebuild(mw, forced=True)
 
 
 def _record_collection_mutation_undo_or_redo(
@@ -3783,12 +3807,21 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_collection_mutation_undo_entries.clear()
     _rwkv_collection_mutation_redo_entries.clear()
+    _count_reviewer_backend_invalidation_locked()
+
+
+def _count_reviewer_backend_invalidation_locked() -> None:
+    """A resident state was thrown away: an exact rebuild that read the
+    history before it starts again (spec sched.rwkv-delete-keeps-state)."""
+    global _reviewer_backend_invalidation_count
+    _reviewer_backend_invalidation_count += 1
 
 
 def _invalidate_reviewer_backend_runtime_state_for_profile_open() -> None:
     global _rwkv_startup_build_started, _rwkv_recordings_pass_started
     global _rwkv_history_reread_started
 
+    _reset_rwkv_exact_rebuild()
     with _reviewer_backend_state_lock:
         _invalidate_all_reviewer_backend_runtime_state_locked()
         _rwkv_startup_build_started = False
@@ -4707,6 +4740,8 @@ def record_collection_mutation_reconciliation(
         )
         return True
     except _RwkvGradeNowReconciliationUnavailable as error:
+        if _keep_resident_state_after_card_deletion(reconciliation):
+            return True
         _invalidate_reviewer_backend_state(
             reviewer,
             reason="collection mutation requires canonical recovery",
@@ -4733,6 +4768,596 @@ def record_collection_mutation_reconciliation(
                 )
             except Exception:
                 logger.exception("failed to clear changed card RWKV info score")
+
+
+# --- A delete keeps the resident state; an exact rebuild follows ------------
+#
+# Spec sched.rwkv-delete-keeps-state. Deleting a card that has reviews moves
+# those reviews, in the replay, from the note, deck and preset streams they
+# went through to the placeholder ones (sched.rwkv-replay-deleted-cards).
+# That changes the state of every later review of those streams, so no stored
+# checkpoint after the card's first review is exact any more, and restoring
+# the state took 13 s on Andrew's collection and then failed: RWKV-Curve gave
+# no intervals until Clanki was restarted (B-034).
+#
+# Instead the resident state is kept, as it was before the delete, and a
+# replay of the whole history as it is now runs on a thread of its own, into
+# a model runtime of its own, then takes the resident state's place.
+# `_rwkv_exact_rebuild_divergent_card_ids` holds the deleted cards whose
+# routing the resident state still has the old way; an undo of the delete
+# before the swap takes them out again, and the rebuild is then not needed.
+
+
+@dataclass(frozen=True)
+class _RwkvDeletedCardsRollbackEntry:
+    """An undo step that deleted cards the resident state still routes."""
+
+    counter: int
+    mw: object
+    card_ids: frozenset[int]
+
+
+_rwkv_exact_rebuild_lock = threading.Lock()
+# cards whose past reviews the resident state routes differently from the
+# collection: deleted after the state was built, or brought back by an undo
+# after the rebuild swapped in
+_rwkv_exact_rebuild_divergent_card_ids: set[int] = set()
+# a rebuild wanted for a reason the card set cannot express: the resident
+# state is cold and the stored cache cannot restore it, or an undo reached an
+# answer the rebuilt runtime has no rollback for
+_rwkv_exact_rebuild_forced = False
+# bumped by every request; a rebuild whose generation moved starts again
+_rwkv_exact_rebuild_generation = 0
+_rwkv_exact_rebuild_thread: threading.Thread | None = None
+# the undo step current when the last rebuild swapped in: an undo of an
+# earlier answer has no rollback frame in the new runtime
+_rwkv_exact_rebuild_swap_undo_counter: int | None = None
+_rwkv_deleted_cards_undo_entries: list[_RwkvDeletedCardsRollbackEntry] = []
+_rwkv_deleted_cards_redo_entries: list[_RwkvDeletedCardsRollbackEntry] = []
+# bumped whenever a resident state is thrown away: a change the replay
+# depends on that nothing reconciled, so a rebuild read before it is stale
+_reviewer_backend_invalidation_count = 0
+# how long the rebuild rests between two steps, so that it takes a small
+# share of the machine while the user works
+_RWKV_EXACT_REBUILD_REST_SECS = 0.002
+_RWKV_EXACT_REBUILD_RETRY_SECS = 5.0
+# how long the user leaves Clanki alone before a step of the rebuild that
+# holds the collection starts
+_RWKV_EXACT_REBUILD_PAUSE_SECS = 3.0
+_RWKV_EXACT_REBUILD_MAX_FAILURES = 5
+_RWKV_EXACT_REBUILD_SWAP_WAIT_SECS = 1.0
+
+
+def _deleted_historical_card_ids(
+    reconciliation: RwkvCollectionMutationReconciliation,
+) -> frozenset[int] | None:
+    """The cards with reviews that the mutation deleted, when deleting them
+    is the only change it made to the replay's routing; None otherwise."""
+
+    reviewer = reconciliation.reviewer
+    if not reconciliation.historical_card_ids:
+        return None
+    if (
+        reconciliation.require_no_preset_overlay
+        and _fsrs_preset_overlay_has_routing_rules(reviewer)
+    ):
+        return None
+    current_historical = _historical_rwkv_card_ids(reviewer, reconciliation.card_ids)
+    if (
+        current_historical is None
+        or frozenset(current_historical) != reconciliation.historical_card_ids
+    ):
+        # the review log itself changed
+        return None
+    col = _collection(reviewer)
+    list_rows = getattr(getattr(col, "db", None), "list", None)
+    if not callable(list_rows):
+        return None
+    try:
+        present = {
+            card_id
+            for value in list_rows(
+                "select id from cards where id in "
+                + ids2str(sorted(reconciliation.historical_card_ids))
+            )
+            if (card_id := _valid_card_id(value)) is not None
+        }
+    except Exception:
+        logger.debug("failed to read which RWKV cards are left", exc_info=True)
+        return None
+    deleted = reconciliation.historical_card_ids - present
+    if not deleted:
+        return None
+    current_identities = _rwkv_identities_for_card_ids(reviewer, present)
+    if current_identities is None or current_identities != {
+        card_id: reconciliation.identities_by_card_id.get(card_id)
+        for card_id in present
+    }:
+        return None
+    return frozenset(deleted)
+
+
+def _keep_resident_state_after_card_deletion(
+    reconciliation: RwkvCollectionMutationReconciliation,
+) -> bool:
+    """Keep the resident RWKV state after a mutation that deleted cards with
+    reviews, and start the exact rebuild (spec sched.rwkv-delete-keeps-state).
+    False when the mutation did more than that, or the state moved on."""
+
+    try:
+        deleted = _deleted_historical_card_ids(reconciliation)
+        if deleted is None:
+            return False
+        if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
+            return False
+    except Exception:
+        logger.exception("failed to check an RWKV card deletion")
+        return False
+
+    reviewer = reconciliation.reviewer
+    mw = getattr(reviewer, "mw", None)
+    # the state no longer matches the collection's history, so nothing may
+    # save it, or mark the stored cache as current, under that history
+    _mark_reviewer_backend_identity_unknown(
+        reviewer,
+        reason="cards deleted; exact rebuild pending",
+        expected_mutation_context=reconciliation.mutation_context,
+    )
+    counter = _current_undo_counter(reviewer)
+    if counter is not None and counter != reconciliation.previous_undo_counter:
+        _rwkv_deleted_cards_redo_entries.clear()
+        _rwkv_deleted_cards_undo_entries.append(
+            _RwkvDeletedCardsRollbackEntry(counter=counter, mw=mw, card_ids=deleted)
+        )
+        del _rwkv_deleted_cards_undo_entries[:-_RWKV_REVIEW_UNDO_LIMIT]
+    _mark_collection_change_reconciled(reviewer)
+    logger.debug("RWKV resident state kept after card deletion: cards=%s", len(deleted))
+    request_exact_rwkv_rebuild(mw, toggle_card_ids=deleted)
+    return True
+
+
+def _record_deleted_cards_undo_or_redo(changes: object, *, redo: bool) -> bool:
+    """An undo or redo of a delete the resident state still knows about: the
+    cards come back, or go again, and the state stays (spec
+    sched.rwkv-delete-keeps-state)."""
+
+    counter = _undo_result_counter(changes)
+    if counter is None:
+        return False
+    source = (
+        _rwkv_deleted_cards_redo_entries if redo else _rwkv_deleted_cards_undo_entries
+    )
+    destination = (
+        _rwkv_deleted_cards_undo_entries if redo else _rwkv_deleted_cards_redo_entries
+    )
+    index = next(
+        (i for i in range(len(source) - 1, -1, -1) if source[i].counter == counter),
+        None,
+    )
+    if index is None:
+        return False
+    entry = source.pop(index)
+    next_counter = _undo_result_next_counter(changes)
+    destination.append(
+        replace(entry, counter=next_counter if next_counter is not None else counter)
+    )
+    del destination[:-_RWKV_REVIEW_UNDO_LIMIT]
+    reviewer = getattr(entry.mw, "reviewer", None) or SimpleNamespace(mw=entry.mw)
+    _mark_reviewer_backend_identity_unknown(
+        reviewer,
+        reason="card deletion redone" if redo else "card deletion undone",
+    )
+    _mark_collection_change_reconciled(reviewer)
+    logger.debug(
+        "RWKV card deletion %s: cards=%s",
+        "redone" if redo else "undone",
+        len(entry.card_ids),
+    )
+    request_exact_rwkv_rebuild(entry.mw, toggle_card_ids=entry.card_ids)
+    return True
+
+
+def request_exact_rwkv_rebuild(
+    mw: object,
+    *,
+    toggle_card_ids: Iterable[int] = (),
+    forced: bool = False,
+) -> None:
+    """Ask for the exact rebuild of the RWKV state, in the background (spec
+    sched.rwkv-delete-keeps-state).
+
+    `toggle_card_ids` are cards whose routing just changed between the
+    resident state and the collection: deleted, or brought back. A card that
+    changes twice is back where the state has it, so a delete and its undo
+    before the rebuild ends need no rebuild at all. `forced` asks for a
+    rebuild the card set cannot express."""
+
+    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
+    global _rwkv_exact_rebuild_thread
+
+    if mw is None:
+        return
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_divergent_card_ids.symmetric_difference_update(
+            toggle_card_ids
+        )
+        _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
+        _rwkv_exact_rebuild_generation += 1
+        if not _rwkv_exact_rebuild_wanted_locked():
+            logger.debug("RWKV exact rebuild no longer needed")
+            return
+        running = _rwkv_exact_rebuild_thread
+        if running is not None and running.is_alive():
+            return
+        thread = threading.Thread(
+            target=_run_exact_rwkv_rebuilds,
+            args=(mw,),
+            name="rwkv-exact-rebuild",
+            daemon=True,
+        )
+        _rwkv_exact_rebuild_thread = thread
+    logger.debug("RWKV exact rebuild started")
+    thread.start()
+
+
+def _rwkv_exact_rebuild_wanted_locked() -> bool:
+    return bool(_rwkv_exact_rebuild_divergent_card_ids) or _rwkv_exact_rebuild_forced
+
+
+def rwkv_exact_rebuild_pending() -> bool:
+    """Whether the resident RWKV state waits for its exact rebuild."""
+    with _rwkv_exact_rebuild_lock:
+        return _rwkv_exact_rebuild_wanted_locked()
+
+
+def _reset_rwkv_exact_rebuild() -> None:
+    """A profile opened: nothing of the last one carries over."""
+    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
+    global _rwkv_exact_rebuild_swap_undo_counter
+
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_divergent_card_ids.clear()
+        _rwkv_exact_rebuild_forced = False
+        _rwkv_exact_rebuild_generation += 1
+        _rwkv_exact_rebuild_swap_undo_counter = None
+    _rwkv_deleted_cards_undo_entries.clear()
+    _rwkv_deleted_cards_redo_entries.clear()
+
+
+class _RwkvExactRebuildStale(Exception):
+    """The rebuild read a history that is no longer the collection's."""
+
+
+def _run_exact_rwkv_rebuilds(mw: object) -> None:
+    """The rebuild thread: rebuild until the resident state is exact, or the
+    profile has closed. The close waits for it to stop (spec
+    ui.close-stops-rwkv-work)."""
+
+    _background_pass_started()
+    try:
+        _run_exact_rwkv_rebuilds_until_done(mw)
+    finally:
+        _background_pass_finished()
+
+
+def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
+    return getattr(mw, "col", None) is not col or _collection_is_closing(col)
+
+
+def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
+    col = getattr(mw, "col", None)
+    failures = 0
+    while True:
+        with _rwkv_exact_rebuild_lock:
+            generation = _rwkv_exact_rebuild_generation
+            if not _rwkv_exact_rebuild_wanted_locked():
+                return
+        if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
+            return
+        try:
+            done = _rebuild_exact_rwkv_state(mw, col, generation)
+        except _RwkvExactRebuildStale as stale:
+            logger.debug("RWKV exact rebuild starts again: %s", stale)
+            continue
+        except Exception:
+            if _rwkv_exact_rebuild_collection_gone(mw, col):
+                # the close stopped it; the next session starts from a
+                # stored cache that is not current, and rebuilds
+                logger.info("the RWKV exact rebuild stopped for the close")
+                return
+            logger.exception("RWKV exact rebuild failed")
+            done = False
+        if done:
+            failures = 0
+            continue
+        # nothing to rebuild with now (a start-up restore owns the cache, or
+        # the rebuild failed): ask again later, and give up after a few
+        # tries; the next request starts it again
+        failures += 1
+        if failures > _RWKV_EXACT_REBUILD_MAX_FAILURES:
+            logger.warning("RWKV exact rebuild stopped after %s tries", failures)
+            return
+        retry_at = time.monotonic() + _RWKV_EXACT_REBUILD_RETRY_SECS * 2 ** (
+            failures - 1
+        )
+        while time.monotonic() < retry_at:
+            if _rwkv_exact_rebuild_collection_gone(mw, col):
+                return
+            time.sleep(0.25)
+
+
+def _rebuild_exact_rwkv_state(mw: object, col: object, generation: int) -> bool:
+    """One rebuild: read the whole history, replay it into a runtime of its
+    own, catch up with the answers given meanwhile, and swap it in. True when
+    it swapped in; raises _RwkvExactRebuildStale when the history moved."""
+
+    reviewer = SimpleNamespace(mw=mw)
+    with _reviewer_backend_state_lock:
+        backend = _reviewer_backend
+        invalidations = _reviewer_backend_invalidation_count
+    if backend is None or getattr(mw, "col", None) is not col:
+        return False
+    if rwkv_state_cache_loading(mw):
+        # a start-up restore or build owns the stored cache now
+        return False
+
+    def require_current() -> None:
+        with _rwkv_exact_rebuild_lock:
+            moved = _rwkv_exact_rebuild_generation != generation
+        with _reviewer_backend_state_lock:
+            changed = (
+                _reviewer_backend is not backend
+                or _reviewer_backend_invalidation_count != invalidations
+            )
+        if moved or changed or _rwkv_exact_rebuild_collection_gone(mw, col):
+            raise _RwkvExactRebuildStale(
+                "a request came in" if moved else "the state or collection changed"
+            )
+
+    def rest() -> None:
+        require_current()
+        time.sleep(_RWKV_EXACT_REBUILD_REST_SECS)
+
+    # the whole-history read holds the collection for about a second: it
+    # starts in a pause of the user's, never in front of the next card
+    _wait_for_a_pause_in_the_review(mw, require_current)
+    started = time.monotonic()
+    cache_dir_available = _rwkv_state_cache_dir(reviewer) is not None
+    history = _historical_rwkv_review_inputs(
+        reviewer,
+        prepare_recovery_checkpoint=cache_dir_available,
+        between_steps=rest,
+    )
+    require_current()
+    read_ms = (time.monotonic() - started) * 1000
+
+    own = _new_recording_pass_runtime(backend)
+    if own is None:
+        logger.debug("RWKV exact rebuild skipped: no runtime of its own")
+        return False
+    swapped = False
+    try:
+        checkpoint_review_counts = (
+            _rwkv_recovery_checkpoint_review_counts(history.review_ids)
+            if cache_dir_available
+            else []
+        )
+        supports_store = getattr(own, "supports_delta_state_store", None)
+        snapshot_review_counts = list(checkpoint_review_counts)
+        if cache_dir_available and callable(supports_store) and supports_store():
+            if history.reviews:
+                snapshot_review_counts.append(len(history.reviews))
+        checkpoint_writer = _RwkvStateCacheCheckpointWriter(
+            reviewer,
+            history,
+            snapshot_review_counts,
+            full_review_counts=checkpoint_review_counts,
+        )
+
+        def replay_progress(_progress: RwkvWarmUpProgress) -> None:
+            rest()
+
+        replay_started = time.monotonic()
+        warm_up = cast(Callable[..., object], getattr(own, "warm_up"))
+        warm_up_kwargs: dict[str, Any] = {
+            "review_ids": history.review_ids,
+            "progress": replay_progress,
+            "snapshot_after_reviews": snapshot_review_counts,
+            "snapshot_recorder": checkpoint_writer,
+        }
+        if _callable_accepts_keyword(_callable_parameters(warm_up), "batch_rows"):
+            warm_up_kwargs["batch_rows"] = RECORDINGS_PASS_BATCH_REVIEWS
+        # the same replay the start-up build runs, with the loaded model: the
+        # deleted cards' reviews go through that model's placeholders (spec
+        # sched.rwkv-replay-deleted-cards)
+        warm_up(history.reviews, **warm_up_kwargs)
+        require_current()
+        replay_ms = (time.monotonic() - replay_started) * 1000
+
+        _wait_for_a_pause_in_the_review(mw, require_current)
+        swapped = bool(
+            _swap_in_exact_rwkv_state(
+                mw,
+                col,
+                reviewer,
+                backend=backend,
+                own=own,
+                history=history,
+                checkpoint_writer=checkpoint_writer,
+                generation=generation,
+                invalidations=invalidations,
+            )
+        )
+        if not swapped:
+            return False
+        logger.debug(
+            "RWKV exact rebuild swapped in: reviews=%s read_ms=%.1f replay_ms=%.1f "
+            "elapsed_ms=%.1f",
+            len(history.reviews),
+            read_ms,
+            replay_ms,
+            (time.monotonic() - started) * 1000,
+        )
+        return True
+    finally:
+        if not swapped:
+            _finish_rwkv_state_cache_checkpoint_writes_safely(own)
+            _release_recording_pass_runtime(own)
+
+
+def _wait_for_a_pause_in_the_review(
+    mw: object, require_current: Callable[[], None]
+) -> None:
+    """Waits until the user has left Clanki alone for
+    _RWKV_EXACT_REBUILD_PAUSE_SECS, as a user reading a card does, so that
+    the rebuild's steps that hold the collection never delay a click."""
+    while True:
+        require_current()
+        since_input = _seconds_since_input(mw)
+        if since_input is None or since_input >= _RWKV_EXACT_REBUILD_PAUSE_SECS:
+            return
+        time.sleep(min(_RWKV_EXACT_REBUILD_PAUSE_SECS - since_input, 0.25))
+
+
+def _swap_in_exact_rwkv_state(
+    mw: object,
+    col: object,
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend,
+    own: RwkvReviewerBackend,
+    history: RwkvHistoricalReviewInputs,
+    checkpoint_writer: _RwkvStateCacheCheckpointWriter,
+    generation: int,
+    invalidations: int,
+) -> bool | None:
+    """Swap the rebuilt runtime in, on the collection worker, so that no
+    answer is half recorded while it happens. True when it swapped in, None
+    when the profile closed first; raises _RwkvExactRebuildStale."""
+
+    result: Future[bool] = Future()
+
+    def swap() -> bool:
+        global _rwkv_exact_rebuild_forced, _rwkv_exact_rebuild_swap_undo_counter
+
+        swap_started = time.monotonic()
+        with _reviewer_backend_execution_lock:
+            with _rwkv_exact_rebuild_lock:
+                moved = _rwkv_exact_rebuild_generation != generation
+            with _reviewer_backend_state_lock:
+                changed = (
+                    _reviewer_backend is not backend
+                    or _reviewer_backend_invalidation_count != invalidations
+                    or any(
+                        key[0] == id(backend)
+                        for key in _reviewer_backend_warmup_pending_generations
+                    )
+                )
+            if moved or changed or _rwkv_exact_rebuild_collection_gone(mw, col):
+                raise _RwkvExactRebuildStale("the history moved before the swap")
+            # the answers given while the rebuild ran, with the routing the
+            # collection has now
+            tail = _historical_rwkv_review_inputs(
+                reviewer,
+                after_review_id=history.last_review_id,
+                previous_review_id_by_card=history.previous_review_id_by_card,
+                previous_interval_days_by_card=history.previous_interval_days_by_card,
+                review_count_by_card=history.review_count_by_card,
+                previous_history_hash=history.history_hash,
+                previous_replay_key=history.replay_key,
+            )
+            if tail.replay_key != history.replay_key:
+                raise _RwkvExactRebuildStale("the replay semantics changed")
+            if tail.reviews:
+                cast(Callable[..., object], getattr(own, "warm_up"))(
+                    tail.reviews, review_ids=tail.review_ids
+                )
+            set_reviewer_backend(own)
+            # the old runtime reads card states from the stored cache as they
+            # come up; it lets go of the file before the new one replaces it
+            _release_recording_pass_runtime(backend)
+            # from here on the rebuilt runtime is the shared one, whatever
+            # happens next
+            key = _reviewer_backend_warmup_key(reviewer)
+            identity = _resident_state_identity(tail if tail.reviews else history)
+            if key is None or not _publish_reviewer_backend_state(
+                key,
+                identity,
+                expected_generation=_reviewer_backend_warmup_generations.get(key, 0),
+            ):
+                logger.warning("the rebuilt RWKV state could not be published")
+            with _rwkv_exact_rebuild_lock:
+                _rwkv_exact_rebuild_divergent_card_ids.clear()
+                _rwkv_exact_rebuild_forced = False
+                _rwkv_exact_rebuild_swap_undo_counter = _current_undo_counter(reviewer)
+            _invalidate_rwkv_review_input_caches(mw)
+            try:
+                _clear_rwkv_review_queue_scores(reviewer)
+            except Exception:
+                logger.exception("failed to clear RWKV queue scores after the swap")
+            logger.debug(
+                "RWKV exact rebuild swap on the collection worker: tail_reviews=%s "
+                "elapsed_ms=%.1f",
+                len(tail.reviews),
+                (time.monotonic() - swap_started) * 1000,
+            )
+            return True
+
+    def run() -> None:
+        try:
+            result.set_result(swap())
+        except BaseException as error:
+            result.set_exception(error)
+
+    def schedule() -> None:
+        taskman = getattr(mw, "taskman", None)
+        run_in_background = getattr(taskman, "run_in_background", None)
+        if callable(run_in_background):
+            run_in_background(run, None, uses_collection=True)
+        else:
+            run()
+
+    _run_on_main(mw, schedule)
+    while True:
+        try:
+            swapped = result.result(timeout=_RWKV_EXACT_REBUILD_SWAP_WAIT_SECS)
+            break
+        except FutureTimeoutError:
+            # the worker is busy with other work; the swap waits its turn
+            # unless the profile closed under it
+            if _rwkv_exact_rebuild_collection_gone(mw, col):
+                return None
+    if swapped:
+        _run_on_main(mw, lambda: _exact_rwkv_state_swapped_in(mw))
+        # The stored cache, for the next start-up, off the collection worker:
+        # the new runtime holds every state and never reads the file, and the
+        # old one has let go of it.
+        persistence_error = _save_reviewer_backend_cache(
+            reviewer,
+            history,
+            backend=own,
+            checkpoint_entries=checkpoint_writer.entries,
+            write_context=checkpoint_writer.context,
+        )
+        _finish_rwkv_state_cache_checkpoint_writes_safely(own)
+        if persistence_error is None:
+            _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
+    return swapped
+
+
+def _exact_rwkv_state_swapped_in(mw: object) -> None:
+    """The screens that waited for the RWKV state, or drew it, show it again."""
+    if getattr(mw, "col", None) is None:
+        return
+    _redraw_open_card_info(mw)
+    reviewer = getattr(mw, "reviewer", None)
+    resume = getattr(reviewer, "rwkv_curve_state_ready", None)
+    if callable(resume):
+        try:
+            resume()
+        except Exception:
+            logger.exception("failed to show the answer buttons after the swap")
+    _refresh_active_rwkv_count_view(mw)
 
 
 def _require_collection_mutation_reconciliation_current(
@@ -6654,8 +7279,29 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     Nothing else restores the state during review: the other review-time
     caller runs after an answer, and an answer is blocked while the buttons
     wait (spec sched.rwkv-curve-buttons-wait). Call this off the Qt main
-    thread: it reads the state cache from the collection."""
-    return _prepare_reviewer_backend_for_review(reviewer)
+    thread: it reads the state cache from the collection.
+
+    When the stored cache cannot restore it either, the exact rebuild builds
+    it in the background (spec sched.rwkv-delete-keeps-state)."""
+    ready = _prepare_reviewer_backend_for_review(reviewer)
+    if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
+        request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
+    return ready
+
+
+def _stored_rwkv_state_cache_cannot_restore(reviewer: object) -> bool:
+    """The resident state is cold, and the stored cache already failed to
+    restore it for this generation."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return False
+    with _reviewer_backend_state_lock:
+        generation = _reviewer_backend_warmup_generations.get(key, 0)
+        return (
+            key not in _reviewer_backend_warmup_states
+            and key not in _reviewer_backend_warmup_pending_generations
+            and _reviewer_backend_cold_fallback_generations.get(key) == generation
+        )
 
 
 def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
@@ -10407,6 +11053,7 @@ def _invalidate_reviewer_backend_state(
                 _reviewer_backend_cold_fallback_generations.pop(key, None)
             _rwkv_collection_mutation_undo_entries.clear()
             _rwkv_collection_mutation_redo_entries.clear()
+            _count_reviewer_backend_invalidation_locked()
     try:
         _clear_rwkv_review_queue_scores(reviewer)
     except Exception:
@@ -10441,6 +11088,7 @@ def _publish_reviewer_backend_state(
                 identity.ignored_review_ids
             )
             _reviewer_backend_cold_fallback_generations.pop(key, None)
+            _exact_rwkv_state_published()
             return True
     logger.debug(
         "discarding invalidated RWKV warm-up result: "
@@ -10450,6 +11098,18 @@ def _publish_reviewer_backend_state(
         backend_changed,
     )
     return False
+
+
+def _exact_rwkv_state_published() -> None:
+    """A state built from the collection's history as it is now took the
+    resident state's place: no exact rebuild is due any more."""
+    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
+    with _rwkv_exact_rebuild_lock:
+        if not _rwkv_exact_rebuild_wanted_locked():
+            return
+        _rwkv_exact_rebuild_divergent_card_ids.clear()
+        _rwkv_exact_rebuild_forced = False
+        _rwkv_exact_rebuild_generation += 1
 
 
 def _mark_reviewer_backend_identity_unknown(
@@ -10508,6 +11168,8 @@ def _invalidate_reviewer_backend_states(
             )
             if key[0] == backend_id
         ]
+        if matching_keys:
+            _count_reviewer_backend_invalidation_locked()
         for key in matching_keys:
             _reviewer_backend_warmup_states.pop(key, None)
             _reviewer_backend_cold_fallback_generations.pop(key, None)

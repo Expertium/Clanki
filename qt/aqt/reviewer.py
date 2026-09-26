@@ -40,6 +40,7 @@ from anki.utils import is_mac
 from aqt import AnkiQt, gui_hooks
 from aqt.browser.card_info import PreviousReviewerCardInfo, ReviewerCardInfo
 from aqt.deckoptions import confirm_deck_then_display_options
+from aqt.errors import show_exception
 from aqt.operations.card import set_card_flag
 from aqt.operations.note import remove_notes
 from aqt.operations.scheduling import (
@@ -2190,15 +2191,32 @@ timeboxReps = 0;
         def prepared(future: Future[bool]) -> None:
             self._rwkv_intervals_prepare_in_flight = False
             try:
-                future.result()
+                ready = future.result()
             except Exception:
                 logger.exception("RWKV-Curve state preparation failed")
                 return
-            if self._rwkv_curve_wait_is_current(card_id, update_id):
+            # Only a ready state asks again at once. A preparation that did
+            # not make the state ready leaves the next ask to the backed-off
+            # retry: asking at once started the next preparation at once, and
+            # a preparation that fails fast made that a busy loop on the main
+            # thread (39,142 log lines in three minutes).
+            if ready and self._rwkv_curve_wait_is_current(card_id, update_id):
                 self._showEaseButtons()
 
         self._rwkv_intervals_prepare_in_flight = True
         self.mw.taskman.run_in_background(prepare, prepared, uses_collection=True)
+
+    def rwkv_curve_state_ready(self) -> None:
+        """RWKV-Curve's state was rebuilt in the background (spec
+        sched.rwkv-delete-keeps-state): answer buttons that wait for it, or
+        that gave up waiting, ask again at once."""
+        if self.state != "answer" or self.card is None:
+            return
+        if not aqt.rwkv_scheduler.answer_intervals_pending(self, self.card):
+            return
+        self._rwkv_intervals_wait_started = None
+        self._rwkv_intervals_retry_ms = 0
+        self._showEaseButtons()
 
     def _retry_rwkv_curve_intervals(self) -> None:
         """The "Try again" button of the notice: wait for RWKV-Curve again
@@ -2632,7 +2650,26 @@ timeboxReps = 0;
         if self.mw.state != "review" or not self.card:
             return
 
-        remove_notes(parent=self.mw, note_ids=[self.card.nid]).run_in_background()
+        # A click in the reviewer: no "Processing..." window, however long
+        # the delete waits for other work (spec ui.no-waiting-windows). Until
+        # it is done, the card it deletes takes no answer and no other action.
+        self.set_review_actions_blocked(True)
+        block_id = self._review_actions_block_id
+
+        def unblock() -> None:
+            if getattr(self, "_review_actions_block_id", 0) == block_id:
+                self.set_review_actions_blocked(False)
+
+        def failed(exception: Exception) -> None:
+            unblock()
+            show_exception(parent=self.mw, exception=exception)
+
+        remove_notes(
+            parent=self.mw,
+            note_ids=[self.card.nid],
+            waiting_window=False,
+            on_success=unblock,
+        ).failure(failed).run_in_background()
 
     def onRecordVoice(self) -> None:
         def after_record(path: str) -> None:
