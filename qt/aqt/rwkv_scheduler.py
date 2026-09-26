@@ -3029,6 +3029,7 @@ def _record_collection_undo_or_redo_with_backend(
                     backend,
                     reason="review redone" if redo else "review undone",
                 )
+                _exact_rwkv_rebuild_history_moved()
                 return restored_card_ids
 
     if _record_history_change_undo_or_redo(changes, redo=redo):
@@ -3036,6 +3037,17 @@ def _record_collection_undo_or_redo_with_backend(
     if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
         _rebuild_after_undo_of_an_answer_before_the_swap(changes)
     return []
+
+
+def _exact_rwkv_rebuild_history_moved() -> None:
+    """An answer went out of the review log or came back into it (an undo or
+    a redo). A running exact rebuild may already hold the history before
+    that; it starts again from the history as it is now, instead of
+    swapping in a state with a review the collection no longer has, or
+    without one it has again (spec sched.rwkv-history-change-keeps-state)."""
+    global _rwkv_exact_rebuild_generation
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_generation += 1
 
 
 def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
@@ -5250,7 +5262,19 @@ def _run_exact_rwkv_rebuilds(mw: object) -> None:
     try:
         _run_exact_rwkv_rebuilds_until_done(mw)
     finally:
+        with _rwkv_exact_rebuild_lock:
+            _rwkv_exact_rebuild_thread_ends_locked()
         _background_pass_finished()
+
+
+def _rwkv_exact_rebuild_thread_ends_locked() -> None:
+    """The rebuild thread has decided to end: a request from now on starts a
+    new one. It is decided under the lock, so a request that comes while the
+    thread is still ending is not left to it."""
+    global _rwkv_exact_rebuild_thread
+
+    if _rwkv_exact_rebuild_thread is threading.current_thread():
+        _rwkv_exact_rebuild_thread = None
 
 
 def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
@@ -5264,6 +5288,7 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         with _rwkv_exact_rebuild_lock:
             generation = _rwkv_exact_rebuild_generation
             if not _rwkv_exact_rebuild_wanted_locked():
+                _rwkv_exact_rebuild_thread_ends_locked()
                 return
         if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
             return
@@ -5289,6 +5314,8 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         failures += 1
         if failures > _RWKV_EXACT_REBUILD_MAX_FAILURES:
             logger.warning("RWKV exact rebuild stopped after %s tries", failures)
+            with _rwkv_exact_rebuild_lock:
+                _rwkv_exact_rebuild_thread_ends_locked()
             return
         retry_at = time.monotonic() + _RWKV_EXACT_REBUILD_RETRY_SECS * 2 ** (
             failures - 1

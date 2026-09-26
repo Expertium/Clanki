@@ -1024,7 +1024,11 @@ then:
   or back from deletion, the deck back on its preset) before the swap leaves
   no difference, and the rebuild is not needed any more. An undo after the
   swap, a redo, another history change, and a state thrown away for another
-  reason start the rebuild again, from the history as it is then. An undo
+  reason start the rebuild again, from the history as it is then, also when
+  the change comes while the rebuild's thread is ending after it found
+  nothing more to rebuild: a new thread starts. An undo or a redo of an
+  answer before the swap starts a running rebuild again too, since the
+  history it read may still hold that answer. An undo
   that reaches an operation from before the swap keeps the state and asks
   for another rebuild, because the new runtime has no rollback for an
   answer from before it. A state published from the current history by any
@@ -1083,6 +1087,8 @@ are thousands of days long, on the flat tail of the curve.
 `test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild`,
 `test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild`,
 `test_a_state_published_from_the_current_history_ends_the_rebuild`,
+`test_a_request_while_the_rebuild_thread_ends_starts_another`,
+`test_an_answer_undone_during_the_exact_rebuild_starts_it_again`,
 `test_the_close_stops_the_exact_rebuild`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`

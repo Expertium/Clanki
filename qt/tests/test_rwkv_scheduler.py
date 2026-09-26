@@ -188,9 +188,27 @@ _REAL_RUN_EXACT_REBUILDS = rwkv_scheduler._run_exact_rwkv_rebuilds
 @pytest.fixture(autouse=True)
 def no_exact_rebuild_thread(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """The exact rebuild runs on a thread of its own; a test that asks for it
-    records the request instead, and a test of the rebuild calls it."""
+    records the request instead, and a test of the rebuild calls it.
+
+    The request returns once the recording thread has recorded it: the
+    thread may not have run yet when Thread.start() returns, and a check
+    made then failed on a busy machine."""
     started: list[object] = []
     monkeypatch.setattr(rwkv_scheduler, "_run_exact_rwkv_rebuilds", started.append)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_thread", None)
+    request = rwkv_scheduler.request_exact_rwkv_rebuild
+
+    def request_and_wait(mw: object, *, forced: bool = False) -> None:
+        request(mw, forced=forced)
+        thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+        if (
+            rwkv_scheduler._run_exact_rwkv_rebuilds == started.append
+            and thread is not None
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=5)
+
+    monkeypatch.setattr(rwkv_scheduler, "request_exact_rwkv_rebuild", request_and_wait)
     return started
 
 
@@ -23197,6 +23215,55 @@ def test_the_exact_rebuild_starts_again_when_the_history_moves(
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
+@pytest.mark.parametrize("redo", [False, True])
+def test_an_answer_undone_during_the_exact_rebuild_starts_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+    redo: bool,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: an answer
+    the rebuild has already read, undone (or redone) before the swap, is a
+    change the rebuild did not read. The kept state rolls the answer back;
+    the rebuilt runtime must not swap in with it, or the card's state would
+    keep a review the collection no longer has."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    rolled_back: list[tuple[int, int | None]] = []
+
+    def answer_undone(counter: int, next_counter: int | None) -> int:
+        rolled_back.append((counter, next_counter))
+        return 1
+
+    setattr(old, "answer_redone" if redo else "answer_undone", answer_undone)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    replayed: list[_RebuildRuntime] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def undo() -> None:
+            # the user undoes the answer to card 1 (review 2000), which the
+            # whole-history read already holds
+            changes = _undo_result(counter=9, next_counter=10)
+            if redo:
+                rwkv_scheduler.record_collection_redo(changes)
+            else:
+                rwkv_scheduler.record_collection_undo(changes)
+
+        own.during_replay = undo
+        replayed.append(own)
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    with pytest.raises(rwkv_scheduler._RwkvExactRebuildStale):
+        rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    assert rolled_back == [(9, 10)]
+    assert rwkv_scheduler._reviewer_backend is old
+    assert replayed and replayed[0].released
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
 def test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild(
     monkeypatch: pytest.MonkeyPatch,
     no_exact_rebuild_thread: list[object],
@@ -23261,6 +23328,52 @@ def test_a_state_published_from_the_current_history_ends_the_rebuild(
         key, _rwkv_resident_identity(), expected_generation=0
     )
 
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_request_while_the_rebuild_thread_ends_starts_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    history change that comes while the rebuild thread is ending, after it
+    found nothing more to rebuild, starts a new rebuild. The ending thread
+    does not take the request with it."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    rebuilds: list[str] = []
+    all_done = threading.Event()
+
+    def rebuild(mw_: object, col: object, generation: int) -> bool:
+        rebuilds.append(threading.current_thread().name)
+        # the swap: the resident state is the history as it is now
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._clear_rwkv_exact_rebuild_wants_locked()
+        if len(rebuilds) == 2:
+            all_done.set()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_rebuild_exact_rwkv_state", rebuild)
+    finished = rwkv_scheduler._background_pass_finished
+    requested_while_ending: list[bool] = []
+
+    def pass_finished() -> None:
+        # the first thread is still alive here: another card is deleted now
+        if not requested_while_ending:
+            requested_while_ending.append(True)
+            rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+        finished()
+
+    monkeypatch.setattr(rwkv_scheduler, "_background_pass_finished", pass_finished)
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+
+    assert all_done.wait(timeout=5), f"rebuilds: {rebuilds}"
+    assert requested_while_ending == [True]
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    if thread is not None:
+        thread.join(timeout=5)
     assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
