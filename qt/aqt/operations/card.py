@@ -16,7 +16,19 @@ from aqt.utils import tooltip, tr
 def set_card_deck(
     *, parent: QWidget, card_ids: Sequence[CardId], deck_id: DeckId
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.set_deck(card_ids, deck_id)).success(
+    def set_deck_keeping_rwkv_state(col: Collection) -> OpChangesWithCount:
+        from aqt import rwkv_scheduler
+
+        # a move changes the deck, and maybe the preset, every past review of
+        # the cards went through: RWKV keeps its state and rebuilds it in the
+        # background (spec sched.rwkv-history-change-keeps-state)
+        return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
+            col,
+            lambda: col.set_deck(card_ids, deck_id),
+            card_ids=card_ids,
+        )
+
+    return CollectionOp(parent, set_deck_keeping_rwkv_state).success(
         lambda out: tooltip(tr.browsing_cards_updated(count=out.count), parent=parent)
     )
 

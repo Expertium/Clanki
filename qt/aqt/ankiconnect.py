@@ -493,6 +493,12 @@ class AnkiConnect:
         def run() -> Any:
             from aqt import rwkv_scheduler
 
+            if ids.get("routing"):
+                # a deck's preset changes (spec
+                # sched.rwkv-history-change-keeps-state)
+                return rwkv_scheduler.run_routing_mutation_keeping_rwkv_state(
+                    self.collection(), action, force_reconciliation=True
+                )
             return rwkv_scheduler.run_collection_mutation_preserving_rwkv_state(
                 self.collection(), action, force_reconciliation=True, **ids
             )
@@ -1079,7 +1085,9 @@ class AnkiConnect:
         self.startEditing()
         return self.decks().id(deck)
 
-    @api(changes=_DECKS)
+    # a move is a history change RWKV keeps its state through (spec
+    # sched.rwkv-history-change-keeps-state)
+    @api(changes=_DECKS, preserve=_card_ids)
     def changeDeck(self, cards: list[int], deck: str) -> None:
         self.startEditing()
 
@@ -1133,7 +1141,7 @@ class AnkiConnect:
             return False
         return True
 
-    @api(changes=_DECK_CONFIG)
+    @api(changes=_DECK_CONFIG, preserve=lambda _params: {"routing": True})
     def setDeckConfigId(self, decks: list[str], configId: Any) -> bool:
         configId = int(configId)
         for deck in decks:

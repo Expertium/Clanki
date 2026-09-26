@@ -412,6 +412,12 @@ class _RustRwkvRuntime:
         in memory behind it.
         """
         with self._locked_process():
+            process = self._process
+            reset = getattr(process, "reset_warm_up_state", None)
+            if callable(reset):
+                # the states first, without the GIL: dropping a whole-history
+                # state with the process held every Python thread for 2.2 s
+                reset()
             self._process = None
 
     def _locked_process(self) -> Any:

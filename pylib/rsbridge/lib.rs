@@ -870,8 +870,11 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    fn reset_warm_up_state(&mut self) {
-        self.inner.reset_warm_up_state();
+    /// Drops the warm-up states without the GIL: a whole-history state is
+    /// gigabytes, and freeing it took 2.2 s with every Python thread stopped
+    /// (spec sched.rwkv-history-change-keeps-state).
+    fn reset_warm_up_state(&mut self, py: Python<'_>) {
+        py.detach(|| self.inner.reset_warm_up_state());
     }
 
     fn state_for_card(&self, card_id: i64) -> RwkvInferenceState {

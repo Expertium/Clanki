@@ -3031,7 +3031,7 @@ def _record_collection_undo_or_redo_with_backend(
                 )
                 return restored_card_ids
 
-    if _record_deleted_cards_undo_or_redo(changes, redo=redo):
+    if _record_history_change_undo_or_redo(changes, redo=redo):
         return []
     if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
         _rebuild_after_undo_of_an_answer_before_the_swap(changes)
@@ -3042,7 +3042,7 @@ def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
     """An undo or redo of an answer given before the exact rebuild swapped
     in: the rebuilt runtime has no rollback frame for it, so its state keeps
     that answer. It stays in use, and another exact rebuild follows (spec
-    sched.rwkv-delete-keeps-state)."""
+    sched.rwkv-history-change-keeps-state)."""
     counter = _undo_result_counter(changes)
     with _rwkv_exact_rebuild_lock:
         swap_counter = _rwkv_exact_rebuild_swap_undo_counter
@@ -3812,7 +3812,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
 
 def _count_reviewer_backend_invalidation_locked() -> None:
     """A resident state was thrown away: an exact rebuild that read the
-    history before it starts again (spec sched.rwkv-delete-keeps-state)."""
+    history before it starts again (spec sched.rwkv-history-change-keeps-state)."""
     global _reviewer_backend_invalidation_count
     _reviewer_backend_invalidation_count += 1
 
@@ -4740,7 +4740,7 @@ def record_collection_mutation_reconciliation(
         )
         return True
     except _RwkvGradeNowReconciliationUnavailable as error:
-        if _keep_resident_state_after_card_deletion(reconciliation):
+        if _keep_resident_state_after_card_rerouting(reconciliation):
             return True
         _invalidate_reviewer_backend_state(
             reviewer,
@@ -4770,40 +4770,54 @@ def record_collection_mutation_reconciliation(
                 logger.exception("failed to clear changed card RWKV info score")
 
 
-# --- A delete keeps the resident state; an exact rebuild follows ------------
+# --- A history change keeps the resident state; an exact rebuild follows ----
 #
-# Spec sched.rwkv-delete-keeps-state. Deleting a card that has reviews moves
-# those reviews, in the replay, from the note, deck and preset streams they
-# went through to the placeholder ones (sched.rwkv-replay-deleted-cards).
-# That changes the state of every later review of those streams, so no stored
-# checkpoint after the card's first review is exact any more, and restoring
-# the state took 13 s on Andrew's collection and then failed: RWKV-Curve gave
-# no intervals until Clanki was restarted (B-034).
+# Spec sched.rwkv-history-change-keeps-state. The replay routes every review of
+# a card through the note, deck and preset the card has NOW, as the model's
+# training did (a deleted card's through placeholders,
+# sched.rwkv-replay-deleted-cards). So deleting a card with reviews, moving it
+# to another deck, or giving a deck another preset changes the past: every
+# later state of the streams involved. No stored checkpoint after the card's
+# first review is exact any more, and restoring the state took 13 s on
+# Andrew's collection and then failed: RWKV-Curve gave no intervals until
+# Clanki was restarted (B-034).
 #
-# Instead the resident state is kept, as it was before the delete, and a
-# replay of the whole history as it is now runs on a thread of its own, into
-# a model runtime of its own, then takes the resident state's place.
-# `_rwkv_exact_rebuild_divergent_card_ids` holds the deleted cards whose
-# routing the resident state still has the old way; an undo of the delete
-# before the swap takes them out again, and the rebuild is then not needed.
+# Instead the resident state is kept, as it was before the change (an exact
+# state of the history before it), and a replay of the whole history as it is
+# now runs on a thread of its own, into a model runtime of its own, then takes
+# the resident state's place. `_rwkv_exact_rebuild_divergent_cards` holds, for
+# each card routed differently now, the routing the resident state has for
+# it; `_rwkv_exact_rebuild_resident_replay_key` the deck-to-preset routing it
+# was built under. An undo back to that routing before the swap leaves no
+# difference, and the rebuild is then not needed.
 
 
 @dataclass(frozen=True)
-class _RwkvDeletedCardsRollbackEntry:
-    """An undo step that deleted cards the resident state still routes."""
+class _RwkvHistoryChangeRollbackEntry:
+    """An undo step that changed the routing of past reviews while the
+    resident state was kept."""
 
     counter: int
     mw: object
+    # the routing of the changed cards before and after the step; a card
+    # missing from a side did not exist on it
+    before: Mapping[int, RwkvReviewIdentity]
+    after: Mapping[int, RwkvReviewIdentity]
     card_ids: frozenset[int]
+    replay_key_before: str | None
+    replay_key_after: str | None
 
 
 _rwkv_exact_rebuild_lock = threading.Lock()
-# cards whose past reviews the resident state routes differently from the
-# collection: deleted after the state was built, or brought back by an undo
-# after the rebuild swapped in
-_rwkv_exact_rebuild_divergent_card_ids: set[int] = set()
-# a rebuild wanted for a reason the card set cannot express: the resident
-# state is cold and the stored cache cannot restore it, or an undo reached an
+# for each card whose past reviews the resident state routes differently from
+# the collection: the routing the state has (None: the card did not exist)
+_rwkv_exact_rebuild_divergent_cards: dict[int, RwkvReviewIdentity | None] = {}
+# the replay semantics key (the deck-to-preset routing among it) the kept
+# state was built under, and whether the collection's differs from it now
+_rwkv_exact_rebuild_resident_replay_key: str | None = None
+_rwkv_exact_rebuild_replay_key_diverged = False
+# a rebuild wanted for a reason the above cannot express: the resident state
+# is cold and the stored cache cannot restore it, or an undo reached an
 # answer the rebuilt runtime has no rollback for
 _rwkv_exact_rebuild_forced = False
 # bumped by every request; a rebuild whose generation moved starts again
@@ -4812,8 +4826,8 @@ _rwkv_exact_rebuild_thread: threading.Thread | None = None
 # the undo step current when the last rebuild swapped in: an undo of an
 # earlier answer has no rollback frame in the new runtime
 _rwkv_exact_rebuild_swap_undo_counter: int | None = None
-_rwkv_deleted_cards_undo_entries: list[_RwkvDeletedCardsRollbackEntry] = []
-_rwkv_deleted_cards_redo_entries: list[_RwkvDeletedCardsRollbackEntry] = []
+_rwkv_history_change_undo_entries: list[_RwkvHistoryChangeRollbackEntry] = []
+_rwkv_history_change_redo_entries: list[_RwkvHistoryChangeRollbackEntry] = []
 # bumped whenever a resident state is thrown away: a change the replay
 # depends on that nothing reconciled, so a rebuild read before it is stale
 _reviewer_backend_invalidation_count = 0
@@ -4828,11 +4842,12 @@ _RWKV_EXACT_REBUILD_MAX_FAILURES = 5
 _RWKV_EXACT_REBUILD_SWAP_WAIT_SECS = 1.0
 
 
-def _deleted_historical_card_ids(
+def _rerouted_historical_cards(
     reconciliation: RwkvCollectionMutationReconciliation,
-) -> frozenset[int] | None:
-    """The cards with reviews that the mutation deleted, when deleting them
-    is the only change it made to the replay's routing; None otherwise."""
+) -> tuple[dict[int, RwkvReviewIdentity], dict[int, RwkvReviewIdentity]] | None:
+    """The routing before and after the mutation of the cards with reviews
+    it deleted or moved, when that is the only change it made to the replay
+    (the review log is the same); None otherwise."""
 
     reviewer = reconciliation.reviewer
     if not reconciliation.historical_card_ids:
@@ -4853,82 +4868,261 @@ def _deleted_historical_card_ids(
     list_rows = getattr(getattr(col, "db", None), "list", None)
     if not callable(list_rows):
         return None
+    historical = sorted(reconciliation.historical_card_ids)
     try:
-        present = {
+        present = [
             card_id
             for value in list_rows(
-                "select id from cards where id in "
-                + ids2str(sorted(reconciliation.historical_card_ids))
+                "select id from cards where id in " + ids2str(historical)
             )
             if (card_id := _valid_card_id(value)) is not None
-        }
+        ]
     except Exception:
         logger.debug("failed to read which RWKV cards are left", exc_info=True)
         return None
-    deleted = reconciliation.historical_card_ids - present
-    if not deleted:
+    _invalidate_resolved_preset_id_cache(reviewer, card_ids=historical)
+    after = _rwkv_identities_for_card_ids(reviewer, present)
+    if after is None:
         return None
-    current_identities = _rwkv_identities_for_card_ids(reviewer, present)
-    if current_identities is None or current_identities != {
-        card_id: reconciliation.identities_by_card_id.get(card_id)
-        for card_id in present
-    }:
+    before = {
+        card_id: identity
+        for card_id in historical
+        if (identity := reconciliation.identities_by_card_id.get(card_id)) is not None
+    }
+    changed = [
+        card_id for card_id in historical if before.get(card_id) != after.get(card_id)
+    ]
+    if not changed:
         return None
-    return frozenset(deleted)
+    return (
+        {card_id: before[card_id] for card_id in changed if card_id in before},
+        {card_id: after[card_id] for card_id in changed if card_id in after},
+    )
 
 
-def _keep_resident_state_after_card_deletion(
+def _keep_resident_state_after_card_rerouting(
     reconciliation: RwkvCollectionMutationReconciliation,
 ) -> bool:
-    """Keep the resident RWKV state after a mutation that deleted cards with
-    reviews, and start the exact rebuild (spec sched.rwkv-delete-keeps-state).
-    False when the mutation did more than that, or the state moved on."""
+    """Keep the resident RWKV state after a mutation that deleted or moved
+    cards with reviews, and start the exact rebuild (spec
+    sched.rwkv-history-change-keeps-state). False when the mutation did more
+    than that, or the state moved on."""
 
     try:
-        deleted = _deleted_historical_card_ids(reconciliation)
-        if deleted is None:
+        rerouted = _rerouted_historical_cards(reconciliation)
+        if rerouted is None:
             return False
         if not _rwkv_collection_mutation_reconciliation_is_current(reconciliation):
             return False
     except Exception:
-        logger.exception("failed to check an RWKV card deletion")
+        logger.exception("failed to check an RWKV card rerouting")
         return False
+    before, after = rerouted
+    _keep_resident_state_after_history_change(
+        reconciliation.reviewer,
+        mutation_context=reconciliation.mutation_context,
+        previous_undo_counter=reconciliation.previous_undo_counter,
+        before=before,
+        after=after,
+        replay_key_before=None,
+        replay_key_after=None,
+        reason="cards deleted or moved",
+    )
+    return True
 
-    reviewer = reconciliation.reviewer
+
+def run_routing_mutation_keeping_rwkv_state(
+    col: object,
+    mutation: Callable[[], _T],
+    *,
+    force_reconciliation: bool = False,
+) -> _T:
+    """Run a mutation that can change which preset a deck uses (a deck-options
+    save, a deck's own preset). A change of that routing changes the past of
+    the replay: the resident state is kept and the exact rebuild starts (spec
+    sched.rwkv-history-change-keeps-state). Any other change is reconciled as
+    `run_collection_mutation_preserving_rwkv_state` does."""
+
+    import aqt
+
+    mw = aqt.mw
+    reviewer = (
+        getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+        if mw is not None and getattr(mw, "col", None) is col
+        else SimpleNamespace(mw=SimpleNamespace(col=col))
+    )
+    started = time.monotonic()
+    reconciliation = prepare_collection_mutation_reconciliation(reviewer)
+    replay_key_before = _rwkv_replay_key_or_none(reviewer)
+    last_review_before = _rwkv_last_review_id_or_none(reviewer)
+    logger.debug(
+        "RWKV routing mutation prepared: elapsed_ms=%.1f",
+        (time.monotonic() - started) * 1000,
+    )
+    result = mutation()
+    changes = (
+        result
+        if isinstance(result, collection_pb2.OpChanges)
+        else getattr(result, "changes", None)
+    )
+    if not force_reconciliation and not (
+        isinstance(changes, collection_pb2.OpChanges)
+        and _rwkv_operation_changes_require_reconciliation(changes)
+    ):
+        return result
+    replay_key_after = _rwkv_replay_key_or_none(reviewer)
+    if (
+        reconciliation is not None
+        and replay_key_before is not None
+        and replay_key_after is not None
+        and replay_key_after != replay_key_before
+    ):
+        if (
+            last_review_before is not None
+            and _rwkv_last_review_id_or_none(reviewer) == last_review_before
+            and _rwkv_collection_mutation_reconciliation_is_current(reconciliation)
+        ):
+            _keep_resident_state_after_history_change(
+                reviewer,
+                mutation_context=reconciliation.mutation_context,
+                previous_undo_counter=reconciliation.previous_undo_counter,
+                before={},
+                after={},
+                replay_key_before=replay_key_before,
+                replay_key_after=replay_key_after,
+                reason="deck preset routing changed",
+            )
+        # otherwise the handlers that follow throw the state away, as before
+        return result
+    record_collection_mutation_reconciliation(reconciliation)
+    return result
+
+
+def _rwkv_replay_key_or_none(reviewer: object) -> str | None:
+    try:
+        return _rwkv_replay_semantics_key(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+    except Exception:
+        logger.debug("failed to read the RWKV replay key", exc_info=True)
+        return None
+
+
+def _rwkv_last_review_id_or_none(reviewer: object) -> int | None:
+    col = _collection(reviewer)
+    scalar = getattr(getattr(col, "db", None), "scalar", None)
+    if not callable(scalar):
+        return None
+    try:
+        value = scalar("select max(id) from revlog")
+    except Exception:
+        logger.debug("failed to read the last review id", exc_info=True)
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _keep_resident_state_after_history_change(
+    reviewer: object,
+    *,
+    mutation_context: _ReviewerBackendMutationContext | None,
+    previous_undo_counter: int | None,
+    before: Mapping[int, RwkvReviewIdentity],
+    after: Mapping[int, RwkvReviewIdentity],
+    replay_key_before: str | None,
+    replay_key_after: str | None,
+    reason: str,
+) -> None:
     mw = getattr(reviewer, "mw", None)
     # the state no longer matches the collection's history, so nothing may
     # save it, or mark the stored cache as current, under that history
     _mark_reviewer_backend_identity_unknown(
         reviewer,
-        reason="cards deleted; exact rebuild pending",
-        expected_mutation_context=reconciliation.mutation_context,
+        reason=f"{reason}; exact rebuild pending",
+        expected_mutation_context=mutation_context,
     )
+    card_ids = frozenset(before) | frozenset(after)
     counter = _current_undo_counter(reviewer)
-    if counter is not None and counter != reconciliation.previous_undo_counter:
-        _rwkv_deleted_cards_redo_entries.clear()
-        _rwkv_deleted_cards_undo_entries.append(
-            _RwkvDeletedCardsRollbackEntry(counter=counter, mw=mw, card_ids=deleted)
+    if counter is not None and counter != previous_undo_counter:
+        _rwkv_history_change_redo_entries.clear()
+        _rwkv_history_change_undo_entries.append(
+            _RwkvHistoryChangeRollbackEntry(
+                counter=counter,
+                mw=mw,
+                before=dict(before),
+                after=dict(after),
+                card_ids=card_ids,
+                replay_key_before=replay_key_before,
+                replay_key_after=replay_key_after,
+            )
         )
-        del _rwkv_deleted_cards_undo_entries[:-_RWKV_REVIEW_UNDO_LIMIT]
+        del _rwkv_history_change_undo_entries[:-_RWKV_REVIEW_UNDO_LIMIT]
+    _invalidate_resolved_preset_id_cache(reviewer)
+    _invalidate_rwkv_review_input_caches(mw)
     _mark_collection_change_reconciled(reviewer)
-    logger.debug("RWKV resident state kept after card deletion: cards=%s", len(deleted))
-    request_exact_rwkv_rebuild(mw, toggle_card_ids=deleted)
-    return True
+    logger.debug(
+        "RWKV resident state kept after a history change: reason=%s cards=%s "
+        "routing_changed=%s",
+        reason,
+        len(card_ids),
+        replay_key_before != replay_key_after,
+    )
+    _note_rwkv_history_change(
+        before=before,
+        after=after,
+        card_ids=card_ids,
+        replay_key_before=replay_key_before,
+        replay_key_after=replay_key_after,
+    )
+    request_exact_rwkv_rebuild(mw)
 
 
-def _record_deleted_cards_undo_or_redo(changes: object, *, redo: bool) -> bool:
-    """An undo or redo of a delete the resident state still knows about: the
-    cards come back, or go again, and the state stays (spec
-    sched.rwkv-delete-keeps-state)."""
+def _note_rwkv_history_change(
+    *,
+    before: Mapping[int, RwkvReviewIdentity],
+    after: Mapping[int, RwkvReviewIdentity],
+    card_ids: Iterable[int],
+    replay_key_before: str | None,
+    replay_key_after: str | None,
+) -> None:
+    """Compare the collection's routing after a change with the resident
+    state's. A card the state does not differ on yet had, in the state, the
+    routing it had just before the change."""
+    global _rwkv_exact_rebuild_resident_replay_key
+    global _rwkv_exact_rebuild_replay_key_diverged
+
+    with _rwkv_exact_rebuild_lock:
+        for card_id in card_ids:
+            resident = (
+                _rwkv_exact_rebuild_divergent_cards[card_id]
+                if card_id in _rwkv_exact_rebuild_divergent_cards
+                else before.get(card_id)
+            )
+            if after.get(card_id) == resident:
+                _rwkv_exact_rebuild_divergent_cards.pop(card_id, None)
+            else:
+                _rwkv_exact_rebuild_divergent_cards[card_id] = resident
+        if replay_key_before is not None and replay_key_after is not None:
+            if _rwkv_exact_rebuild_resident_replay_key is None:
+                _rwkv_exact_rebuild_resident_replay_key = replay_key_before
+            _rwkv_exact_rebuild_replay_key_diverged = (
+                replay_key_after != _rwkv_exact_rebuild_resident_replay_key
+            )
+
+
+def _record_history_change_undo_or_redo(changes: object, *, redo: bool) -> bool:
+    """An undo or redo of a history change the resident state still knows
+    about: the routing goes back, or forward again, and the state stays
+    (spec sched.rwkv-history-change-keeps-state)."""
 
     counter = _undo_result_counter(changes)
     if counter is None:
         return False
     source = (
-        _rwkv_deleted_cards_redo_entries if redo else _rwkv_deleted_cards_undo_entries
+        _rwkv_history_change_redo_entries if redo else _rwkv_history_change_undo_entries
     )
     destination = (
-        _rwkv_deleted_cards_undo_entries if redo else _rwkv_deleted_cards_redo_entries
+        _rwkv_history_change_undo_entries if redo else _rwkv_history_change_redo_entries
     )
     index = next(
         (i for i in range(len(source) - 1, -1, -1) if source[i].counter == counter),
@@ -4945,32 +5139,41 @@ def _record_deleted_cards_undo_or_redo(changes: object, *, redo: bool) -> bool:
     reviewer = getattr(entry.mw, "reviewer", None) or SimpleNamespace(mw=entry.mw)
     _mark_reviewer_backend_identity_unknown(
         reviewer,
-        reason="card deletion redone" if redo else "card deletion undone",
+        reason="history change redone" if redo else "history change undone",
     )
+    _invalidate_resolved_preset_id_cache(reviewer)
+    _invalidate_rwkv_review_input_caches(entry.mw)
     _mark_collection_change_reconciled(reviewer)
     logger.debug(
-        "RWKV card deletion %s: cards=%s",
+        "RWKV history change %s: cards=%s",
         "redone" if redo else "undone",
         len(entry.card_ids),
     )
-    request_exact_rwkv_rebuild(entry.mw, toggle_card_ids=entry.card_ids)
+    if redo:
+        _note_rwkv_history_change(
+            before=entry.before,
+            after=entry.after,
+            card_ids=entry.card_ids,
+            replay_key_before=entry.replay_key_before,
+            replay_key_after=entry.replay_key_after,
+        )
+    else:
+        _note_rwkv_history_change(
+            before=entry.after,
+            after=entry.before,
+            card_ids=entry.card_ids,
+            replay_key_before=entry.replay_key_after,
+            replay_key_after=entry.replay_key_before,
+        )
+    request_exact_rwkv_rebuild(entry.mw)
     return True
 
 
-def request_exact_rwkv_rebuild(
-    mw: object,
-    *,
-    toggle_card_ids: Iterable[int] = (),
-    forced: bool = False,
-) -> None:
+def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
     """Ask for the exact rebuild of the RWKV state, in the background (spec
-    sched.rwkv-delete-keeps-state).
-
-    `toggle_card_ids` are cards whose routing just changed between the
-    resident state and the collection: deleted, or brought back. A card that
-    changes twice is back where the state has it, so a delete and its undo
-    before the rebuild ends need no rebuild at all. `forced` asks for a
-    rebuild the card set cannot express."""
+    sched.rwkv-history-change-keeps-state). It runs while the collection's
+    routing differs from the resident state's; `forced` asks for a rebuild
+    that difference cannot express."""
 
     global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
     global _rwkv_exact_rebuild_thread
@@ -4978,9 +5181,6 @@ def request_exact_rwkv_rebuild(
     if mw is None:
         return
     with _rwkv_exact_rebuild_lock:
-        _rwkv_exact_rebuild_divergent_card_ids.symmetric_difference_update(
-            toggle_card_ids
-        )
         _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
         _rwkv_exact_rebuild_generation += 1
         if not _rwkv_exact_rebuild_wanted_locked():
@@ -5001,7 +5201,22 @@ def request_exact_rwkv_rebuild(
 
 
 def _rwkv_exact_rebuild_wanted_locked() -> bool:
-    return bool(_rwkv_exact_rebuild_divergent_card_ids) or _rwkv_exact_rebuild_forced
+    return (
+        bool(_rwkv_exact_rebuild_divergent_cards)
+        or _rwkv_exact_rebuild_replay_key_diverged
+        or _rwkv_exact_rebuild_forced
+    )
+
+
+def _clear_rwkv_exact_rebuild_wants_locked() -> None:
+    """The resident state is the collection's history as it is now."""
+    global _rwkv_exact_rebuild_forced, _rwkv_exact_rebuild_resident_replay_key
+    global _rwkv_exact_rebuild_replay_key_diverged
+
+    _rwkv_exact_rebuild_divergent_cards.clear()
+    _rwkv_exact_rebuild_resident_replay_key = None
+    _rwkv_exact_rebuild_replay_key_diverged = False
+    _rwkv_exact_rebuild_forced = False
 
 
 def rwkv_exact_rebuild_pending() -> bool:
@@ -5012,16 +5227,14 @@ def rwkv_exact_rebuild_pending() -> bool:
 
 def _reset_rwkv_exact_rebuild() -> None:
     """A profile opened: nothing of the last one carries over."""
-    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
-    global _rwkv_exact_rebuild_swap_undo_counter
+    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_swap_undo_counter
 
     with _rwkv_exact_rebuild_lock:
-        _rwkv_exact_rebuild_divergent_card_ids.clear()
-        _rwkv_exact_rebuild_forced = False
+        _clear_rwkv_exact_rebuild_wants_locked()
         _rwkv_exact_rebuild_generation += 1
         _rwkv_exact_rebuild_swap_undo_counter = None
-    _rwkv_deleted_cards_undo_entries.clear()
-    _rwkv_deleted_cards_redo_entries.clear()
+    _rwkv_history_change_undo_entries.clear()
+    _rwkv_history_change_redo_entries.clear()
 
 
 class _RwkvExactRebuildStale(Exception):
@@ -5238,7 +5451,7 @@ def _swap_in_exact_rwkv_state(
     result: Future[bool] = Future()
 
     def swap() -> bool:
-        global _rwkv_exact_rebuild_forced, _rwkv_exact_rebuild_swap_undo_counter
+        global _rwkv_exact_rebuild_swap_undo_counter
 
         swap_started = time.monotonic()
         with _reviewer_backend_execution_lock:
@@ -5273,9 +5486,6 @@ def _swap_in_exact_rwkv_state(
                     tail.reviews, review_ids=tail.review_ids
                 )
             set_reviewer_backend(own)
-            # the old runtime reads card states from the stored cache as they
-            # come up; it lets go of the file before the new one replaces it
-            _release_recording_pass_runtime(backend)
             # from here on the rebuilt runtime is the shared one, whatever
             # happens next
             key = _reviewer_backend_warmup_key(reviewer)
@@ -5287,8 +5497,7 @@ def _swap_in_exact_rwkv_state(
             ):
                 logger.warning("the rebuilt RWKV state could not be published")
             with _rwkv_exact_rebuild_lock:
-                _rwkv_exact_rebuild_divergent_card_ids.clear()
-                _rwkv_exact_rebuild_forced = False
+                _clear_rwkv_exact_rebuild_wants_locked()
                 _rwkv_exact_rebuild_swap_undo_counter = _current_undo_counter(reviewer)
             _invalidate_rwkv_review_input_caches(mw)
             try:
@@ -5329,6 +5538,12 @@ def _swap_in_exact_rwkv_state(
                 return None
     if swapped:
         _run_on_main(mw, lambda: _exact_rwkv_state_swapped_in(mw))
+        # Nothing uses the kept runtime any more: a prediction holds the
+        # execution lock, which the swap held. It is released here, off the
+        # collection worker, and before the save, because it reads card
+        # states from the stored cache as they come up and lets go of the
+        # file before the new one replaces it.
+        _release_recording_pass_runtime(backend)
         # The stored cache, for the next start-up, off the collection worker:
         # the new runtime holds every state and never reads the file, and the
         # old one has let go of it.
@@ -7282,7 +7497,7 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     thread: it reads the state cache from the collection.
 
     When the stored cache cannot restore it either, the exact rebuild builds
-    it in the background (spec sched.rwkv-delete-keeps-state)."""
+    it in the background (spec sched.rwkv-history-change-keeps-state)."""
     ready = _prepare_reviewer_backend_for_review(reviewer)
     if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
         request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
@@ -11103,12 +11318,11 @@ def _publish_reviewer_backend_state(
 def _exact_rwkv_state_published() -> None:
     """A state built from the collection's history as it is now took the
     resident state's place: no exact rebuild is due any more."""
-    global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
+    global _rwkv_exact_rebuild_generation
     with _rwkv_exact_rebuild_lock:
         if not _rwkv_exact_rebuild_wanted_locked():
             return
-        _rwkv_exact_rebuild_divergent_card_ids.clear()
-        _rwkv_exact_rebuild_forced = False
+        _clear_rwkv_exact_rebuild_wants_locked()
         _rwkv_exact_rebuild_generation += 1
 
 

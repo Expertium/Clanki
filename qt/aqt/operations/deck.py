@@ -143,8 +143,29 @@ def set_current_deck(*, parent: QWidget, deck_id: DeckId) -> CollectionOp[OpChan
 def update_deck_configs(
     *, parent: QWidget, input: UpdateDeckConfigs
 ) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.decks.update_deck_configs(input))
+    # a deck-options save can give a deck another preset: RWKV keeps its
+    # state and rebuilds it in the background (spec
+    # sched.rwkv-history-change-keeps-state)
+    return CollectionOp(
+        parent,
+        lambda col: _run_keeping_rwkv_state_through_routing(
+            col, lambda: col.decks.update_deck_configs(input)
+        ),
+    )
 
 
 def update_deck_dict(*, parent: QWidget, deck: DeckDict) -> CollectionOp[OpChanges]:
-    return CollectionOp(parent, lambda col: col.decks.update_dict(deck))
+    return CollectionOp(
+        parent,
+        lambda col: _run_keeping_rwkv_state_through_routing(
+            col, lambda: col.decks.update_dict(deck)
+        ),
+    )
+
+
+def _run_keeping_rwkv_state_through_routing(
+    col: Collection, mutation: Callable[[], _T]
+) -> _T:
+    from aqt import rwkv_scheduler
+
+    return rwkv_scheduler.run_routing_mutation_keeping_rwkv_state(col, mutation)

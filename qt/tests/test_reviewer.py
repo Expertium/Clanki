@@ -3117,7 +3117,7 @@ def test_a_failed_state_preparation_leaves_the_next_ask_to_the_backed_off_retry(
 def test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt(
     monkeypatch,
 ) -> None:
-    """Pins spec/scheduling.md#sched.rwkv-delete-keeps-state: when the exact
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: when the exact
     rebuild swaps in, buttons that wait for RWKV-Curve, or gave up waiting,
     ask again at once."""
     shots: list[tuple[int, Callable[[], None]]] = []
