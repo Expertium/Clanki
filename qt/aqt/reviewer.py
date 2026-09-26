@@ -2208,7 +2208,7 @@ timeboxReps = 0;
 
     def rwkv_curve_state_ready(self) -> None:
         """RWKV-Curve's state was rebuilt in the background (spec
-        sched.rwkv-delete-keeps-state): answer buttons that wait for it, or
+        sched.rwkv-history-change-keeps-state): answer buttons that wait for it, or
         that gave up waiting, ask again at once."""
         if self.state != "answer" or self.card is None:
             return

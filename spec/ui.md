@@ -1698,7 +1698,7 @@ to 9.5-18 ms.
 Given a close of the profile while RWKV background work runs (the start-up
 restore or build of the RWKV state, the recording pass that writes the
 per-review rows for the graphs, or the exact rebuild after a delete,
-`sched.rwkv-delete-keeps-state`), the close work of `ui.close-off-main-thread`
+`sched.rwkv-history-change-keeps-state`), the close work of `ui.close-off-main-thread`
 first stops that work, then optimizes, checks, backs up and closes the
 collection. Each pass stops at its next check, which comes after its current
 batch. The rows of an unfinished batch are dropped, not written, and are not
