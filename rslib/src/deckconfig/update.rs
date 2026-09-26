@@ -226,24 +226,36 @@ impl Collection {
 
     /// Information required for the deck options screen.
     pub fn update_deck_configs(&mut self, input: UpdateDeckConfigsRequest) -> Result<OpOutput<()>> {
-        self.update_deck_configs_and_algorithm(input, None)
+        self.update_deck_configs_and_algorithm(input, None, false)
     }
 
     /// A deck-options save that can also change the collection's algorithm
     /// (spec sched.one-global-algorithm). The new algorithm is set first, so
-    /// the saved presets take it.
+    /// the saved presets take it. With `reschedule_all_cards` and FSRS-7
+    /// after the save, the save also reschedules every card, in the same
+    /// undo step; the switch then leaves the memory states to that
+    /// reschedule, which computes them all again with the saved parameters,
+    /// so the history is replayed once (spec sched.algorithm-change-prompt).
     pub fn update_deck_configs_and_algorithm(
         &mut self,
         input: UpdateDeckConfigsRequest,
         algorithm: Option<SchedulingAlgorithm>,
+        reschedule_all_cards: bool,
     ) -> Result<OpOutput<()>> {
         self.transact(Op::UpdateDeckConfig, |col| {
+            let reschedule_all_cards = reschedule_all_cards
+                && algorithm.unwrap_or(col.effective_scheduling_algorithm()?)
+                    == SchedulingAlgorithm::Fsrs7;
             if let Some(algorithm) = algorithm {
                 if algorithm != col.effective_scheduling_algorithm()? {
-                    col.change_scheduling_algorithm(algorithm)?;
+                    col.change_scheduling_algorithm_then(algorithm, reschedule_all_cards)?;
                 }
             }
-            col.update_deck_configs_inner(input)
+            col.update_deck_configs_inner(input)?;
+            if reschedule_all_cards {
+                col.reschedule_all_cards_with_fsrs7_inner()?;
+            }
+            Ok(())
         })
     }
 }
