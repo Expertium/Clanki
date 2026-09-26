@@ -569,9 +569,11 @@ impl SqliteStorage {
     /// Records which algorithm scheduled the review, once, at the moment it
     /// is answered (spec sched.review-scheduler-record), in the scheduler
     /// record and in the retrievability cache (spec
-    /// database.sidecar-recovery). A review already recorded keeps its first
-    /// answer, because the algorithm that scheduled it cannot change
-    /// afterwards.
+    /// database.sidecar-recovery). A record already under the id is
+    /// replaced: the answer has just taken the id as a new one in the review
+    /// log, so an older record belongs to a review that no longer exists (an
+    /// undone answer whose id the next answer in the same millisecond took
+    /// again).
     ///
     /// The copy is written first and a failure of one write does not stop
     /// the other, so a damaged cache never costs the copy its row.
@@ -591,7 +593,7 @@ impl SqliteStorage {
                 .and_then(|()| {
                     self.db
                         .prepare_cached(&format!(
-                            "insert or ignore into {schema}.{REVIEW_SCHEDULER_TABLE}
+                            "insert or replace into {schema}.{REVIEW_SCHEDULER_TABLE}
                              (revlog_id, algorithm, recorded_at) values (?1, ?2, ?3)"
                         ))?
                         .execute(params![revlog_id.0, algorithm, recorded_at])

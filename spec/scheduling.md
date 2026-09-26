@@ -2122,9 +2122,11 @@ preset at the moment of the answer. One row per review, keyed by the review
 log id, in the `review_scheduler` table of the retrievability-cache sidecar
 beside the collection.
 
-- The record is written once. A second write of the same review keeps the
-  first answer, because the algorithm that scheduled a review cannot change
-  afterwards.
+- An answer replaces a record already stored under its review id. The
+  answer has just taken that id as a new one in the review log, so the older
+  record belongs to a review that no longer exists: an undone answer whose id
+  the next answer took again, which happens when both fall in the same
+  millisecond.
 - A review answered before this version has no row. It is absent, not
   guessed: nothing in the review log says which algorithm set its interval.
 - A failure to write the record never fails the answer. The answer is the
@@ -2140,10 +2142,12 @@ beside the collection.
 scheduled using FSRS-7, RWKV-Curve or RWKV-Instant. We'll later add another
 stat: how well the algorithm performs on all reviews (logloss and AUC) vs how
 well it performs _on reviews that it scheduled_." An algorithm judged only on
-reviews another algorithm chose is judged on the wrong sample.
+reviews another algorithm chose is judged on the wrong sample. Andrew,
+2026-09-26, on a record left under a reused id: "extremely unlikely, but
+sure, fix it".
 
 **Pinned by:** `every_answer_records_the_algorithm_that_scheduled_it`,
-`a_review_keeps_the_algorithm_it_was_first_recorded_with`
+`an_answer_that_takes_a_freed_review_id_records_its_own_algorithm`
 (`rslib/src/scheduler/answering/mod.rs`).
 
 ## sched.one-global-algorithm

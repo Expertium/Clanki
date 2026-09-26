@@ -417,9 +417,8 @@ fn create_scheduler_record_table(db: &Connection, schema: &str) -> rusqlite::Res
 }
 
 /// Makes both copies of `review_scheduler` hold the same rows, plus any rows
-/// salvaged from a damaged file. A row already present keeps its first
-/// answer, as a second write of a review does (spec
-/// sched.review-scheduler-record). The two files are compared by row count
+/// salvaged from a damaged file. A row a file already holds keeps its
+/// value. The two files are compared by row count
 /// and largest review id, which reads two index pages when they agree.
 fn bring_scheduler_records_into_step(
     db: &Connection,
