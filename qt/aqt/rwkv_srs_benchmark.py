@@ -25,6 +25,7 @@ from aqt.rwkv_scheduler import (
     RwkvCurveSources,
     RwkvIntervalOverride,
     RwkvRecallPoint,
+    RwkvReplayReviews,
     RwkvReviewCandidate,
     RwkvReviewerBackend,
     RwkvReviewerStateSnapshot,
@@ -1778,12 +1779,14 @@ def _packed_review_input_row(
 
 
 def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
-    payload = bytearray(
-        _PACKED_PREDICTION_REQUEST_HEADER.pack(
-            _PACKED_WARM_UP_REVIEW_MAGIC,
-            len(reviews),
-        )
+    header = _PACKED_PREDICTION_REQUEST_HEADER.pack(
+        _PACKED_WARM_UP_REVIEW_MAGIC,
+        len(reviews),
     )
+    if isinstance(reviews, RwkvReplayReviews):
+        # the backend's replay builder wrote these rows already
+        return header + reviews.packed_warm_up_rows()
+    payload = bytearray(header)
     for review_input in reviews:
         payload.extend(_packed_review_input_row(review_input))
     return bytes(payload)

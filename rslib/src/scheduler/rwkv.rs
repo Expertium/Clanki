@@ -12,6 +12,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use fnv::FnvHashMap;
 
 use crate::card::Card;
 use crate::card::CardQueue;
@@ -35,9 +36,11 @@ use crate::scheduler::fsrs::rescheduler::Rescheduler;
 use crate::scheduler::rwkv_inputs::published::PublishedEncoder;
 use crate::scheduler::rwkv_inputs::published::RwkvFirstReviewElapsed;
 use crate::scheduler::rwkv_inputs::published::RwkvHistoryHashChain;
+use crate::scheduler::rwkv_inputs::published::RwkvReplayDays;
 use crate::scheduler::rwkv_inputs::stream::RwkvHistoricalPresetRoute;
 use crate::scheduler::rwkv_inputs::stream::RwkvReviewStream;
 use crate::scheduler::rwkv_inputs::stream::RwkvStreamPresets;
+use crate::scheduler::rwkv_inputs::RwkvReplayCard;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
 use crate::search::Node;
@@ -172,10 +175,10 @@ impl Collection {
                 Ok(RwkvHistoricalPresetRoute {
                     stable_preset_id: rwkv_stable_preset_id(&preset.id, stable_preset_ids)?,
                     card_ids,
-                    min_reps: rule.min_reps,
-                    max_reps: rule.max_reps,
-                    min_interval_days: rule.min_interval_days,
-                    max_interval_days: rule.max_interval_days,
+                    min_reps: rule.min_reps.map(i64::from),
+                    max_reps: rule.max_reps.map(i64::from),
+                    min_interval_days: rule.min_interval_days.map(f64::from),
+                    max_interval_days: rule.max_interval_days.map(f64::from),
                 })
             })
             .collect()
@@ -1097,8 +1100,8 @@ impl RwkvHistoricalFingerprintJob {
             },
             &preset_routes,
         );
-        let mut encoder = PublishedEncoder::new(
-            timing,
+        let encoder = PublishedEncoder::new(
+            RwkvReplayDays::from(&timing),
             RwkvFirstReviewElapsed::DeckConfig {
                 decks_by_id: &decks_by_id,
                 configs_by_id: &configs_by_id,
@@ -1121,8 +1124,21 @@ impl RwkvHistoricalFingerprintJob {
             prefix_identity = Some((0, history_hash.hex()));
         }
 
+        // each card's previous review, and its count and interval for the
+        // preset routes, as the replay inputs keep them
+        let mut cards: FnvHashMap<i64, RwkvReplayCard> = FnvHashMap::default();
         for row in rows {
-            let review = encoder.encode(&stream.event(row)?);
+            let card = cards.entry(row.card_id).or_default();
+            let interval_days = row.interval_days;
+            let event = stream.event(
+                row,
+                card.review_count.unwrap_or(0),
+                card.previous_interval_days.unwrap_or(0),
+            )?;
+            let review = encoder.encode_review(&event, card.previous_review_id);
+            card.previous_review_id = Some(review.review_id);
+            card.previous_interval_days = Some(interval_days);
+            card.review_count = Some(card.review_count.unwrap_or(0) + 1);
             last_review_id = last_review_id.max(review.review_id);
             history_hash.update(&review);
             rows_read += 1;

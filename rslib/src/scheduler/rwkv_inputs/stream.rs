@@ -65,8 +65,14 @@ pub(crate) enum RwkvStreamPresets<'a> {
         decks_by_id: &'a HashMap<DeckId, Deck>,
         configs_by_id: &'a HashMap<DeckConfigId, DeckConfig>,
     },
-    /// Each card's stable preset id, where it has one.
+    /// Each card's stable preset id, where it has one. A card the map lacks
+    /// has none, and its review fails unless a route gives it one.
     ByCard(HashMap<CardId, i64>),
+    /// Each card's stable preset id as the caller resolved it, None where it
+    /// resolved none: such a card's review has no preset (the caller read
+    /// the rows and the presets itself). A card the map lacks fails, as in
+    /// `ByCard`.
+    ByCardOrNone(HashMap<CardId, Option<i64>>),
 }
 
 /// An add-on simulator rule that routes a review to another preset while
@@ -75,14 +81,16 @@ pub(crate) enum RwkvStreamPresets<'a> {
 pub(crate) struct RwkvHistoricalPresetRoute {
     pub(crate) stable_preset_id: i64,
     pub(crate) card_ids: Option<HashSet<CardId>>,
-    pub(crate) min_reps: Option<u32>,
-    pub(crate) max_reps: Option<u32>,
-    pub(crate) min_interval_days: Option<f32>,
-    pub(crate) max_interval_days: Option<f32>,
+    pub(crate) min_reps: Option<i64>,
+    pub(crate) max_reps: Option<i64>,
+    pub(crate) min_interval_days: Option<f64>,
+    pub(crate) max_interval_days: Option<f64>,
 }
 
 impl RwkvHistoricalPresetRoute {
-    fn matches(&self, card_id: CardId, reps: u32, interval_days: i64) -> bool {
+    /// Compares as Python's `_historical_preset_id_for_review` does: the
+    /// review counts as whole numbers, the interval as a float.
+    fn matches(&self, card_id: CardId, reps: i64, interval_days: i64) -> bool {
         self.card_ids
             .as_ref()
             .map_or(true, |card_ids| card_ids.contains(&card_id))
@@ -90,28 +98,29 @@ impl RwkvHistoricalPresetRoute {
             && self.max_reps.map_or(true, |maximum| reps <= maximum)
             && self
                 .min_interval_days
-                .map_or(true, |minimum| interval_days as f32 >= minimum)
+                .map_or(true, |minimum| interval_days as f64 >= minimum)
             && self
                 .max_interval_days
-                .map_or(true, |maximum| interval_days as f32 <= maximum)
+                .map_or(true, |maximum| interval_days as f64 <= maximum)
     }
 }
 
-/// What the stream remembers about a card: only what its reviews so far
-/// say, never the review at hand.
-#[derive(Debug, Default)]
-struct StreamCard {
-    /// The card's own stable preset id, before any route overrides it.
-    preset_id: Option<i64>,
-    review_count: u32,
-    previous_interval_days: i64,
+/// A card's own preset, as the stream found it.
+#[derive(Debug, Clone, Copy)]
+enum StreamPreset {
+    Id(i64),
+    /// The caller resolved no preset for the card.
+    None,
+    /// The card has no preset where one is required.
+    Missing,
 }
 
 /// Turns the replay's rows into events, one row at a time and in order.
 pub(crate) struct RwkvReviewStream<'a> {
     presets: RwkvStreamPresets<'a>,
     routes: &'a [RwkvHistoricalPresetRoute],
-    cards: FnvHashMap<CardId, StreamCard>,
+    /// Each card's own preset, before any route overrides it.
+    cards: FnvHashMap<CardId, StreamPreset>,
     home_deck_presets: FnvHashMap<i64, i64>,
 }
 
@@ -130,59 +139,66 @@ impl<'a> RwkvReviewStream<'a> {
 
     /// The card's own stable preset id, once the stream has seen the card.
     pub(crate) fn card_preset_id(&self, card_id: i64) -> Option<i64> {
-        self.cards
-            .get(&CardId(card_id))
-            .and_then(|card| card.preset_id)
+        match self.cards.get(&CardId(card_id)) {
+            Some(StreamPreset::Id(preset_id)) => Some(*preset_id),
+            _ => None,
+        }
     }
 
     /// The event of the next row. Its preset is the first route that
-    /// matches the card's reviews before this one, else the card's own. A
-    /// deleted card's review has no preset, as it has no deck.
-    pub(crate) fn event(&mut self, row: RwkvHistoricalReviewRow) -> Result<RwkvReviewEvent> {
+    /// matches the card's reviews before this one (`review_count` of them,
+    /// the last with `previous_interval_days`; 0 and 0 before the first),
+    /// else the card's own. A deleted card's review has no preset, as it has
+    /// no deck.
+    pub(crate) fn event(
+        &mut self,
+        row: RwkvHistoricalReviewRow,
+        review_count: i64,
+        previous_interval_days: i64,
+    ) -> Result<RwkvReviewEvent> {
         let card_id = CardId(row.card_id);
-        let card = match self.cards.entry(card_id) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let preset_id = match (&self.presets, row.deck_id) {
-                    (_, None) => None,
-                    (RwkvStreamPresets::ByCard(by_card), Some(_)) => by_card.get(&card_id).copied(),
-                    (
+        let preset_id = match row.deck_id {
+            // a card that is gone has no deck, so no preset
+            None => None,
+            Some(deck_id) => {
+                let own = match self.cards.entry(card_id) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => *entry.insert(match &self.presets {
+                        RwkvStreamPresets::ByCard(by_card) => by_card
+                            .get(&card_id)
+                            .map_or(StreamPreset::Missing, |id| StreamPreset::Id(*id)),
+                        RwkvStreamPresets::ByCardOrNone(by_card) => match by_card.get(&card_id) {
+                            Some(Some(id)) => StreamPreset::Id(*id),
+                            Some(None) => StreamPreset::None,
+                            None => StreamPreset::Missing,
+                        },
                         RwkvStreamPresets::HomeDeck {
                             decks_by_id,
                             configs_by_id,
-                        },
-                        Some(deck_id),
-                    ) => Some(match self.home_deck_presets.entry(deck_id) {
-                        Entry::Occupied(deck) => *deck.get(),
-                        Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
-                            DeckId(deck_id),
-                            decks_by_id,
-                            configs_by_id,
-                        )?),
+                        } => StreamPreset::Id(match self.home_deck_presets.entry(deck_id) {
+                            Entry::Occupied(deck) => *deck.get(),
+                            Entry::Vacant(deck) => *deck.insert(rwkv_home_deck_preset_id(
+                                DeckId(deck_id),
+                                decks_by_id,
+                                configs_by_id,
+                            )?),
+                        }),
                     }),
                 };
-                entry.insert(StreamCard {
-                    preset_id,
-                    ..Default::default()
-                })
+                let routed = self
+                    .routes
+                    .iter()
+                    .find(|route| route.matches(card_id, review_count, previous_interval_days));
+                match (routed, own) {
+                    (Some(route), _) => Some(route.stable_preset_id),
+                    (None, StreamPreset::Id(id)) => Some(id),
+                    (None, StreamPreset::None) => None,
+                    (None, StreamPreset::Missing) => {
+                        invalid_input!("missing stable RWKV preset id")
+                    }
+                }
             }
         };
-        let preset_id = if row.deck_id.is_none() {
-            None
-        } else {
-            Some(
-                self.routes
-                    .iter()
-                    .find(|route| {
-                        route.matches(card_id, card.review_count, card.previous_interval_days)
-                    })
-                    .map(|route| route.stable_preset_id)
-                    .or(card.preset_id)
-                    .or_invalid("missing stable RWKV preset id")?,
-            )
-        };
-        card.review_count += 1;
-        card.previous_interval_days = row.interval_days;
         Ok(RwkvReviewEvent {
             review_id: row.review_id,
             card_id: row.card_id,

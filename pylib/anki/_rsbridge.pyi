@@ -17,6 +17,7 @@ def rwkv_stats_graph_scores_request(
     curve_due_card_ids: frozenset[int] | set[int],
     curve_retrievabilities: dict[int, float],
 ) -> bytes: ...
+def rwkv_replay_inputs_from_rows(request: bytes) -> bytes: ...
 def stored_curve_recalls(
     ids: list[int],
     packed: bytes,
