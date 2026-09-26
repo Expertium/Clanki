@@ -6,7 +6,9 @@ from __future__ import annotations
 from concurrent.futures import Future
 
 import aqt
+import aqt.fsrs_predictions
 import aqt.main
+import aqt.sidecar_recovery
 from aqt.qt import *
 from aqt.utils import showText, tooltip
 
@@ -44,6 +46,12 @@ def check_db(mw: aqt.AnkiQt) -> None:
             showText(ret, parent=mw)
         else:
             tooltip(ret, parent=mw)
+
+        # a replaced cache is filled again at once; the check's own report
+        # already told the user (spec database.sidecar-recovery)
+        recovery = aqt.sidecar_recovery.take_and_apply(mw, notify=False)
+        if recovery is not None and recovery.cache_replaced:
+            aqt.fsrs_predictions.ensure_ready(mw)
 
         # if an error has directed the user to check the database,
         # silently clean up any broken reset hooks which distract from

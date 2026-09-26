@@ -3083,6 +3083,51 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// Pins spec/database.md#database.sidecar-recovery: the copy of the
+    /// record holds the cache's rows after answers and an undo.
+    #[test]
+    fn the_record_copy_stays_in_step_after_answers_and_undo() -> Result<()> {
+        fn read(col: &Collection, schema: &str) -> Vec<(i64, String)> {
+            col.storage
+                .db
+                .prepare(&format!(
+                    "select revlog_id, algorithm from {schema}.review_scheduler
+                     order by revlog_id"
+                ))
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect()
+        }
+
+        let (mut col, _cids) = v3_test_collection(3)?;
+        col.change_scheduling_algorithm(SchedulingAlgorithm::RwkvCurve)?;
+        col.answer_good();
+        col.answer_good();
+        let before_undo = read(&col, "scheduler_record");
+        assert_eq!(before_undo.len(), 2);
+        assert_eq!(before_undo, read(&col, "retrievability_cache"));
+
+        col.undo()?;
+        // neither copy forgets the undone answer: the record is not part of
+        // the undo step, in either file
+        assert_eq!(read(&col, "scheduler_record"), before_undo);
+        assert_eq!(read(&col, "retrievability_cache"), before_undo);
+
+        col.answer_again();
+        let after = read(&col, "scheduler_record");
+        assert_eq!(after, read(&col, "retrievability_cache"));
+        // the new answer is recorded (a review id freed by the undo may be
+        // taken again within the same millisecond, and keeps its row)
+        let newest = col
+            .storage
+            .db
+            .query_row("select max(id) from revlog", [], |row| row.get::<_, i64>(0))?;
+        assert!(after.iter().any(|(id, _)| *id == newest));
+        Ok(())
+    }
+
     /// Pins spec/scheduling.md#sched.review-scheduler-record
     #[test]
     fn a_review_keeps_the_algorithm_it_was_first_recorded_with() -> Result<()> {

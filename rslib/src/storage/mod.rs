@@ -11,6 +11,7 @@ mod graves;
 mod note;
 mod notetype;
 mod revlog;
+mod sidecar;
 mod sqlite;
 mod sync;
 mod sync_check;

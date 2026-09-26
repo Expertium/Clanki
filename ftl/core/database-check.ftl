@@ -60,6 +60,8 @@ database-check-ignore-before-dates =
         [one] Fixed { $count } preset with an invalid "Ignore reviews before" date.
        *[other] Fixed { $count } presets with an invalid "Ignore reviews before" date.
     }
+database-check-sidecar-replaced = A cache file beside the collection was damaged. It was moved aside and a new one was made; the review predictions in it are computed again in the background.
+database-check-scheduler-records-lost = The record of which algorithm scheduled each review was damaged and could not be recovered. Reviews answered from now on are recorded again.
 # "db-check" is always in English
 database-check-notetypes-recovered = One or more note types were missing. The notes that used them have been given new note types starting with "db-check", but field names and card design have been lost, so you may be better off restoring from an automatic backup.
 

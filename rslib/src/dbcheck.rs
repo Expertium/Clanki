@@ -45,6 +45,8 @@ pub struct CheckDatabaseOutput {
     invalid_ids: usize,
     card_last_review_time_empty: usize,
     ignore_before_dates_invalid: usize,
+    sidecar_replaced: bool,
+    scheduler_records_lost: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,6 +108,12 @@ impl CheckDatabaseOutput {
         if self.invalid_ids > 0 {
             probs.push(tr.database_check_fixed_invalid_ids(self.invalid_ids));
         }
+        if self.sidecar_replaced {
+            probs.push(tr.database_check_sidecar_replaced());
+        }
+        if self.scheduler_records_lost {
+            probs.push(tr.database_check_scheduler_records_lost());
+        }
 
         probs.into_iter().map(Into::into).collect()
     }
@@ -117,19 +125,25 @@ impl Collection {
         let mut progress = self.new_progress_handler();
         progress.set(DatabaseCheckProgress::Integrity)?;
         debug!("quick check");
-        if self.storage.quick_check_corrupt() {
-            debug!("quick check failed");
+        if let Some(damage) = self.storage.quick_check_damage("main") {
+            debug!(damage, "quick check failed");
             return Err(AnkiError::db_error(
                 self.tr.database_check_corrupt(),
                 DbErrorKind::Corrupt,
             ));
         }
+        // a damaged sidecar is not the collection: it is replaced, and the
+        // check goes on (spec database.sidecar-recovery)
+        let sidecars = self.storage.check_sidecars()?;
 
         progress.set(DatabaseCheckProgress::Optimize)?;
         debug!("optimize");
         self.storage.optimize()?;
 
-        self.transact_no_undo(|col| col.check_database_inner(progress))
+        let mut out = self.transact_no_undo(|col| col.check_database_inner(progress))?;
+        out.sidecar_replaced = sidecars.anything_replaced();
+        out.scheduler_records_lost = sidecars.records_lost;
+        Ok(out)
     }
 
     fn check_database_inner(

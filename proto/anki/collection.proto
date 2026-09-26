@@ -21,6 +21,10 @@ service CollectionService {
   rpc SetWantsAbort(generic.Empty) returns (generic.Empty);
   rpc SetLoadBalancerEnabled(generic.Bool) returns (OpChanges);
   rpc GetCustomColours(generic.Empty) returns (GetCustomColoursResponse);
+  // What the collection open, or the last Check Database, found wrong with
+  // the sidecar databases beside the collection and did about it. The read
+  // clears it.
+  rpc TakeSidecarRecovery(generic.Empty) returns (SidecarRecoveryResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -52,6 +56,17 @@ message CloseCollectionRequest {
 
 message CheckDatabaseResponse {
   repeated string problems = 1;
+}
+
+message SidecarRecoveryResponse {
+  // the retrievability cache was damaged and replaced by a new one
+  bool cache_replaced = 1;
+  // the copy of the review scheduler record was damaged and replaced
+  bool record_copy_replaced = 2;
+  // rows of the review scheduler record could not be recovered
+  bool records_lost = 3;
+  // where the damaged files were moved
+  repeated string moved_aside = 4;
 }
 
 message OpChanges {

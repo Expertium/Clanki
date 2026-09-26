@@ -22,6 +22,10 @@ use rusqlite::Connection;
 use serde_json::Value;
 use unicase::UniCase;
 
+use super::sidecar::attach_sidecars;
+use super::sidecar::replace_damaged_sidecars;
+use super::sidecar::SidecarRecovery;
+use super::sidecar::SCHEDULER_RECORD_DB_SCHEMA;
 use super::upgrades::SCHEMA_MAX_VERSION;
 use super::upgrades::SCHEMA_MIN_VERSION;
 use super::upgrades::SCHEMA_STARTING_VERSION;
@@ -49,6 +53,9 @@ fn unicase_compare(s1: &str, s2: &str) -> Ordering {
 pub struct SqliteStorage {
     // currently crate-visible for dbproxy
     pub(crate) db: Connection,
+    /// What the open found wrong with the sidecar databases, and did about
+    /// it (spec database.sidecar-recovery).
+    pub(crate) sidecar_recovery: SidecarRecovery,
 }
 
 pub(crate) const RETRIEVABILITY_CACHE_DB_SCHEMA: &str = "retrievability_cache";
@@ -56,7 +63,7 @@ pub(crate) const RETRIEVABILITY_CACHE_DB_SCHEMA: &str = "retrievability_cache";
 fn open_or_create_collection_db(
     path: &Path,
     persistent_retrievability_cache: bool,
-) -> Result<Connection> {
+) -> Result<(Connection, SidecarRecovery)> {
     let db = Connection::open(path)?;
 
     if std::env::var("TRACESQL").is_ok() {
@@ -106,9 +113,12 @@ fn open_or_create_collection_db(
 
     db.create_collation("unicase", unicase_compare)?;
 
-    attach_retrievability_cache_db(&db, persistent_retrievability_cache.then_some(path))?;
+    // the retrievability cache, and the copy of the one table in it that
+    // nothing can compute again; a damaged one is replaced, so the
+    // collection always opens (spec database.sidecar-recovery)
+    let recovery = attach_sidecars(&db, persistent_retrievability_cache.then_some(path))?;
 
-    Ok(db)
+    Ok((db, recovery))
 }
 
 pub(crate) fn retrievability_cache_path(collection_path: &Path) -> PathBuf {
@@ -117,19 +127,6 @@ pub(crate) fn retrievability_cache_path(collection_path: &Path) -> PathBuf {
     } else {
         collection_path.with_extension("retrievability-cache.sqlite")
     }
-}
-
-fn attach_retrievability_cache_db(db: &Connection, collection_path: Option<&Path>) -> Result<()> {
-    let cache_path = collection_path
-        .map(retrievability_cache_path)
-        .unwrap_or_else(|| PathBuf::from(":memory:"));
-    let cache_path = cache_path.to_string_lossy();
-    db.execute(
-        &format!("ATTACH DATABASE ? AS {RETRIEVABILITY_CACHE_DB_SCHEMA}"),
-        [cache_path.as_ref()],
-    )?;
-    db.pragma_update(Some(RETRIEVABILITY_CACHE_DB_SCHEMA), "journal_mode", "wal")?;
-    Ok(())
 }
 
 impl SqliteStorage {
@@ -196,7 +193,10 @@ impl SqliteStorage {
         )?;
         db.pragma_update(None, "query_only", true)?;
         db.set_prepared_statement_cache_capacity(8);
-        Ok(Some(Self { db }))
+        Ok(Some(Self {
+            db,
+            sidecar_recovery: SidecarRecovery::default(),
+        }))
     }
 }
 /// Adds sql function card_and_review_changes(): how many rows of the
@@ -627,7 +627,7 @@ impl SqliteStorage {
         server: bool,
         check_integrity: bool,
     ) -> Result<Self> {
-        let db = open_or_create_collection_db(path, !check_integrity)?;
+        let (db, sidecar_recovery) = open_or_create_collection_db(path, !check_integrity)?;
         let (create, ver) = schema_version(&db)?;
 
         let err = match ver {
@@ -675,7 +675,10 @@ impl SqliteStorage {
             )?;
         }
 
-        let storage = Self { db };
+        let storage = Self {
+            db,
+            sidecar_recovery,
+        };
 
         if create || upgrade {
             storage.upgrade_to_latest_schema(ver, server)?;
@@ -819,16 +822,36 @@ impl SqliteStorage {
     //////////////////////////////////////////
 
     /// true if corrupt/can't access
-    pub(crate) fn quick_check_corrupt(&self) -> bool {
-        match self.db.pragma_query_value(None, "quick_check", |row| {
-            row.get(0).map(|v: String| v != "ok")
-        }) {
-            Ok(corrupt) => corrupt,
-            Err(e) => {
-                println!("error: {e:?}");
-                true
+    /// None when `schema`'s quick_check passes, else what it reported.
+    pub(crate) fn quick_check_damage(&self, schema: &str) -> Option<String> {
+        match self
+            .db
+            .pragma_query_value(Some(schema), "quick_check", |row| row.get::<_, String>(0))
+        {
+            Ok(result) if result == "ok" => None,
+            Ok(result) => Some(result),
+            Err(err) => Some(err.to_string()),
+        }
+    }
+
+    /// Checks the two sidecar databases the way Check Database checks the
+    /// collection, and replaces a damaged one (spec
+    /// database.sidecar-recovery). The result is also what the next
+    /// `TakeSidecarRecovery` reports.
+    pub(crate) fn check_sidecars(&mut self) -> Result<SidecarRecovery> {
+        let copy_damage = self.quick_check_damage(SCHEDULER_RECORD_DB_SCHEMA);
+        let cache_damage = self.quick_check_damage(RETRIEVABILITY_CACHE_DB_SCHEMA);
+        for (schema, damage) in [
+            (SCHEDULER_RECORD_DB_SCHEMA, &copy_damage),
+            (RETRIEVABILITY_CACHE_DB_SCHEMA, &cache_damage),
+        ] {
+            if let Some(damage) = damage {
+                tracing::warn!(schema, damage, "sidecar failed quick_check");
             }
         }
+        let recovery = replace_damaged_sidecars(&self.db, copy_damage, cache_damage)?;
+        self.sidecar_recovery = recovery.clone();
+        Ok(recovery)
     }
 
     pub(crate) fn optimize(&self) -> Result<()> {

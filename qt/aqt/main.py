@@ -24,6 +24,7 @@ import aqt
 import aqt.forms
 import aqt.fsrs_predictions
 import aqt.progress
+import aqt.sidecar_recovery
 import aqt.sound
 import aqt.stats_prefetch
 import aqt.ui_split
@@ -718,6 +719,9 @@ class AnkiQt(QMainWindow):
             self._show_review_heatmap_addon_notice()
             self._show_ankiconnect_addon_notice()
             self._show_fsrs_helper_addon_notice()
+            # a damaged sidecar was replaced at open: say so only when
+            # records were lost (spec database.sidecar-recovery)
+            aqt.sidecar_recovery.take_and_apply(self, notify=True)
         except Exception:
             # dump error to stderr so it gets picked up by errors.py
             traceback.print_exc()
