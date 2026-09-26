@@ -3676,7 +3676,9 @@ class _RwkvCurveSourceWriter:
     an untagged source could later be read by the wrong model.
     """
 
-    _BATCH_ROWS = 20_000
+    # rows per write: each write holds the collection, and 20,000 sources
+    # held it for about 44 ms, 5,000 for about 11 ms
+    _BATCH_ROWS = 5_000
 
     def __init__(self, reviewer: object) -> None:
         self._col: Any | None = _collection(reviewer)
