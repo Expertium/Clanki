@@ -25,6 +25,7 @@ struct Backend {
 }
 
 mod stats_scores;
+mod warm_up_pack;
 
 #[pyclass(module = "_rsbridge")]
 struct RwkvInference {
@@ -1525,6 +1526,8 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(stored_curve_recalls))
         .unwrap();
     m.add_wrapped(wrap_pyfunction!(rwkv_replay_inputs_from_rows))
+        .unwrap();
+    m.add_wrapped(wrap_pyfunction!(warm_up_pack::packed_warm_up_reviews))
         .unwrap();
 
     Ok(())

@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+from anki import _rsbridge
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
@@ -1779,17 +1780,23 @@ def _packed_review_input_row(
 
 
 def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
-    header = _PACKED_PREDICTION_REQUEST_HEADER.pack(
-        _PACKED_WARM_UP_REVIEW_MAGIC,
-        len(reviews),
-    )
+    """The warm-up request of `reviews`: the header (`ARWKVWU2` and the
+    count), then `_packed_review_input_row(review)` of each review.
+
+    The backend's replay builder writes these rows itself, so a replay
+    history (`RwkvReplayReviews`) only gets the header; this check stays
+    first, or each review becomes an object again. Any other sequence is
+    packed in Rust, byte for byte as the rows are packed here, because every
+    replay packs its whole history this way while the user works (the
+    start-up build, the rebuild after a delete or a preset change, the
+    recording pass): ~3 us a row in Python with the GIL held."""
     if isinstance(reviews, RwkvReplayReviews):
-        # the backend's replay builder wrote these rows already
+        header = _PACKED_PREDICTION_REQUEST_HEADER.pack(
+            _PACKED_WARM_UP_REVIEW_MAGIC,
+            len(reviews),
+        )
         return header + reviews.packed_warm_up_rows()
-    payload = bytearray(header)
-    for review_input in reviews:
-        payload.extend(_packed_review_input_row(review_input))
-    return bytes(payload)
+    return _rsbridge.packed_warm_up_reviews(reviews)
 
 
 class MemorisedDayRows:
