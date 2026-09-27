@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import Future
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -11,9 +13,10 @@ import pytest
 
 import aqt.mediasrv
 from anki.collection import OpChanges
-from anki.decks import UpdateDeckConfigs
+from anki.decks import UpdateDeckConfigs, UpdateDeckConfigsMode
 from anki.sync import SyncStatus
 from aqt.deckoptions import (
+    DeckOptionsDialog,
     SchedulingAlgorithm,
     _DeckOptionsWebViews,
     after_algorithm_change,
@@ -120,6 +123,125 @@ def test_no_question_for_rwkv_instant(mock_box: MagicMock) -> None:
         is False
     )
     mock_box.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def no_save_running():
+    """A test that stops half-way must not leave a save "running" for the
+    next one."""
+    aqt.mediasrv._deck_options_save_running = False
+    yield
+    aqt.mediasrv._deck_options_save_running = False
+
+
+class RealSave:
+    """The deck-options save handler with a real CollectionOp on a mocked
+    main window; the collection work itself is not run. `mw.taskman` shows
+    which way the op went."""
+
+    def __init__(self, stack: ExitStack) -> None:
+        self.mocks = {
+            name: stack.enter_context(patch(target, create=create))
+            for name, target, create in [
+                ("mw", "aqt.mw", True),
+                ("saved", "aqt.mediasrv._on_update_deck_configs_success", False),
+                ("error", "aqt.mediasrv.show_exception", True),
+                ("sip", "aqt.mediasrv.sip", True),
+                ("finished", "aqt.operations.on_op_finished", False),
+                (
+                    "snapshot",
+                    "aqt.rwkv_scheduler.rwkv_curve_reschedule_snapshot",
+                    False,
+                ),
+            ]
+        }
+        self.mocks["sip"].isdeleted.return_value = False
+        self.mw = self.mocks["mw"]
+        self.mw.taskman.run_on_main.side_effect = lambda fn: fn()
+        self.window = MagicMock(spec=DeckOptionsDialog)
+        self.window.web = MagicMock()
+        self.mw.app.activeModalWidget.return_value = self.window
+
+    def start(self, mode: UpdateDeckConfigsMode.V) -> None:
+        data = UpdateDeckConfigs(mode=mode).SerializeToString()
+        with patch("aqt.mediasrv.request", new=SimpleNamespace(data=data)):
+            aqt.mediasrv.update_deck_configs_and_close()
+
+    def finish(self, on_done: Callable, error: Exception | None = None) -> None:
+        """Complete the op as the collection worker would."""
+        future: Future = Future()
+        if error:
+            future.set_exception(error)
+        else:
+            future.set_result(OpChanges())
+        on_done(future)
+
+
+@pytest.fixture
+def real_save():
+    with ExitStack() as stack:
+        yield RealSave(stack)
+
+
+NORMAL = UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_NORMAL
+OPTIMIZE_ALL = UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_COMPUTE_ALL_PARAMS
+
+
+# Pins spec/deck-options.md#deck-options.save-without-window
+def test_a_normal_save_opens_no_progress_window_and_blocks_the_page(
+    real_save: RealSave,
+) -> None:
+    mw, web = real_save.mw, real_save.window.web
+    real_save.start(NORMAL)
+
+    # no progress window: not the backend-progress one, not "Processing..."
+    mw.taskman.with_backend_progress.assert_not_called()
+    mw.taskman.with_progress.assert_not_called()
+    mw.progress.start.assert_not_called()
+    mw.taskman.run_in_background.assert_called_once()
+    # the page takes no input, and a second save is not started
+    web.setEnabled.assert_called_once_with(False)
+    real_save.start(NORMAL)
+    real_save.start(OPTIMIZE_ALL)
+    mw.taskman.run_in_background.assert_called_once()
+    mw.taskman.with_backend_progress.assert_not_called()
+
+    real_save.finish(mw.taskman.run_in_background.call_args.args[1])
+    web.setEnabled.assert_called_with(True)
+    real_save.mocks["saved"].assert_called_once()
+    # the next save starts again
+    real_save.start(NORMAL)
+    assert mw.taskman.run_in_background.call_count == 2
+
+
+# Pins spec/deck-options.md#deck-options.save-without-window
+def test_a_failed_normal_save_shows_its_error_and_frees_the_page(
+    real_save: RealSave,
+) -> None:
+    mw = real_save.mw
+    real_save.start(NORMAL)
+    error = Exception("invalid parameters")
+    real_save.finish(mw.taskman.run_in_background.call_args.args[1], error)
+
+    real_save.mocks["error"].assert_called_once_with(parent=mw, exception=error)
+    real_save.window.web.setEnabled.assert_called_with(True)
+    real_save.mocks["saved"].assert_not_called()
+    assert not aqt.mediasrv._deck_options_save_running
+
+
+# Pins spec/deck-options.md#deck-options.save-without-window
+def test_optimize_all_presets_keeps_its_progress_window(
+    real_save: RealSave,
+) -> None:
+    mw = real_save.mw
+    real_save.start(OPTIMIZE_ALL)
+
+    mw.taskman.with_backend_progress.assert_called_once()
+    mw.taskman.run_in_background.assert_not_called()
+    real_save.window.web.setEnabled.assert_not_called()
+    real_save.finish(mw.taskman.with_backend_progress.call_args.kwargs["on_done"])
+    real_save.mocks["saved"].assert_called_once()
+    assert not aqt.mediasrv._deck_options_save_running
 
 
 # Pins spec/scheduling.md#sched.algorithm-change-prompt
