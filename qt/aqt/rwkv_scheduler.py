@@ -12538,10 +12538,15 @@ def _free_review_inputs_in_steps(
 
     Nothing is mutated: the slices are new lists that share the inputs, and
     once the histories are dropped, each slice frees its inputs when it goes
-    (inputs that another holder still uses are not freed)."""
-    slices: list[list[RwkvReviewInput]] = []
+    (inputs that another holder still uses are not freed). A replay history
+    read off the backend's rows (`RwkvReplayReviews`) holds no input object
+    per review, so it is freed at once."""
+    slices: list[Sequence[RwkvReviewInput]] = []
     while histories:
         reviews = histories.pop().reviews
+        if isinstance(reviews, RwkvReplayReviews):
+            del reviews
+            continue
         slices.extend(
             reviews[start : start + _FREE_REVIEW_INPUTS_STEP]
             for start in range(0, len(reviews), _FREE_REVIEW_INPUTS_STEP)
