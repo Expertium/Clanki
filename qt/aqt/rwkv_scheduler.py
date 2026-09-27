@@ -3029,6 +3029,7 @@ def _record_collection_undo_or_redo_with_backend(
                     backend,
                     reason="review redone" if redo else "review undone",
                 )
+                _exact_rwkv_rebuild_history_moved()
                 return restored_card_ids
 
     if _record_history_change_undo_or_redo(changes, redo=redo):
@@ -3036,6 +3037,17 @@ def _record_collection_undo_or_redo_with_backend(
     if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
         _rebuild_after_undo_of_an_answer_before_the_swap(changes)
     return []
+
+
+def _exact_rwkv_rebuild_history_moved() -> None:
+    """An answer went out of the review log or came back into it (an undo or
+    a redo). A running exact rebuild may already hold the history before
+    that; it starts again from the history as it is now, instead of
+    swapping in a state with a review the collection no longer has, or
+    without one it has again (spec sched.rwkv-history-change-keeps-state)."""
+    global _rwkv_exact_rebuild_generation
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_generation += 1
 
 
 def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
@@ -4840,6 +4852,9 @@ _RWKV_EXACT_REBUILD_RETRY_SECS = 5.0
 _RWKV_EXACT_REBUILD_PAUSE_SECS = 3.0
 _RWKV_EXACT_REBUILD_MAX_FAILURES = 5
 _RWKV_EXACT_REBUILD_SWAP_WAIT_SECS = 1.0
+# how often the rebuild looks whether a start-up restore or build still
+# owns the stored cache
+_RWKV_EXACT_REBUILD_LOADING_POLL_SECS = 0.25
 
 
 def _rerouted_historical_cards(
@@ -5169,11 +5184,17 @@ def _record_history_change_undo_or_redo(changes: object, *, redo: bool) -> bool:
     return True
 
 
-def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
+def request_exact_rwkv_rebuild(
+    mw: object, *, forced: bool = False, history_moved: bool = True
+) -> None:
     """Ask for the exact rebuild of the RWKV state, in the background (spec
     sched.rwkv-history-change-keeps-state). It runs while the collection's
     routing differs from the resident state's; `forced` asks for a rebuild
-    that difference cannot express."""
+    that difference cannot express.
+
+    A request says the history moved, so a running rebuild starts again from
+    the history as it is now. `history_moved=False` asks for a rebuild of the
+    same history: a running rebuild already reads it, and goes on."""
 
     global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
     global _rwkv_exact_rebuild_thread
@@ -5182,7 +5203,8 @@ def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
         return
     with _rwkv_exact_rebuild_lock:
         _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
-        _rwkv_exact_rebuild_generation += 1
+        if history_moved:
+            _rwkv_exact_rebuild_generation += 1
         if not _rwkv_exact_rebuild_wanted_locked():
             logger.debug("RWKV exact rebuild no longer needed")
             return
@@ -5250,7 +5272,19 @@ def _run_exact_rwkv_rebuilds(mw: object) -> None:
     try:
         _run_exact_rwkv_rebuilds_until_done(mw)
     finally:
+        with _rwkv_exact_rebuild_lock:
+            _rwkv_exact_rebuild_thread_ends_locked()
         _background_pass_finished()
+
+
+def _rwkv_exact_rebuild_thread_ends_locked() -> None:
+    """The rebuild thread has decided to end: a request from now on starts a
+    new one. It is decided under the lock, so a request that comes while the
+    thread is still ending is not left to it."""
+    global _rwkv_exact_rebuild_thread
+
+    if _rwkv_exact_rebuild_thread is threading.current_thread():
+        _rwkv_exact_rebuild_thread = None
 
 
 def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
@@ -5264,9 +5298,18 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         with _rwkv_exact_rebuild_lock:
             generation = _rwkv_exact_rebuild_generation
             if not _rwkv_exact_rebuild_wanted_locked():
+                _rwkv_exact_rebuild_thread_ends_locked()
                 return
         if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
             return
+        if rwkv_state_cache_loading(mw):
+            # A start-up restore or build owns the stored cache. It publishes
+            # the state, which leaves no rebuild due, or it ends without one
+            # (its state was thrown away while it ran). Wait for it, however
+            # long it runs: a try now does nothing, and it counted as a
+            # failure, so a long build made the rebuild give up.
+            time.sleep(_RWKV_EXACT_REBUILD_LOADING_POLL_SECS)
+            continue
         try:
             done = _rebuild_exact_rwkv_state(mw, col, generation)
         except _RwkvExactRebuildStale as stale:
@@ -5289,6 +5332,8 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         failures += 1
         if failures > _RWKV_EXACT_REBUILD_MAX_FAILURES:
             logger.warning("RWKV exact rebuild stopped after %s tries", failures)
+            with _rwkv_exact_rebuild_lock:
+                _rwkv_exact_rebuild_thread_ends_locked()
             return
         retry_at = time.monotonic() + _RWKV_EXACT_REBUILD_RETRY_SECS * 2 ** (
             failures - 1
@@ -5565,14 +5610,20 @@ def _exact_rwkv_state_swapped_in(mw: object) -> None:
     if getattr(mw, "col", None) is None:
         return
     _redraw_open_card_info(mw)
+    _answer_buttons_ask_again(mw)
+    _refresh_active_rwkv_count_view(mw)
+
+
+def _answer_buttons_ask_again(mw: object) -> None:
+    """The RWKV state is in place: answer buttons that wait for it, or that
+    stopped waiting, ask again (spec sched.rwkv-curve-buttons-wait)."""
     reviewer = getattr(mw, "reviewer", None)
     resume = getattr(reviewer, "rwkv_curve_state_ready", None)
     if callable(resume):
         try:
             resume()
         except Exception:
-            logger.exception("failed to show the answer buttons after the swap")
-    _refresh_active_rwkv_count_view(mw)
+            logger.exception("failed to show the answer buttons for the RWKV state")
 
 
 def _require_collection_mutation_reconciliation_current(
@@ -7497,10 +7548,24 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     thread: it reads the state cache from the collection.
 
     When the stored cache cannot restore it either, the exact rebuild builds
-    it in the background (spec sched.rwkv-history-change-keeps-state)."""
+    it in the background (spec sched.rwkv-history-change-keeps-state). The
+    same is true when a restore or build still runs whose state was thrown
+    away: that work cannot make the state ready, and it can end after the
+    buttons have stopped waiting, when nothing asks any more (spec
+    sched.rwkv-curve-buttons-wait)."""
     ready = _prepare_reviewer_backend_for_review(reviewer)
-    if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
-        request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
+    if not ready and (
+        _stored_rwkv_state_cache_cannot_restore(reviewer)
+        or _running_rwkv_warm_up_was_thrown_away(reviewer)
+    ):
+        # The buttons ask about once a second while they wait. The request
+        # carries no change of the history (a change that throws the state
+        # away starts a running rebuild again by itself), so it must not
+        # start the rebuild again: that restarted it after every history
+        # read, and it never finished while the buttons waited.
+        request_exact_rwkv_rebuild(
+            getattr(reviewer, "mw", None), forced=True, history_moved=False
+        )
     return ready
 
 
@@ -7516,6 +7581,23 @@ def _stored_rwkv_state_cache_cannot_restore(reviewer: object) -> bool:
             key not in _reviewer_backend_warmup_states
             and key not in _reviewer_backend_warmup_pending_generations
             and _reviewer_backend_cold_fallback_generations.get(key) == generation
+        )
+
+
+def _running_rwkv_warm_up_was_thrown_away(reviewer: object) -> bool:
+    """The resident state is cold, and the restore or build that still runs
+    claimed an older generation: the state it makes was thrown away while it
+    ran (a bury and its undo during the start-up build), so it cannot
+    publish it."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return False
+    with _reviewer_backend_state_lock:
+        claimed = _reviewer_backend_warmup_pending_generations.get(key)
+        return (
+            claimed is not None
+            and claimed != _reviewer_backend_warmup_generations.get(key, 0)
+            and key not in _reviewer_backend_warmup_states
         )
 
 
@@ -13602,6 +13684,9 @@ def _finish_rwkv_state_cache_operation(
         return
     _redraw_open_card_info(mw)
     if ready:
+        # the buttons stop waiting after 60 s, and a start-up build can take
+        # longer: nothing else would tell them
+        _answer_buttons_ask_again(mw)
         start_rwkv_maintenance_if_needed(mw)
     if _refresh_active_rwkv_count_view(mw) or not ready:
         return
