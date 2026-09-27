@@ -23866,3 +23866,109 @@ def test_a_history_change_that_keeps_the_state_marks_the_stored_cache(
     assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
     assert metadata is not None and key not in metadata
+
+
+def test_a_state_kept_at_open_is_never_saved_and_a_second_open_keeps_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: only
+    the exact rebuild's save takes the mark off. A state kept at an open is
+    never saved and never marks the stored cache as current, so a second
+    close before the swap leaves the same marked stored state, and the open
+    after it keeps that state again, replays from it and starts the exact
+    rebuild again."""
+    reviewer, _rows, review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=True
+    )
+    metadata_path = tmp_path / "rwkv-state-cache" / "state-v1.meta.json"
+    for _open in range(2):
+        runtime = _CacheRuntime()
+        set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+        assert rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer) is True
+        assert runtime.reviewed == [(2, 3)]
+        assert rwkv_scheduler._rwkv_ready_state_cache_history_identity(reviewer) is None
+        # what the swap and the start-up paths call to mark the cache current
+        stored = metadata_path.read_bytes()
+        rwkv_scheduler._refresh_ready_rwkv_state_cache_collection_mod(reviewer)
+        assert metadata_path.read_bytes() == stored
+        metadata = json.loads(stored)
+        assert metadata["lastReviewId"] == review_ids["second"]
+        assert metadata["historyChangedSinceSaved"] is True
+        assert rwkv_scheduler._rwkv_exact_rebuild_forced is True
+    assert no_exact_rebuild_thread == [reviewer.mw, reviewer.mw]
+
+
+def test_changes_after_a_kept_state_add_up_and_keep_the_rebuild_due(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    second delete or move while the stored cache has the mark keeps the mark,
+    also after an open that kept the stored state; undoing the second change
+    leaves the rebuild due, because the rebuild replays the whole history as
+    it is now, not the difference of one change."""
+    reviewer, _rows, _review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=True
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer) is True
+    before = {5: cast(Any, "deck 100")}
+    after = {5: cast(Any, "deck 200")}
+
+    rwkv_scheduler._keep_resident_state_after_history_change(
+        reviewer,
+        mutation_context=None,
+        previous_undo_counter=None,
+        before=before,
+        after=after,
+        replay_key_before=None,
+        replay_key_after=None,
+        reason="cards deleted or moved",
+    )
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None and metadata["historyChangedSinceSaved"] is True
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+    # the second change undone: its difference is gone, the first is not
+    rwkv_scheduler._note_rwkv_history_change(
+        before=after,
+        after=before,
+        card_ids=[5],
+        replay_key_before=None,
+        replay_key_after=None,
+    )
+    assert not rwkv_scheduler._rwkv_exact_rebuild_divergent_cards
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_sync_that_changed_the_collection_takes_the_mark_off(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    change a sync brought is not one the mark recorded. The refresh after
+    such a sync takes the mark off, so a stored state that does not match
+    the history gets the build from the whole history, as before."""
+    reviewer, _rows, _review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=True
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=False),
+    )
+    done: list[str] = []
+
+    rwkv_scheduler.refresh_rwkv_state_after_sync(
+        reviewer.mw, lambda: done.append("done")
+    )
+
+    assert done == ["done"]
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None and "historyChangedSinceSaved" not in metadata
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer) is False
+    assert no_exact_rebuild_thread == []

@@ -5143,6 +5143,33 @@ def _mark_rwkv_state_cache_history_changed(reviewer: object) -> None:
         )
 
 
+def forget_rwkv_state_cache_history_change(mw: object, *, reason: str) -> None:
+    """Take the history-change mark off the stored cache: a sync brought
+    changes of the collection, or a full sync replaced it, and the mark did
+    not record them. The next restore that finds the stored state not exact
+    then builds the state from the whole history (spec
+    sched.rwkv-history-change-keeps-state). A sync never sets the mark."""
+    reviewer = SimpleNamespace(mw=mw)
+    try:
+        metadata = _read_rwkv_state_cache_metadata(reviewer)
+        if metadata is None or _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY not in metadata:
+            return
+        cache_dir = _rwkv_state_cache_dir(reviewer)
+        if cache_dir is None:
+            return
+        updated = dict(metadata)
+        updated.pop(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY, None)
+        _atomic_write(
+            cache_dir / _RWKV_STATE_CACHE_META_FILE,
+            json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf8"),
+        )
+        logger.info("RWKV state cache history-change mark dropped: %s", reason)
+    except Exception:
+        logger.warning(
+            "failed to drop the RWKV state cache history-change mark", exc_info=True
+        )
+
+
 def _note_rwkv_history_change(
     *,
     before: Mapping[int, RwkvReviewIdentity],
@@ -14563,6 +14590,8 @@ def refresh_rwkv_state_after_sync(
 ) -> None:
     """Reconcile resident RWKV state with the merged review history."""
 
+    # the changes the sync brought are not a change the mark recorded
+    forget_rwkv_state_cache_history_change(mw, reason="sync changed the collection")
     reviewer = SimpleNamespace(mw=mw)
     ignored_review_count_before = len(
         _rwkv_state_cache_ignored_review_ids(_read_rwkv_state_cache_metadata(reviewer))
