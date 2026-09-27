@@ -808,6 +808,37 @@ where data like '%"s":%' and data not like '%"s_int":%'"#,
             .collect()
     }
 
+    /// The due review and interday learning cards of these decks (due on or
+    /// before `today`), in card id order, each with the last review time its
+    /// data holds.
+    pub(crate) fn due_review_card_last_review_times(
+        &self,
+        deck_ids: &[DeckId],
+        today: u32,
+    ) -> Result<Vec<(CardId, Option<TimestampSecs>)>> {
+        let mut cards: Vec<(CardId, Option<TimestampSecs>)> = self
+            .db
+            .prepare(&format!(
+                "select id, data from cards where did in ({}) and queue in ({}, {}) and due <= ?",
+                deck_ids
+                    .iter()
+                    .map(|id| id.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                CardQueue::Review as i8,
+                CardQueue::DayLearn as i8,
+            ))?
+            .query_and_then([today], |row| -> Result<_> {
+                let data: CardData = row.get(1)?;
+                Ok((row.get(0)?, data.last_review_time))
+            })?
+            .collect::<Result<_>>()?;
+        // the order of the cards table itself, which the whole-card read
+        // this replaces gave; the index read above gives deck, queue, due
+        cards.sort_unstable_by_key(|(card_id, _)| *card_id);
+        Ok(cards)
+    }
+
     pub(crate) fn all_searched_cards(&self) -> Result<Vec<Card>> {
         self.db
             .prepare_cached(concat!(
