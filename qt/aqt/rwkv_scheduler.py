@@ -263,6 +263,9 @@ _RWKV_STATE_CACHE_CHECKPOINT_MAX_AGE_MILLIS = 8 * 86_400_000
 _RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY = "ignoredReviewIds"
 _RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY = "staleSinceForget"
 _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
+# set on the stored cache when a history change keeps the resident state; the
+# exact rebuild's save writes metadata without it
+_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY = "historyChangedSinceSaved"
 _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
 _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
     _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
@@ -785,6 +788,14 @@ class RwkvResidentStateIdentity:
 
 
 @dataclass(frozen=True)
+class _RwkvKeptStateIdentity(RwkvResidentStateIdentity):
+    """A restored state that is exact for the history before a change that
+    keeps the resident state, not for the collection's history now (spec
+    sched.rwkv-history-change-keeps-state). It is published with an unknown
+    identity, and the exact rebuild replaces it."""
+
+
+@dataclass(frozen=True)
 class _ReviewerBackendPredictionStateToken:
     backend: RwkvReviewerBackend
     backend_assignment_generation: int
@@ -1033,6 +1044,9 @@ class RwkvStoredStateCache:
     state_store_generation: str | None = None
     state_store_segment_id: int | None = None
     ignored_review_ids_changed: bool = False
+    # the state is exact for the history before a change that keeps the
+    # resident state (spec sched.rwkv-history-change-keeps-state)
+    saved_before_history_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -5091,7 +5105,42 @@ def _keep_resident_state_after_history_change(
         replay_key_before=replay_key_before,
         replay_key_after=replay_key_after,
     )
+    _mark_rwkv_state_cache_history_changed(reviewer)
     request_exact_rwkv_rebuild(mw)
+
+
+def _mark_rwkv_state_cache_history_changed(reviewer: object) -> None:
+    """Say in the stored cache that a history change that keeps the resident
+    state came after it was saved. If the profile closes before the exact
+    rebuild saves the new state, the next open restores the stored state and
+    keeps it the same way (spec sched.rwkv-history-change-keeps-state),
+    instead of building the state from the whole history while the first
+    card waits."""
+    try:
+        metadata = _read_rwkv_state_cache_metadata(reviewer)
+        if (
+            metadata is None
+            or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+            or metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+        ):
+            return
+        cache_dir = _rwkv_state_cache_dir(reviewer)
+        if cache_dir is None:
+            return
+        _atomic_write(
+            cache_dir / _RWKV_STATE_CACHE_META_FILE,
+            json.dumps(
+                {**metadata, _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY: True},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf8"),
+        )
+        logger.debug("marked the RWKV state cache as saved before a history change")
+    except Exception:
+        logger.warning(
+            "failed to mark the RWKV state cache as saved before a history change",
+            exc_info=True,
+        )
 
 
 def _note_rwkv_history_change(
@@ -8148,7 +8197,7 @@ def _prepare_reviewer_backend_for_review(reviewer: object) -> bool:
     return _prepare_reviewer_backend_from_cache(reviewer)
 
 
-def _prepare_reviewer_backend_from_cache(
+def _prepare_reviewer_backend_from_cache(  # noqa: PLR0911
     reviewer: object,
     *,
     progress: RwkvStateCacheProgressCallback | None = None,
@@ -8220,9 +8269,24 @@ def _prepare_reviewer_backend_from_cache(
                 backend=backend,
                 is_current=is_current,
                 progress=progress,
+                keep_after_history_change=True,
             )
             if not is_current():
                 return False
+            if isinstance(restored_identity, _RwkvKeptStateIdentity):
+                if not _publish_kept_reviewer_backend_state(
+                    key,
+                    restored_identity,
+                    expected_generation=warmup_generation,
+                ):
+                    return False
+                logger.debug(
+                    "restored the RWKV state saved before a history change: "
+                    "elapsed_ms=%.1f; exact rebuild pending",
+                    (time.monotonic() - start) * 1000,
+                )
+                request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
+                return True
             if restored_identity is not None and _publish_reviewer_backend_state(
                 key,
                 restored_identity,
@@ -11397,6 +11461,29 @@ def _publish_reviewer_backend_state(
         backend_changed,
     )
     return False
+
+
+def _publish_kept_reviewer_backend_state(
+    key: tuple[int, int],
+    identity: RwkvResidentStateIdentity,
+    *,
+    expected_generation: int,
+) -> bool:
+    """Publish a restored state that does not match the collection's history
+    (`_RwkvKeptStateIdentity`): it predicts, but its identity is unknown, so
+    nothing saves it or marks the stored cache as current, and the exact
+    rebuild stays due."""
+    with _reviewer_backend_state_lock:
+        current_generation = _reviewer_backend_warmup_generations.get(key, 0)
+        backend_changed = (
+            id(_reviewer_backend) if _reviewer_backend is not None else None
+        ) != key[0]
+        if current_generation != expected_generation or backend_changed:
+            return False
+        _reviewer_backend_warmup_states[key] = None
+        _reviewer_backend_resident_ignored_review_ids[key] = identity.ignored_review_ids
+        _reviewer_backend_cold_fallback_generations.pop(key, None)
+        return True
 
 
 def _exact_rwkv_state_published() -> None:
@@ -15582,7 +15669,12 @@ def _restore_reviewer_backend_cache(
     record_retrievability_cache: bool = False,
     progress: RwkvStateCacheProgressCallback | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
+    keep_after_history_change: bool = False,
 ) -> RwkvResidentStateIdentity | None:
+    """Restore the stored state and replay the reviews after it. With
+    `keep_after_history_change`, a stored state saved before a history change
+    that keeps the resident state is restored too; its identity is then a
+    `_RwkvKeptStateIdentity`, and nothing is saved from it."""
     restore_snapshot = getattr(backend, "restore_cache_snapshot", None)
     warm_up = getattr(backend, "warm_up", None)
     if not callable(restore_snapshot) or not callable(warm_up):
@@ -15592,6 +15684,7 @@ def _restore_reviewer_backend_cache(
         reviewer,
         backend=backend,
         additional_ignored_review_ids=additional_ignored_review_ids,
+        keep_after_history_change=keep_after_history_change,
     )
     if stored is None:
         return None
@@ -15616,6 +15709,10 @@ def _restore_reviewer_backend_cache(
     state_store_generation = stored.state_store_generation
     state_store_segment_id = stored.state_store_segment_id
     ignored_review_ids_changed = stored.ignored_review_ids_changed
+    # the state is not the collection's history: nothing is saved from it,
+    # and it never marks the stored cache as current (spec
+    # sched.rwkv-history-change-keeps-state)
+    saved_before_history_change = stored.saved_before_history_change
     del stored
     try:
         _require_reviewer_backend_warmup_current(is_current)
@@ -15720,6 +15817,8 @@ def _restore_reviewer_backend_cache(
                     else []
                 ),
             ]
+            if saved_before_history_change:
+                snapshot_review_counts = []
             checkpoint_writer = _RwkvStateCacheCheckpointWriter(
                 reviewer,
                 history,
@@ -15745,11 +15844,13 @@ def _restore_reviewer_backend_cache(
                 is_current=is_current,
             )
             _require_reviewer_backend_warmup_current(is_current)
-            _report_rwkv_state_cache_progress(
-                progress,
-                "Saving RWKV state cache...",
-            )
-            if recovered_from_checkpoint:
+            if saved_before_history_change:
+                pass
+            elif recovered_from_checkpoint:
+                _report_rwkv_state_cache_progress(
+                    progress,
+                    "Saving RWKV state cache...",
+                )
                 desired_checkpoint_review_count_set = set(
                     desired_checkpoint_review_counts
                 )
@@ -15770,6 +15871,10 @@ def _restore_reviewer_backend_cache(
                     write_context=checkpoint_writer.context,
                 )
             elif _rwkv_state_cache_uses_current_model_key(stored_metadata):
+                _report_rwkv_state_cache_progress(
+                    progress,
+                    "Saving RWKV state cache...",
+                )
                 _require_reviewer_backend_warmup_current(is_current)
                 _append_rwkv_state_cache_deltas(
                     reviewer,
@@ -15780,12 +15885,18 @@ def _restore_reviewer_backend_cache(
                     or stored_history.last_review_id,
                 )
             else:
+                _report_rwkv_state_cache_progress(
+                    progress,
+                    "Saving RWKV state cache...",
+                )
                 _require_reviewer_backend_warmup_current(is_current)
                 _save_reviewer_backend_cache(
                     reviewer,
                     history,
                     backend=backend,
                 )
+        elif saved_before_history_change:
+            pass
         elif recovered_from_checkpoint or ignored_review_ids_changed:
             _report_rwkv_state_cache_progress(
                 progress,
@@ -15847,15 +15958,26 @@ def _restore_reviewer_backend_cache(
                 backend=backend,
             )
         _require_reviewer_backend_warmup_current(is_current)
-        _refresh_rwkv_state_cache_collection_mod(reviewer, history)
+        if not saved_before_history_change:
+            _refresh_rwkv_state_cache_collection_mod(reviewer, history)
         logger.debug(
             "loaded RWKV state cache: cached_delta_reviews=%s "
-            "incremental_reviews=%s last_review_id=%s",
+            "incremental_reviews=%s last_review_id=%s saved_before_history_change=%s",
             len(stored_history.reviews),
             len(history.reviews),
             history.last_review_id,
+            saved_before_history_change,
         )
-        return _resident_state_identity(history)
+        identity = _resident_state_identity(history)
+        if saved_before_history_change:
+            return _RwkvKeptStateIdentity(
+                last_review_id=identity.last_review_id,
+                review_count=identity.review_count,
+                history_hash=identity.history_hash,
+                replay_key=identity.replay_key,
+                ignored_review_ids=identity.ignored_review_ids,
+            )
+        return identity
     except _ReviewerBackendWarmupInvalidated:
         raise
     except Exception:
@@ -16643,11 +16765,13 @@ def _read_rwkv_state_cache(
     *,
     backend: RwkvReviewerBackend | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
+    keep_after_history_change: bool = False,
 ) -> RwkvStoredStateCache | None:
     stored = _read_rwkv_state_cache_binary(
         reviewer,
         backend=backend,
         additional_ignored_review_ids=additional_ignored_review_ids,
+        keep_after_history_change=keep_after_history_change,
     )
     if stored is not None:
         return stored
@@ -16655,12 +16779,13 @@ def _read_rwkv_state_cache(
     return _read_rwkv_state_cache_legacy_json(reviewer)
 
 
-def _read_rwkv_state_cache_binary(  # noqa: PLR0911
+def _read_rwkv_state_cache_binary(
     reviewer: object,
     *,
     backend: RwkvReviewerBackend | None = None,
     dynamic_preset_replay_enabled: bool | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
+    keep_after_history_change: bool = False,
 ) -> RwkvStoredStateCache | None:
     location = _rwkv_state_cache_binary_location(reviewer)
     if location is None:
@@ -16739,6 +16864,40 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         replay_key=current_history.replay_key,
     ):
         return None
+    stored = _read_rwkv_state_cache_binary_for_history(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+        current_history=current_history,
+        desired_checkpoint_review_counts=desired_checkpoint_review_counts,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        ignored_review_ids_changed=ignored_review_ids_changed,
+    )
+    if stored is None and keep_after_history_change and not ignored_review_ids_changed:
+        stored = _read_rwkv_state_cache_saved_before_history_change(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            current_history=current_history,
+        )
+    return stored
+
+
+def _read_rwkv_state_cache_binary_for_history(  # noqa: PLR0911
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    current_history: RwkvHistoricalReviewInputs,
+    desired_checkpoint_review_counts: tuple[int, ...],
+    dynamic_preset_replay_enabled: bool | None,
+    ignored_review_ids_changed: bool,
+) -> RwkvStoredStateCache | None:
+    """The stored state that is exact for `current_history`, or for a start
+    of it: the effective state, or a checkpoint to replay the rest from."""
     if metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND:
         stored = _read_rwkv_state_cache_store(
             reviewer,
@@ -16987,6 +17146,52 @@ def _read_rwkv_state_cache_binary(  # noqa: PLR0911
         desired_checkpoint_review_counts=desired_checkpoint_review_counts,
         ignored_review_ids_changed=ignored_review_ids_changed,
     )
+
+
+def _read_rwkv_state_cache_saved_before_history_change(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    current_history: RwkvHistoricalReviewInputs,
+) -> RwkvStoredStateCache | None:
+    """The stored state as it was saved before a history change of the kind
+    that keeps the resident state (a delete or a move of cards with reviews),
+    when the profile closed before the exact rebuild could save the new one
+    (spec sched.rwkv-history-change-keeps-state). The stored cache says such
+    a change came after it was saved, and the review log up to its last
+    review still has the same reviews, so only the routing of past reviews
+    differs; the caller keeps the state as the in-session change did, and
+    starts the exact rebuild. None when that does not hold."""
+
+    if metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is not True:
+        return None
+    last_review_id = _int_value(metadata.get("lastReviewId"))
+    review_count = _int_value(metadata.get("reviewCount"))
+    if not last_review_id or not review_count:
+        return None
+    prefix = _rwkv_history_prefix_identity(current_history, last_review_id)
+    if prefix.last_review_id != last_review_id or prefix.review_count != review_count:
+        # the review log itself changed before the saved state's last review
+        return None
+    stored = _read_unchanged_rwkv_state_cache_binary(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+    )
+    if stored is None:
+        return None
+    logger.info(
+        "RWKV state cache saved before a history change: kept until the exact "
+        "rebuild; saved_reviews=%s reviews=%s",
+        review_count,
+        current_history.review_count,
+    )
+    # the reviews after the saved state are read, with the routing they have
+    # now, as for any restore
+    return replace(stored, pending_history=None, saved_before_history_change=True)
 
 
 def _read_rwkv_state_cache_from_rust_fingerprint(

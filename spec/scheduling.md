@@ -1061,6 +1061,36 @@ While a start-up restore or build owns the stored cache, the rebuild waits for
 it to end, however long it runs, and then runs unless that work published the
 state.
 
+A close before the swap stops the rebuild (`ui.close-stops-rwkv-work`), so
+the stored state cache still holds the state from before the change. The
+change marks the stored cache for this case, and the next save of an exact
+state leaves the mark out. When the next profile open (or a review-time
+restore) finds that the stored state does not match the history, and:
+
+- the stored cache has the mark,
+- the replay key and the ignored reviews are the same as the stored ones,
+  which holds for a delete or a move and not for a preset change, and
+- the review log up to the stored state's last review has the same number of
+  reviews (no review before it was added or removed),
+
+then it restores the stored state, replays the reviews after it with the
+routing they have now, and keeps it as above: the answer buttons are ready
+at once, the state is never saved and never marks the stored cache as
+current, and the exact rebuild starts once the restore is over. In every
+other case the start-up build runs as before
+(`sched.rwkv-state-cache-startup-build`).
+
+**Why:** Andrew, 2026-09-27 (B-042): "Well, that's not great. I just started
+reviewing the first card of the day". The day before, he deleted two notes
+with reviews 60 s before he closed Clanki. The next open found the stored
+state no longer matching the history and built the state from the whole
+history, and the first card showed "Getting this card ready…" for 175 s (a
+copy of his collection, 868,446 reviews, 8 cores). Keeping the state in the
+session did not prevent this: the exact rebuild takes about 110 s, and a close
+5 s after a delete stopped it, so the next open waited 175 s the same way.
+With the mark, the stored state from before the delete is exact except for
+the routing of the deleted cards' reviews: the state the session kept.
+
 **Why:** Andrew, 2026-09-26 (B-034): "I got "Processing..." after deleting a
 card, and then the next card wasn't ready". A delete threw the resident
 state away. The review-time restore then read the stored cache for 13 s on
@@ -1107,7 +1137,10 @@ are thousands of days long, on the flat tail of the curve.
 `test_a_state_published_from_the_current_history_ends_the_rebuild`,
 `test_a_request_while_the_rebuild_thread_ends_starts_another`,
 `test_an_answer_undone_during_the_exact_rebuild_starts_it_again`,
-`test_the_close_stops_the_exact_rebuild`
+`test_the_close_stops_the_exact_rebuild`,
+`test_a_state_saved_before_a_history_change_is_kept_at_the_next_open`,
+`test_a_state_saved_before_a_history_change_is_not_kept_when_reviews_changed`,
+`test_a_history_change_that_keeps_the_state_marks_the_stored_cache`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`
 (`qt/tests/test_reviewer.py`).

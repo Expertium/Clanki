@@ -23714,3 +23714,155 @@ def test_the_close_stops_the_exact_rebuild(monkeypatch: pytest.MonkeyPatch) -> N
     assert not thread.is_alive()
     assert rwkv_scheduler._background_passes == passes_before
     assert rwkv_scheduler._reviewer_backend is backend
+
+
+def _saved_state_then_rerouted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    marked: bool,
+) -> tuple[SimpleNamespace, list[tuple[int, ...]], dict[str, int]]:
+    """A saved RWKV state of two reviewed cards, then a change of the note
+    stream every past review of card 1 went through (as a delete or a move
+    changes the routing), and an answer after the save. `marked`: the stored
+    cache says a change that keeps the resident state came after it was
+    saved, as `_keep_resident_state_after_history_change` writes it."""
+    review_ids = {
+        "first": (40 * 86_400 + 100) * 1000,
+        "second": (41 * 86_400 + 3_700) * 1000,
+        "later": (42 * 86_400 + 100) * 1000,
+    }
+    rows: list[tuple[int, ...]] = [
+        (review_ids["first"], 1, 10, 100, 3, 1234, 1, 3, 2500),
+        (review_ids["second"], 2, 20, 100, 3, 2345, 1, 4, 2400),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    if marked:
+        # as the in-session change writes it
+        # (`_mark_rwkv_state_cache_history_changed`)
+        metadata_path = tmp_path / "rwkv-state-cache" / "state-v1.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf8"))
+        metadata["historyChangedSinceSaved"] = True
+        metadata_path.write_text(json.dumps(metadata), encoding="utf8")
+    rows[:] = [
+        (row[0], row[1], 11 if row[1] == 1 else row[2], *row[3:]) for row in rows
+    ]
+    rows.append((review_ids["later"], 2, 20, 100, 3, 1234, 1, 5, 2500))
+    return reviewer, rows, review_ids
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_a_state_saved_before_a_history_change_is_kept_at_the_next_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+    marked: bool,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    profile closed after a delete or a move of a card with reviews, before the
+    exact rebuild saved the new state. The next open restores the stored
+    state, which is the state before the change, keeps it the way the
+    in-session change did, and starts the exact rebuild: the first card's
+    answer buttons do not wait for a build of the whole history. Before
+    (B-042), the restore found the stored history changed and the first card
+    showed "Getting this card ready..." for the whole build (175 s on
+    Andrew's collection). A stored cache that says nothing of such a change
+    is restored only when it is exact, as before."""
+    reviewer, _rows, review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=marked
+    )
+    restored_runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored_runtime))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+
+    ready = rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer)
+
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    if not marked:
+        assert ready is False
+        assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+        assert no_exact_rebuild_thread == []
+        return
+    assert ready is True
+    # the stored state, then only the answer given after it was saved
+    assert restored_runtime.restored_cache_states == [b"runtime-cache"]
+    assert restored_runtime.reviewed == [(2, 3)]
+    assert rwkv_scheduler._reviewer_backend_ready_for_review(reviewer)
+    # it is not the collection's history: nothing saves it or marks the
+    # stored cache as current, and the exact rebuild starts
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] is None
+    assert metadata["lastReviewId"] == review_ids["second"]
+    assert metadata["historyChangedSinceSaved"] is True
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+def test_a_state_saved_before_a_history_change_is_not_kept_when_reviews_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    stored state is kept only while the review log up to its last review has
+    the same reviews; a review gone from before it is a change of the
+    history itself, and the state is built from the whole history as
+    before."""
+    reviewer, rows, _review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=True
+    )
+    del rows[0]
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+
+    assert rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer) is False
+    assert no_exact_rebuild_thread == []
+
+
+def test_a_history_change_that_keeps_the_state_marks_the_stored_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    history change that keeps the resident state says so in the stored cache,
+    and the next save of an exact state leaves it out again."""
+    rows: list[tuple[int, ...]] = [
+        ((40 * 86_400 + 100) * 1000, 1, 10, 100, 3, 1234, 1, 3, 2500),
+    ]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_model_cache_key",
+        lambda: {"model": "test"},
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    key = rwkv_scheduler._RWKV_STATE_CACHE_HISTORY_CHANGED_KEY
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None and key not in metadata
+
+    rwkv_scheduler._keep_resident_state_after_history_change(
+        reviewer,
+        mutation_context=None,
+        previous_undo_counter=None,
+        before={},
+        after={},
+        replay_key_before=None,
+        replay_key_after=None,
+        reason="cards deleted or moved",
+    )
+
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None and metadata[key] is True
+    # an exact state saved again, as the exact rebuild's swap does
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None and key not in metadata
