@@ -355,6 +355,61 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
     ]
 
 
+def test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off(
+    monkeypatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a sync
+    that brought changes takes the RWKV history-change mark off, also the
+    sync at profile open, which leaves the RWKV refresh to the start-up
+    restore; a full sync does too."""
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(
+        models=SimpleNamespace(_clear_cache=lambda: None),
+        reopen=lambda after_full_sync: calls.append(f"reopen {after_full_sync}"),
+    )
+    mw.reset = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", lambda: None)
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_did_finish", lambda: None)
+    monkeypatch.setattr(
+        aqt.main.gui_hooks, "collection_did_temporarily_close", lambda _col: None
+    )
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(
+            aqt.sync.RemoteCollectionChanges(collection_changed=True)
+        )
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "forget_rwkv_state_cache_history_change",
+        lambda _mw, *, reason: calls.append(f"mark off: {reason}"),
+    )
+
+    mw._sync_collection_and_media(
+        lambda: calls.append("done"), refresh_rwkv_state=False
+    )
+    mw.reopen(after_full_sync=True)
+    mw.reopen()
+
+    assert calls == [
+        "mark off: sync changed the collection",
+        "done",
+        "reopen True",
+        "mark off: full sync",
+        "reopen False",
+    ]
+
+
 def test_profile_load_marks_rwkv_startup_before_loading_collection(
     monkeypatch,
 ) -> None:
