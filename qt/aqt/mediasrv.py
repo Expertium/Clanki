@@ -739,9 +739,10 @@ def _on_update_deck_configs_success(
         aqt.rwkv_scheduler.reschedule_rwkv_curve_after_save(
             aqt.mw, rwkv_snapshot, input
         )
-    # The save dropped the stored predictions of every preset whose FSRS-7
-    # parameters changed, so write them again at once rather than waiting
-    # for tomorrow (spec ui.stats-fsrs-predictions-ready).
+    # The save marked stale the stored predictions of every preset whose
+    # FSRS-7 parameters changed and of both presets of a moved deck, so
+    # delete and write them again at once rather than waiting for tomorrow
+    # (spec ui.stats-fsrs-predictions-ready).
     aqt.fsrs_predictions.ensure_ready(aqt.mw, force=True)
 
 

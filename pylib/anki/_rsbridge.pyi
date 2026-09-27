@@ -1,4 +1,4 @@
-from typing import Any, Callable, Union
+from typing import Any, Callable, Sequence, Union
 
 class Backend:
     @classmethod
@@ -17,6 +17,7 @@ def rwkv_stats_graph_scores_request(
     curve_due_card_ids: frozenset[int] | set[int],
     curve_retrievabilities: dict[int, float],
 ) -> bytes: ...
+def rwkv_replay_inputs_from_rows(request: bytes) -> bytes: ...
 def stored_curve_recalls(
     ids: list[int],
     packed: bytes,
@@ -24,6 +25,7 @@ def stored_curve_recalls(
     elapsed_seconds: list[int | None],
     decay_rates: tuple[float, ...],
 ) -> list[float] | None: ...
+def packed_warm_up_reviews(reviews: Sequence[Any]) -> bytes: ...
 
 class RwkvReviewInputRows:
     loaded_cards: int

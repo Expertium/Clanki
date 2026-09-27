@@ -25,6 +25,7 @@ struct Backend {
 }
 
 mod stats_scores;
+mod warm_up_pack;
 
 #[pyclass(module = "_rsbridge")]
 struct RwkvInference {
@@ -137,6 +138,25 @@ fn stored_curve_recalls(
             &decay_rates,
         )
     }))
+}
+
+/// The RWKV replay inputs of rows Python read itself: a serialized
+/// `RwkvReplayInputsFromRowsRequest` in, a serialized
+/// `RwkvHistoricalReviewInputsResponse` out, built by the backend's encoder
+/// (`anki::scheduler::rwkv_replay_inputs_from_rows`) with the GIL released.
+/// It needs no collection, so a caller without a backend has it too.
+#[pyfunction]
+fn rwkv_replay_inputs_from_rows<'py>(
+    py: Python<'py>,
+    request: &Bound<'py, PyBytes>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let request = request.as_bytes();
+    match py.detach(|| anki::scheduler::rwkv_replay_inputs_from_rows(request)) {
+        Ok(response) => py_bytes_filled_without_the_gil(py, response),
+        Err(err) => Err(PyException::new_err(
+            err.message(&anki::prelude::I18n::template_only()),
+        )),
+    }
 }
 
 #[pyfunction]
@@ -1504,6 +1524,10 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(initialize_logging)).unwrap();
     m.add_wrapped(wrap_pyfunction!(syncserver)).unwrap();
     m.add_wrapped(wrap_pyfunction!(stored_curve_recalls))
+        .unwrap();
+    m.add_wrapped(wrap_pyfunction!(rwkv_replay_inputs_from_rows))
+        .unwrap();
+    m.add_wrapped(wrap_pyfunction!(warm_up_pack::packed_warm_up_reviews))
         .unwrap();
 
     Ok(())

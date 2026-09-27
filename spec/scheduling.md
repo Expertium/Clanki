@@ -732,8 +732,13 @@ that backed-off retry. Asking again alone
 would never end the wait: the other review-time restore of the state runs
 after an answer, and an answer is blocked while the buttons wait. When the
 stored state cache cannot restore the state either, the exact rebuild builds
-it in the background (`sched.rwkv-history-change-keeps-state`), and the buttons ask
-again as soon as it is in place, also after the wait has timed out.
+it in the background (`sched.rwkv-history-change-keeps-state`). A restore or
+build that still runs, but whose state was thrown away while it ran (for
+example by a bury and its undo during the start-up build), cannot make the
+state ready: the buttons ask for the exact rebuild at once and do not wait
+for that work to end. The buttons ask again as soon as the state is in place,
+from the exact rebuild or from the start-up restore or build, also after the
+wait has timed out.
 
 The wait covers every reason RWKV-Curve has no intervals yet:
 
@@ -788,7 +793,11 @@ mode gives me this", and it took ten seconds to clear. Every config, deck,
 deck-config and notetype change reaches one handler, so saving any Preferences
 setting read as "the preset routing may have changed" and threw away a state
 that took ten seconds to build again. The two-button mode is a collection
-config bool; the replay cannot see it.
+config bool; the replay cannot see it. Found 2026-09-27 on a copy of his
+collection: after a bury and its undo during the start-up build, the buttons
+waited for a build that could no longer make the state, stopped after 60 s,
+and nothing asked for the rebuild after that build ended; and a start-up
+build longer than 60 s left the timed-out message until "Try again".
 
 **Pinned by:** `test_answer_buttons_wait_for_rwkv_curve_intervals`,
 `test_the_waiting_answer_buttons_restore_the_rwkv_curve_state`,
@@ -804,6 +813,8 @@ config bool; the replay cannot see it.
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
 `test_answer_intervals_unavailable_only_when_rwkv_curve_answered`,
 `test_the_answer_button_wait_can_restore_the_resident_state`,
+`test_a_build_whose_state_was_thrown_away_does_not_hold_back_the_rebuild`,
+`test_waiting_answer_buttons_ask_again_when_the_start_up_state_is_ready`,
 `test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
 `test_error_building_rwkv_curve_states_leaves_the_buttons_waiting`,
 `test_set_answer_rwkv_metadata_clears_the_prediction`
@@ -1024,7 +1035,11 @@ then:
   or back from deletion, the deck back on its preset) before the swap leaves
   no difference, and the rebuild is not needed any more. An undo after the
   swap, a redo, another history change, and a state thrown away for another
-  reason start the rebuild again, from the history as it is then. An undo
+  reason start the rebuild again, from the history as it is then, also when
+  the change comes while the rebuild's thread is ending after it found
+  nothing more to rebuild: a new thread starts. An undo or a redo of an
+  answer before the swap starts a running rebuild again too, since the
+  history it read may still hold that answer. An undo
   that reaches an operation from before the swap keeps the state and asks
   for another rebuild, because the new runtime has no rollback for an
   answer from before it. A state published from the current history by any
@@ -1039,7 +1054,51 @@ throws the state away as before.
 
 When the answer buttons wait for a cold state and the stored state cache has
 already failed to restore it, the same rebuild builds it
-(`sched.rwkv-curve-buttons-wait`).
+(`sched.rwkv-curve-buttons-wait`). The buttons ask for it about once a second
+while they wait. Such a request carries no history change, so it does not
+start a running rebuild again, and the rebuild finishes while they wait.
+While a start-up restore or build owns the stored cache, the rebuild waits for
+it to end, however long it runs, and then runs unless that work published the
+state.
+
+A close before the swap stops the rebuild (`ui.close-stops-rwkv-work`), so
+the stored state cache still holds the state from before the change. The
+change marks the stored cache for this case, and the next save of an exact
+state leaves the mark out. When the next profile open (or a review-time
+restore) finds that the stored state does not match the history, and:
+
+- the stored cache has the mark,
+- the replay key and the ignored reviews are the same as the stored ones,
+  which holds for a delete or a move and not for a preset change, and
+- the review log up to the stored state's last review has the same number of
+  reviews (no review before it was added or removed),
+
+then it restores the stored state, replays the reviews after it with the
+routing they have now, and keeps it as above: the answer buttons are ready
+at once, the state is never saved and never marks the stored cache as
+current, and the exact rebuild starts once the restore is over. The open
+logs one info line when it does this. In every other case the start-up build
+runs as before (`sched.rwkv-state-cache-startup-build`).
+
+Only the save of an exact state takes the mark off: the exact rebuild's
+swap, the start-up build, or a restore of a stored state that matches the
+history. So a second close before the swap leaves the marked state, and the
+open after it keeps it again. A second delete or move keeps the mark, and
+the rebuild always replays the whole history as it is then, so the changes
+add up. A sync that brought changes, the sync at profile open included, and a
+full sync take the mark off, because the mark did not record what they
+changed; a sync never sets it.
+
+**Why:** Andrew, 2026-09-27 (B-042): "Well, that's not great. I just started
+reviewing the first card of the day". The day before, he deleted two notes
+with reviews 60 s before he closed Clanki. The next open found the stored
+state no longer matching the history and built the state from the whole
+history, and the first card showed "Getting this card ready…" for 175 s (a
+copy of his collection, 868,446 reviews, 8 cores). Keeping the state in the
+session did not prevent this: the exact rebuild takes about 110 s, and a close
+5 s after a delete stopped it, so the next open waited 175 s the same way.
+With the mark, the stored state from before the delete is exact except for
+the routing of the deleted cards' reviews: the state the session kept.
 
 **Why:** Andrew, 2026-09-26 (B-034): "I got "Processing..." after deleting a
 card, and then the next card wasn't ready". A delete threw the resident
@@ -1081,12 +1140,24 @@ are thousands of days long, on the flat tail of the curve.
 `test_the_exact_rebuild_replays_into_its_own_runtime_and_swaps_it_in`,
 `test_the_exact_rebuild_starts_again_when_the_history_moves`,
 `test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild`,
+`test_waiting_answer_buttons_do_not_start_a_running_rebuild_again`,
+`test_the_exact_rebuild_waits_for_a_start_up_build_however_long_it_runs`,
 `test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild`,
 `test_a_state_published_from_the_current_history_ends_the_rebuild`,
-`test_the_close_stops_the_exact_rebuild`
+`test_a_request_while_the_rebuild_thread_ends_starts_another`,
+`test_an_answer_undone_during_the_exact_rebuild_starts_it_again`,
+`test_the_close_stops_the_exact_rebuild`,
+`test_a_state_saved_before_a_history_change_is_kept_at_the_next_open`,
+`test_a_state_saved_before_a_history_change_is_not_kept_when_reviews_changed`,
+`test_a_history_change_that_keeps_the_state_marks_the_stored_cache`,
+`test_a_state_kept_at_open_is_never_saved_and_a_second_open_keeps_it_again`,
+`test_changes_after_a_kept_state_add_up_and_keep_the_rebuild_due`,
+`test_a_sync_that_changed_the_collection_takes_the_mark_off`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`
-(`qt/tests/test_reviewer.py`).
+(`qt/tests/test_reviewer.py`);
+`test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off`
+(`qt/tests/test_main.py`).
 
 ## sched.rwkv-id-codes
 

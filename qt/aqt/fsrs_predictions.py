@@ -8,8 +8,14 @@ The model-quality graphs read stored rows and never compute; this is what
 fills them. The pass runs by itself, off the main thread, so the user never
 has to find a button and the graphs never wait for it: once after the
 collection opens if any preset lacks rows, and again whenever a preset's
-FSRS-7 parameters change, because the backend drops that preset's rows in
-the same transaction as the change.
+FSRS-7 parameters change or a deck moves to another preset, because the
+backend marks those presets' rows stale in the same transaction as the
+change.
+
+A save does not delete the old rows itself: it marks the preset stale, the
+graphs read a stale preset's rows as absent, and this pass deletes them in
+short parts before it writes the preset again. The deletion in the save held
+the collection for about a second and showed a "Processing..." window.
 
 Three rules keep it out of the user's way at start-up. It never begins while
 the RWKV state cache is loading, because that load already holds the
@@ -96,6 +102,11 @@ _running = False
 # while the pass waits for a pause and not while it rests
 _holding_collection = False
 _waiting = False
+# a request for a full pass (a parameter change, or no pass done today) that
+# came while a pass ran: that pass may already be past the point where it
+# would see it, or be a same-day pass that writes nothing, so another pass
+# follows it
+_full_pass_requested = False
 # a failed pass warns once per session, not once per preset and not once
 # per retry
 _failure_reported = False
@@ -137,10 +148,12 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
     if col is None:
         return
     with _lock:
-        global _running, _waiting
-        if _running:
-            return
+        global _running, _waiting, _full_pass_requested
         only_if_due = not force and _finished_today(mw, col)
+        if _running:
+            if not only_if_due:
+                _full_pass_requested = True
+            return
         if rwkv_startup_busy(mw):
             # the RWKV state cache is loading: ask again rather than start
             # behind it (spec ui.stats-fsrs-predictions-ready)
@@ -158,6 +171,17 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
         name="fsrs-predictions",
         daemon=True,
     ).start()
+
+
+def after_undo_or_redo(mw: Any, changes: Any) -> None:
+    """An undo or redo that changed a deck or a preset may have moved a
+    deck to another preset or brought back other FSRS-7 parameters. The
+    backend then marked the presets' stored predictions stale, and the
+    graphs read none until a pass writes them again; so a pass runs now,
+    not the next day (spec ui.stats-fsrs-predictions-ready)."""
+
+    if getattr(changes, "deck", False) or getattr(changes, "deck_config", False):
+        ensure_ready(mw, force=True)
 
 
 def _retry(mw: Any, force: bool) -> None:
@@ -324,11 +348,20 @@ def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
             report_failure(mw)
     finally:
         with _lock:
+            global _full_pass_requested
             _running = False
-    if mw.col is not col:
-        # a profile that opened while this pass still ran found it running
-        # and asked for nothing; ask for it now
-        ensure_ready(mw)
+            full_pass_requested, _full_pass_requested = _full_pass_requested, False
+        # here, not after the try: a pass that returns early (a close during
+        # its wait for a pause, a same-day pass with no preset due) asks
+        # again too
+        if mw.col is not col:
+            # a profile that opened while this pass still ran found it
+            # running and asked for nothing; ask for it now
+            ensure_ready(mw)
+        elif full_pass_requested:
+            # a parameter change while this pass ran: its predictions are
+            # written now, not tomorrow
+            ensure_ready(mw, force=True)
 
 
 def _collection_closed(mw: Any, col: Any) -> bool:

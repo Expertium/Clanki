@@ -54,7 +54,7 @@ pub(crate) fn total_knowledge_rwkv_replay(
         hash_history: false,
         recovery_checkpoint_max_age_millis: 0,
     })?;
-    let reviews = inputs.reviews;
+    let reviews = inputs.replay.reviews;
     let searched: HashSet<i64> = input
         .card_ids
         .chunks_exact(8)
@@ -62,7 +62,7 @@ pub(crate) fn total_knowledge_rwkv_replay(
         .collect();
     let events = card_events(&reviews, &resets, &searched, input.today, input.next_day_at);
     let mut response = replay_response(&reviews, &events, input.today, &input.digest_days);
-    response.preset_card_ids = i64_column(inputs.cards.iter().map(|card| card.card_id));
+    response.preset_card_ids = i64_column(inputs.replay.cards.iter().map(|card| card.card_id));
     response.card_fsrs_preset_ids = inputs.card_fsrs_preset_ids;
     tracing::debug!(
         reviews = reviews.len(),

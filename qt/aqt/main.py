@@ -771,6 +771,14 @@ class AnkiQt(QMainWindow):
 
     def reopen(self, after_full_sync: bool = False) -> None:
         self.col.reopen(after_full_sync=after_full_sync)
+        if after_full_sync:
+            from aqt import rwkv_scheduler
+
+            # a full sync replaced the collection (spec
+            # sched.rwkv-history-change-keeps-state)
+            rwkv_scheduler.forget_rwkv_state_cache_history_change(
+                self, reason="full sync"
+            )
         gui_hooks.collection_did_temporarily_close(self.col)
 
     def unloadCollection(self, onsuccess: Callable) -> None:
@@ -1336,6 +1344,13 @@ title="{}" {}>{}</button>""".format(
             def finish_sync() -> None:
                 after_sync()
 
+            if remote_collection_changes.collection_changed:
+                # also when the start-up restore follows this sync: the
+                # history-change mark did not record what it brought (spec
+                # sched.rwkv-history-change-keeps-state)
+                rwkv_scheduler.forget_rwkv_state_cache_history_change(
+                    self, reason="sync changed the collection"
+                )
             if refresh_rwkv_state and remote_collection_changes.collection_changed:
                 ignored_review_candidates = (
                     ()

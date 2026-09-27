@@ -163,8 +163,10 @@ impl Collection {
 
     /// Saves the trained parameters as a save in deck options would: the
     /// cards' memory states follow them, and the stored per-review
-    /// predictions go. The day is recorded even when nothing changed, so a
-    /// preset with too few reviews is not retrained every day. Unusable
+    /// predictions are marked stale; the pass that called this deletes
+    /// them in parts before it writes the preset again. The day is recorded
+    /// even when nothing changed, so a preset with too few reviews is not
+    /// retrained every day. Unusable
     /// FSRS-7 parameters that training did not replace are cleared: the
     /// preset ran the FSRS-7 defaults with them and runs them without, and
     /// it is then not due again at every pass. Not undoable: the pass runs
@@ -193,7 +195,7 @@ impl Collection {
             }
             col.add_or_update_deck_config(&mut config)?;
             if changed {
-                col.clear_fsrs_review_predictions_of_presets(&[config.id])?;
+                col.mark_fsrs_predictions_stale(&[config.id])?;
                 col.update_memory_state_of_preset(&config)?;
             }
             Ok(changed)

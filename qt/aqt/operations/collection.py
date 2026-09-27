@@ -65,6 +65,7 @@ def undo(*, parent: QWidget) -> None:
                     out.changes.study_queues = True
             unblock_after_success = not queued_restored_card
             gui_hooks.state_did_undo(out)
+            _write_stale_fsrs_predictions_again(out)
             tooltip(tr.undo_action_undone(action=out.operation), parent=parent)
             if callable(finish_undo):
                 finish_undo(out.changes)
@@ -106,9 +107,17 @@ def redo(*, parent: QWidget) -> None:
                 reviewer,
                 restored_card_ids,
             )
+        _write_stale_fsrs_predictions_again(out)
         tooltip(tr.undo_action_redone(action=out.operation), parent=parent)
 
     CollectionOp(parent, perform_redo).success(on_success).run_in_background()
+
+
+def _write_stale_fsrs_predictions_again(out: OpChangesAfterUndo) -> None:
+    import aqt
+    import aqt.fsrs_predictions
+
+    aqt.fsrs_predictions.after_undo_or_redo(aqt.mw, out.changes)
 
 
 def set_preferences(

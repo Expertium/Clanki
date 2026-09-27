@@ -12,6 +12,7 @@ use anki_proto::scheduler::RwkvReviewInputRowsForCardsRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForCardsResponse;
 use anki_proto::scheduler::RwkvReviewInputRowsForDeckReviewQueueRequest;
 use anki_proto::scheduler::RwkvReviewInputRowsForSearchRequest;
+use fnv::FnvHashMap;
 
 use crate::card::Card;
 use crate::card::CardQueue;
@@ -35,9 +36,11 @@ use crate::scheduler::fsrs::rescheduler::Rescheduler;
 use crate::scheduler::rwkv_inputs::published::PublishedEncoder;
 use crate::scheduler::rwkv_inputs::published::RwkvFirstReviewElapsed;
 use crate::scheduler::rwkv_inputs::published::RwkvHistoryHashChain;
+use crate::scheduler::rwkv_inputs::published::RwkvReplayDays;
 use crate::scheduler::rwkv_inputs::stream::RwkvHistoricalPresetRoute;
 use crate::scheduler::rwkv_inputs::stream::RwkvReviewStream;
 use crate::scheduler::rwkv_inputs::stream::RwkvStreamPresets;
+use crate::scheduler::rwkv_inputs::RwkvReplayCard;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::search::parse_search;
 use crate::search::Node;
@@ -172,10 +175,10 @@ impl Collection {
                 Ok(RwkvHistoricalPresetRoute {
                     stable_preset_id: rwkv_stable_preset_id(&preset.id, stable_preset_ids)?,
                     card_ids,
-                    min_reps: rule.min_reps,
-                    max_reps: rule.max_reps,
-                    min_interval_days: rule.min_interval_days,
-                    max_interval_days: rule.max_interval_days,
+                    min_reps: rule.min_reps.map(i64::from),
+                    max_reps: rule.max_reps.map(i64::from),
+                    min_interval_days: rule.min_interval_days.map(f64::from),
+                    max_interval_days: rule.max_interval_days.map(f64::from),
                 })
             })
             .collect()
@@ -679,35 +682,37 @@ impl Collection {
         };
         let deck_ids = self.storage.deck_id_with_children(&deck)?;
         let today = self.timing_today()?.days_elapsed;
-        let card_ids: Vec<CardId> = self
+        // only each card's id and last review time: this runs on every
+        // answer, and reading the whole card rows was most of its cost
+        let mut cards = self
             .storage
-            .db
-            .prepare(&format!(
-                "select id from cards where did in ({}) and queue in ({}, {}) and due <= ?",
-                deck_ids
-                    .iter()
-                    .map(|id| id.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                CardQueue::Review as i8,
-                CardQueue::DayLearn as i8,
-            ))?
-            .query_and_then([today], |row| row.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
-        let mut cards = self.all_cards_for_ids(&card_ids, false)?;
-        self.populate_rwkv_last_review_times(&mut cards)?;
+            .due_review_card_last_review_times(&deck_ids, today)?;
+        // a card whose data holds no last review time: the review log's
+        let missing: Vec<CardId> = cards
+            .iter()
+            .filter(|(_, last_review_time)| last_review_time.is_none())
+            .map(|(card_id, _)| *card_id)
+            .collect();
+        if !missing.is_empty() {
+            let review_times = self.storage.times_of_last_review(&missing)?;
+            for (card_id, last_review_time) in &mut cards {
+                if last_review_time.is_none() {
+                    *last_review_time = review_times.get(card_id).copied();
+                }
+            }
+        }
         let kept = self.state.rwkv_queue_curves.as_mut().unwrap();
-        let due: HashSet<CardId> = card_ids.iter().copied().collect();
+        let due: HashSet<CardId> = cards.iter().map(|(card_id, _)| *card_id).collect();
         kept.curves.retain(|card_id, _| due.contains(card_id));
         Ok(cards
-            .iter()
-            .filter_map(|card| {
-                let last_review_time = card.last_review_time?;
+            .into_iter()
+            .filter_map(|(card_id, last_review_time)| {
+                let last_review_time = last_review_time?;
                 let held = kept
                     .curves
-                    .get(&card.id)
+                    .get(&card_id)
                     .is_some_and(|entry| entry.last_review_time == last_review_time);
-                (!held).then_some((card.id, last_review_time))
+                (!held).then_some((card_id, last_review_time))
             })
             .collect())
     }
@@ -1097,8 +1102,8 @@ impl RwkvHistoricalFingerprintJob {
             },
             &preset_routes,
         );
-        let mut encoder = PublishedEncoder::new(
-            timing,
+        let encoder = PublishedEncoder::new(
+            RwkvReplayDays::from(&timing),
             RwkvFirstReviewElapsed::DeckConfig {
                 decks_by_id: &decks_by_id,
                 configs_by_id: &configs_by_id,
@@ -1121,8 +1126,21 @@ impl RwkvHistoricalFingerprintJob {
             prefix_identity = Some((0, history_hash.hex()));
         }
 
+        // each card's previous review, and its count and interval for the
+        // preset routes, as the replay inputs keep them
+        let mut cards: FnvHashMap<i64, RwkvReplayCard> = FnvHashMap::default();
         for row in rows {
-            let review = encoder.encode(&stream.event(row)?);
+            let card = cards.entry(row.card_id).or_default();
+            let interval_days = row.interval_days;
+            let event = stream.event(
+                row,
+                card.review_count.unwrap_or(0),
+                card.previous_interval_days.unwrap_or(0),
+            )?;
+            let review = encoder.encode_review(&event, card.previous_review_id);
+            card.previous_review_id = Some(review.review_id);
+            card.previous_interval_days = Some(interval_days);
+            card.review_count = Some(card.review_count.unwrap_or(0) + 1);
             last_review_id = last_review_id.max(review.review_id);
             history_hash.update(&review);
             rows_read += 1;
@@ -1165,7 +1183,7 @@ impl RwkvHistoricalFingerprintJob {
 
 /// Review-log rows per part of the fingerprint's read: about 25 ms of the
 /// collection on a fast machine.
-pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 32_768;
+pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 16_384;
 /// Reads in parts that a write may interrupt before the fingerprint reads
 /// the collection in one piece instead.
 const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
