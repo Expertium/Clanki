@@ -75,6 +75,14 @@ class Overview:
         self.refresh()
 
     def refresh(self) -> None:
+        from aqt.review_heatmap import (
+            EarlyReport,
+            HeatmapView,
+            draw_after_report,
+            read_sums_before_draw,
+            start_report_with_counts,
+        )
+
         self._rwkv_count_generation += 1
         generation = self._rwkv_count_generation
 
@@ -89,6 +97,13 @@ class Overview:
                 return
             self._refresh_needed = False
             self._rwkv_counts_pending = rwkv_counts_pending
+            # one draw with the heatmap when its report is in soon
+            # (spec ui.review-heatmap-fills-in)
+            draw_after_report(early_report, lambda: draw(rwkv_counts_pending))
+
+        def draw(rwkv_counts_pending: bool) -> None:
+            if generation != self._rwkv_count_generation:
+                return
             self._renderPage()
             self._renderBottom()
             self.mw.web.setFocus()
@@ -110,12 +125,15 @@ class Overview:
             )
             # the draw checks the heatmap's fingerprint on the main thread;
             # its card scan is done here instead
-            from aqt.review_heatmap import HeatmapView, read_sums_before_draw
-
             read_sums_before_draw(HeatmapView.overview, current_deck_only=True)
             return pending
 
+        early_report: EarlyReport | None = None
         QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
+        # queued behind the counts on the collection worker
+        early_report = start_report_with_counts(
+            HeatmapView.overview, current_deck_only=True
+        )
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed:

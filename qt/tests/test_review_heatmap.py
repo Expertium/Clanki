@@ -843,6 +843,258 @@ def test_a_cold_cache_is_reported_without_reading_the_collection() -> None:
         assert heatmap.cached_html(HeatmapView.overview, current_deck_only=True) is None
 
 
+def _early_heatmap(
+    cached: bool = True,
+) -> tuple[ReviewHeatmap, list[Any], list[tuple[Any, Any]], list[Any]]:
+    """A heatmap for the report started with a screen's counts: the draws
+    it asks for, the background steps it starts and the timers it sets."""
+    heatmap, drawn = _fill_in_heatmap()
+    shots: list[Any] = []
+    heatmap.mw = cast(
+        Any,
+        SimpleNamespace(
+            **vars(heatmap.mw),
+            progress=SimpleNamespace(
+                single_shot=lambda ms, func, *args: shots.append((ms, func))
+            ),
+        ),
+    )
+    if cached:
+        heatmap._cache[(HeatmapView.overview, True, None, None)] = cast(
+            Any, SimpleNamespace(html="<div>old</div>", key=("old",))
+        )
+    ops: list[tuple[Any, Any]] = []
+    return heatmap, drawn, ops, shots
+
+
+class _RecordedQueryOp:
+    ops: list[tuple[Any, Any]] = []
+
+    def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+        self.ops.append((op, success))
+
+    def run_in_background(self) -> None:
+        pass
+
+
+def _screen_draw(heatmap: ReviewHeatmap, screens: list[str]) -> Any:
+    """A screen's draw: its content hook, as the overview draws it."""
+
+    def draw() -> None:
+        content = SimpleNamespace(stats="", table="<table></table>")
+        heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+        screens.append(content.table)
+
+    return draw
+
+
+def test_a_report_ready_in_time_is_drawn_with_the_counts_in_one_draw() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap()
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with patch("aqt.operations.QueryOp", _RecordedQueryOp):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        assert early is not None and len(ops) == 1
+        # the counts are ready: the screen waits for the report
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+        assert screens == []
+        assert [ms for ms, _ in shots] == [review_heatmap.EARLY_REPORT_WAIT_MS]
+        op, success = ops[0]
+        with patch.object(heatmap, "render", return_value="<div>new</div>") as render:
+            assert op(heatmap.mw.col) is True
+        render.assert_called_once_with(HeatmapView.overview, True)
+        with patch.object(heatmap, "cached_html", return_value="<div>new</div>"):
+            success(True)
+            # the time limit passes after the draw: nothing more
+            shots[0][1]()
+    assert screens == ["<table></table><div>new</div>"]
+    assert drawn == []
+    assert len(ops) == 1
+
+
+def test_a_report_later_than_the_limit_is_drawn_as_a_fill_in() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap()
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with (
+        patch("aqt.operations.QueryOp", _RecordedQueryOp),
+        patch.object(heatmap, "cached_html", return_value=None),
+    ):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+        # the limit passes first: the screen draws without the heatmap, and
+        # starts no second report
+        shots[0][1]()
+        assert screens == ["<table></table>"]
+        assert len(ops) == 1
+        # the report arrives: the screen is drawn again in place, as today
+        ops[0][1](True)
+    assert screens == ["<table></table>"]
+    assert drawn == [("overview", {})]
+
+
+def test_a_report_ready_before_the_counts_draws_at_once() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap()
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with (
+        patch("aqt.operations.QueryOp", _RecordedQueryOp),
+        patch.object(heatmap, "cached_html", return_value="<div>new</div>"),
+    ):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        ops[0][1](True)
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+    assert screens == ["<table></table><div>new</div>"]
+    assert shots == [] and drawn == []
+
+
+def test_the_first_report_of_a_session_does_not_hold_the_screen() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap(cached=False)
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with (
+        patch("aqt.operations.QueryOp", _RecordedQueryOp),
+        patch.object(heatmap, "cached_html", return_value=None),
+    ):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        assert early is None and ops == []
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+        # drawn at once, and the heatmap fills in, as always
+        assert screens == ["<table></table>"]
+        assert shots == [] and len(ops) == 1
+        ops[0][1](True)
+    assert drawn == [("overview", {})]
+
+
+def test_an_early_report_that_fails_leaves_the_screen_as_it_is() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap()
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with (
+        patch("aqt.operations.QueryOp", _RecordedQueryOp),
+        patch.object(heatmap, "cached_html", return_value=None),
+    ):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+        op, success = ops[0]
+        with patch.object(heatmap, "render", side_effect=RuntimeError("no")):
+            assert op(heatmap.mw.col) is False
+        success(False)
+        shots[0][1]()
+    # drawn once without the heatmap, with no second report and no redraw
+    assert screens == ["<table></table>"]
+    assert len(ops) == 1 and drawn == []
+
+
+def test_a_deck_opened_while_the_early_report_ran_gets_its_own_heatmap() -> None:
+    heatmap, drawn, ops, shots = _early_heatmap()
+    _RecordedQueryOp.ops = ops
+    screens: list[str] = []
+    with (
+        patch("aqt.operations.QueryOp", _RecordedQueryOp),
+        patch.object(heatmap, "cached_html", return_value=None),
+    ):
+        early = heatmap.start_early_report(HeatmapView.overview, True)
+        # a second deck opened before the report ran shares it
+        assert heatmap.start_early_report(HeatmapView.overview, True) is early
+        heatmap.draw_after_early_report(early, _screen_draw(heatmap, screens))
+        # the report was of the first deck: the draw misses, and asks for
+        # the report of the deck now open
+        ops[0][1](True)
+    assert screens == ["<table></table>"]
+    assert len(ops) == 2
+
+
+def test_the_deck_list_and_overview_start_the_report_after_the_counts(
+    monkeypatch: Any,
+) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
+    from aqt.deckbrowser import DeckBrowser
+    from aqt.overview import Overview
+
+    heatmap = MagicMock()
+    mw = MagicMock()
+    mw.col.sched._is_finished.return_value = False
+    calls: list[Any] = []
+    successes: list[Any] = []
+
+    class FakeQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            successes.append(success)
+
+        def run_in_background(self) -> None:
+            calls.append("counts")
+
+    def start_early_report(*args: Any) -> str:
+        calls.append(args)
+        return "r"
+
+    heatmap.start_early_report.side_effect = start_early_report
+    with (
+        patch.object(review_heatmap, "instance", return_value=heatmap),
+        patch("aqt.deckbrowser.QueryOp", FakeQueryOp),
+        patch("aqt.overview.QueryOp", FakeQueryOp),
+    ):
+        DeckBrowser(mw).refresh()
+        Overview(mw).refresh()
+        # each report is queued right behind its screen's counts
+        assert calls == [
+            "counts",
+            (HeatmapView.deckbrowser, False),
+            "counts",
+            (HeatmapView.overview, True),
+        ]
+        # the counts' success hands the draw to the report
+        successes[1](False)
+        early, _draw = heatmap.draw_after_early_report.call_args.args
+        assert early == "r"
+
+
+def test_the_calendar_animates_only_the_first_time_it_is_shown_in_a_session() -> None:
+    heatmap = _heatmap(enabled=True)
+    heatmap.mw.col.path = "one.anki2"
+    report = compute_activity([(DAY, 3)], [], DAY, 4)
+    calendar = render_report(report, HeatmapView.deckbrowser, False)
+    figures_only = render_report(
+        report,
+        HeatmapView.deckbrowser,
+        False,
+        HeatmapSettings(show_on_deck_list=False),
+    )
+    assert 'id="cal-heatmap"' in calendar
+    # the page's script turns the animation off where the flag is set
+    assert "if (window.rhStill)" in calendar
+    assert "settings.animationDuration = 0" in calendar
+
+    def drawn(view: HeatmapView, html: str) -> str:
+        content = SimpleNamespace(stats="", table="")
+        with patch.object(heatmap, "render_when_ready", return_value=html):
+            if view == HeatmapView.deckbrowser:
+                heatmap.on_deck_browser_will_render_content(
+                    cast(Any, None), cast(Any, content)
+                )
+                return content.stats
+            heatmap.on_overview_will_render_content(cast(Any, None), cast(Any, content))
+            return content.table
+
+    # a screen without the calendar (not ready yet, or only the figures)
+    # does not count as shown
+    assert drawn(HeatmapView.deckbrowser, "") == ""
+    assert drawn(HeatmapView.deckbrowser, figures_only) == figures_only
+    # the first calendar of the session animates
+    assert drawn(HeatmapView.deckbrowser, calendar) == calendar
+    # every later draw, on either screen, shows the cells at once
+    still = review_heatmap.HTML_STILL + calendar
+    assert drawn(HeatmapView.deckbrowser, calendar) == still
+    assert drawn(HeatmapView.overview, calendar) == still
+    # another collection is another session
+    heatmap.mw.col.path = "two.anki2"
+    assert drawn(HeatmapView.overview, calendar) == calendar
+    assert drawn(HeatmapView.overview, calendar) == still
+
+
 def test_clicking_a_day_opens_the_browser_with_the_search() -> None:
     heatmap = _heatmap(enabled=True)
     with patch("aqt.dialogs.open") as open_dialog:

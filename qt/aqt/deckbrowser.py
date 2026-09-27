@@ -251,6 +251,13 @@ class DeckBrowser:
         if not reuse:
             self.cancel_rwkv_count_refresh()
             generation = self._rwkv_count_generation
+            from aqt.review_heatmap import (
+                EarlyReport,
+                HeatmapView,
+                draw_after_report,
+                read_sums_before_draw,
+                start_report_with_counts,
+            )
 
             def get_data(col: Collection) -> RenderData:
                 aqt.rwkv_scheduler.clear_deck_browser_rwkv_count_scores(self.mw)
@@ -269,8 +276,6 @@ class DeckBrowser:
                 )
                 # the draw checks the heatmap's fingerprint on the main
                 # thread; its card scan is done here instead
-                from aqt.review_heatmap import HeatmapView, read_sums_before_draw
-
                 read_sums_before_draw(HeatmapView.deckbrowser, current_deck_only=False)
                 return data
 
@@ -295,6 +300,13 @@ class DeckBrowser:
                     output.tree,
                     output.rwkv_count_scope_ids,
                 )
+                # one draw with the heatmap when its report is in soon
+                # (spec ui.review-heatmap-fills-in)
+                draw_after_report(early_report, lambda: draw(output))
+
+            def draw(output: RenderData) -> None:
+                if generation != self._rwkv_count_generation:
+                    return
                 keep = keep_position and self._page_is_drawn()
                 if keep and self._redraw_tree_in_place():
                     # the counts changed in the open page; nothing moved
@@ -310,11 +322,16 @@ class DeckBrowser:
                     self.__renderPage(None)
                     start_rwkv_counts(output)
 
+            early_report: EarlyReport | None = None
             QueryOp(
                 parent=self.mw,
                 op=get_data,
                 success=success,
             ).run_in_background()
+            # queued behind the counts on the collection worker
+            early_report = start_report_with_counts(
+                HeatmapView.deckbrowser, current_deck_only=False
+            )
         else:
             self.web.evalWithCallback("window.pageYOffset", self.__renderPage)
 

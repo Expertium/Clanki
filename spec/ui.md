@@ -691,18 +691,24 @@ link, disabling the add-on, the one-time notice,
 ## ui.review-heatmap-fills-in
 
 Given a screen that draws the review heatmap (the deck list, or a deck's
-overview), Clanki draws the screen as soon as its own counts are ready and
-leaves the heatmap out where its report is not computed yet. It computes
-that report in a background step, and draws the screen again in place when
-the report arrives, without counting the deck tree or the deck's cards a
-second time. A report that cannot be computed leaves the screen as it is,
-rather than being drawn again with nothing new. Once a report is cached,
-the screen draws it at once and starts no background step. Nothing warms
-a heatmap up ahead of the screen that shows it. Each of the two draws
-appears in one finished frame (spec ui.screen-one-frame). Everything else
-about the heatmap is unchanged (spec ui.review-heatmap): the same report,
-the same cache, the same figures. The congratulations screen has no heatmap
-and computes none.
+overview), Clanki reads the screen's own counts in a background step. Where
+the heatmap has been drawn on that screen before in this session, Clanki
+also starts the heatmap's report together with the counts, queued right
+behind them. When the counts are ready, the screen waits for that report
+for at most 100 ms and then draws once, with the heatmap. When the report is
+not in by then, or where it was not started (the first heatmap of that
+screen in a session), the screen draws without the heatmap, and draws again
+in place when the report arrives, without counting the deck tree or the
+deck's cards a second time. A report that cannot be computed leaves the
+screen as it is, rather than being drawn again with nothing new. Once a
+report is cached, the screen draws it at once and starts no further
+background step. Nothing warms a heatmap up ahead of the screen that shows
+it. Each draw appears in one finished frame (spec ui.screen-one-frame). The
+calendar animates its squares (500 ms) only the first time the deck list or
+the overview shows it after a collection is opened; every later draw shows
+the squares at once. Everything else about the heatmap is unchanged (spec
+ui.review-heatmap): the same report, the same cache, the same figures. The
+congratulations screen has no heatmap and computes none.
 
 **Why:** Andrew, 2026-09-21: "the first click on a deck has a MASSIVE
 delay, like 1-3 seconds. After that everything is fine." The first click
@@ -713,7 +719,15 @@ warm-up then took the one collection worker, and the click's counts waited
 behind it. The screen waited for the heatmap before it drew anything, so
 the user waited for a calendar to see the deck's counts. Both screens now
 draw first: the first click is 72 ms, and its heatmap arrives about 650 ms
-after it.
+after it. Andrew, 2026-09-27, chose to draw once instead ("Option a it is"):
+after any answer, undo, bury or other change to the cards, every return to
+the deck list or the overview drew the page twice, first without the
+heatmap. The report was ready well inside the wait (on a copy of Andrew's
+collection: 27 ms after the counts on the deck list, at most 42 ms; 5 ms on
+the overview), so the page now loads once. The first report of a session can
+take a second, so it keeps the draw-first path. The animation: Andrew left
+the choice to Claude, 2026-09-27; reason: repeated animation on every return
+looks like a slow load.
 
 **Pinned by:** `test_the_deck_list_and_overview_draw_without_waiting_for_the_heatmap`,
 `test_a_screen_without_its_heatmap_draws_it_in_the_background_and_again`,
@@ -722,7 +736,15 @@ after it.
 `test_a_deck_opened_while_the_report_ran_gets_its_own_heatmap`,
 `test_a_cold_cache_is_reported_without_reading_the_collection`,
 `test_the_background_step_fills_the_cache_and_reports_an_error`,
-`test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s`
+`test_the_deck_list_no_longer_warms_the_overview_heatmap_after_2_s`,
+`test_a_report_ready_in_time_is_drawn_with_the_counts_in_one_draw`,
+`test_a_report_later_than_the_limit_is_drawn_as_a_fill_in`,
+`test_a_report_ready_before_the_counts_draws_at_once`,
+`test_the_first_report_of_a_session_does_not_hold_the_screen`,
+`test_an_early_report_that_fails_leaves_the_screen_as_it_is`,
+`test_a_deck_opened_while_the_early_report_ran_gets_its_own_heatmap`,
+`test_the_deck_list_and_overview_start_the_report_after_the_counts`,
+`test_the_calendar_animates_only_the_first_time_it_is_shown_in_a_session`
 (`qt/tests/test_review_heatmap.py`).
 
 ## ui.screen-one-frame

@@ -20,7 +20,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from anki.collection import Config
 from anki.decks import DeckId
@@ -1018,10 +1018,22 @@ HTML_HEATMAP = f"""
     <div id="cal-heatmap"></div>
 </div>
 <script type="text/javascript">
+    if (window.rhStill) {{{{
+        // shown before in this session: the cells appear at once
+        var rhInit = CalHeatMap.prototype.init;
+        CalHeatMap.prototype.init = function (settings) {{{{
+            settings.animationDuration = 0;
+            return rhInit.call(this, settings);
+        }}}};
+    }}}}
     window.reviewHeatmap = new ReviewHeatmap({{options}});
     reviewHeatmap.create({{data}});
 </script>
 """
+
+# Put before a heatmap's HTML: its cells appear at once instead of taking the
+# calendar's 500 ms animation (spec ui.review-heatmap-fills-in)
+HTML_STILL = "<script>window.rhStill = true;</script>"
 
 HTML_STREAK = """
 <div class="streak">
@@ -1137,6 +1149,29 @@ class _RenderCache:
     key: tuple[Any, ...]
 
 
+# How long a screen whose counts are ready waits for its heatmap's report, to
+# draw once with it (spec ui.review-heatmap-fills-in). The report starts with
+# the counts and runs right after them on the one collection worker; on a copy
+# of Andrew's collection (159k cards, 1.3M reviews) the deck list's report
+# took 40 ms (p90 44, max 48). A second draw costs about 96 ms more than the
+# first there, so a wait longer than that would finish later than drawing
+# twice.
+EARLY_REPORT_WAIT_MS = 100
+
+
+@dataclass
+class EarlyReport:
+    """A place's report, started together with its screen's counts."""
+
+    col: Any
+    state: Any
+    finished: bool = False
+    # draws waiting for the report
+    waiting: list[Callable[[], None]] = field(default_factory=list)
+    # a draw went ahead without it: draw again when it arrives
+    drawn_without: bool = False
+
+
 class ReviewHeatmap:
     """Draws the heatmap into the deck list, the overview and the legacy
     stats screen, and handles the calendar's clicks."""
@@ -1152,6 +1187,10 @@ class ReviewHeatmap:
         self._contents = _Contents()
         # the places whose heatmap a background step is computing right now
         self._filling: set[tuple[HeatmapView, bool]] = set()
+        # of those, the ones started together with their screen's counts
+        self._early: dict[tuple[HeatmapView, bool], EarlyReport] = {}
+        # the collection whose deck list or overview has shown a calendar
+        self._shown_for: str | None = None
 
     def enabled(self) -> bool:
         col = self.mw.col
@@ -1266,6 +1305,12 @@ class ReviewHeatmap:
         from aqt.operations import QueryOp
 
         place = (view, current_deck_only)
+        early = self._live_early_report(place)
+        if early is not None:
+            # the report started with the counts is still running: it draws
+            # the screen again when it arrives
+            early.drawn_without = True
+            return
         if place in self._filling:
             return
         self._filling.add(place)
@@ -1294,6 +1339,102 @@ class ReviewHeatmap:
             self._filling.discard(place)
             raise
 
+    def _live_early_report(self, place: tuple[HeatmapView, bool]) -> EarlyReport | None:
+        early = self._early.get(place)
+        if early is not None and early.col is not self.mw.col:
+            # started for a collection since closed: it will never finish
+            del self._early[place]
+            self._filling.discard(place)
+            return None
+        return early
+
+    def start_early_report(
+        self, view: HeatmapView, current_deck_only: bool
+    ) -> EarlyReport | None:
+        """For a screen about to read its counts: start its heatmap's report
+        now, so that it is computed right after the counts on the collection
+        worker, and the screen can draw once with it
+        (draw_after_early_report()). Only where this session has drawn the
+        place's heatmap before: the first report of a session can take a
+        second or more (spec ui.review-heatmap-fills-in), and the screen then
+        draws at once and fills in, as always. The report is the one render()
+        makes; a report that is cached and current costs a fingerprint check
+        only. None where no report is started."""
+        from aqt.operations import QueryOp
+
+        col = self.mw.col
+        place = (view, current_deck_only)
+        if col is None or (view, current_deck_only, None, None) not in self._cache:
+            return None
+        early = self._live_early_report(place)
+        if early is not None:
+            return early
+        if place in self._filling:
+            return None
+        early = EarlyReport(col, getattr(self.mw, "state", None))
+
+        def compute(_col: Collection) -> bool:
+            try:
+                self.render(view, current_deck_only)
+            except Exception:
+                logger.debug("the heatmap report failed", exc_info=True)
+                return False
+            return True
+
+        def finished(computed: bool) -> None:
+            early.finished = True
+            if self._early.get(place) is early:
+                del self._early[place]
+            waiting, early.waiting = early.waiting, []
+            if computed:
+                # a waiting draw that still misses (another deck opened
+                # meanwhile) asks for its own report
+                self._filling.discard(place)
+            try:
+                for draw in waiting:
+                    draw()
+            finally:
+                # a report that failed is not asked for again by the draws
+                # above: the screen is left as it is
+                self._filling.discard(place)
+            if (
+                computed
+                and early.drawn_without
+                and getattr(self.mw, "state", None) == early.state
+            ):
+                self.redraw_in_place()
+
+        self._filling.add(place)
+        self._early[place] = early
+        try:
+            QueryOp(parent=self.mw, op=compute, success=finished).run_in_background()
+        except Exception:
+            del self._early[place]
+            self._filling.discard(place)
+            raise
+        return early
+
+    def draw_after_early_report(
+        self, early: EarlyReport | None, draw: Callable[[], None]
+    ) -> None:
+        """Draw the screen once its early report is in, or after
+        EARLY_REPORT_WAIT_MS without it; then the report draws the screen
+        again when it arrives, as a fill-in does. At once without a report."""
+        if early is None or early.finished:
+            draw()
+            return
+        early.waiting.append(draw)
+
+        def give_up() -> None:
+            if draw not in early.waiting:
+                return
+            early.waiting.remove(draw)
+            # a draw that leaves the heatmap out marks the report to draw
+            # the screen again (_schedule_fill_in)
+            draw()
+
+        self.mw.progress.single_shot(EARLY_REPORT_WAIT_MS, give_up, False)
+
     def redraw_in_place(self) -> None:
         """Draw the current screen again, without recomputing its counts."""
         state = getattr(self.mw, "state", None)
@@ -1313,20 +1454,33 @@ class ReviewHeatmap:
             forecast_days=days,
         )
 
+    def _animated_once(self, html: str) -> str:
+        """The calendar animates its cells the first time the deck list or
+        the overview shows it in a session (a collection opened); every
+        later draw shows them at once (spec ui.review-heatmap-fills-in)."""
+        if 'id="cal-heatmap"' not in html:
+            return html
+        col = self.mw.col
+        path = None if col is None else col.path
+        if self._shown_for != path:
+            self._shown_for = path
+            return html
+        return HTML_STILL + html
+
     # hooks
 
     def on_deck_browser_will_render_content(
         self, deck_browser: DeckBrowser, content: DeckBrowserContent
     ) -> None:
-        content.stats += self.render_when_ready(
-            HeatmapView.deckbrowser, current_deck_only=False
+        content.stats += self._animated_once(
+            self.render_when_ready(HeatmapView.deckbrowser, current_deck_only=False)
         )
 
     def on_overview_will_render_content(
         self, overview: Overview, content: OverviewContent
     ) -> None:
-        content.table += self.render_when_ready(
-            HeatmapView.overview, current_deck_only=True
+        content.table += self._animated_once(
+            self.render_when_ready(HeatmapView.overview, current_deck_only=True)
         )
 
     def on_webview_did_receive_js_message(
@@ -1468,6 +1622,27 @@ def read_sums_before_draw(view: HeatmapView, current_deck_only: bool) -> None:
     heatmap = instance()
     if heatmap is not None:
         heatmap.read_fingerprint_sums(view, current_deck_only)
+
+
+def start_report_with_counts(
+    view: HeatmapView, current_deck_only: bool
+) -> EarlyReport | None:
+    """ReviewHeatmap.start_early_report() of the heatmap in use, if any; for
+    the deck list and the overview, as they start to read their counts."""
+    heatmap = instance()
+    if heatmap is None:
+        return None
+    return heatmap.start_early_report(view, current_deck_only)
+
+
+def draw_after_report(early: EarlyReport | None, draw: Callable[[], None]) -> None:
+    """ReviewHeatmap.draw_after_early_report() of the heatmap in use; draws
+    at once without one."""
+    heatmap = instance()
+    if heatmap is None or early is None:
+        draw()
+        return
+    heatmap.draw_after_early_report(early, draw)
 
 
 def initialize(mw: AnkiQt) -> ReviewHeatmap:
