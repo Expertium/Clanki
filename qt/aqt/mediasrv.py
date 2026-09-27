@@ -75,10 +75,12 @@ from aqt.deckoptions import (
     ask_reschedule_after_algorithm_change,
     on_deck_options_page_ready,
 )
+from aqt.errors import show_exception
 from aqt.operations import on_op_finished
 from aqt.operations.deck import update_deck_configs as update_deck_configs_op
 from aqt.progress import ProgressBarUpdate, ProgressUpdate
 from aqt.qt import *
+from aqt.qt import sip
 from aqt.utils import (
     aqt_data_path,
     askUser,
@@ -882,6 +884,18 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
             update.abort = True
 
     def handle_on_main() -> None:
+        if _deck_options_save_running:
+            # the page takes no second save while one runs (spec
+            # deck-options.save-without-window)
+            return
+        _start_deck_options_save(is_optimize)
+        try:
+            run_save()
+        except BaseException:
+            _end_deck_options_save()
+            raise
+
+    def run_save() -> None:
         if input.HasField("scheduling_algorithm"):
             # a new algorithm: the user's answer replaces the RWKV
             # reschedules a desired-retention change would start (spec
@@ -914,12 +928,59 @@ def _update_deck_configs(*, close_on_success: bool) -> bytes:
                     rwkv_snapshot=rwkv_snapshot,
                 )
 
-        update_deck_configs_op(parent=aqt.mw, input=input).success(
-            on_success
-        ).with_backend_progress(on_progress).run_in_background()
+        def on_saved(changes: OpChanges) -> None:
+            _end_deck_options_save()
+            on_success(changes)
 
+        def on_failed(exception: Exception) -> None:
+            _end_deck_options_save()
+            show_exception(parent=aqt.mw, exception=exception)
+
+        op = (
+            update_deck_configs_op(parent=aqt.mw, input=input)
+            .success(on_saved)
+            .failure(on_failed)
+        )
+        if is_optimize:
+            # optimizing is a wait the user asked for: it keeps its
+            # progress window, which also blocks the page
+            op = op.with_backend_progress(on_progress)
+        else:
+            op = op.without_waiting_window()
+        op.run_in_background()
+
+    is_optimize = (
+        input.mode == UpdateDeckConfigsMode.UPDATE_DECK_CONFIGS_MODE_COMPUTE_ALL_PARAMS
+    )
     aqt.mw.taskman.run_on_main(handle_on_main)
     return b""
+
+
+# True from the start of a deck-options save until it is done
+_deck_options_save_running = False
+# the deck-options page a running normal save disabled
+_deck_options_save_page: QWidget | None = None
+
+
+def _start_deck_options_save(is_optimize: bool) -> None:
+    """A normal save (no optimizing) opens no progress window; the page is
+    disabled instead until the save is done (spec
+    deck-options.save-without-window)."""
+    global _deck_options_save_running, _deck_options_save_page
+    _deck_options_save_running = True
+    window = aqt.mw.app.activeModalWidget()
+    if not is_optimize and isinstance(window, DeckOptionsDialog):
+        _deck_options_save_page = window.web
+        window.web.setEnabled(False)
+
+
+def _end_deck_options_save() -> None:
+    global _deck_options_save_running, _deck_options_save_page
+    _deck_options_save_running = False
+    page, _deck_options_save_page = _deck_options_save_page, None
+    if page is not None and not sip.isdeleted(page):
+        page.setEnabled(True)
+        page.setFocus()
 
 
 def set_advanced_ui() -> bytes:

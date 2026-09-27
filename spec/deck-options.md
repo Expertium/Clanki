@@ -788,3 +788,25 @@ other SM-2 settings entirely. We won't be using SM-2".
 `test_options_never_open_the_old_qt_dialog`
 (`qt/tests/test_deckoptions.py`); the id list in
 `qt/tests/test_ui_split.py`.
+
+## deck-options.save-without-window
+
+Given a deck-options save that does not optimize (Save, Ctrl+Enter, "Save
+to All Subdecks", and the RWKV box's own save), Clanki opens no progress
+window ("Processing..."). While the save runs, the page takes no input and
+a second save is not started; when the save is done the page takes input
+again, and an error shows in the same message as before. "Optimize All
+Presets" keeps its progress window with the per-preset progress bars.
+
+**Why:** Andrew's rule `ui.no-waiting-windows`: no waiting window on a
+click, except for the waits the user asks for, such as optimizing FSRS-7
+parameters. The save used a window that could show after 100 ms, and it
+showed on every save that moves a deck to another preset (about 0.7 s
+in all, most of it the window's own minimum show time). Andrew left the
+choice to Claude, 2026-09-27; Claude chose no window for a normal save, and
+optimizing keeps its window.
+
+**Pinned by:** `test_a_normal_save_opens_no_progress_window_and_blocks_the_page`,
+`test_a_failed_normal_save_shows_its_error_and_frees_the_page`,
+`test_optimize_all_presets_keeps_its_progress_window`
+(`qt/tests/test_deckoptions.py`).
