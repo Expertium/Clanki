@@ -1,4 +1,4 @@
-from typing import Any, Callable, Union
+from typing import Any, Callable, Sequence, Union
 
 class Backend:
     @classmethod
@@ -24,6 +24,7 @@ def stored_curve_recalls(
     elapsed_seconds: list[int | None],
     decay_rates: tuple[float, ...],
 ) -> list[float] | None: ...
+def packed_warm_up_reviews(reviews: Sequence[Any]) -> bytes: ...
 
 class RwkvReviewInputRows:
     loaded_cards: int
