@@ -23,6 +23,12 @@ impl Collection {
                     .storage
                     .get_deck_config(config.id)?
                     .or_invalid("deck config disappeared")?;
+                // an undo or redo that brings back other FSRS-7 parameters
+                // leaves the preset's stored predictions stale, as the save
+                // itself did (spec ui.stats-fsrs-predictions-ready)
+                if config.fsrs_params() != current.fsrs_params() {
+                    self.mark_fsrs_predictions_stale(&[config.id])?;
+                }
                 self.update_deck_config_undoable(&config, current)
             }
             UndoableDeckConfigChange::Removed(config) => self.restore_deleted_deck_config(*config),

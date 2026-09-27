@@ -371,3 +371,69 @@ def test_failed_undo_releases_its_input_block() -> None:
     assert reviewer._review_actions_are_blocked()
     reviewer.finish_undo(None)
     assert not reviewer._review_actions_are_blocked()
+
+
+class _ImmediateOp:
+    """A CollectionOp that runs its operation and its success at once."""
+
+    def __init__(self, parent: object, op: Callable[[object], object]) -> None:
+        self._op = op
+        self._success: Callable[[object], None] | None = None
+
+    def success(self, callback: Callable[[object], None]) -> _ImmediateOp:
+        self._success = callback
+        return self
+
+    def failure(self, callback: Callable[[Exception], None]) -> _ImmediateOp:
+        return self
+
+    def run_in_background(self) -> None:
+        assert self._success is not None
+        self._success(self._op(_ImmediateOp.col))
+
+    col: object = None
+
+
+# Pins spec/ui.md#ui.stats-fsrs-predictions-ready: an undo or a redo that
+# changes a deck or a preset may leave presets' stored predictions marked
+# stale, so the prediction pass runs at once; any other undo starts none.
+def test_undo_or_redo_of_a_deck_change_writes_the_predictions_again(
+    monkeypatch,
+) -> None:
+    import aqt.fsrs_predictions
+
+    requests: list[bool] = []
+    monkeypatch.setattr(
+        aqt.fsrs_predictions,
+        "ensure_ready",
+        lambda mw, *, force=False: requests.append(force),
+    )
+    monkeypatch.setattr(collection_ops, "CollectionOp", _ImmediateOp)
+    monkeypatch.setattr(aqt.rwkv_scheduler, "record_collection_undo", lambda o: [])
+    monkeypatch.setattr(aqt.rwkv_scheduler, "record_collection_redo", lambda o: [])
+    monkeypatch.setattr(collection_ops.gui_hooks, "state_did_undo", lambda o: None)
+    monkeypatch.setattr(
+        collection_ops.tr, "undo_action_undone", lambda *, action: action
+    )
+    monkeypatch.setattr(
+        collection_ops.tr, "undo_action_redone", lambda *, action: action
+    )
+    monkeypatch.setattr(collection_ops, "tooltip", lambda *args, **kwargs: None)
+    parent = SimpleNamespace()
+
+    for changes, expected in [
+        (OpChanges(), []),
+        (OpChanges(card=True, study_queues=True), []),
+        (OpChanges(deck=True), [True]),
+        (OpChanges(deck_config=True), [True]),
+    ]:
+        out = SimpleNamespace(changes=changes, operation="Update Options")
+        _ImmediateOp.col = SimpleNamespace(
+            undo=lambda out=out: out, redo=lambda out=out: out
+        )
+        requests.clear()
+        collection_ops.undo(parent=parent)
+        assert requests == expected, changes
+        requests.clear()
+        collection_ops.redo(parent=parent)
+        assert requests == expected, changes

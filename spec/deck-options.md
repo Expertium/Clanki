@@ -184,7 +184,8 @@ collection open by then, even a copy with the same preset, is left as it
 is. The new parameters are saved as a deck-options save would save
 them: the cards' memory states follow them (their due dates too when
 "Reschedule cards when desired retention changes" is on), and the preset's
-stored per-review predictions go and are written again by the same pass.
+stored per-review predictions are marked stale, then deleted and written
+again by the same pass (`ui.stats-fsrs-predictions-ready`).
 The save is not undoable, so Undo keeps undoing the user's own last action.
 The day is recorded even when the parameters did not change, and "Optimize
 All Presets" records it for every preset. Unusable FSRS-7 parameters that
