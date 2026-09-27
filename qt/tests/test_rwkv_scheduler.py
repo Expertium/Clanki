@@ -23344,6 +23344,124 @@ def test_waiting_answer_buttons_do_not_start_a_running_rebuild_again(
     assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
+def test_a_build_whose_state_was_thrown_away_does_not_hold_back_the_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a build that
+    still runs after its state was thrown away (a bury and its undo during
+    the start-up build) cannot make the state ready. The waiting answer
+    buttons ask for the exact rebuild at once. Before, they waited for that
+    build to end. It can end after the buttons stop waiting (60 s), and then
+    nothing asked for the rebuild, so the buttons never came."""
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda sql: 123)
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_review", lambda _r: False
+    )
+    # the start-up build runs: the state it builds is still to come
+    rwkv_scheduler._reviewer_backend_warmup_pending_generations[key] = (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(key, 0)
+    )
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == []
+
+    # a bury throws the state away while the build runs
+    rwkv_scheduler._invalidate_reviewer_backend_state(reviewer, reason="test")
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == [reviewer.mw]
+    # the request carries no history change
+    assert rwkv_scheduler._rwkv_exact_rebuild_generation == generation
+
+
+def test_the_exact_rebuild_waits_for_a_start_up_build_however_long_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: while a
+    start-up restore or build owns the stored cache, the rebuild waits for
+    it to end and then runs. Before, each try while it ran counted as a
+    failure, and the rebuild gave up after six: with a build that ran for
+    more than about 155 s, the waiting answer buttons never came."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_EXACT_REBUILD_RETRY_SECS", 0.0001)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_RWKV_EXACT_REBUILD_LOADING_POLL_SECS", 0.0001, raising=False
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    checks: list[bool] = []
+
+    def loading(_mw: object) -> bool:
+        checks.append(True)
+        # the build runs for longer than the tries the rebuild used to allow
+        return len(checks) <= 20
+
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_state_cache_loading", loading)
+    rebuilt = threading.Event()
+
+    def rebuild(mw_: object, col: object, generation: int) -> bool:
+        # as the real one: nothing to do while that build owns the cache
+        if rwkv_scheduler.rwkv_state_cache_loading(mw_):
+            return False
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._clear_rwkv_exact_rebuild_wants_locked()
+        rebuilt.set()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_rebuild_exact_rwkv_state", rebuild)
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True, history_moved=False)
+
+    assert rebuilt.wait(timeout=5), f"loading checks: {len(checks)}"
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_waiting_answer_buttons_ask_again_when_the_start_up_state_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: answer buttons
+    that wait for the state the start-up restore or build makes, or that
+    stopped waiting after 60 s, ask again as soon as it is in place. Before,
+    only the exact rebuild told them: after a start-up build longer than the
+    wait, the buttons stayed hidden until the user pressed "Try again"."""
+    monkeypatch.setattr(rwkv_scheduler, "_redraw_open_card_info", lambda _mw: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "start_rwkv_maintenance_if_needed", lambda _mw: None
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_refresh_active_rwkv_count_view", lambda _mw: True
+    )
+    asked: list[str] = []
+    mw = SimpleNamespace(
+        col=SimpleNamespace(),
+        reviewer=SimpleNamespace(
+            rwkv_curve_state_ready=lambda: asked.append("buttons ask again")
+        ),
+    )
+
+    # a build that ended without a state gives the buttons nothing to show
+    rwkv_scheduler._finish_rwkv_state_cache_operation(
+        mw, ready=False, prewarm_reason="state cache build"
+    )
+    assert asked == []
+
+    rwkv_scheduler._finish_rwkv_state_cache_operation(
+        mw, ready=True, prewarm_reason="state cache build"
+    )
+    assert asked == ["buttons ask again"]
+
+
 def test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild(
     monkeypatch: pytest.MonkeyPatch,
     no_exact_rebuild_thread: list[object],

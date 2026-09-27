@@ -4852,6 +4852,9 @@ _RWKV_EXACT_REBUILD_RETRY_SECS = 5.0
 _RWKV_EXACT_REBUILD_PAUSE_SECS = 3.0
 _RWKV_EXACT_REBUILD_MAX_FAILURES = 5
 _RWKV_EXACT_REBUILD_SWAP_WAIT_SECS = 1.0
+# how often the rebuild looks whether a start-up restore or build still
+# owns the stored cache
+_RWKV_EXACT_REBUILD_LOADING_POLL_SECS = 0.25
 
 
 def _rerouted_historical_cards(
@@ -5299,6 +5302,14 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
                 return
         if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
             return
+        if rwkv_state_cache_loading(mw):
+            # A start-up restore or build owns the stored cache. It publishes
+            # the state, which leaves no rebuild due, or it ends without one
+            # (its state was thrown away while it ran). Wait for it, however
+            # long it runs: a try now does nothing, and it counted as a
+            # failure, so a long build made the rebuild give up.
+            time.sleep(_RWKV_EXACT_REBUILD_LOADING_POLL_SECS)
+            continue
         try:
             done = _rebuild_exact_rwkv_state(mw, col, generation)
         except _RwkvExactRebuildStale as stale:
@@ -5599,14 +5610,20 @@ def _exact_rwkv_state_swapped_in(mw: object) -> None:
     if getattr(mw, "col", None) is None:
         return
     _redraw_open_card_info(mw)
+    _answer_buttons_ask_again(mw)
+    _refresh_active_rwkv_count_view(mw)
+
+
+def _answer_buttons_ask_again(mw: object) -> None:
+    """The RWKV state is in place: answer buttons that wait for it, or that
+    stopped waiting, ask again (spec sched.rwkv-curve-buttons-wait)."""
     reviewer = getattr(mw, "reviewer", None)
     resume = getattr(reviewer, "rwkv_curve_state_ready", None)
     if callable(resume):
         try:
             resume()
         except Exception:
-            logger.exception("failed to show the answer buttons after the swap")
-    _refresh_active_rwkv_count_view(mw)
+            logger.exception("failed to show the answer buttons for the RWKV state")
 
 
 def _require_collection_mutation_reconciliation_current(
@@ -7531,9 +7548,16 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     thread: it reads the state cache from the collection.
 
     When the stored cache cannot restore it either, the exact rebuild builds
-    it in the background (spec sched.rwkv-history-change-keeps-state)."""
+    it in the background (spec sched.rwkv-history-change-keeps-state). The
+    same is true when a restore or build still runs whose state was thrown
+    away: that work cannot make the state ready, and it can end after the
+    buttons have stopped waiting, when nothing asks any more (spec
+    sched.rwkv-curve-buttons-wait)."""
     ready = _prepare_reviewer_backend_for_review(reviewer)
-    if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
+    if not ready and (
+        _stored_rwkv_state_cache_cannot_restore(reviewer)
+        or _running_rwkv_warm_up_was_thrown_away(reviewer)
+    ):
         # The buttons ask about once a second while they wait. The request
         # carries no change of the history (a change that throws the state
         # away starts a running rebuild again by itself), so it must not
@@ -7557,6 +7581,23 @@ def _stored_rwkv_state_cache_cannot_restore(reviewer: object) -> bool:
             key not in _reviewer_backend_warmup_states
             and key not in _reviewer_backend_warmup_pending_generations
             and _reviewer_backend_cold_fallback_generations.get(key) == generation
+        )
+
+
+def _running_rwkv_warm_up_was_thrown_away(reviewer: object) -> bool:
+    """The resident state is cold, and the restore or build that still runs
+    claimed an older generation: the state it makes was thrown away while it
+    ran (a bury and its undo during the start-up build), so it cannot
+    publish it."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return False
+    with _reviewer_backend_state_lock:
+        claimed = _reviewer_backend_warmup_pending_generations.get(key)
+        return (
+            claimed is not None
+            and claimed != _reviewer_backend_warmup_generations.get(key, 0)
+            and key not in _reviewer_backend_warmup_states
         )
 
 
@@ -13580,6 +13621,9 @@ def _finish_rwkv_state_cache_operation(
         return
     _redraw_open_card_info(mw)
     if ready:
+        # the buttons stop waiting after 60 s, and a start-up build can take
+        # longer: nothing else would tell them
+        _answer_buttons_ask_again(mw)
         start_rwkv_maintenance_if_needed(mw)
     if _refresh_active_rwkv_count_view(mw) or not ready:
         return
