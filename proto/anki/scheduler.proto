@@ -243,11 +243,12 @@ service BackendSchedulerService {
   rpc RwkvHistoricalReviewRows(RwkvHistoricalReviewRowsRequest)
       returns (RwkvHistoricalReviewRowsResponse);
   // The whole history's replay inputs: what Python's
-  // `_historical_rwkv_review_inputs` builds without a cutoff or a deck,
-  // value for value (rslib/src/scheduler/rwkv_inputs). The review log is
-  // read as RwkvHistoricalReviewRows reads it; the inputs are built with the
-  // collection free. Fails where Python would read the collection another
-  // way; Python then builds them itself.
+  // `_historical_rwkv_review_inputs` gives without a cutoff or a deck
+  // (rslib/src/scheduler/rwkv_inputs). The review log is read as
+  // RwkvHistoricalReviewRows reads it; the inputs are built with the
+  // collection free. Fails where Python reads the collection another way;
+  // Python then reads the rows and the presets itself and hands them to the
+  // same encoder (RwkvReplayInputsFromRowsRequest).
   rpc RwkvHistoricalReviewInputs(RwkvHistoricalReviewInputsRequest)
       returns (RwkvHistoricalReviewInputsResponse);
 }
@@ -303,53 +304,125 @@ message RwkvHistoricalReviewInputsRequest {
   // newest review less this many milliseconds (the state cache's recovery
   // checkpoint).
   int64 recovery_checkpoint_max_age_millis = 6;
+  // The model's input layout (`_RWKV_FEATURE_LAYOUT`), which picks the
+  // encoder; empty is today's published layout. An unknown layout fails.
+  string feature_layout = 7;
 }
 
-// Each column holds one little-endian int64 per review, in replay order, or
-// per card, in the order the replay first reaches the cards. Python turns
-// them into its review inputs in short chunks (see
-// RwkvHistoricalReviewRowsResponse).
-message RwkvHistoricalReviewInputsResponse {
+// The replay inputs of rows the caller read itself (Python's
+// `_historical_rwkv_review_rows`: a read after a cutoff, of a deck, or of a
+// collection the backend reads another way), with the presets and the
+// first-review rule it resolved for them. Built without a collection by the
+// encoder RwkvHistoricalReviewInputs uses (`_rsbridge.
+// rwkv_replay_inputs_from_rows`); the response is
+// RwkvHistoricalReviewInputsResponse.
+message RwkvReplayInputsFromRowsRequest {
+  // A preset rule of an add-on overlay (Python's RwkvHistoricalPresetRule).
+  message Route {
+    int64 stable_preset_id = 1;
+    // Without it the rule matches every card.
+    bool has_card_ids = 2;
+    // One little-endian int64 per card.
+    bytes card_ids = 3;
+    optional int64 min_reps = 4;
+    optional int64 max_reps = 5;
+    optional double min_interval_days = 6;
+    optional double max_interval_days = 7;
+  }
+  // The rows, in replay order: one little-endian int64 per row in each
+  // int64 column, one byte (0 or 1) per row in the others. Only rows with a
+  // start state and a whole review id.
   bytes review_ids = 1;
   bytes card_ids = 2;
   bytes note_ids = 3;
   bytes deck_ids = 4;
-  bytes preset_ids = 5;
-  bytes eases = 6;
-  bytes durations_millis = 7;
-  bytes card_types = 8;
-  bytes review_kinds = 9;
-  bytes interval_days = 10;
-  bytes ease_factors = 11;
-  bytes day_offsets = 12;
-  bytes elapsed_days = 13;
-  bytes elapsed_seconds = 14;
-  bytes cards = 15;
-  bytes card_previous_review_ids = 16;
-  bytes card_previous_interval_days = 17;
-  bytes card_review_counts = 18;
-  int64 last_review_id = 19;
-  uint64 review_count = 20;
+  bytes eases = 5;
+  bytes durations_millis = 6;
+  bytes review_kinds = 7;
+  bytes interval_days = 8;
+  bytes ease_factors = 9;
+  bytes learning_starts = 10;
+  bytes has_note = 11;
+  bytes has_deck = 12;
+  // 0 where a value of the row is not a whole number: the row is counted
+  // and not replayed.
+  bytes encodable = 13;
+  // Each card with a deck, its own stable preset id and whether it has one.
+  bytes preset_card_ids = 14;
+  bytes preset_ids = 15;
+  bytes has_preset = 16;
+  RwkvHistoricalReviewInputsRequest.FirstReviewElapsedSource
+      first_review_elapsed_source = 17;
+  // DECK_CONFIG: whether a card's first review measures from its creation,
+  // by its home deck; a deck missing here does not.
+  map<int64, bool> first_review_uses_creation_by_deck_id = 18;
+  repeated Route routes = 19;
+  int64 days_elapsed = 20;
+  int64 next_day_at = 21;
+  // Rows up to it are counted and not replayed.
+  optional int64 after_review_id = 22;
+  // The state the read goes on from, as three per-card maps (keys, then
+  // values, int64 each).
+  bytes seed_previous_review_id_cards = 23;
+  bytes seed_previous_review_ids = 24;
+  bytes seed_previous_interval_cards = 25;
+  bytes seed_previous_interval_days = 26;
+  bytes seed_review_count_cards = 27;
+  bytes seed_review_counts = 28;
+  // The reviews before `after_review_id` are counted from
+  // seed_review_counts instead of from the rows.
+  bool counts_before_cutoff = 29;
+  // The hash the chain goes on from; empty: the empty history's.
+  string previous_history_hash = 30;
+  bool hash_history = 31;
+  int64 recovery_checkpoint_max_age_millis = 32;
+  string feature_layout = 33;
+}
+
+// The replay's inputs. The byte columns hold one little-endian int64 per
+// review, in replay order, or per card, in the order the replay first
+// reaches the cards, except packed_rows. They are numbered one after the
+// other, between the fields before and after them, so that Python can read
+// them as views of the response's bytes, without a copy
+// (`_rwkv_replay_response_columns`).
+message RwkvHistoricalReviewInputsResponse {
+  reserved 1 to 30;
+  int64 last_review_id = 31;
+  // Python's count: the reviews through `last_review_id`.
+  uint64 review_count = 32;
   // Empty unless asked for.
-  string history_hash = 21;
-  repeated int64 active_ignored_review_ids = 22;
+  string history_hash = 33;
   // The recovery checkpoint: how many reviews come before it (0: none), the
-  // last of them, the hash so far, and the per-card columns of the cards the
-  // replay reached by then (the first ones of `cards`).
-  uint64 checkpoint_review_count = 23;
-  int64 checkpoint_last_review_id = 24;
-  string checkpoint_history_hash = 25;
-  bytes checkpoint_card_previous_review_ids = 26;
-  bytes checkpoint_card_previous_interval_days = 27;
-  bytes checkpoint_card_review_counts = 28;
+  // last of them, the hash so far, and how many cards the replay had reached
+  // by then (the first ones of `cards`).
+  uint64 checkpoint_review_count = 34;
+  int64 checkpoint_last_review_id = 35;
+  string checkpoint_history_hash = 36;
+  uint64 checkpoint_card_count = 37;
+  // The reviews: one packed warm-up row each in the layout's format (today
+  // `_PACKED_PREDICTION_REQUEST_ROW`), and the review log values the row
+  // does not hold.
+  bytes packed_rows = 40;
+  bytes review_ids = 41;
+  bytes review_kinds = 42;
+  bytes interval_days = 43;
+  bytes ease_factors = 44;
+  // The cards this read replayed, and each one's state after it.
+  bytes cards = 45;
+  bytes card_previous_review_ids = 46;
+  bytes card_previous_interval_days = 47;
+  bytes card_review_counts = 48;
+  // The same state of the first checkpoint_card_count cards at the
+  // checkpoint.
+  bytes checkpoint_card_previous_review_ids = 49;
+  bytes checkpoint_card_previous_interval_days = 50;
+  bytes checkpoint_card_review_counts = 51;
+  repeated int64 active_ignored_review_ids = 60;
   // Each card's own preset (per card, like `cards`), as
   // GetFsrsPresetIdsForCards gives it: Python keeps these, as its own build
-  // of the inputs does. Empty for a card that is gone.
-  repeated string card_fsrs_preset_ids = 29;
-  // One byte per review: 1 where the card is gone (spec
-  // sched.rwkv-replay-deleted-cards). Such a review has no note, deck or
-  // preset; its note_ids, deck_ids and preset_ids hold 0.
-  bytes deleted_cards = 30;
+  // of the inputs does. Empty for a card that is gone. Only the backend's
+  // read of the whole history fills it.
+  repeated string card_fsrs_preset_ids = 61;
 }
 
 message SchedulingState {

@@ -26,6 +26,7 @@ mod upgrade;
 
 use chrono::FixedOffset;
 pub use reviews::parse_due_date_str;
+pub use rwkv_inputs::rwkv_replay_inputs_from_rows;
 use timing::sched_timing_today;
 use timing::SchedTimingToday;
 
