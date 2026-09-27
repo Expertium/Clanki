@@ -14,7 +14,12 @@ APP_LOG_FILE = "clanki.log"
 APP_LOG_MAX_BYTES = 10 * 1024 * 1024
 APP_LOG_BACKUPS = 4
 # Loggers whose debug lines go to the log file (stdout keeps the app's level)
-APP_DEBUG_LOGGERS = ("aqt.rwkv_scheduler", "aqt.fsrs_predictions")
+APP_DEBUG_LOGGERS = (
+    "aqt.rwkv_scheduler",
+    "aqt.fsrs_predictions",
+    "aqt.reviewer",
+    "aqt.progress",
+)
 
 # All loggers with the following prefix will be treated as add-on loggers
 #
