@@ -2048,7 +2048,11 @@ The pass that writes the rows runs off the main thread, and the Stats page
 never waits for it. It runs after the collection has opened, at most once a
 day, and again whenever a preset's FSRS-7 parameters change. A later open on
 the same day writes predictions only when a preset is due for optimization
-(`deck-options.fsrs-auto-optimize`).
+(`deck-options.fsrs-auto-optimize`). A request that comes while a pass runs
+or waits for a pause is not lost: a parameter change, a replaced prediction
+cache or a day with no pass yet gets a full pass after the one that runs,
+and a profile that opened meanwhile gets its own pass, also when the old
+pass stops during its wait.
 
 It waits for a pause in what the user does **before it begins**. It asks
 which presets are stale only once ten seconds have passed without a key
@@ -2244,6 +2248,8 @@ of every preset every day: about 76 s of CPU on his collection.
 `test_a_pass_cut_short_by_a_profile_switch_stops_quietly`,
 `test_a_pass_cut_short_by_a_full_sync_stops_quietly`,
 `test_the_next_profile_gets_its_pass_when_the_old_one_stops_late`,
+`test_the_next_profile_gets_its_pass_when_the_old_one_was_waiting`,
+`test_a_parameter_change_while_a_same_day_pass_waits_still_writes`,
 `test_a_failure_with_the_collection_still_open_still_says_so`
 (`qt/tests/test_fsrs_predictions.py`);
 `a_parameter_change_drops_that_presets_predictions`,
@@ -2441,3 +2447,29 @@ the hook a second time. Found in speed hunt round 5 (2026-09-25). Upstream
 **Pinned by:** `test_the_day_rollover_fires_day_did_change_in_the_reviewer`,
 `test_the_day_rollover_fires_day_did_change_once_outside_the_reviewer`,
 `test_no_rollover_changes_nothing` (`qt/tests/test_main.py`).
+
+## ui.deleted-widget-callbacks-are-skipped
+
+Given a callback that runs after a delay (a screen-boundary retry timer, or
+an operation's success or failure handler) and a widget it was built for
+that has since closed, Clanki skips the work on that widget instead of
+raising. The operation or callback itself still completes: `tooltip()` and
+`showInfo()` (so `showWarning()` and `showCritical()` too) fall back to the
+active window, or the main window, in place of the closed one instead of
+using it; `ensureWidgetInScreenBoundaries()` does nothing for a widget that
+is already gone.
+
+**Why:** found in speed hunt round 7 (2026-09-27): a Card Info dialog closed
+while `ensureWidgetInScreenBoundaries()`'s own 50 ms retry timer was still
+pending raised "wrapped C/C++ object ... has been deleted"; a Browser
+suspend's success tooltip did the same when the Browser closed before the
+40-second-late operation finished. Every operation in `qt/aqt/operations/`
+that reports its result with `tooltip()` or `showInfo()` on the widget that
+started it shares the same shape, since nothing stops the widget from
+closing while the operation is still running. Upstream `ankitects/anki`
+main has the same code in all three functions.
+
+**Pinned by:** `test_ensure_widget_in_screen_boundaries_does_nothing_for_a_deleted_widget`
+(`qt/tests/test_utils.py`), `test_a_tooltip_on_a_deleted_parent_falls_back_to_the_main_window`
+(`qt/tests/test_tooltip.py`), `test_show_info_on_a_deleted_parent_falls_back_to_the_main_window`
+(`qt/tests/test_utils.py`).

@@ -3223,6 +3223,7 @@ def _record_collection_undo_or_redo_with_backend(
                     backend,
                     reason="review redone" if redo else "review undone",
                 )
+                _exact_rwkv_rebuild_history_moved()
                 return restored_card_ids
 
     if _record_history_change_undo_or_redo(changes, redo=redo):
@@ -3230,6 +3231,17 @@ def _record_collection_undo_or_redo_with_backend(
     if not _record_collection_mutation_undo_or_redo(changes, redo=redo):
         _rebuild_after_undo_of_an_answer_before_the_swap(changes)
     return []
+
+
+def _exact_rwkv_rebuild_history_moved() -> None:
+    """An answer went out of the review log or came back into it (an undo or
+    a redo). A running exact rebuild may already hold the history before
+    that; it starts again from the history as it is now, instead of
+    swapping in a state with a review the collection no longer has, or
+    without one it has again (spec sched.rwkv-history-change-keeps-state)."""
+    global _rwkv_exact_rebuild_generation
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_generation += 1
 
 
 def _rebuild_after_undo_of_an_answer_before_the_swap(changes: object) -> None:
@@ -3870,7 +3882,9 @@ class _RwkvCurveSourceWriter:
     an untagged source could later be read by the wrong model.
     """
 
-    _BATCH_ROWS = 20_000
+    # rows per write: each write holds the collection, and 20,000 sources
+    # held it for about 44 ms, 5,000 for about 11 ms
+    _BATCH_ROWS = 5_000
 
     def __init__(self, reviewer: object) -> None:
         self._col: Any | None = _collection(reviewer)
@@ -5034,6 +5048,9 @@ _RWKV_EXACT_REBUILD_RETRY_SECS = 5.0
 _RWKV_EXACT_REBUILD_PAUSE_SECS = 3.0
 _RWKV_EXACT_REBUILD_MAX_FAILURES = 5
 _RWKV_EXACT_REBUILD_SWAP_WAIT_SECS = 1.0
+# how often the rebuild looks whether a start-up restore or build still
+# owns the stored cache
+_RWKV_EXACT_REBUILD_LOADING_POLL_SECS = 0.25
 
 
 def _rerouted_historical_cards(
@@ -5363,11 +5380,17 @@ def _record_history_change_undo_or_redo(changes: object, *, redo: bool) -> bool:
     return True
 
 
-def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
+def request_exact_rwkv_rebuild(
+    mw: object, *, forced: bool = False, history_moved: bool = True
+) -> None:
     """Ask for the exact rebuild of the RWKV state, in the background (spec
     sched.rwkv-history-change-keeps-state). It runs while the collection's
     routing differs from the resident state's; `forced` asks for a rebuild
-    that difference cannot express."""
+    that difference cannot express.
+
+    A request says the history moved, so a running rebuild starts again from
+    the history as it is now. `history_moved=False` asks for a rebuild of the
+    same history: a running rebuild already reads it, and goes on."""
 
     global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
     global _rwkv_exact_rebuild_thread
@@ -5376,7 +5399,8 @@ def request_exact_rwkv_rebuild(mw: object, *, forced: bool = False) -> None:
         return
     with _rwkv_exact_rebuild_lock:
         _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
-        _rwkv_exact_rebuild_generation += 1
+        if history_moved:
+            _rwkv_exact_rebuild_generation += 1
         if not _rwkv_exact_rebuild_wanted_locked():
             logger.debug("RWKV exact rebuild no longer needed")
             return
@@ -5444,7 +5468,19 @@ def _run_exact_rwkv_rebuilds(mw: object) -> None:
     try:
         _run_exact_rwkv_rebuilds_until_done(mw)
     finally:
+        with _rwkv_exact_rebuild_lock:
+            _rwkv_exact_rebuild_thread_ends_locked()
         _background_pass_finished()
+
+
+def _rwkv_exact_rebuild_thread_ends_locked() -> None:
+    """The rebuild thread has decided to end: a request from now on starts a
+    new one. It is decided under the lock, so a request that comes while the
+    thread is still ending is not left to it."""
+    global _rwkv_exact_rebuild_thread
+
+    if _rwkv_exact_rebuild_thread is threading.current_thread():
+        _rwkv_exact_rebuild_thread = None
 
 
 def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
@@ -5458,9 +5494,18 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         with _rwkv_exact_rebuild_lock:
             generation = _rwkv_exact_rebuild_generation
             if not _rwkv_exact_rebuild_wanted_locked():
+                _rwkv_exact_rebuild_thread_ends_locked()
                 return
         if col is None or _rwkv_exact_rebuild_collection_gone(mw, col):
             return
+        if rwkv_state_cache_loading(mw):
+            # A start-up restore or build owns the stored cache. It publishes
+            # the state, which leaves no rebuild due, or it ends without one
+            # (its state was thrown away while it ran). Wait for it, however
+            # long it runs: a try now does nothing, and it counted as a
+            # failure, so a long build made the rebuild give up.
+            time.sleep(_RWKV_EXACT_REBUILD_LOADING_POLL_SECS)
+            continue
         try:
             done = _rebuild_exact_rwkv_state(mw, col, generation)
         except _RwkvExactRebuildStale as stale:
@@ -5483,6 +5528,8 @@ def _run_exact_rwkv_rebuilds_until_done(mw: object) -> None:
         failures += 1
         if failures > _RWKV_EXACT_REBUILD_MAX_FAILURES:
             logger.warning("RWKV exact rebuild stopped after %s tries", failures)
+            with _rwkv_exact_rebuild_lock:
+                _rwkv_exact_rebuild_thread_ends_locked()
             return
         retry_at = time.monotonic() + _RWKV_EXACT_REBUILD_RETRY_SECS * 2 ** (
             failures - 1
@@ -5759,14 +5806,20 @@ def _exact_rwkv_state_swapped_in(mw: object) -> None:
     if getattr(mw, "col", None) is None:
         return
     _redraw_open_card_info(mw)
+    _answer_buttons_ask_again(mw)
+    _refresh_active_rwkv_count_view(mw)
+
+
+def _answer_buttons_ask_again(mw: object) -> None:
+    """The RWKV state is in place: answer buttons that wait for it, or that
+    stopped waiting, ask again (spec sched.rwkv-curve-buttons-wait)."""
     reviewer = getattr(mw, "reviewer", None)
     resume = getattr(reviewer, "rwkv_curve_state_ready", None)
     if callable(resume):
         try:
             resume()
         except Exception:
-            logger.exception("failed to show the answer buttons after the swap")
-    _refresh_active_rwkv_count_view(mw)
+            logger.exception("failed to show the answer buttons for the RWKV state")
 
 
 def _require_collection_mutation_reconciliation_current(
@@ -7691,10 +7744,24 @@ def prepare_reviewer_backend_for_answer_buttons(reviewer: object) -> bool:
     thread: it reads the state cache from the collection.
 
     When the stored cache cannot restore it either, the exact rebuild builds
-    it in the background (spec sched.rwkv-history-change-keeps-state)."""
+    it in the background (spec sched.rwkv-history-change-keeps-state). The
+    same is true when a restore or build still runs whose state was thrown
+    away: that work cannot make the state ready, and it can end after the
+    buttons have stopped waiting, when nothing asks any more (spec
+    sched.rwkv-curve-buttons-wait)."""
     ready = _prepare_reviewer_backend_for_review(reviewer)
-    if not ready and _stored_rwkv_state_cache_cannot_restore(reviewer):
-        request_exact_rwkv_rebuild(getattr(reviewer, "mw", None), forced=True)
+    if not ready and (
+        _stored_rwkv_state_cache_cannot_restore(reviewer)
+        or _running_rwkv_warm_up_was_thrown_away(reviewer)
+    ):
+        # The buttons ask about once a second while they wait. The request
+        # carries no change of the history (a change that throws the state
+        # away starts a running rebuild again by itself), so it must not
+        # start the rebuild again: that restarted it after every history
+        # read, and it never finished while the buttons waited.
+        request_exact_rwkv_rebuild(
+            getattr(reviewer, "mw", None), forced=True, history_moved=False
+        )
     return ready
 
 
@@ -7710,6 +7777,23 @@ def _stored_rwkv_state_cache_cannot_restore(reviewer: object) -> bool:
             key not in _reviewer_backend_warmup_states
             and key not in _reviewer_backend_warmup_pending_generations
             and _reviewer_backend_cold_fallback_generations.get(key) == generation
+        )
+
+
+def _running_rwkv_warm_up_was_thrown_away(reviewer: object) -> bool:
+    """The resident state is cold, and the restore or build that still runs
+    claimed an older generation: the state it makes was thrown away while it
+    ran (a bury and its undo during the start-up build), so it cannot
+    publish it."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return False
+    with _reviewer_backend_state_lock:
+        claimed = _reviewer_backend_warmup_pending_generations.get(key)
+        return (
+            claimed is not None
+            and claimed != _reviewer_backend_warmup_generations.get(key, 0)
+            and key not in _reviewer_backend_warmup_states
         )
 
 
@@ -12416,6 +12500,68 @@ def recompute_rwkv_calibration_data(
 ) -> bool:
     """Rewrite historical RWKV calibration rows without replacing active state.
 
+    See `_recompute_rwkv_calibration_data`. The replay inputs of the whole
+    history it reads are freed here afterwards, in steps
+    (`_free_review_inputs_in_steps`), whether the pass finished or stopped.
+    """
+    histories: list[RwkvHistoricalReviewInputs] = []
+    try:
+        return _recompute_rwkv_calibration_data(
+            mw,
+            progress=progress,
+            between_batches=between_batches,
+            resume_from=resume_from,
+            recorded_through=recorded_through,
+            read_history=histories.append,
+        )
+    finally:
+        _free_review_inputs_in_steps(histories)
+
+
+# Replay inputs freed at a time by `_free_review_inputs_in_steps`: about a
+# millisecond of work.
+_FREE_REVIEW_INPUTS_STEP = 4096
+
+
+def _free_review_inputs_in_steps(
+    histories: list[RwkvHistoricalReviewInputs],
+) -> None:
+    """Frees the replay inputs of these histories a step at a time.
+
+    One input is a handful of Python objects, and the history of a large
+    collection is about a million inputs. Freed with the list that holds
+    them, they are freed in one piece of C code that keeps the GIL for the
+    whole of it, about a second, and the main window cannot run a line of
+    Python meanwhile: a key pressed as the recording pass stops for a card
+    waited that long. Each step here frees one slice of them, and the main
+    thread can take the GIL between two steps.
+
+    Nothing is mutated: the slices are new lists that share the inputs, and
+    once the histories are dropped, each slice frees its inputs when it goes
+    (inputs that another holder still uses are not freed)."""
+    slices: list[list[RwkvReviewInput]] = []
+    while histories:
+        reviews = histories.pop().reviews
+        slices.extend(
+            reviews[start : start + _FREE_REVIEW_INPUTS_STEP]
+            for start in range(0, len(reviews), _FREE_REVIEW_INPUTS_STEP)
+        )
+        del reviews
+    while slices:
+        slices.pop()
+
+
+def _recompute_rwkv_calibration_data(
+    mw: object,
+    *,
+    progress: RwkvStateCacheProgressCallback | None,
+    between_batches: Callable[[], None] | None,
+    resume_from: Callable[[Sequence[int]], RwkvRecordingsResumePoint | None] | None,
+    recorded_through: Callable[[int, int, RecordedRows], None] | None,
+    read_history: Callable[[RwkvHistoricalReviewInputs], None],
+) -> bool:
+    """Rewrite historical RWKV calibration rows without replacing active state.
+
     The replay runs in a model runtime of the pass's own, loaded from the
     same weights and released at the end, so the reviewer keeps the shared
     one and answers a card while the pass runs (spec
@@ -12492,6 +12638,7 @@ def recompute_rwkv_calibration_data(
             # several seconds and the machine for the preparation after it
             between_steps=between_batches,
         )
+        read_history(history)
         logger.debug(
             "RWKV calibration recompute inputs prepared: reviews=%s",
             len(history.reviews),
@@ -13159,6 +13306,7 @@ def _rwkv_calibration_fold_role_maps(
     fsrs_validation_folds = _active_fsrs_validation_fold_indices(
         reviewer,
         last_review_id=history.last_review_id,
+        review_ids=review_ids,
     )
     if fsrs_validation_folds:
         sample_role_by_review_id = {
@@ -13203,12 +13351,31 @@ def _rwkv_calibration_fold_role_maps(
     return sample_role_by_review_id, fold_index_by_review_id
 
 
+# How many parts `_active_fsrs_validation_fold_indices` reads a whole
+# history's folds in: the one query over the FSRS prediction cache held the
+# collection for about 1.1 s on 868k reviews (965k cached rows), and a click
+# in that second waited for it.
+FSRS_VALIDATION_FOLD_PARTS = 64
+# Reads in parts that a write may interrupt before the folds are read in one
+# query instead.
+_FSRS_VALIDATION_FOLD_READ_ATTEMPTS = 3
+
+
 def _active_fsrs_validation_fold_indices(
     reviewer: object,
     *,
     last_review_id: int,
+    review_ids: Sequence[int] = (),
 ) -> dict[int, int] | None:
-    """Return the FSRS validation rows currently visible to calibration graphs."""
+    """Return the FSRS validation rows currently visible to calibration graphs.
+
+    With the history's `review_ids` the cache is read in
+    FSRS_VALIDATION_FOLD_PARTS ranges of review ids, one query each, so the
+    collection is held for one range at a time. The ranges are one read:
+    SQLite's count of changed rows is the same before the first range and
+    after the last one, or the read starts again; after
+    _FSRS_VALIDATION_FOLD_READ_ATTEMPTS interrupted reads it runs as one
+    query. The rows and their order are those of the one query."""
 
     col = _collection(reviewer)
     db = getattr(col, "db", None)
@@ -13217,8 +13384,12 @@ def _active_fsrs_validation_fold_indices(
         return None
 
     try:
-        rows = all_rows(
-            f"""
+        rows = _fsrs_validation_fold_rows_in_parts(
+            db, last_review_id=last_review_id, review_ids=review_ids
+        )
+        if rows is None:
+            rows = all_rows(
+                f"""
 with latest as (
   select revlog_id, max(updated_at) as updated_at
   from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
@@ -13234,8 +13405,8 @@ join latest
 where cache.sample_role = 'validation_fold'
 order by cache.revlog_id
 """,
-            last_review_id,
-        )
+                last_review_id,
+            )
     except Exception:
         logger.debug(
             "FSRS validation folds unavailable for RWKV calibration alignment",
@@ -13258,6 +13429,69 @@ order by cache.revlog_id
         ):
             validation_folds[review_id] = fold_index
     return validation_folds
+
+
+def _fsrs_validation_fold_rows_in_parts(
+    db: Any,
+    *,
+    last_review_id: int,
+    review_ids: Sequence[int],
+) -> list[Sequence[object]] | None:
+    """The rows of `_active_fsrs_validation_fold_indices`'s one query, read in
+    ranges of review ids; None when there is nothing to split the read by, or
+    when writes kept interrupting it.
+
+    A range's rows are those the one query gives for the reviews in the
+    range: `latest` takes each review's newest row among that review's own
+    rows. The ranges are cut at a sample of `review_ids` (without sorting a
+    whole history's ids, which would hold the GIL), and the first and the
+    last range are open, so together they cover every review id."""
+
+    scalar = getattr(db, "scalar", None)
+    if not callable(scalar) or len(review_ids) < FSRS_VALIDATION_FOLD_PARTS:
+        return None
+    step = -(-len(review_ids) // FSRS_VALIDATION_FOLD_PARTS)
+    # the reviews up to the last one only; a range's own bounds are then the
+    # only bounds of its query, which SQLite can search the index by (with
+    # `revlog_id <= last` beside them it scanned on to the last review)
+    end = last_review_id + 1
+    cuts = sorted(
+        {min(review_ids[index], end) for index in range(step, len(review_ids), step)}
+    )
+    lows = [-(2**63), *cuts]
+    highs = [*cuts, end]
+    for _ in range(_FSRS_VALIDATION_FOLD_READ_ATTEMPTS):
+        stamp = scalar("select total_changes()")
+        rows: list[Sequence[object]] = []
+        for low, high in zip(lows, highs, strict=True):
+            if low >= high:
+                continue
+            rows.extend(
+                db.all(
+                    f"""
+with latest as (
+  select revlog_id, max(updated_at) as updated_at
+  from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE}
+  where revlog_id >= ?1 and revlog_id < ?2
+    and sample_role in ('final_fit', 'validation_fold', 'post_optimization')
+  group by revlog_id
+)
+select cache.revlog_id, cache.fold_index
+from {_FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE} cache
+join latest
+  on latest.revlog_id = cache.revlog_id
+ and latest.updated_at = cache.updated_at
+where cache.sample_role = 'validation_fold'
+  and cache.revlog_id >= ?1 and cache.revlog_id < ?2
+order by cache.revlog_id
+""",
+                    low,
+                    high,
+                )
+            )
+        if scalar("select total_changes()") == stamp:
+            return rows
+    return None
 
 
 def _rwkv_calibration_test_folds_match_fsrs(
@@ -13740,6 +13974,9 @@ def _finish_rwkv_state_cache_operation(
         return
     _redraw_open_card_info(mw)
     if ready:
+        # the buttons stop waiting after 60 s, and a start-up build can take
+        # longer: nothing else would tell them
+        _answer_buttons_ask_again(mw)
         start_rwkv_maintenance_if_needed(mw)
     if _refresh_active_rwkv_count_view(mw) or not ready:
         return

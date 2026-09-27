@@ -188,9 +188,29 @@ _REAL_RUN_EXACT_REBUILDS = rwkv_scheduler._run_exact_rwkv_rebuilds
 @pytest.fixture(autouse=True)
 def no_exact_rebuild_thread(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """The exact rebuild runs on a thread of its own; a test that asks for it
-    records the request instead, and a test of the rebuild calls it."""
+    records the request instead, and a test of the rebuild calls it.
+
+    The request returns once the recording thread has recorded it: the
+    thread may not have run yet when Thread.start() returns, and a check
+    made then failed on a busy machine."""
     started: list[object] = []
     monkeypatch.setattr(rwkv_scheduler, "_run_exact_rwkv_rebuilds", started.append)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_thread", None)
+    request = rwkv_scheduler.request_exact_rwkv_rebuild
+
+    def request_and_wait(
+        mw: object, *, forced: bool = False, history_moved: bool = True
+    ) -> None:
+        request(mw, forced=forced, history_moved=history_moved)
+        thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+        if (
+            rwkv_scheduler._run_exact_rwkv_rebuilds == started.append
+            and thread is not None
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=5)
+
+    monkeypatch.setattr(rwkv_scheduler, "request_exact_rwkv_rebuild", request_and_wait)
     return started
 
 
@@ -8552,7 +8572,7 @@ def test_rwkv_calibration_recompute_uses_fsrs_validation_folds(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_active_fsrs_validation_fold_indices",
-        lambda _reviewer, *, last_review_id: {first_review: 3},
+        lambda _reviewer, *, last_review_id, **_kwargs: {first_review: 3},
     )
 
     backend = RwkvStatefulReviewerBackend(_CacheRuntime())
@@ -8586,7 +8606,7 @@ def test_rwkv_calibration_fold_roles_fall_back_to_chronological_split(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_active_fsrs_validation_fold_indices",
-        lambda _reviewer, *, last_review_id: None,
+        lambda _reviewer, *, last_review_id, **_kwargs: None,
     )
 
     sample_roles, fold_indices = rwkv_scheduler._rwkv_calibration_fold_role_maps(
@@ -8668,6 +8688,144 @@ values (?, 0.5, 'test', ?, ?, ?)
         reviewer,
         last_review_id=3_000,
     ) == {1_000: 2, 3_000: 4}
+
+
+def _fold_cache_connection() -> sqlite3.Connection:
+    """An FSRS prediction cache with every case of the fold read: reviews
+    whose newest row is a validation fold, a final fit or a post-optimization
+    row, reviews with an older validation row, reviews past the last one,
+    and reviews without rows."""
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        """
+create table search_stats_fsrs_review_retrievability (
+  revlog_id integer not null,
+  prediction real not null,
+  source text not null,
+  updated_at integer not null,
+  sample_role text not null,
+  fold_index integer not null
+)
+"""
+    )
+    rows = []
+    for review in range(1, 400):
+        review_id = review * 1_000
+        kind = review % 5
+        if kind == 0:
+            continue
+        rows.append((review_id, 10, "final_fit", -1))
+        if kind in (1, 2):
+            rows.append((review_id, 10 + kind, "validation_fold", review % 4))
+        if kind == 2:
+            rows.append((review_id, 13, "post_optimization", -1))
+        if kind == 3:
+            rows.append((review_id, 9, "validation_fold", 3))
+        if kind == 4:
+            rows.append((review_id, 20, "validation_fold", 1))
+            rows.append((review_id, 15, "validation_fold", 2))
+    connection.executemany(
+        """
+insert into search_stats_fsrs_review_retrievability
+  (revlog_id, prediction, source, updated_at, sample_role, fold_index)
+values (?, 0.5, 'test', ?, ?, ?)
+""",
+        rows,
+    )
+    return connection
+
+
+class _FoldCacheDB:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.queries = 0
+        self.sqls: list[str] = []
+        self.before_query: Callable[[int], None] = lambda _query: None
+
+    def all(self, sql: str, *args: object) -> list[tuple[int, int]]:
+        self.queries += 1
+        self.sqls.append(sql)
+        self.before_query(self.queries)
+        return cast(
+            list[tuple[int, int]], self.connection.execute(sql, args).fetchall()
+        )
+
+    def scalar(self, sql: str, *args: object) -> object:
+        return self.connection.execute(sql, args).fetchone()[0]
+
+
+def _fold_reviewer(db: object) -> SimpleNamespace:
+    return SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(db=db)))
+
+
+def test_fsrs_validation_folds_read_in_parts_are_the_one_query() -> None:
+    """The folds read in ranges of review ids are those of the one query, in
+    the same order, whatever the review ids the ranges are cut at."""
+    db = _FoldCacheDB(_fold_cache_connection())
+    reviewer = _fold_reviewer(db)
+    last_review_id = 350_000
+    one_query = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=last_review_id
+    )
+    assert db.queries == 1
+    assert one_query and len(one_query) > 100
+    review_id_sets = [
+        [review * 1_000 for review in range(1, 351)],
+        [review * 1_000 for review in range(351, 0, -1)],
+        [review * 1_000 for review in range(100, 200)],
+        [7_000] * 64,
+    ]
+    for review_ids in review_id_sets:
+        db.queries = 0
+        in_parts = rwkv_scheduler._active_fsrs_validation_fold_indices(
+            reviewer, last_review_id=last_review_id, review_ids=review_ids
+        )
+        assert list(in_parts.items()) == list(one_query.items())
+        assert db.queries > 1
+
+
+def test_fsrs_validation_folds_read_again_after_a_write_between_parts() -> None:
+    """A write between two ranges makes the read start again, so the folds
+    are those of one moment; writes that keep coming make it one query."""
+    connection = _fold_cache_connection()
+    db = _FoldCacheDB(connection)
+    reviewer = _fold_reviewer(db)
+    review_ids = [review * 1_000 for review in range(1, 400)]
+
+    def write_once(query: int) -> None:
+        if query == 3:
+            connection.execute(
+                "update search_stats_fsrs_review_retrievability "
+                "set updated_at = 30 where revlog_id = 4000 and fold_index = 2"
+            )
+
+    db.before_query = write_once
+    in_parts = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000, review_ids=review_ids
+    )
+    db.before_query = lambda _query: None
+    after_the_write = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000
+    )
+    assert in_parts == after_the_write
+    assert in_parts[4_000] == 2
+
+    def write_always(_query: int) -> None:
+        connection.execute(
+            "update search_stats_fsrs_review_retrievability set prediction = 0.5"
+        )
+
+    db.before_query = write_always
+    db.sqls.clear()
+    kept_writing = rwkv_scheduler._active_fsrs_validation_fold_indices(
+        reviewer, last_review_id=500_000, review_ids=review_ids
+    )
+    part_queries = sum("?2" in sql for sql in db.sqls)
+    attempts = rwkv_scheduler._FSRS_VALIDATION_FOLD_READ_ATTEMPTS
+    assert part_queries > attempts and part_queries % attempts == 0
+    # then the one query
+    assert len(db.sqls) == part_queries + 1 and "?2" not in db.sqls[-1]
+    assert kept_writing == after_the_write
 
 
 def test_rwkv_state_cache_build_satisfies_sse_explicit_revlog_contract(
@@ -23184,6 +23342,55 @@ def test_the_exact_rebuild_starts_again_when_the_history_moves(
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
+@pytest.mark.parametrize("redo", [False, True])
+def test_an_answer_undone_during_the_exact_rebuild_starts_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+    redo: bool,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: an answer
+    the rebuild has already read, undone (or redone) before the swap, is a
+    change the rebuild did not read. The kept state rolls the answer back;
+    the rebuilt runtime must not swap in with it, or the card's state would
+    keep a review the collection no longer has."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    rolled_back: list[tuple[int, int | None]] = []
+
+    def answer_undone(counter: int, next_counter: int | None) -> int:
+        rolled_back.append((counter, next_counter))
+        return 1
+
+    setattr(old, "answer_redone" if redo else "answer_undone", answer_undone)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    replayed: list[_RebuildRuntime] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def undo() -> None:
+            # the user undoes the answer to card 1 (review 2000), which the
+            # whole-history read already holds
+            changes = _undo_result(counter=9, next_counter=10)
+            if redo:
+                rwkv_scheduler.record_collection_redo(changes)
+            else:
+                rwkv_scheduler.record_collection_undo(changes)
+
+        own.during_replay = undo
+        replayed.append(own)
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    with pytest.raises(rwkv_scheduler._RwkvExactRebuildStale):
+        rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    assert rolled_back == [(9, 10)]
+    assert rwkv_scheduler._reviewer_backend is old
+    assert replayed and replayed[0].released
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
 def test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild(
     monkeypatch: pytest.MonkeyPatch,
     no_exact_rebuild_thread: list[object],
@@ -23210,6 +23417,174 @@ def test_a_cold_state_the_stored_cache_cannot_restore_gets_the_exact_rebuild(
     assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
     assert no_exact_rebuild_thread == [reviewer.mw]
+
+
+def test_waiting_answer_buttons_do_not_start_a_running_rebuild_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    waiting answer buttons ask for the rebuild of a cold state about once a
+    second. A rebuild that already runs reads the same history, so a repeat
+    request does not start it again, and it swaps in. Before, each request
+    started it again after its history read, and it never finished while the
+    buttons waited."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    reviewer = SimpleNamespace(mw=mw)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    # the state is cold, and the stored cache already failed to restore it
+    rwkv_scheduler._reviewer_backend_warmup_states.pop(key, None)
+    rwkv_scheduler._reviewer_backend_cold_fallback_generations[key] = (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(key, 0)
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_review", lambda _r: False
+    )
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    asked: list[bool] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def buttons_ask_again() -> None:
+            asked.append(
+                rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+            )
+
+        own.during_replay = buttons_ask_again
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    assert rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    # once during the replay, once during the replay of the answers given
+    # meanwhile, at the swap
+    assert asked == [False, False]
+    assert rwkv_scheduler._reviewer_backend is not old
+    assert old.released
+    assert "buttons ask again" in log
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_build_whose_state_was_thrown_away_does_not_hold_back_the_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: a build that
+    still runs after its state was thrown away (a bury and its undo during
+    the start-up build) cannot make the state ready. The waiting answer
+    buttons ask for the exact rebuild at once. Before, they waited for that
+    build to end. It can end after the buttons stop waiting (60 s), and then
+    nothing asked for the rebuild, so the buttons never came."""
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda sql: 123)
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    monkeypatch.setattr(
+        rwkv_scheduler, "_prepare_reviewer_backend_for_review", lambda _r: False
+    )
+    # the start-up build runs: the state it builds is still to come
+    rwkv_scheduler._reviewer_backend_warmup_pending_generations[key] = (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(key, 0)
+    )
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == []
+
+    # a bury throws the state away while the build runs
+    rwkv_scheduler._invalidate_reviewer_backend_state(reviewer, reason="test")
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    assert not rwkv_scheduler.prepare_reviewer_backend_for_answer_buttons(reviewer)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    assert no_exact_rebuild_thread == [reviewer.mw]
+    # the request carries no history change
+    assert rwkv_scheduler._rwkv_exact_rebuild_generation == generation
+
+
+def test_the_exact_rebuild_waits_for_a_start_up_build_however_long_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: while a
+    start-up restore or build owns the stored cache, the rebuild waits for
+    it to end and then runs. Before, each try while it ran counted as a
+    failure, and the rebuild gave up after six: with a build that ran for
+    more than about 155 s, the waiting answer buttons never came."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_EXACT_REBUILD_RETRY_SECS", 0.0001)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_RWKV_EXACT_REBUILD_LOADING_POLL_SECS", 0.0001, raising=False
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    checks: list[bool] = []
+
+    def loading(_mw: object) -> bool:
+        checks.append(True)
+        # the build runs for longer than the tries the rebuild used to allow
+        return len(checks) <= 20
+
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_state_cache_loading", loading)
+    rebuilt = threading.Event()
+
+    def rebuild(mw_: object, col: object, generation: int) -> bool:
+        # as the real one: nothing to do while that build owns the cache
+        if rwkv_scheduler.rwkv_state_cache_loading(mw_):
+            return False
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._clear_rwkv_exact_rebuild_wants_locked()
+        rebuilt.set()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_rebuild_exact_rwkv_state", rebuild)
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True, history_moved=False)
+
+    assert rebuilt.wait(timeout=5), f"loading checks: {len(checks)}"
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_waiting_answer_buttons_ask_again_when_the_start_up_state_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-curve-buttons-wait: answer buttons
+    that wait for the state the start-up restore or build makes, or that
+    stopped waiting after 60 s, ask again as soon as it is in place. Before,
+    only the exact rebuild told them: after a start-up build longer than the
+    wait, the buttons stayed hidden until the user pressed "Try again"."""
+    monkeypatch.setattr(rwkv_scheduler, "_redraw_open_card_info", lambda _mw: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "start_rwkv_maintenance_if_needed", lambda _mw: None
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_refresh_active_rwkv_count_view", lambda _mw: True
+    )
+    asked: list[str] = []
+    mw = SimpleNamespace(
+        col=SimpleNamespace(),
+        reviewer=SimpleNamespace(
+            rwkv_curve_state_ready=lambda: asked.append("buttons ask again")
+        ),
+    )
+
+    # a build that ended without a state gives the buttons nothing to show
+    rwkv_scheduler._finish_rwkv_state_cache_operation(
+        mw, ready=False, prewarm_reason="state cache build"
+    )
+    assert asked == []
+
+    rwkv_scheduler._finish_rwkv_state_cache_operation(
+        mw, ready=True, prewarm_reason="state cache build"
+    )
+    assert asked == ["buttons ask again"]
 
 
 def test_an_undo_of_an_answer_from_before_the_swap_asks_for_another_rebuild(
@@ -23248,6 +23623,52 @@ def test_a_state_published_from_the_current_history_ends_the_rebuild(
         key, _rwkv_resident_identity(), expected_generation=0
     )
 
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_request_while_the_rebuild_thread_ends_starts_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
+    history change that comes while the rebuild thread is ending, after it
+    found nothing more to rebuild, starts a new rebuild. The ending thread
+    does not take the request with it."""
+    monkeypatch.setattr(
+        rwkv_scheduler, "_run_exact_rwkv_rebuilds", _REAL_RUN_EXACT_REBUILDS
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    rebuilds: list[str] = []
+    all_done = threading.Event()
+
+    def rebuild(mw_: object, col: object, generation: int) -> bool:
+        rebuilds.append(threading.current_thread().name)
+        # the swap: the resident state is the history as it is now
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._clear_rwkv_exact_rebuild_wants_locked()
+        if len(rebuilds) == 2:
+            all_done.set()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "_rebuild_exact_rwkv_state", rebuild)
+    finished = rwkv_scheduler._background_pass_finished
+    requested_while_ending: list[bool] = []
+
+    def pass_finished() -> None:
+        # the first thread is still alive here: another card is deleted now
+        if not requested_while_ending:
+            requested_while_ending.append(True)
+            rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+        finished()
+
+    monkeypatch.setattr(rwkv_scheduler, "_background_pass_finished", pass_finished)
+
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+
+    assert all_done.wait(timeout=5), f"rebuilds: {rebuilds}"
+    assert requested_while_ending == [True]
+    thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    if thread is not None:
+        thread.join(timeout=5)
     assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 

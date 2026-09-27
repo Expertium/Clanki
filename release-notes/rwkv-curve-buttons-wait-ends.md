@@ -8,3 +8,7 @@
   once. When RWKV-Curve does not give the intervals in 60 seconds, the button
   area says what happened, what to try, and offers a "Try again" button on the
   same card. FSRS-7 intervals still never stand in for RWKV-Curve's.
+- The answer buttons now also come by themselves when RWKV-Curve's state is
+  ready after the 60-second message: when the start-up build ends, and when
+  a bury or an undo during that build threw its work away. Before, the
+  message stayed until you pressed "Try again".

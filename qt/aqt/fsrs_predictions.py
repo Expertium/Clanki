@@ -96,6 +96,11 @@ _running = False
 # while the pass waits for a pause and not while it rests
 _holding_collection = False
 _waiting = False
+# a request for a full pass (a parameter change, or no pass done today) that
+# came while a pass ran: that pass may already be past the point where it
+# would see it, or be a same-day pass that writes nothing, so another pass
+# follows it
+_full_pass_requested = False
 # a failed pass warns once per session, not once per preset and not once
 # per retry
 _failure_reported = False
@@ -137,10 +142,12 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
     if col is None:
         return
     with _lock:
-        global _running, _waiting
-        if _running:
-            return
+        global _running, _waiting, _full_pass_requested
         only_if_due = not force and _finished_today(mw, col)
+        if _running:
+            if not only_if_due:
+                _full_pass_requested = True
+            return
         if rwkv_startup_busy(mw):
             # the RWKV state cache is loading: ask again rather than start
             # behind it (spec ui.stats-fsrs-predictions-ready)
@@ -324,11 +331,20 @@ def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
             report_failure(mw)
     finally:
         with _lock:
+            global _full_pass_requested
             _running = False
-    if mw.col is not col:
-        # a profile that opened while this pass still ran found it running
-        # and asked for nothing; ask for it now
-        ensure_ready(mw)
+            full_pass_requested, _full_pass_requested = _full_pass_requested, False
+        # here, not after the try: a pass that returns early (a close during
+        # its wait for a pause, a same-day pass with no preset due) asks
+        # again too
+        if mw.col is not col:
+            # a profile that opened while this pass still ran found it
+            # running and asked for nothing; ask for it now
+            ensure_ready(mw)
+        elif full_pass_requested:
+            # a parameter change while this pass ran: its predictions are
+            # written now, not tomorrow
+            ensure_ready(mw, force=True)
 
 
 def _collection_closed(mw: Any, col: Any) -> bool:

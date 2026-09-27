@@ -82,6 +82,42 @@ def test_a_tooltip_closes_on_a_click_and_on_close(window: Any) -> None:
     assert utils._tooltipLabel is None
 
 
+def test_a_tooltip_on_a_deleted_parent_falls_back_to_the_main_window(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operation's success handler (e.g. a Browser suspend that finished
+    after the Browser closed) can call tooltip(parent=...) with a widget
+    that is already gone. It must not raise "wrapped C/C++ object ... has
+    been deleted"; the tooltip shows over the main window instead."""
+    import aqt
+    from aqt import utils
+    from aqt.qt import QTimer, QWidget, sip
+
+    class Progress:
+        def timer(self, *args: Any, **kwargs: Any) -> QTimer:
+            return QTimer()
+
+    class FakeMw(QWidget):
+        pass
+
+    mw = FakeMw()
+    mw.app = app  # type: ignore[attr-defined]
+    mw.progress = Progress()  # type: ignore[attr-defined]
+    monkeypatch.setattr(aqt, "mw", mw, raising=False)
+
+    closed = QWidget()
+    sip.delete(closed)
+    assert sip.isdeleted(closed)
+
+    utils.tooltip("hi", parent=closed)
+    try:
+        outer = utils._tooltipLabel
+        assert outer is not None
+        assert outer.parent() is mw
+    finally:
+        utils.closeTooltip()
+
+
 def _press() -> Any:
     from aqt.qt import QEvent, QMouseEvent, QPointF, Qt
 

@@ -76,6 +76,7 @@ from aqt.qt import (
     qtmajor,
     qtminor,
     qVersion,
+    sip,
     traceback,
 )
 from aqt.theme import theme_manager
@@ -298,7 +299,11 @@ def showInfo(
 ) -> int:
     "Show a small info window with an OK button."
     parent_widget: QWidget
-    if parent is None:
+    if parent is None or sip.isdeleted(parent):
+        # a deleted parent is a window that closed before a delayed callback
+        # ran, e.g. an operation's success handler (spec
+        # ui.deleted-widget-callbacks-are-skipped); fall back to the main
+        # window instead of crashing
         parent_widget = aqt.mw.app.activeWindow() or aqt.mw
     else:
         parent_widget = parent
@@ -789,6 +794,10 @@ def restoreGeom(
 
 
 def ensureWidgetInScreenBoundaries(widget: QWidget) -> None:
+    if sip.isdeleted(widget):
+        # the widget closed before this ran, e.g. as a retry queued by the
+        # branch below (spec ui.deleted-widget-callbacks-are-skipped)
+        return
     window = widget.window()
     assert window is not None
     handle = window.windowHandle()
@@ -1085,6 +1094,11 @@ def tooltip(
             self.hide()
 
     closeTooltip()
+    if parent is not None and sip.isdeleted(parent):
+        # the caller's window closed before this ran, e.g. a delayed
+        # operation success callback (spec ui.deleted-widget-callbacks-are-skipped);
+        # fall back to the main window instead of crashing
+        parent = None
     aw = parent or aqt.mw.app.activeWindow() or aqt.mw
     # the outer widget is transparent and only holds the margin the shadow
     # is drawn in; the inner label carries the toast itself

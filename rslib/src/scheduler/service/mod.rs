@@ -1310,7 +1310,7 @@ impl crate::services::BackendSchedulerService for Backend {
         rwkv_historical_review_fingerprint_in_parts(
             input,
             RWKV_FINGERPRINT_PART_ROWS,
-            &mut |step| self.with_col(|col| step(col)),
+            &mut |step| self.with_col_for_a_part(|col| step(col)),
         )
     }
 
@@ -1321,7 +1321,7 @@ impl crate::services::BackendSchedulerService for Backend {
         let rows = rwkv_historical_review_rows_in_parts(
             &rwkv_sorted_review_ids(&input.ignored_review_ids),
             RWKV_FINGERPRINT_PART_ROWS,
-            &mut |step| self.with_col(|col| step(col)),
+            &mut |step| self.with_col_for_a_part(|col| step(col)),
         )?;
         let wide = rows.len() * 8;
         let mut out = scheduler::RwkvHistoricalReviewRowsResponse {
@@ -1359,7 +1359,7 @@ impl crate::services::BackendSchedulerService for Backend {
         input: scheduler::RwkvHistoricalReviewInputsRequest,
     ) -> Result<scheduler::RwkvHistoricalReviewInputsResponse> {
         rwkv_historical_review_inputs(input, RWKV_FINGERPRINT_PART_ROWS, &mut |step| {
-            self.with_col(|col| step(col))
+            self.with_col_for_a_part(|col| step(col))
         })
     }
 
@@ -1372,7 +1372,7 @@ impl crate::services::BackendSchedulerService for Backend {
         Ok(scheduler::StaleFsrsPredictionPresetsResponse {
             deck_config_ids: presets_with_stale_fsrs_review_predictions_in_parts(
                 STALE_PRESETS_PART_ROWS,
-                &mut |step| self.with_col(|col| step(col)),
+                &mut |step| self.with_col_for_a_part(|col| step(col)),
             )?
             .into_iter()
             .map(|preset| preset.0)
@@ -1392,7 +1392,7 @@ impl crate::services::BackendSchedulerService for Backend {
         Ok(refresh_fsrs_review_predictions_of_preset(
             DeckConfigId(input.deck_config_id),
             PREDICTION_WRITE_BATCH_ROWS,
-            &mut |step| self.with_col(|col| step(col)),
+            &mut |step| self.with_col_for_a_part(|col| step(col)),
         )?
         .into())
     }
