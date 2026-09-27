@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -14,6 +15,8 @@ from aqt.branding import APP_NAME
 from aqt.qt import *
 from aqt.qt import sip
 from aqt.utils import disable_help_button, tr
+
+logger = logging.getLogger(__name__)
 
 # Progress info
 ##########################################################################
@@ -163,6 +166,7 @@ class ProgressManager:
         cancel_label: str | None = None,
     ) -> ProgressDialog | None:
         self._levels += 1
+        logger.debug("progress start: levels=%s label=%r", self._levels, label)
         if self._levels > 1:
             return None
         # setup window
@@ -270,6 +274,7 @@ class ProgressManager:
 
             next_levels = self._levels - 1
             next_levels = max(0, next_levels)
+            logger.debug("progress finish: levels=%s", next_levels)
             try:
                 if next_levels == 0:
                     if self._win:

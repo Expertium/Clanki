@@ -2093,6 +2093,7 @@ timeboxReps = 0;
         """Draw a message in place of the answer buttons. RWKV-Curve's
         intervals are not there, and FSRS intervals never stand in (spec
         sched.rwkv-curve-buttons-wait)."""
+        logger.debug("RWKV-Curve answer notice: %r try_again=%s", text, try_again)
         body = html.escape(text)
         if try_again:
             body += """<br><button onclick='pycmd("rwkvCurveRetry");'>%s</button>""" % (
@@ -2131,6 +2132,16 @@ timeboxReps = 0;
             started = now
             self._rwkv_intervals_wait_started = started
         delay = getattr(self, "_rwkv_intervals_retry_ms", 0)
+        logger.debug(
+            "RWKV-Curve buttons wait: card=%s waited=%.1fs delay=%sms "
+            "retry_pending=%s prepare_in_flight=%s progress_levels=%s",
+            self.card.id,
+            now - started,
+            delay,
+            getattr(self, "_rwkv_intervals_retry_pending", False),
+            getattr(self, "_rwkv_intervals_prepare_in_flight", False),
+            getattr(self.mw.progress, "_levels", None),
+        )
         if delay == 0:
             self._rwkv_curve_answer_notice(
                 tr.qt_misc_rwkv_curve_intervals_pending(), try_again=False
@@ -2159,7 +2170,18 @@ timeboxReps = 0;
 
         def retry() -> None:
             self._rwkv_intervals_retry_pending = False
-            if self._rwkv_curve_wait_is_current(card_id, update_id):
+            current = self._rwkv_curve_wait_is_current(card_id, update_id)
+            logger.debug(
+                "RWKV-Curve buttons retry: card=%s current=%s state=%s "
+                "shown_card=%s update_id=%s/%s",
+                card_id,
+                current,
+                self.state,
+                self.card.id if self.card else None,
+                update_id,
+                self._answer_update_id,
+            )
+            if current:
                 self._showEaseButtons()
 
         self._rwkv_intervals_retry_pending = True
@@ -2195,6 +2217,9 @@ timeboxReps = 0;
             except Exception:
                 logger.exception("RWKV-Curve state preparation failed")
                 return
+            logger.debug(
+                "RWKV-Curve state preparation for card=%s: ready=%s", card_id, ready
+            )
             # Only a ready state asks again at once. A preparation that did
             # not make the state ready leaves the next ask to the backed-off
             # retry: asking at once started the next preparation at once, and
@@ -2210,6 +2235,11 @@ timeboxReps = 0;
         """RWKV-Curve's state was rebuilt in the background (spec
         sched.rwkv-history-change-keeps-state): answer buttons that wait for it, or
         that gave up waiting, ask again at once."""
+        logger.debug(
+            "RWKV-Curve state ready: reviewer state=%s card=%s",
+            self.state,
+            self.card.id if self.card else None,
+        )
         if self.state != "answer" or self.card is None:
             return
         if not aqt.rwkv_scheduler.answer_intervals_pending(self, self.card):

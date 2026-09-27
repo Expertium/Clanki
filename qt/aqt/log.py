@@ -5,9 +5,21 @@ from __future__ import annotations
 
 import logging
 import sys
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional, cast
+
+# The app's own log file in the logs folder, kept to 5 files of 10 MB
+APP_LOG_FILE = "clanki.log"
+APP_LOG_MAX_BYTES = 10 * 1024 * 1024
+APP_LOG_BACKUPS = 4
+# Loggers whose debug lines go to the log file (stdout keeps the app's level)
+APP_DEBUG_LOGGERS = (
+    "aqt.rwkv_scheduler",
+    "aqt.fsrs_predictions",
+    "aqt.reviewer",
+    "aqt.progress",
+)
 
 # All loggers with the following prefix will be treated as add-on loggers
 #
@@ -92,9 +104,26 @@ def setup_logging(path: Path | str, **kwargs) -> None:
     )
     logging.Logger.manager = logger_manager
 
+    level = kwargs.get("level", logging.WARNING)
     stdout_handler = logging.StreamHandler(stream=sys.stdout)
     stdout_handler.setFormatter(FORMATTER)
-    logging.basicConfig(handlers=[stdout_handler], force=True, **kwargs)
+    stdout_handler.setLevel(level)
+    # pythonw has no stdout, so the app's own log also goes to a file in the
+    # logs folder, with the scheduling passes at debug level: without it a
+    # wait in the reviewer leaves nothing to read afterwards
+    file_handler = RotatingFileHandler(
+        Path(path) / APP_LOG_FILE,
+        maxBytes=APP_LOG_MAX_BYTES,
+        backupCount=APP_LOG_BACKUPS,
+        encoding="utf-8",
+        delay=True,
+    )
+    file_handler.setFormatter(FORMATTER)
+    file_handler.setLevel(logging.DEBUG)
+    logging.basicConfig(handlers=[stdout_handler, file_handler], force=True, **kwargs)
+    for name in APP_DEBUG_LOGGERS:
+        if logging.getLogger(name).getEffectiveLevel() > logging.DEBUG:
+            logging.getLogger(name).setLevel(logging.DEBUG)
     logging.captureWarnings(True)
 
     # Silence some loggers of external libraries:
