@@ -174,6 +174,9 @@ pub(crate) fn refresh_fsrs_review_predictions_of_preset(
     batch_rows: usize,
     hold: &mut RwkvCollectionHold,
 ) -> Result<u32> {
+    if !delete_stale_fsrs_predictions_in_parts(preset, batch_rows, hold)? {
+        return Ok(0);
+    }
     let mut read = None;
     hold(&mut |col| {
         read = col.fsrs_review_prediction_read(preset)?;
@@ -208,6 +211,75 @@ pub(crate) fn refresh_fsrs_review_predictions_of_preset(
     };
     hold(&mut |col| col.record_fsrs_prediction_coverage(&coverage))?;
     Ok(written)
+}
+
+/// Cards per part while the deletion gathers a stale preset's reviews: a
+/// few milliseconds of the collection each.
+const STALE_SWEEP_PART_CARDS: usize = 1_000;
+
+/// Where the deletion of a stale preset's rows has got to.
+#[derive(Default)]
+pub(crate) struct StalePredictionSweep {
+    /// The open collection the sweep began in.
+    collection: Option<CollectionOpenId>,
+    /// The preset's decks when the sweep (last) began.
+    decks: Option<Vec<DeckId>>,
+    /// While gathering: the last card whose reviews are gathered, None
+    /// before the first part.
+    after_card: Option<i64>,
+    /// The reviews of the preset's cards gathered so far.
+    gathered: Vec<i64>,
+    /// Once gathered: the reviews whose rows are still to be deleted, in
+    /// descending review-id order (the next part is at the end).
+    to_delete: Option<Vec<i64>>,
+}
+
+/// What one part of that deletion did.
+pub(crate) enum StaleSweepStep {
+    /// A part is done and more may follow.
+    More,
+    /// The preset's rows are gone and its mark with them, or it had no mark.
+    Done,
+    /// The collection open now is not the one the sweep began in.
+    OtherCollection,
+}
+
+/// Deletes the stored rows of a preset marked stale, and then the mark,
+/// holding the collection for one short part at a time (spec
+/// ui.stats-fsrs-predictions-ready). The save that marked the preset
+/// deleted nothing: deleting a large preset's rows in one write held the
+/// collection for about a second, and the click that saved waited for it.
+///
+/// First the preset's reviews are gathered, a part of its cards at a time;
+/// then their rows are deleted in review-id order, `part_reviews` reviews
+/// per write. The cache is keyed by review, so a part in review order
+/// touches one stretch of it; a part in card order touched pages all over
+/// the file and took several times as long.
+///
+/// False when the collection changed under the sweep: the pass then stops.
+pub(crate) fn delete_stale_fsrs_predictions_in_parts(
+    preset: DeckConfigId,
+    part_reviews: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<bool> {
+    let mut sweep = StalePredictionSweep::default();
+    loop {
+        let mut step = None;
+        hold(&mut |col| {
+            step = Some(col.delete_stale_fsrs_predictions_part(
+                preset,
+                &mut sweep,
+                STALE_SWEEP_PART_CARDS,
+                part_reviews,
+            )?);
+            Ok(())
+        })?;
+        match step.or_invalid("stale rows never deleted")? {
+            StaleSweepStep::More => std::thread::sleep(PREDICTION_WRITE_BATCH_REST),
+            StaleSweepStep::Done => return Ok(true),
+            StaleSweepStep::OtherCollection => return Ok(false),
+        }
+    }
 }
 
 /// What a pass records once it has written a preset: the reviews it left
@@ -336,7 +408,8 @@ impl Collection {
         &mut self,
         uncovered: Vec<(DeckId, UncoveredReviews)>,
     ) -> Result<Vec<DeckConfigId>> {
-        if uncovered.is_empty() {
+        let marked = self.storage.fsrs_prediction_stale_presets()?;
+        if uncovered.is_empty() && marked.is_empty() {
             return Ok(vec![]);
         }
         let config_of_deck: HashMap<DeckId, DeckConfigId> = self
@@ -368,22 +441,44 @@ impl Collection {
                 (!unchanged).then_some(config_id)
             })
             .collect();
+        // a preset marked stale is stale whatever its rows cover: they are
+        // the rows of its old parameters or of its old decks
+        stale.extend(
+            marked
+                .into_iter()
+                .filter(|preset| selections.contains_key(preset)),
+        );
         stale.sort_unstable();
         stale.dedup();
         Ok(stale)
     }
 
-    /// Drops the stored predictions of these presets' cards. Called when
-    /// their parameters change, so that no row made by superseded
-    /// parameters can reach a graph.
-    pub(crate) fn clear_fsrs_review_predictions_of_presets(
-        &mut self,
-        presets: &[DeckConfigId],
-    ) -> Result<usize> {
-        if presets.is_empty() {
-            return Ok(0);
+    /// Marks the stored predictions of these presets' cards stale, instead
+    /// of deleting them where the change is saved: a large preset's rows
+    /// took half a second to delete and as long again to commit, and the
+    /// save showed a waiting window for it. While the mark stands no graph
+    /// reads the rows ([`Self::fsrs_predictions_hidden_reviews`]), and the
+    /// prediction pass deletes them in parts before it writes the preset
+    /// again (spec ui.stats-fsrs-predictions-ready).
+    pub(crate) fn mark_fsrs_predictions_stale(&mut self, presets: &[DeckConfigId]) -> Result<()> {
+        self.storage.mark_fsrs_predictions_stale(presets)
+    }
+
+    /// The reviews whose stored predictions a stale mark hides: those of
+    /// the cards of every deck of a marked preset, in review-id order. The
+    /// graphs read them as absent, exactly as if the rows were gone.
+    pub(crate) fn fsrs_predictions_hidden_reviews(&mut self) -> Result<Vec<RevlogId>> {
+        let marked = self.storage.fsrs_prediction_stale_presets()?;
+        if marked.is_empty() {
+            return Ok(vec![]);
         }
-        let decks: Vec<DeckId> = self
+        let decks = self.decks_of_presets(&marked)?;
+        self.storage.reviews_of_cards_in_decks(&decks)
+    }
+
+    /// The normal decks that use one of these presets, in id order.
+    fn decks_of_presets(&mut self, presets: &[DeckConfigId]) -> Result<Vec<DeckId>> {
+        let mut decks: Vec<DeckId> = self
             .storage
             .get_all_decks()?
             .into_iter()
@@ -393,7 +488,69 @@ impl Collection {
             })
             .map(|deck| deck.id)
             .collect();
-        self.storage.clear_fsrs_review_predictions_for_decks(&decks)
+        decks.sort_unstable();
+        Ok(decks)
+    }
+
+    /// One part of the deletion of a stale preset's stored predictions
+    /// (spec ui.stats-fsrs-predictions-ready): gathers the reviews of a
+    /// part of its cards, or deletes the rows of a part of those reviews.
+    /// The parts go by the decks the preset has now; when they changed
+    /// since the sweep began, the sweep starts over, so a deck moved in
+    /// meanwhile loses its rows too. The mark goes with the last part, in
+    /// the same write.
+    pub(crate) fn delete_stale_fsrs_predictions_part(
+        &mut self,
+        preset: DeckConfigId,
+        sweep: &mut StalePredictionSweep,
+        part_cards: usize,
+        part_reviews: usize,
+    ) -> Result<StaleSweepStep> {
+        match sweep.collection {
+            Some(collection) if collection != self.state.open_id => {
+                return Ok(StaleSweepStep::OtherCollection)
+            }
+            _ => sweep.collection = Some(self.state.open_id),
+        }
+        if !self
+            .storage
+            .fsrs_prediction_stale_presets()?
+            .contains(&preset)
+        {
+            return Ok(StaleSweepStep::Done);
+        }
+        let decks = self.decks_of_presets(&[preset])?;
+        if sweep.decks.as_ref() != Some(&decks) {
+            *sweep = StalePredictionSweep {
+                collection: sweep.collection,
+                decks: Some(decks.clone()),
+                ..Default::default()
+            };
+        }
+        let Some(to_delete) = &mut sweep.to_delete else {
+            let (reviews, last) = self.storage.reviews_of_cards_in_decks_part(
+                &decks,
+                sweep.after_card.unwrap_or(i64::MIN),
+                part_cards,
+            )?;
+            sweep.gathered.extend(reviews);
+            sweep.after_card = last;
+            if last.is_none() {
+                let mut gathered = std::mem::take(&mut sweep.gathered);
+                gathered.sort_unstable_by(|a, b| b.cmp(a));
+                sweep.to_delete = Some(gathered);
+            }
+            return Ok(StaleSweepStep::More);
+        };
+        let part = to_delete.split_off(to_delete.len().saturating_sub(part_reviews.max(1)));
+        let last = to_delete.is_empty();
+        self.storage
+            .delete_stale_fsrs_predictions_part(preset, &part, last)?;
+        Ok(if last {
+            StaleSweepStep::Done
+        } else {
+            StaleSweepStep::More
+        })
     }
 
     /// Reads what ONE preset's recompute needs, with the collection held:
@@ -1144,13 +1301,175 @@ mod test {
         refresh(&mut col, small_preset)?;
         assert!(col.presets_with_stale_fsrs_review_predictions()?.is_empty());
 
-        // and new parameters, whose save drops the preset's rows
+        // and new parameters, whose save marks the preset's rows stale
         bump_params(&mut col, preset)?;
-        col.clear_fsrs_review_predictions_of_presets(&[preset])?;
+        col.mark_fsrs_predictions_stale(&[preset])?;
         assert_eq!(
             col.presets_with_stale_fsrs_review_predictions()?,
             vec![preset]
         );
+        Ok(())
+    }
+
+    /// A row of the pass's own kind for every review in the collection.
+    fn cover_every_review(col: &mut Collection) -> Result<()> {
+        let reviews: Vec<i64> = col
+            .storage
+            .db
+            .prepare("select id from revlog")?
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        for review in reviews {
+            cover(col, RevlogId(review))?;
+        }
+        Ok(())
+    }
+
+    fn move_deck(col: &mut Collection, deck: DeckId, preset: DeckConfigId) -> Result<()> {
+        let mut moved = col.storage.get_deck(deck)?.unwrap();
+        moved.normal_mut()?.config_id = preset.0;
+        col.storage.update_deck(&moved)?;
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: the pass deletes a
+    // stale preset's rows one bounded part at a time, with the collection
+    // free between two parts, and the mark goes with the last part. Another
+    // preset's rows stay.
+    #[test]
+    fn a_stale_presets_rows_go_one_bounded_part_at_a_time() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..4 {
+            card_with_reviews(&mut col);
+        }
+        let other = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        let other_review = rated_card_in(&mut col, other.id, 15);
+        cover_every_review(&mut col)?;
+        assert_eq!(fold_rows(&col), 13);
+        let preset = DeckConfigId(1);
+        col.mark_fsrs_predictions_stale(&[preset])?;
+
+        let mut deleted_per_hold = vec![];
+        let finished = delete_stale_fsrs_predictions_in_parts(preset, 2, &mut |step| {
+            let before = fold_rows(&col);
+            step(&mut col)?;
+            deleted_per_hold.push(before - fold_rows(&col));
+            Ok(())
+        })?;
+
+        assert!(finished);
+        assert!(
+            deleted_per_hold.len() > 1,
+            "one part is not a bounded write"
+        );
+        assert!(
+            deleted_per_hold.iter().all(|rows| *rows <= 2),
+            "a part ran over: {deleted_per_hold:?}"
+        );
+        assert_eq!(deleted_per_hold.iter().sum::<usize>(), 12);
+        // only the other preset's row is left, and the mark is gone
+        let left: Vec<i64> = stored_rows(&col).into_iter().map(|row| row.0).collect();
+        assert_eq!(left, vec![other_review.0]);
+        assert!(col.storage.fsrs_prediction_stale_presets()?.is_empty());
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: a deck moved into the
+    // preset while its rows are being deleted loses its rows too; the
+    // deletion starts over with the preset's decks as they are now.
+    #[test]
+    fn a_deck_moved_in_during_the_deletion_loses_its_rows_too() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..4 {
+            card_with_reviews(&mut col);
+        }
+        let other = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        rated_card_in(&mut col, other.id, 15);
+        cover_every_review(&mut col)?;
+        let preset = DeckConfigId(1);
+        col.mark_fsrs_predictions_stale(&[preset])?;
+
+        let mut holds = 0;
+        delete_stale_fsrs_predictions_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            if holds == 2 {
+                move_deck(&mut col, other.id, preset)?;
+            }
+            step(&mut col)
+        })?;
+
+        assert_eq!(fold_rows(&col), 0);
+        assert!(col.storage.fsrs_prediction_stale_presets()?.is_empty());
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: like a batch of the
+    // write, a part of the deletion never touches another collection.
+    #[test]
+    fn the_deletion_never_touches_another_collection() -> Result<()> {
+        let preset = DeckConfigId(1);
+        let mut first = Collection::new();
+        let mut second = Collection::new();
+        for col in [&mut first, &mut second] {
+            for _ in 0..4 {
+                card_with_reviews(col);
+            }
+            cover_every_review(col)?;
+            col.mark_fsrs_predictions_stale(&[preset])?;
+        }
+
+        let mut holds = 0;
+        let finished = delete_stale_fsrs_predictions_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            // the profile switches after the first part
+            if holds == 1 {
+                step(&mut first)
+            } else {
+                step(&mut second)
+            }
+        })?;
+
+        assert!(!finished);
+        assert_eq!(holds, 2);
+        // the first part only gathered the reviews
+        assert_eq!(fold_rows(&first), 12);
+        assert_eq!(fold_rows(&second), 12);
+        assert_eq!(
+            second.storage.fsrs_prediction_stale_presets()?,
+            vec![preset]
+        );
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: a preset marked stale
+    // is stale whatever its rows cover, until its pass has run.
+    #[test]
+    fn a_marked_preset_is_stale_until_its_pass() -> Result<()> {
+        let (mut col, other, covered) = collection_with_three_presets()?;
+        let covered_preset = covered.config_id().unwrap();
+        let mut expected = vec![DeckConfigId(1), other.config_id().unwrap()];
+        expected.sort_unstable();
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, expected);
+
+        col.mark_fsrs_predictions_stale(&[covered_preset])?;
+        expected.push(covered_preset);
+        expected.sort_unstable();
+        assert_eq!(col.presets_with_stale_fsrs_review_predictions()?, expected);
+        assert_eq!(
+            presets_with_stale_fsrs_review_predictions_in_parts(4, &mut |step| step(&mut col))?,
+            expected
+        );
+
+        // its pass deletes the rows and drops the mark
+        refresh(&mut col, covered_preset)?;
+        assert!(col.storage.fsrs_prediction_stale_presets()?.is_empty());
+        assert!(!col
+            .presets_with_stale_fsrs_review_predictions()?
+            .contains(&covered_preset));
         Ok(())
     }
 
@@ -1496,6 +1815,82 @@ mod test {
                 "{pair},{:.2},{:.2},{:.2},{:.2}",
                 current.0, candidate.0, current.1, candidate.1
             );
+        }
+        Ok(())
+    }
+
+    /// How long the pass holds the collection while it deletes the rows of
+    /// stale presets, on a copy of a real collection
+    /// (`ANKI_STALE_DELETE_BENCH_COL`): the presets of
+    /// `ANKI_STALE_DELETE_BENCH_PRESETS` (comma-separated ids) are marked,
+    /// as a save that moves a deck between them marks them, and deleted
+    /// part by part; the rows are put back between rounds. One CSV line per
+    /// round and preset: `round,preset,parts,rows,longest_hold_ms,
+    /// total_hold_ms,wall_ms`.
+    #[test]
+    #[ignore]
+    fn bench_stale_delete_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_DELETE_BENCH_COL")
+            .expect("set ANKI_STALE_DELETE_BENCH_COL to a copy of a collection");
+        let presets: Vec<DeckConfigId> = std::env::var("ANKI_STALE_DELETE_BENCH_PRESETS")
+            .expect("set ANKI_STALE_DELETE_BENCH_PRESETS")
+            .split(',')
+            .map(|id| DeckConfigId(id.trim().parse().unwrap()))
+            .collect();
+        let rounds: usize =
+            std::env::var("ANKI_STALE_DELETE_BENCH_ROUNDS").map_or(10, |n| n.parse().unwrap());
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let decks = col.decks_of_presets(&presets)?;
+        let mut ids = String::new();
+        crate::storage::write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
+        col.storage.db.execute_batch(&format!(
+            "drop table if exists retrievability_cache.bench_stale_rows;
+             create table retrievability_cache.bench_stale_rows as
+                 select * from retrievability_cache.search_stats_fsrs_review_retrievability
+                 where revlog_id in (select r.id from revlog r join cards c on c.id = r.cid
+                                     where c.did in ({ids}) or c.odid in ({ids}));"
+        ))?;
+        println!("round,preset,parts,rows,longest_hold_ms,total_hold_ms,wall_ms");
+        for round in 0..rounds {
+            col.storage.db.execute_batch(
+                "insert or ignore into retrievability_cache.search_stats_fsrs_review_retrievability
+                     select * from retrievability_cache.bench_stale_rows;
+                 pragma retrievability_cache.wal_checkpoint(truncate);",
+            )?;
+            col.mark_fsrs_predictions_stale(&presets)?;
+            for preset in &presets {
+                let before = fold_rows(&col);
+                let (mut parts, mut longest, mut total) = (0, 0f64, 0f64);
+                let mut holds = vec![];
+                let at = Instant::now();
+                delete_stale_fsrs_predictions_in_parts(
+                    *preset,
+                    PREDICTION_WRITE_BATCH_ROWS,
+                    &mut |step| {
+                        let held = Instant::now();
+                        let result = step(&mut col);
+                        let hold = ms(held.elapsed());
+                        parts += 1;
+                        holds.push(hold);
+                        longest = longest.max(hold);
+                        total += hold;
+                        result
+                    },
+                )?;
+                let wall = ms(at.elapsed());
+                if std::env::var("ANKI_STALE_DELETE_BENCH_HOLDS").is_ok() {
+                    let list: Vec<String> = holds.iter().map(|hold| format!("{hold:.0}")).collect();
+                    println!("holds {}", list.join(" "));
+                }
+                println!(
+                    "{round},{},{parts},{},{longest:.2},{total:.2},{wall:.2}",
+                    preset.0,
+                    before - fold_rows(&col)
+                );
+            }
         }
         Ok(())
     }

@@ -42,6 +42,11 @@ pub(crate) const REVIEW_SCHEDULER_TABLE: &str = "review_scheduler";
 /// a deck it could not cover more of is not stale (spec
 /// ui.stats-fsrs-predictions-ready).
 const FSRS_PREDICTION_COVERAGE_TABLE: &str = "fsrs_prediction_coverage";
+/// The presets whose stored FSRS-7 predictions are stale: a save changed
+/// their parameters or moved a deck in or out of them, and the prediction
+/// pass has not yet deleted their rows (spec
+/// ui.stats-fsrs-predictions-ready).
+const FSRS_PREDICTION_STALE_PRESETS_TABLE: &str = "fsrs_prediction_stale_presets";
 /// RWKV-Curve's per-review curve sources (spec ui.card-info-rwkv-curve), one
 /// row per review, and the tags that say which model wrote them.
 const RWKV_CURVE_SOURCES_TABLE: &str = "rwkv_curve_sources";
@@ -1187,27 +1192,155 @@ impl SqliteStorage {
             .collect()
     }
 
-    /// Deletes every stored FSRS prediction of the cards of these decks.
-    /// Parameters are per preset, so a preset's own rows go when its
-    /// parameters change and no superseded value survives to be drawn.
-    pub(crate) fn clear_fsrs_review_predictions_for_decks(
-        &self,
-        decks: &[DeckId],
-    ) -> Result<usize> {
-        if decks.is_empty() {
-            return Ok(0);
+    fn ensure_fsrs_prediction_stale_presets_schema(&self) -> Result<()> {
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_STALE_PRESETS_TABLE);
+        self.db.execute_batch(&format!(
+            "
+            CREATE TABLE IF NOT EXISTS {table} (
+                preset_id INTEGER NOT NULL PRIMARY KEY,
+                marked_at INTEGER NOT NULL
+            );
+            "
+        ))?;
+        Ok(())
+    }
+
+    /// Marks the stored FSRS-7 predictions of these presets' cards stale:
+    /// one small write, however many rows the presets hold. From here on no
+    /// graph reads them, and the prediction pass deletes them in parts
+    /// before it writes the preset again (spec
+    /// ui.stats-fsrs-predictions-ready).
+    pub(crate) fn mark_fsrs_predictions_stale(&self, presets: &[DeckConfigId]) -> Result<()> {
+        if presets.is_empty() {
+            return Ok(());
         }
-        let table =
-            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        self.ensure_fsrs_prediction_stale_presets_schema()?;
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_STALE_PRESETS_TABLE);
+        let mut statement = self.db.prepare_cached(&format!(
+            "insert or replace into {table} (preset_id, marked_at) values (?1, ?2)"
+        ))?;
+        let now = TimestampMillis::now().0;
+        for preset in presets {
+            statement.execute((preset.0, now))?;
+        }
+        Ok(())
+    }
+
+    /// The presets whose stored FSRS-7 predictions are marked stale, in id
+    /// order.
+    pub(crate) fn fsrs_prediction_stale_presets(&self) -> Result<Vec<DeckConfigId>> {
+        let exists: bool = self.db.query_row(
+            &format!(
+                "select exists(select 1 from {RETRIEVABILITY_CACHE_DB_SCHEMA}.sqlite_master
+                 where type = 'table' and name = ?1)"
+            ),
+            (FSRS_PREDICTION_STALE_PRESETS_TABLE,),
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(vec![]);
+        }
+        let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_STALE_PRESETS_TABLE);
+        self.db
+            .prepare_cached(&format!("select preset_id from {table} order by preset_id"))?
+            .query_and_then([], |row| Ok(DeckConfigId(row.get(0)?)))?
+            .collect()
+    }
+
+    /// The reviews of the cards of these decks, in review-id order: the
+    /// reviews whose stored FSRS-7 predictions a stale mark hides. A card
+    /// in a filtered deck counts for its home deck.
+    pub(crate) fn reviews_of_cards_in_decks(&self, decks: &[DeckId]) -> Result<Vec<RevlogId>> {
+        if decks.is_empty() {
+            return Ok(vec![]);
+        }
         let mut ids = String::new();
         write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
-        self.db.execute_batch(&format!(
-            "delete from {table} where revlog_id in (
-                     select r.id from revlog r join cards c on c.id = r.cid
-                     where c.did in ({ids}) or c.odid in ({ids})
-                 );"
-        ))?;
-        Ok(self.db.changes() as usize)
+        self.db
+            .prepare(&format!(
+                "select r.id from cards c join revlog r on r.cid = c.id
+                 where c.did in ({ids}) or c.odid in ({ids})
+                 order by r.id"
+            ))?
+            .query_and_then([], |row| Ok(RevlogId(row.get(0)?)))?
+            .collect()
+    }
+
+    /// The reviews of one part of the cards of these decks: of the first
+    /// `part_cards` cards after `after_card` in card-id order (a card in a
+    /// filtered deck counts for its home deck). Also returns the last card
+    /// of the part, None when the part reached the end.
+    pub(crate) fn reviews_of_cards_in_decks_part(
+        &self,
+        decks: &[DeckId],
+        after_card: i64,
+        part_cards: usize,
+    ) -> Result<(Vec<i64>, Option<i64>)> {
+        if decks.is_empty() {
+            return Ok((vec![], None));
+        }
+        let part_cards = part_cards.max(1);
+        let mut ids = String::new();
+        write_comma_separated_ids(&mut ids, decks.iter().map(|deck| deck.0));
+        let cards: Vec<i64> = self
+            .db
+            .prepare(&format!(
+                "select id from cards
+                 where (did in ({ids}) or odid in ({ids})) and id > ?1
+                 order by id limit ?2"
+            ))?
+            .query_and_then((after_card, part_cards as i64), |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut reviews = vec![];
+        if !cards.is_empty() {
+            let mut ids = String::new();
+            write_comma_separated_ids(&mut ids, cards.iter().copied());
+            reviews = self
+                .db
+                .prepare(&format!("select id from revlog where cid in ({ids})"))?
+                .query_and_then([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+        }
+        let last = (cards.len() == part_cards)
+            .then(|| cards.last().copied())
+            .flatten();
+        Ok((reviews, last))
+    }
+
+    /// Deletes the stored FSRS-7 predictions of these reviews, in one
+    /// write; with `last`, `preset`'s stale mark goes in the same write
+    /// (spec ui.stats-fsrs-predictions-ready).
+    pub(crate) fn delete_stale_fsrs_predictions_part(
+        &self,
+        preset: DeckConfigId,
+        reviews: &[i64],
+        last: bool,
+    ) -> Result<usize> {
+        self.ensure_fsrs_review_retrievability_cache_schema()?;
+        self.ensure_fsrs_prediction_stale_presets_schema()?;
+        self.with_retrievability_cache_write_batch(|| {
+            let mut deleted = 0;
+            if !reviews.is_empty() {
+                let table = Self::qualified_retrievability_cache_table(
+                    FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                );
+                let mut ids = String::new();
+                write_comma_separated_ids(&mut ids, reviews.iter().copied());
+                deleted = self.db.execute(
+                    &format!("delete from {table} where revlog_id in ({ids})"),
+                    [],
+                )?;
+            }
+            if last {
+                let marks =
+                    Self::qualified_retrievability_cache_table(FSRS_PREDICTION_STALE_PRESETS_TABLE);
+                self.db.execute(
+                    &format!("delete from {marks} where preset_id = ?1"),
+                    [preset.0],
+                )?;
+            }
+            Ok(deleted)
+        })
     }
 
     /// Whether ONE role of a legacy table has a row at all; see
@@ -1224,6 +1357,29 @@ impl SqliteStorage {
             ))?
             .query_row((role,), |row| row.get(0))
             .map_err(Into::into)
+    }
+
+    /// `cached_review_prediction_role_exists`, with the rows of `hidden`
+    /// (in review-id order) read as if they were not stored: whether ONE
+    /// role has a row of another review. It stops at the first such row,
+    /// which on most collections is the first row of the role.
+    pub(crate) fn cached_review_prediction_role_exists_outside(
+        &self,
+        table: &str,
+        role: &str,
+        hidden: &[RevlogId],
+    ) -> Result<bool> {
+        let table = Self::qualified_retrievability_cache_table(table);
+        let mut statement = self.db.prepare_cached(&format!(
+            "select revlog_id from {table} where sample_role = ?1 order by revlog_id"
+        ))?;
+        let mut rows = statement.query((role,))?;
+        while let Some(row) = rows.next()? {
+            if hidden.binary_search(&RevlogId(row.get(0)?)).is_err() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Deletes the rows this source stored for these reviews. The

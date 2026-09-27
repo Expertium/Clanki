@@ -104,8 +104,9 @@ seen by a full sync, a backup, official Anki or AnkiDroid:
 
 - `collection.retrievability-cache.sqlite`, the retrievability cache. Every
   table in it but one is computed again from the review log:
-  `search_stats_fsrs_review_retrievability` and `fsrs_prediction_coverage`
-  by the FSRS-7 prediction pass (`ui.stats-fsrs-predictions-ready`);
+  `search_stats_fsrs_review_retrievability`, `fsrs_prediction_coverage`
+  and `fsrs_prediction_stale_presets` by the FSRS-7 prediction pass
+  (`ui.stats-fsrs-predictions-ready`);
   `search_stats_rwkv_review_retrievability`, `review_predictions`,
   `rwkv_curve_sources` and `rwkv_curve_source_tags` by the RWKV recording
   pass (`sched.rwkv-recordings-automatic`); `foreign_card_scan` is a stamp

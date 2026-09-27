@@ -439,7 +439,7 @@ impl Collection {
         let usn = self.usn()?;
         let today = self.timing_today()?.days_elapsed;
         let selected_config = req.configs.last().unwrap();
-        let mut presets_with_new_fsrs_params: HashSet<DeckConfigId> = HashSet::new();
+        let mut presets_with_stale_predictions: HashSet<DeckConfigId> = HashSet::new();
         let mut decks_needing_memory_recompute: HashMap<DeckConfigId, Vec<DeckId>> =
             Default::default();
         let fsrs_toggled = self.get_config_bool(BoolKey::Fsrs) != req.fsrs;
@@ -505,12 +505,18 @@ impl Collection {
                         .push(deck_id);
                 }
                 // The stored per-review predictions are FSRS-7's output for
-                // these parameters, so new parameters make every one of
-                // them wrong (spec ui.stats-fsrs-predictions-ready). Only a
-                // parameter change matters here: desired retention, easy
-                // days and fuzz move the schedule, not the prediction.
+                // these parameters and these folds, so new parameters make
+                // every one of them wrong, and so does a deck moved in or out
+                // of a preset: the folds of both presets now train on other
+                // reviews (spec ui.stats-fsrs-predictions-ready). Desired
+                // retention, easy days and fuzz move the schedule, not the
+                // prediction.
                 if fsrs_toggled || previous_params != current_params {
-                    presets_with_new_fsrs_params.insert(current_config_id);
+                    presets_with_stale_predictions.insert(current_config_id);
+                }
+                if current_config_id != previous_config_id {
+                    presets_with_stale_predictions.insert(previous_config_id);
+                    presets_with_stale_predictions.insert(current_config_id);
                 }
                 if let Some(desired_retention) = current_deck_dr {
                     deck_desired_retention.insert(deck_id, desired_retention);
@@ -519,13 +525,16 @@ impl Collection {
             }
         }
 
-        // Drop the superseded rows inside the same transaction as the
-        // parameter change, so no graph can draw a value that the current
-        // parameters did not produce. The pass that writes the new rows
-        // runs in the background afterwards.
-        if !presets_with_new_fsrs_params.is_empty() {
-            let presets: Vec<DeckConfigId> = presets_with_new_fsrs_params.iter().copied().collect();
-            self.clear_fsrs_review_predictions_of_presets(&presets)?;
+        // Mark the superseded rows stale inside the same transaction as the
+        // change, so no graph can draw a value that the current parameters
+        // and folds did not produce. The mark is one small write; the pass
+        // that deletes the old rows and writes the new ones runs in the
+        // background afterwards.
+        if !presets_with_stale_predictions.is_empty() {
+            let mut presets: Vec<DeckConfigId> =
+                presets_with_stale_predictions.iter().copied().collect();
+            presets.sort_unstable();
+            self.mark_fsrs_predictions_stale(&presets)?;
         }
 
         if !decks_needing_memory_recompute.is_empty() {
@@ -1318,6 +1327,13 @@ mod test {
             },
             false,
         )?;
+        store_prediction(col, review)?;
+        Ok(review)
+    }
+
+    /// A stored FSRS-7 prediction of `review`, as a pass writes it. Not an
+    /// undoable step, as the pass's writes are not.
+    fn store_prediction(col: &Collection, review: RevlogId) -> Result<()> {
         col.storage.set_fsrs_review_retrievability_predictions(
             &[crate::storage::FsrsReviewRetrievabilityCacheRow {
                 revlog_id: review,
@@ -1327,9 +1343,10 @@ mod test {
             }],
             "test",
         )?;
-        Ok(review)
+        Ok(())
     }
 
+    /// The FSRS-7 rows on disk, whether a graph may read them or not.
     fn stored_predictions(col: &Collection) -> usize {
         col.storage
             .cached_review_predictions(
@@ -1339,6 +1356,39 @@ mod test {
             )
             .unwrap()
             .len()
+    }
+
+    /// The FSRS-7 rows a graph reads: those on disk, less those a stale
+    /// mark hides.
+    fn visible_predictions(col: &mut Collection) -> usize {
+        let hidden = col.fsrs_predictions_hidden_reviews().unwrap();
+        col.storage
+            .cached_review_predictions(
+                crate::storage::FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE,
+                "validation_fold",
+                0.into(),
+            )
+            .unwrap()
+            .into_iter()
+            .filter(|(review, _)| !hidden.contains(review))
+            .count()
+    }
+
+    fn stale_presets(col: &Collection) -> Vec<DeckConfigId> {
+        col.storage.fsrs_prediction_stale_presets().unwrap()
+    }
+
+    /// What the prediction pass does first for every stale preset: deletes
+    /// its rows in parts and drops its mark.
+    fn delete_stale_rows(col: &mut Collection) -> Result<()> {
+        for preset in stale_presets(col) {
+            crate::scheduler::fsrs::predictions::delete_stale_fsrs_predictions_in_parts(
+                preset,
+                2,
+                &mut |step| step(col),
+            )?;
+        }
+        Ok(())
     }
 
     /// Turns FSRS on with one save, so that a later save in the same test
@@ -1403,20 +1453,27 @@ mod test {
 
     // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
     #[test]
-    fn a_parameter_change_drops_that_presets_predictions() -> Result<()> {
+    fn a_parameter_change_marks_that_presets_predictions_stale() -> Result<()> {
         let mut col = Collection::new();
         settle_fsrs_on(&mut col)?;
+        delete_stale_rows(&mut col)?;
         card_with_stored_prediction(&mut col, DeckId(1), 10)?;
-        assert_eq!(stored_predictions(&col), 1);
+        assert_eq!(visible_predictions(&mut col), 1);
 
         let mut input = save_request(&mut col)?;
         input.configs[0].inner.fsrs_params_7 =
             (0..34).map(|index| 0.1 + index as f32 * 0.01).collect();
         col.update_deck_configs(input)?;
 
-        // the prediction was FSRS-7's output for the old parameters, so it
-        // is gone rather than kept and drawn
+        // the prediction was FSRS-7's output for the old parameters, so no
+        // graph reads it; the save only marked it, and deleted nothing
+        assert_eq!(visible_predictions(&mut col), 0);
+        assert_eq!(stored_predictions(&col), 1);
+        assert_eq!(stale_presets(&col), vec![DeckConfigId(1)]);
+        // the pass deletes it
+        delete_stale_rows(&mut col)?;
         assert_eq!(stored_predictions(&col), 0);
+        assert!(stale_presets(&col).is_empty());
         Ok(())
     }
 
@@ -1425,12 +1482,13 @@ mod test {
     fn another_presets_predictions_survive_a_parameter_change() -> Result<()> {
         let mut col = Collection::new();
         settle_fsrs_on(&mut col)?;
+        delete_stale_rows(&mut col)?;
         let other_deck = DeckAdder::new("other")
             .with_config(|config| config.name = "Other".to_string())
             .add(&mut col);
         card_with_stored_prediction(&mut col, DeckId(1), 10)?;
         card_with_stored_prediction(&mut col, other_deck.id, 20)?;
-        assert_eq!(stored_predictions(&col), 2);
+        assert_eq!(visible_predictions(&mut col), 2);
 
         let mut input = save_request(&mut col)?;
         // only the default preset's parameters change
@@ -1448,7 +1506,120 @@ mod test {
         col.update_deck_configs(input)?;
 
         // the preset whose parameters did not change keeps its row
+        assert_eq!(visible_predictions(&mut col), 1);
+        delete_stale_rows(&mut col)?;
         assert_eq!(stored_predictions(&col), 1);
+        Ok(())
+    }
+
+    /// The default deck and "moved" use the default preset, "other" uses
+    /// "Other"; each holds a card with a stored prediction.
+    fn three_decks_with_predictions(col: &mut Collection) -> Result<(Deck, Deck, RevlogId)> {
+        settle_fsrs_on(col)?;
+        delete_stale_rows(col)?;
+        let other_deck = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(col);
+        let moved_deck = DeckAdder::new("moved").add(col);
+        card_with_stored_prediction(col, DeckId(1), 10)?;
+        card_with_stored_prediction(col, other_deck.id, 20)?;
+        let moved_review = card_with_stored_prediction(col, moved_deck.id, 30)?;
+        assert_eq!(visible_predictions(col), 3);
+        assert!(stale_presets(col).is_empty());
+        Ok((other_deck, moved_deck, moved_review))
+    }
+
+    /// Gives `deck` the preset "Other", as the deck-options screen does
+    /// when the user picks that preset for the deck and saves.
+    fn move_deck_to_other(col: &mut Collection, deck: &Deck) -> Result<()> {
+        let mut input = save_request(col)?;
+        input.target_deck_id = deck.id;
+        input
+            .configs
+            .sort_by_key(|config| u8::from(config.name == "Other"));
+        assert_eq!(input.configs.last().unwrap().name, "Other");
+        col.update_deck_configs(input)?;
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: a deck that moves to
+    // another preset changes the reviews both presets' folds train on, so
+    // the stored predictions of BOTH are stale, the preset it left as much
+    // as the one it joined; and the save deletes no row itself.
+    #[test]
+    fn a_deck_moved_to_another_preset_marks_both_presets() -> Result<()> {
+        let mut col = Collection::new();
+        let (other_deck, moved_deck, _) = three_decks_with_predictions(&mut col)?;
+        let other_preset = other_deck.config_id().unwrap();
+
+        move_deck_to_other(&mut col, &moved_deck)?;
+
+        let mut expected = vec![DeckConfigId(1), other_preset];
+        expected.sort_unstable();
+        assert_eq!(stale_presets(&col), expected);
+        // no graph reads any of the three rows, the default deck's included
+        assert_eq!(visible_predictions(&mut col), 0);
+        // and the save deleted none of them
+        assert_eq!(stored_predictions(&col), 3);
+        // the pass does
+        delete_stale_rows(&mut col)?;
+        assert_eq!(stored_predictions(&col), 0);
+        assert!(stale_presets(&col).is_empty());
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: an undo of the move
+    // puts the deck back, and the rows the pass wrote in between were made
+    // for the other folds, so both presets are stale again. A redo is the
+    // same move once more.
+    #[test]
+    fn an_undo_or_redo_of_a_move_marks_both_presets_again() -> Result<()> {
+        let mut col = Collection::new();
+        let (other_deck, moved_deck, moved_review) = three_decks_with_predictions(&mut col)?;
+        let other_preset = other_deck.config_id().unwrap();
+        let mut both = vec![DeckConfigId(1), other_preset];
+        both.sort_unstable();
+
+        move_deck_to_other(&mut col, &moved_deck)?;
+        delete_stale_rows(&mut col)?;
+        // the pass wrote the row again for the new folds
+        store_prediction(&col, moved_review)?;
+        assert!(stale_presets(&col).is_empty());
+        assert_eq!(visible_predictions(&mut col), 1);
+
+        col.undo()?;
+        let deck = col.storage.get_deck(moved_deck.id)?.unwrap();
+        assert_eq!(deck.config_id(), Some(DeckConfigId(1)));
+        assert_eq!(stale_presets(&col), both);
+        assert_eq!(visible_predictions(&mut col), 0);
+
+        delete_stale_rows(&mut col)?;
+        col.redo()?;
+        let deck = col.storage.get_deck(moved_deck.id)?.unwrap();
+        assert_eq!(deck.config_id(), Some(other_preset));
+        assert_eq!(stale_presets(&col), both);
+        Ok(())
+    }
+
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn an_undo_of_a_parameter_change_marks_the_preset_again() -> Result<()> {
+        let mut col = Collection::new();
+        settle_fsrs_on(&mut col)?;
+        delete_stale_rows(&mut col)?;
+        let review = card_with_stored_prediction(&mut col, DeckId(1), 10)?;
+        let mut input = save_request(&mut col)?;
+        input.configs[0].inner.fsrs_params_7 =
+            (0..34).map(|index| 0.1 + index as f32 * 0.01).collect();
+        col.update_deck_configs(input)?;
+        delete_stale_rows(&mut col)?;
+        // the pass wrote the row again for the new parameters
+        store_prediction(&col, review)?;
+        assert_eq!(visible_predictions(&mut col), 1);
+
+        col.undo()?;
+        assert_eq!(stale_presets(&col), vec![DeckConfigId(1)]);
+        assert_eq!(visible_predictions(&mut col), 0);
         Ok(())
     }
 
@@ -1457,6 +1628,7 @@ mod test {
     fn a_desired_retention_change_keeps_the_predictions() -> Result<()> {
         let mut col = Collection::new();
         settle_fsrs_on(&mut col)?;
+        delete_stale_rows(&mut col)?;
         card_with_stored_prediction(&mut col, DeckId(1), 10)?;
 
         let mut input = save_request(&mut col)?;
@@ -1464,7 +1636,8 @@ mod test {
         col.update_deck_configs(input)?;
 
         // desired retention moves the schedule, not the prediction
-        assert_eq!(stored_predictions(&col), 1);
+        assert_eq!(visible_predictions(&mut col), 1);
+        assert!(stale_presets(&col).is_empty());
         Ok(())
     }
 

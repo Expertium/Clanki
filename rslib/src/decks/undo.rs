@@ -22,6 +22,15 @@ impl Collection {
                     .storage
                     .get_deck(deck.id)?
                     .or_invalid("deck disappeared")?;
+                // an undo or redo that moves the deck to another preset
+                // leaves the stored FSRS-7 predictions of both presets
+                // stale, as the move itself did (spec
+                // ui.stats-fsrs-predictions-ready)
+                if let (Some(restored), Some(now)) = (deck.config_id(), current.config_id()) {
+                    if restored != now {
+                        self.mark_fsrs_predictions_stale(&[now, restored])?;
+                    }
+                }
                 self.update_single_deck_undoable(&mut deck, current)
             }
             UndoableDeckChange::Removed(deck) => self.restore_deleted_deck(*deck),

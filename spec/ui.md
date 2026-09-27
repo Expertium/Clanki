@@ -2092,10 +2092,10 @@ batches already written stay in the job's own collection, as for any pass
 cut off part way. This holds even when the other collection is a copy of the
 first, whose preset passes every other check.
 Only the rows this pass wrote go, named by review id, so another preset's
-rows are untouched. The cache therefore holds no mixture of rows from two
-sets of parameters: a parameter change deletes that preset's stored rows in
-the same transaction as the change, and whatever the pass wrote after that
-deletion it takes back itself.
+rows are untouched. No graph therefore reads a mixture of rows from two
+sets of parameters: a parameter change marks that preset's stored rows
+stale in the same transaction as the change, and whatever the pass wrote
+after that mark it takes back itself.
 
 A pass cut off part way through a preset — the profile closes, Clanki stops
 — leaves the batches it had written. They are validation folds made by the
@@ -2128,22 +2128,46 @@ reviews are still uncovered and the newest of them, together with the preset
 and its selection (search filter and "Ignore reviews before"). A deck whose
 uncovered reviews are exactly the recorded ones, for the same preset and
 selection, is not stale, so an unchanged preset is not fitted again the next
-day. A new review, new parameters (they drop the rows), a new search filter
-or date, or a deck moved to another preset makes it stale again. A review
+day. A new review, new parameters (they mark the rows stale), a new search
+filter or date, or a deck moved to another preset makes it stale again. A review
 answered after the pass read the preset is never recorded as uncoverable.
 The record lives in the prediction cache, next to the rows.
 
 When a preset's FSRS-7 parameters change, every prediction those parameters
-produced is wrong, and Clanki deletes that preset's stored rows in the same
-transaction as the change. Only that preset's rows go; parameters are per
-preset, and another preset's rows were made by parameters that did not
-change. Desired retention, easy days and fuzz change the schedule but not
-the prediction, so they delete nothing.
+produced is wrong, and Clanki marks that preset's stored rows stale in the
+same transaction as the change. When a save in deck options moves a deck to
+another preset, the folds of both presets now train on other reviews, so
+both are marked: the preset the deck joined and the preset it left. Only
+those presets are marked; parameters and folds are per preset, and another
+preset's rows were made by parameters and folds that did not change. Desired
+retention, easy days and fuzz change the schedule but not the prediction,
+so they mark nothing. The automatic optimization marks its preset in the
+same way when it saves new parameters (`deck-options.fsrs-auto-optimize`).
 
-Between the deletion and the end of the pass, FSRS-7 has no rows. The
-graphs then show FSRS-7 as absent with its own reason, "its predictions for
-these reviews are being computed", and never draw a value that the current
-parameters did not produce. No other algorithm is drawn in its place.
+The mark is one small write; the save deletes no row. While a preset is
+marked, every graph reads the stored rows of its cards (a card in a
+filtered deck counts for its home deck) as if they were gone: they give no
+FSRS-7 value, and they do not decide which sample role FSRS-7 is read from.
+The prediction pass deletes them before it writes that preset again. It
+first reads the reviews of the preset's cards, 1,000 cards at a time, and
+then deletes their rows in review order, at most 2,500 reviews per write.
+Each part holds the collection on its own, the collection is free between
+two parts, and the mark goes with the last part, in the same write. A part
+goes by the decks the preset has when it runs; when they changed since the
+deletion began, it starts over, so a deck moved in meanwhile loses its rows
+too. A marked preset is stale for the pass whatever its rows cover.
+
+An undo or a redo keeps the stored rows valid for the state it restores. An
+undo or redo that moves a deck to another preset marks both presets, and
+one that brings back other FSRS-7 parameters marks that preset, even when
+the pass has already written the rows again in between. After an undo or
+redo that changes a deck or a preset, the pass runs again at once.
+
+Between the mark and the end of the pass, FSRS-7 has no rows for those
+presets. The graphs then show FSRS-7 as absent with its own reason, "its
+predictions for these reviews are being computed", and never draw a value
+that the current parameters and folds did not produce. No other algorithm
+is drawn in its place.
 
 A pass that fails says so: Clanki shows one message in that session naming
 what could not be stored, and does not count that day as done, so the pass
@@ -2233,6 +2257,21 @@ preset's parameters. And no preset ever became covered, because the first
 ratings and the oldest sixth never get a fold, so the pass fitted five folds
 of every preset every day: about 76 s of CPU on his collection.
 
+The stale mark is the batched write seen from the save. The save used to
+delete the rows itself: on Andrew's collection, giving a deck of 17,944
+cards another preset deleted 80,964 rows, which took 475 ms and as much
+again to commit, and the save showed "Processing..." after about half a
+second (1.4 to 2.7 s in the app). Andrew, 2026-09-27, approved marking the
+presets instead and letting the pass delete the rows in parts, and marking
+the preset the deck left as well: its rows stayed although its folds now
+trained on other reviews. The graphs still never draw a stale prediction,
+and never draw another algorithm in FSRS-7's place. With the mark the same
+save takes 0.13 s of backend time instead of 1.8 s, and the pass's deletion
+of both presets' rows (206,871 rows) holds the collection for 3 to 20 ms
+per part and at most 0.15 s, when SQLite folds its log back into the
+file. Parts in card order instead of review order held it for up to half a
+second: the rows of one card's reviews lie all over the cache.
+
 **Pinned by:** `test_the_pass_waits_for_the_rwkv_state_cache`,
 `test_the_collection_is_free_between_presets`,
 `test_a_pass_that_fails_says_so`,
@@ -2246,9 +2285,16 @@ of every preset every day: about 76 s of CPU on his collection.
 `test_the_next_profile_gets_its_pass_when_the_old_one_stops_late`,
 `test_a_failure_with_the_collection_still_open_still_says_so`
 (`qt/tests/test_fsrs_predictions.py`);
-`a_parameter_change_drops_that_presets_predictions`,
-`another_presets_predictions_survive_a_parameter_change`
+`test_undo_or_redo_of_a_deck_change_writes_the_predictions_again`
+(`qt/tests/test_operations_collection.py`);
+`a_parameter_change_marks_that_presets_predictions_stale`,
+`another_presets_predictions_survive_a_parameter_change`,
+`a_deck_moved_to_another_preset_marks_both_presets`,
+`an_undo_or_redo_of_a_move_marks_both_presets_again`,
+`an_undo_of_a_parameter_change_marks_the_preset_again`
 (`rslib/src/deckconfig/update.rs`);
+`a_stale_presets_predictions_read_as_if_deleted`
+(`rslib/src/stats/review_metrics.rs`);
 `the_pass_covers_every_preset_with_uncovered_reviews`,
 `a_presets_rows_are_written_one_bounded_batch_at_a_time`,
 `a_save_midway_through_the_write_takes_back_what_was_written`,
@@ -2256,7 +2302,11 @@ of every preset every day: about 76 s of CPU on his collection.
 `the_folds_train_on_the_optimizers_reviews`,
 `a_preset_is_covered_after_its_pass_until_it_changes`,
 `a_review_after_the_read_is_not_recorded_as_uncoverable`,
-`a_search_filter_writes_rows_for_the_presets_own_reviews_only`
+`a_search_filter_writes_rows_for_the_presets_own_reviews_only`,
+`a_stale_presets_rows_go_one_bounded_part_at_a_time`,
+`a_deck_moved_in_during_the_deletion_loses_its_rows_too`,
+`the_deletion_never_touches_another_collection`,
+`a_marked_preset_is_stale_until_its_pass`
 (`rslib/src/scheduler/fsrs/predictions.rs`);
 `qt/tests/test_fsrs_predictions.py`; `ts/routes/graphs/roc.test.ts`.
 

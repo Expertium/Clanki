@@ -211,6 +211,10 @@ impl Collection {
         } else {
             TimestampMillis((timing.next_day_at.0 - (days as i64) * 86_400) * 1000)
         };
+        // the reviews whose FSRS-7 rows a stale mark hides: read as absent,
+        // exactly as if the rows were gone (spec
+        // ui.stats-fsrs-predictions-ready)
+        let hidden_fsrs = self.fsrs_predictions_hidden_reviews()?;
         let guard = self.search_cards_into_table_with_stats_search(
             search,
             SortMode::NoOrder,
@@ -228,7 +232,7 @@ impl Collection {
         // each algorithm names itself; no read can reach another
         // algorithm's rows without saying whose they are
         let (mut ratings, fsrs, rwkv, rwkv_curve) =
-            read_ratings_and_predictions(storage, cutoff, many_cards)?;
+            read_ratings_and_predictions(storage, cutoff, many_cards, &hidden_fsrs)?;
         // No algorithm knows anything about a card before its first answer,
         // so that rating says nothing about any of them; srs-benchmark
         // leaves it out too (Andrew, 2026-09-23). The same holds for the
@@ -366,6 +370,7 @@ mod tests {
     use crate::storage::FsrsReviewRetrievabilitySampleRole;
     use crate::storage::RwkvReviewRetrievabilityCacheRow;
     use crate::storage::RwkvReviewRetrievabilitySampleRole;
+    use crate::tests::DeckAdder;
     use crate::tests::NoteAdder;
 
     /// One algorithm's series in the response.
@@ -384,7 +389,12 @@ mod tests {
     /// graphs leave a card's first rating out, so the ratings a test adds
     /// are the ones it means.
     fn add_card(col: &mut Collection) -> CardId {
-        let note = NoteAdder::basic(col).add(col);
+        add_card_in(col, DeckId(1))
+    }
+
+    /// `add_card`, in `deck`.
+    fn add_card_in(col: &mut Collection, deck: DeckId) -> CardId {
+        let note = NoteAdder::basic(col).deck(deck).add(col);
         let mut card = col.storage.all_cards_of_note(note.id).unwrap().remove(0);
         card.ctype = CardType::Review;
         card.queue = CardQueue::Review;
@@ -1027,6 +1037,81 @@ mod tests {
         Ok(())
     }
 
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready: while a preset is
+    // marked stale, the graphs read its FSRS-7 rows exactly as they read
+    // them once the pass has deleted them: absent, and choosing no role.
+    #[test]
+    fn a_stale_presets_predictions_read_as_if_deleted() -> Result<()> {
+        let mut col = Collection::new();
+        let other = DeckAdder::new("other")
+            .with_config(|config| config.name = "Other".to_string())
+            .add(&mut col);
+        // the default preset's reviews have validation folds; the other
+        // preset's review has only a row written while answering
+        let card = add_card(&mut col);
+        let first = rate(&mut col, card, -20, 3);
+        let second = rate(&mut col, card, -10, 1);
+        store_fsrs(
+            &col,
+            first,
+            0.8,
+            FsrsReviewRetrievabilitySampleRole::ValidationFold,
+        );
+        store_fsrs(
+            &col,
+            second,
+            0.3,
+            FsrsReviewRetrievabilitySampleRole::ValidationFold,
+        );
+        let other_card = add_card_in(&mut col, other.id);
+        let answered = rate(&mut col, other_card, -15, 3);
+        store_fsrs(
+            &col,
+            answered,
+            0.7,
+            FsrsReviewRetrievabilitySampleRole::PostOptimization,
+        );
+        let before = col.scored_ratings("", 0)?;
+        assert_eq!(before.fsrs_role, "validation_fold");
+        assert_eq!(before.revlog_ids, vec![first.0, second.0]);
+
+        col.mark_fsrs_predictions_stale(&[DeckConfigId(1)])?;
+        let marked = col.scored_ratings("", 0)?;
+        let preset_search = col.review_predictions("deck:Default", 0)?;
+        crate::scheduler::fsrs::predictions::delete_stale_fsrs_predictions_in_parts(
+            DeckConfigId(1),
+            1,
+            &mut |step| step(&mut col),
+        )?;
+        let deleted = col.scored_ratings("", 0)?;
+
+        // with the folds gone the role is the one the other preset has
+        assert_eq!(deleted.fsrs_role, "post_optimization");
+        assert_eq!(deleted.revlog_ids, vec![answered.0]);
+        assert_eq!(marked.fsrs_role, deleted.fsrs_role);
+        assert_eq!(marked.revlog_ids, deleted.revlog_ids);
+        let bits = |values: &[f32]| {
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(&marked.fsrs_predictions),
+            bits(&deleted.fsrs_predictions)
+        );
+        assert_eq!(
+            (marked.fsrs_only, marked.unscored, marked.newer_reviews),
+            (deleted.fsrs_only, deleted.unscored, deleted.newer_reviews)
+        );
+        // the stale preset's own deck shows FSRS-7 as absent
+        assert_eq!(
+            series_of(&preset_search, SchedulingAlgorithmProto::Fsrs7).unavailable,
+            Unavailable::NoReviews as i32
+        );
+        Ok(())
+    }
+
     // Pins spec/ui.md#ui.stats-model-metrics
     #[test]
     fn newer_ratings_than_the_stored_predictions_are_reported() -> Result<()> {
@@ -1411,10 +1496,14 @@ fn weighted_slope(
 /// out. With no second connection to be had (a cache in memory, an open
 /// transaction) all four run on the collection's connection, one after
 /// another, and give the same four lists.
+///
+/// `hidden_fsrs` are the reviews whose FSRS-7 rows are stale; FSRS-7 reads
+/// them as absent.
 fn read_ratings_and_predictions(
     storage: &SqliteStorage,
     cutoff: TimestampMillis,
     many_cards: bool,
+    hidden_fsrs: &[RevlogId],
 ) -> Result<(
     Vec<SearchedRating>,
     CachedPredictions,
@@ -1428,19 +1517,19 @@ fn read_ratings_and_predictions(
         let ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards)?;
         return Ok((
             ratings,
-            read_predictions(storage, &FSRS7, cutoff)?,
-            read_predictions(storage, &RWKV_INSTANT, cutoff)?,
-            read_predictions(storage, &RWKV_CURVE, cutoff)?,
+            read_predictions(storage, &FSRS7, cutoff, hidden_fsrs)?,
+            read_predictions(storage, &RWKV_INSTANT, cutoff, &[])?,
+            read_predictions(storage, &RWKV_CURVE, cutoff, &[])?,
         ));
     };
     std::thread::scope(|scope| {
-        let fsrs = scope.spawn(move || read_predictions(&fsrs_reader, &FSRS7, cutoff));
-        let rwkv = scope.spawn(move || read_predictions(&rwkv_reader, &RWKV_INSTANT, cutoff));
+        let fsrs = scope.spawn(move || read_predictions(&fsrs_reader, &FSRS7, cutoff, hidden_fsrs));
+        let rwkv = scope.spawn(move || read_predictions(&rwkv_reader, &RWKV_INSTANT, cutoff, &[]));
         // RWKV-Curve's rows are in the table every algorithm shares, whose
         // reader creates it when it is missing; a write belongs on the
         // collection's connection, so this read stays here
         let ratings = storage.searched_ratings_that_affect_scheduling(cutoff, many_cards);
-        let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff);
+        let rwkv_curve = read_predictions(storage, &RWKV_CURVE, cutoff, &[]);
         let joined = |thread: std::thread::ScopedJoinHandle<'_, Result<CachedPredictions>>| {
             thread.join().unwrap_or_else(|payload| {
                 std::panic::resume_unwind(payload);
@@ -1454,17 +1543,27 @@ fn read_ratings_and_predictions(
 /// One algorithm's rows, from a single sample role: the role its own
 /// contract chooses out of the roles it has rows for. Roles are never
 /// mixed, and no other algorithm's rows are reachable from here.
+///
+/// The rows of `hidden` (in review-id order) are read as if they were not
+/// stored: they neither choose the role nor reach the list. Only a legacy
+/// table that takes its first role (FSRS-7) is ever given any.
 fn read_predictions(
     storage: &SqliteStorage,
     algorithm: &PredictsRecall,
     after: TimestampMillis,
+    hidden: &[RevlogId],
 ) -> Result<CachedPredictions> {
     // an algorithm that takes the first role it has rows for only asks
     // whether each role has one, which an index answers at once; counting
     // every role's reviews reads a row per review of the collection
     let has_any_row = |role: &str| match algorithm.store {
         PredictionStore::Generic => storage.review_prediction_role_exists(algorithm.id(), role),
-        PredictionStore::Legacy(table) => storage.cached_review_prediction_role_exists(table, role),
+        PredictionStore::Legacy(table) if hidden.is_empty() => {
+            storage.cached_review_prediction_role_exists(table, role)
+        }
+        PredictionStore::Legacy(table) => {
+            storage.cached_review_prediction_role_exists_outside(table, role, hidden)
+        }
     };
     let chosen = match algorithm.role_choice {
         RoleChoice::FirstHonest => {
@@ -1500,10 +1599,13 @@ fn read_predictions(
     let Some(role) = chosen else {
         return Ok(CachedPredictions::none());
     };
-    let rows = match algorithm.store {
+    let mut rows = match algorithm.store {
         PredictionStore::Generic => storage.review_predictions_of(algorithm.id(), role, after)?,
         PredictionStore::Legacy(table) => storage.cached_review_predictions(table, role, after)?,
     };
+    if !hidden.is_empty() {
+        rows.retain(|(review, _)| hidden.binary_search(review).is_err());
+    }
     Ok(CachedPredictions {
         role: (*role).to_string(),
         by_review: rows,
