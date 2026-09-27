@@ -81,6 +81,12 @@ class Overview:
         def success(rwkv_counts_pending: bool) -> None:
             if generation != self._rwkv_count_generation:
                 return
+            if self.mw.state != "overview":
+                # Study was clicked while the counts were read: drawing the
+                # overview now would cover the review screen (spec
+                # ui.overview-refresh-after-leaving). The next showing reads
+                # them again.
+                return
             self._refresh_needed = False
             self._rwkv_counts_pending = rwkv_counts_pending
             self._renderPage()

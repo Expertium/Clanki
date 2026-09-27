@@ -164,3 +164,67 @@ def test_overview_mode_redraw_repaints_the_page_and_the_bottom_bar() -> None:
     render_page.assert_called_once()
     render_bottom.assert_called_once()
     ov.refresh.assert_not_called()
+
+
+def _overview_refresh_in_flight(monkeypatch: Any) -> tuple[Any, list[Any]]:
+    """An overview whose count refresh has started and not returned yet: the
+    QueryOp is held, so the test decides when its success runs."""
+    import aqt.overview
+
+    ops: list[Any] = []
+
+    class HeldQueryOp:
+        def __init__(self, *, parent: Any, op: Any, success: Any) -> None:
+            self.success = success
+
+        def run_in_background(self) -> None:
+            ops.append(self)
+
+    monkeypatch.setattr(aqt.overview, "QueryOp", HeldQueryOp)
+    ov = cast(
+        Any,
+        SimpleNamespace(
+            mw=SimpleNamespace(state="overview", web=MagicMock()),
+            _rwkv_count_generation=0,
+            _refresh_needed=True,
+            _rwkv_counts_pending=True,
+            _renderPage=MagicMock(),
+            _renderBottom=MagicMock(),
+            _retry_rwkv_counts=MagicMock(),
+        ),
+    )
+    Overview.refresh(ov)
+    return ov, ops
+
+
+def test_a_count_refresh_that_returns_after_study_does_not_draw_the_overview(
+    monkeypatch: Any,
+) -> None:
+    """Pins spec/ui.md#ui.overview-refresh-after-leaving: Study was clicked
+    while the overview read its counts (right after the RWKV state became
+    ready, which refreshes the overview). The counts came back after the
+    review screen had started, and drew the overview over it: the question
+    never counted as shown, so Space did nothing and "Study Now" did
+    nothing either."""
+    ov, ops = _overview_refresh_in_flight(monkeypatch)
+    ov.mw.state = "review"
+
+    ops[0].success(False)
+
+    ov._renderPage.assert_not_called()
+    ov._renderBottom.assert_not_called()
+    ov._retry_rwkv_counts.assert_not_called()
+    # the next showing of the overview reads the counts again
+    assert ov._refresh_needed
+
+
+def test_a_count_refresh_on_the_open_overview_still_draws_it(
+    monkeypatch: Any,
+) -> None:
+    ov, ops = _overview_refresh_in_flight(monkeypatch)
+
+    ops[0].success(False)
+
+    ov._renderPage.assert_called_once()
+    ov._renderBottom.assert_called_once()
+    assert not ov._refresh_needed

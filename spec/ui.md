@@ -2523,3 +2523,26 @@ main has the same code in all three functions.
 (`qt/tests/test_utils.py`), `test_a_tooltip_on_a_deleted_parent_falls_back_to_the_main_window`
 (`qt/tests/test_tooltip.py`), `test_show_info_on_a_deleted_parent_falls_back_to_the_main_window`
 (`qt/tests/test_utils.py`).
+
+## ui.overview-refresh-after-leaving
+
+Given the deck overview reading its counts in the background, when the user
+leaves the overview before the counts come back (Study, the deck list, or
+any other screen), the counts are dropped: the overview is not drawn, and
+the next showing of the overview reads them again. Only a read that comes
+back while the overview is still open draws it.
+
+**Why:** the overview reads its counts off the main thread, and while the
+RWKV state loads it reads them again every 2 seconds; the end of the RWKV
+start-up restore or build also refreshes it. A click on Study while such a
+read ran started the review screen, and the late counts then drew the
+overview over it. The first card never counted as shown: Space did nothing,
+"Study Now" did nothing, and nothing ended it but leaving the screen.
+Measured on a copy of Andrew's collection (2026-09-27): Study 0.4 s after
+the RWKV state was restored left the overview on screen in 6 of 6 runs;
+with this rule the first card showed 0.34-0.43 s after Study in 4 of 4. Upstream Anki draws the
+overview on the main thread, so it has no such read to come back late.
+
+**Pinned by:** `test_a_count_refresh_that_returns_after_study_does_not_draw_the_overview`,
+`test_a_count_refresh_on_the_open_overview_still_draws_it`
+(`qt/tests/test_overview.py`).
