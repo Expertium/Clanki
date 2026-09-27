@@ -3219,3 +3219,66 @@ def test_deleting_the_note_in_the_reviewer_opens_no_waiting_window(
 
     assert not reviewer._review_actions_are_blocked()
     assert tooltips == ["1 deleted"]
+
+
+class _CapturedOp:
+    """Stands in for a collection op: keeps the success callback instead of
+    running the op."""
+
+    def __init__(self, captured: list[Callable[[Any], None]]) -> None:
+        self._captured = captured
+
+    def success(self, callback: Callable[[Any], None]) -> _CapturedOp:
+        self._captured.append(callback)
+        return self
+
+    def run_in_background(self, **_kwargs: Any) -> None:
+        pass
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_mark_that_finishes_after_the_card_left_draws_nothing(
+    monkeypatch: pytest.MonkeyPatch, marked: bool
+) -> None:
+    captured: list[Callable[[Any], None]] = []
+    monkeypatch.setattr(
+        reviewer_module, "add_tags_to_notes", lambda **_: _CapturedOp(captured)
+    )
+    monkeypatch.setattr(
+        reviewer_module, "remove_tags_from_notes", lambda **_: _CapturedOp(captured)
+    )
+    note = SimpleNamespace(id=7, has_tag=lambda _tag: marked)
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace()
+    reviewer.web = MagicMock()
+    reviewer.card = SimpleNamespace(note=lambda: note)
+
+    reviewer.toggle_mark_on_current_note()
+    # the card leaves the screen before the tag change finishes
+    reviewer.card = None
+    captured[0](SimpleNamespace(count=1))
+
+    reviewer.web.eval.assert_not_called()
+
+
+def test_mark_that_finishes_while_its_card_shows_redraws_the_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[Callable[[Any], None]] = []
+    monkeypatch.setattr(
+        reviewer_module, "add_tags_to_notes", lambda **_: _CapturedOp(captured)
+    )
+    tags: list[str] = []
+    note = SimpleNamespace(id=7, has_tag=lambda tag: tag in tags)
+    loads: list[bool] = []
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.mw = SimpleNamespace()
+    reviewer.web = MagicMock()
+    reviewer.card = SimpleNamespace(note=lambda: note, load=lambda: loads.append(True))
+
+    reviewer.toggle_mark_on_current_note()
+    tags.append("marked")
+    captured[0](SimpleNamespace(count=1))
+
+    assert loads == [True]
+    reviewer.web.eval.assert_called_once_with("_drawMark(true);")
