@@ -795,7 +795,8 @@ for the toolbar's new background. The screen's pages are expected from the
 moment the screen opens, so the toolbar and the bottom bar wait for pages
 that are drawn after work in the background (the deck list's and the
 overview's counts, the Study screen's queue). The bottom bar changes height
-once, when its new page is shown. The toolbar's hover shadow and its
+once, when its new page is shown; leaving the Study screen does not give it
+the Study screen's height first. The toolbar's hover shadow and its
 sliding away on the Study screen (Preferences > "Hide top bar during
 review") still animate.
 
@@ -803,8 +804,13 @@ review") still animate.
 Study screen: "Fix both": the toolbar's animation (about 300 ms, 8 to 10
 frames on every switch) and the two height changes of the bottom bar on
 the way back to the deck list, each before the deck list itself appeared.
+Andrew, 2026-09-28, "Yeah, fix it": the bar's delayed measure, started while
+the state was still "review", gave it the Study page's 67 px after the switch,
+and a 4 px strip of background showed under the old Study page for ~130 ms.
 
-**Pinned by:** `qt/tests/test_toolbar_switch.py`.
+**Pinned by:** `qt/tests/test_toolbar_switch.py` (for leaving the Study
+screen: `test_leaving_the_study_screen_does_not_give_the_bar_the_study_height`,
+`test_the_study_screen_still_measures_its_bar`).
 
 ## ui.review-heatmap-kept-counts
 
