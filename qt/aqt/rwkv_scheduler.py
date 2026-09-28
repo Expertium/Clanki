@@ -267,6 +267,20 @@ _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
 # set on the stored cache when a history change keeps the resident state; the
 # exact rebuild's save writes metadata without it
 _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY = "historyChangedSinceSaved"
+# The deltas after this review id were appended by the idle save
+# (`_save_rwkv_state_cache_tail`), not replayed by a restore: the next restore
+# replays them as it replays the reviews it reads after the stored state, so
+# it saves their curve sources as that read did. Every save that rebuilds the
+# metadata from its base leaves the key out.
+_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY = "unrecordedAfterReviewId"
+# The stored cache as it was before the first idle save that appended to it:
+# its identity and the length of its deltas log. An undo can take out a review
+# the idle save appended; the stored history is then no start of the history,
+# and the restore (or the next idle save) goes back to this base and reads the
+# reviews after it, as it would have without the idle save, instead of
+# reading the whole history. Every save that rebuilds the metadata from its
+# base leaves the key out.
+_RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY = "idleSaveBase"
 _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN = b"anki-rwkv-state-cache-history-v1\0"
 _RWKV_STATE_CACHE_EMPTY_HISTORY_HASH = hashlib.sha256(
     _RWKV_STATE_CACHE_HISTORY_HASH_DOMAIN
@@ -291,6 +305,11 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
 
 _reviewer_backend_state_lock = threading.RLock()
 _reviewer_backend_execution_lock = threading.RLock()
+# Held while the stored state cache's metadata (and the deltas log it names)
+# is read and replaced, by the writers that read it first: the idle save
+# replaces it only if it is still the metadata it validated, so no other
+# writer's change (a history-change mark, a save) is lost under it.
+_rwkv_state_cache_write_lock = threading.RLock()
 # set while the recording pass rests between two batches: it still owns the
 # replayed state and has only handed the execution lock back, so a prediction
 # made now would read a half-replayed state (spec
@@ -5325,31 +5344,32 @@ def _mark_rwkv_state_cache_history_changed(reviewer: object) -> None:
     keeps it the same way (spec sched.rwkv-history-change-keeps-state),
     instead of building the state from the whole history while the first
     card waits."""
-    try:
-        metadata = _read_rwkv_state_cache_metadata(reviewer)
-        if (
-            metadata is None
-            or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
-            or metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
-        ):
-            return
-        cache_dir = _rwkv_state_cache_dir(reviewer)
-        if cache_dir is None:
-            return
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_META_FILE,
-            json.dumps(
-                {**metadata, _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY: True},
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf8"),
-        )
-        logger.debug("marked the RWKV state cache as saved before a history change")
-    except Exception:
-        logger.warning(
-            "failed to mark the RWKV state cache as saved before a history change",
-            exc_info=True,
-        )
+    with _rwkv_state_cache_write_lock:
+        try:
+            metadata = _read_rwkv_state_cache_metadata(reviewer)
+            if (
+                metadata is None
+                or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+                or metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+            ):
+                return
+            cache_dir = _rwkv_state_cache_dir(reviewer)
+            if cache_dir is None:
+                return
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(
+                    {**metadata, _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY: True},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf8"),
+            )
+            logger.debug("marked the RWKV state cache as saved before a history change")
+        except Exception:
+            logger.warning(
+                "failed to mark the RWKV state cache as saved before a history change",
+                exc_info=True,
+            )
 
 
 def forget_rwkv_state_cache_history_change(mw: object, *, reason: str) -> None:
@@ -5359,24 +5379,30 @@ def forget_rwkv_state_cache_history_change(mw: object, *, reason: str) -> None:
     then builds the state from the whole history (spec
     sched.rwkv-history-change-keeps-state). A sync never sets the mark."""
     reviewer = SimpleNamespace(mw=mw)
-    try:
-        metadata = _read_rwkv_state_cache_metadata(reviewer)
-        if metadata is None or _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY not in metadata:
-            return
-        cache_dir = _rwkv_state_cache_dir(reviewer)
-        if cache_dir is None:
-            return
-        updated = dict(metadata)
-        updated.pop(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY, None)
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_META_FILE,
-            json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf8"),
-        )
-        logger.info("RWKV state cache history-change mark dropped: %s", reason)
-    except Exception:
-        logger.warning(
-            "failed to drop the RWKV state cache history-change mark", exc_info=True
-        )
+    with _rwkv_state_cache_write_lock:
+        try:
+            metadata = _read_rwkv_state_cache_metadata(reviewer)
+            if (
+                metadata is None
+                or _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY not in metadata
+            ):
+                return
+            cache_dir = _rwkv_state_cache_dir(reviewer)
+            if cache_dir is None:
+                return
+            updated = dict(metadata)
+            updated.pop(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY, None)
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(updated, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
+            logger.info("RWKV state cache history-change mark dropped: %s", reason)
+        except Exception:
+            logger.warning(
+                "failed to drop the RWKV state cache history-change mark", exc_info=True
+            )
 
 
 def _note_rwkv_history_change(
@@ -14112,6 +14138,7 @@ def _finish_rwkv_state_cache_operation(
         # longer: nothing else would tell them
         _answer_buttons_ask_again(mw)
         start_rwkv_maintenance_if_needed(mw)
+        _arm_rwkv_state_cache_idle_save(mw)
     if _refresh_active_rwkv_count_view(mw) or not ready:
         return
     prewarm_reviewer_queue_score_cache(
@@ -15991,7 +16018,13 @@ def _restore_reviewer_backend_cache(
             set_stale_since_forget(
                 stored_metadata.get(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY) is True
             )
-        if stored_history.reviews:
+        # the deltas the idle save appended were never replayed: they go
+        # through the replay a restore gives the reviews it reads after the
+        # stored state, which saves each one's curve source
+        replayed_delta_count = _rwkv_replayed_delta_count(
+            stored_metadata, stored_history
+        )
+        if stored_history.reviews[:replayed_delta_count]:
             _require_reviewer_backend_warmup_current(is_current)
             _report_rwkv_state_cache_progress(
                 progress,
@@ -16000,12 +16033,27 @@ def _restore_reviewer_backend_cache(
             _replay_rwkv_cache_reviews(
                 backend,
                 warm_up,
-                stored_history.reviews,
+                stored_history.reviews[:replayed_delta_count],
                 progress=progress,
                 label=_tr().qt_misc_review_history_loading(),
                 is_current=is_current,
             )
             _require_reviewer_backend_warmup_current(is_current)
+        if stored_history.reviews[replayed_delta_count:]:
+            _require_reviewer_backend_warmup_current(is_current)
+            _warm_up_rwkv_reviews(
+                reviewer,
+                backend,
+                warm_up,
+                stored_history.reviews[replayed_delta_count:],
+                review_ids=stored_history.review_ids[replayed_delta_count:],
+                progress=progress,
+                label=_tr().qt_misc_review_history_updating(),
+                record_retrievability_cache=record_retrievability_cache,
+                is_current=is_current,
+            )
+            _require_reviewer_backend_warmup_current(is_current)
+            _forget_rwkv_state_cache_unrecorded_deltas(reviewer, stored_history)
 
         _report_rwkv_state_cache_progress(
             progress,
@@ -16771,13 +16819,16 @@ def _save_reviewer_backend_cache(
         # the metadata first: it names the snapshot, so the deltas the old
         # metadata still needs stay until the new one is in place, and the
         # new one reads no delta at or before its snapshot
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_META_FILE,
-            json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
-        )
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, _rwkv_empty_deltas_log()
-        )
+        with _rwkv_state_cache_write_lock:
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, _rwkv_empty_deltas_log()
+            )
         _remove_legacy_rwkv_state_cache_files(cache_dir)
         logger.debug(
             "saved RWKV state cache snapshot: reviews=%s last_review_id=%s "
@@ -16855,14 +16906,15 @@ def _save_reviewer_backend_state_store(
     # deltas log is emptied, so a failed write leaves the old metadata with
     # the deltas and the segment it names (pruned only below): the old cache,
     # whole. The new metadata reads no delta at or before its head segment.
-    _atomic_write(
-        context.cache_dir / _RWKV_STATE_CACHE_META_FILE,
-        json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
-    )
-    _atomic_write(
-        context.cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
-        _rwkv_empty_deltas_log(),
-    )
+    with _rwkv_state_cache_write_lock:
+        _atomic_write(
+            context.cache_dir / _RWKV_STATE_CACHE_META_FILE,
+            json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
+        )
+        _atomic_write(
+            context.cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
+            _rwkv_empty_deltas_log(),
+        )
     (context.cache_dir / _RWKV_STATE_CACHE_SNAPSHOT_FILE).unlink(missing_ok=True)
     _remove_legacy_rwkv_state_cache_files(context.cache_dir)
     _remove_legacy_rwkv_state_cache_checkpoint_files(context.cache_dir)
@@ -16941,58 +16993,676 @@ def _append_rwkv_state_cache_deltas(
     history: RwkvHistoricalReviewInputs,
     *,
     snapshot_review_id: int,
-) -> None:
+    expected_metadata: Mapping[str, object] | None = None,
+    collection_mod: int | None = None,
+    unrecorded_after_review_id: int | None = None,
+    idle_save_base: Mapping[str, object] | None = None,
+    truncate_deltas_to: int | None = None,
+) -> bool:
+    """Appends `history`'s reviews to the stored cache's deltas log and names
+    them in its metadata. Returns whether it did.
+
+    The idle save (`_save_rwkv_state_cache_tail`) passes the metadata it
+    validated as `expected_metadata`: nothing is written unless the stored
+    metadata is still exactly that, so a save or a history-change mark that
+    came in between is never overwritten. It keeps that metadata's "stale
+    since Forget" mark (it replayed nothing), records `collection_mod`, the
+    marker it read before it validated, names its reviews as not yet
+    replayed (`_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY`) and keeps the base to
+    go back to (`_RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY`). After going back to
+    that base it first cuts the deltas log to `truncate_deltas_to` bytes, the
+    length it had then."""
     if history.deck_id is not None:
         _log_scoped_rwkv_state_cache_write_skip("append deltas", history)
-        return
+        return False
 
     cache_dir = _rwkv_state_cache_dir(reviewer)
     if cache_dir is None:
-        return
+        return False
 
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        existing_metadata = _read_rwkv_state_cache_metadata(reviewer)
-        snapshot_history_hash = (
-            existing_metadata.get("snapshotHistoryHash")
-            if isinstance(existing_metadata, dict)
-            else None
-        )
-        if not _rwkv_history_hash_is_valid(snapshot_history_hash):
-            raise ValueError("missing RWKV snapshot history identity")
-        delta_path = cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE
-        _append_rwkv_delta_records(delta_path, history.review_ids, history.reviews)
-        metadata = _rwkv_state_cache_metadata(
-            reviewer,
-            history,
-            snapshot_review_id=snapshot_review_id,
-            snapshot_history_hash=cast(str, snapshot_history_hash),
-            checkpoint_entries=_rwkv_state_cache_checkpoint_entries(
-                existing_metadata,
-            ),
-            state_store_generation=(
-                cast(str, existing_metadata.get("storeGeneration"))
-                if existing_metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND
-                and isinstance(existing_metadata.get("storeGeneration"), str)
+        # read before the lock: it asks the collection, which may be busy
+        metadata_base = _rwkv_state_cache_metadata_base(reviewer)
+        if collection_mod is not None:
+            metadata_base[_RWKV_STATE_CACHE_COLLECTION_MOD_KEY] = collection_mod
+        with _rwkv_state_cache_write_lock:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            existing_metadata = _read_rwkv_state_cache_metadata(reviewer)
+            if expected_metadata is not None and existing_metadata != expected_metadata:
+                logger.debug(
+                    "RWKV state cache deltas not appended: the stored cache changed"
+                )
+                return False
+            snapshot_history_hash = (
+                existing_metadata.get("snapshotHistoryHash")
+                if isinstance(existing_metadata, dict)
                 else None
-            ),
-            snapshot_segment_id=(
-                _int_value(existing_metadata.get("snapshotSegmentId"))
-                if existing_metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND
-                else None
-            ),
-        )
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_META_FILE,
-            json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf8"),
-        )
+            )
+            if not _rwkv_history_hash_is_valid(snapshot_history_hash):
+                raise ValueError("missing RWKV snapshot history identity")
+            assert existing_metadata is not None
+            metadata = _rwkv_state_cache_metadata(
+                reviewer,
+                history,
+                snapshot_review_id=snapshot_review_id,
+                snapshot_history_hash=cast(str, snapshot_history_hash),
+                checkpoint_entries=_rwkv_state_cache_checkpoint_entries(
+                    existing_metadata,
+                ),
+                base_metadata=metadata_base,
+                state_store_generation=(
+                    cast(str, existing_metadata.get("storeGeneration"))
+                    if existing_metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND
+                    and isinstance(existing_metadata.get("storeGeneration"), str)
+                    else None
+                ),
+                snapshot_segment_id=(
+                    _int_value(existing_metadata.get("snapshotSegmentId"))
+                    if existing_metadata.get("storage") == _RWKV_STATE_CACHE_STORE_KIND
+                    else None
+                ),
+            )
+            if expected_metadata is not None:
+                if existing_metadata.get(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY):
+                    metadata[_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY] = True
+                else:
+                    metadata.pop(_RWKV_STATE_CACHE_STALE_SINCE_FORGET_KEY, None)
+            if unrecorded_after_review_id is not None:
+                metadata[_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY] = (
+                    unrecorded_after_review_id
+                )
+            if idle_save_base is not None:
+                metadata[_RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY] = dict(idle_save_base)
+            delta_path = cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE
+            if truncate_deltas_to is not None:
+                _truncate_rwkv_delta_records(delta_path, truncate_deltas_to)
+            _append_rwkv_delta_records(delta_path, history.review_ids, history.reviews)
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
         logger.debug(
             "appended RWKV state cache deltas: reviews=%s last_review_id=%s",
             len(history.reviews),
             history.last_review_id,
         )
+        return True
     except Exception:
         logger.exception("failed to append RWKV state cache deltas")
+        return False
+
+
+def _rwkv_replayed_delta_count(
+    metadata: Mapping[str, object],
+    history: RwkvHistoricalReviewInputs,
+) -> int:
+    """How many of the stored deltas (`history.reviews`) a restore replayed
+    before: all of them but the ones the idle save appended."""
+    unrecorded_after = _int_value(metadata.get(_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY))
+    if unrecorded_after is None or len(history.review_ids) != len(history.reviews):
+        return len(history.reviews)
+    return next(
+        (
+            index
+            for index, review_id in enumerate(history.review_ids)
+            if review_id > unrecorded_after
+        ),
+        len(history.review_ids),
+    )
+
+
+def _forget_rwkv_state_cache_unrecorded_deltas(
+    reviewer: object,
+    history: RwkvHistoricalReviewInputs,
+) -> None:
+    """A restore replayed the deltas the idle save appended, and saved their
+    curve sources: the next one replays them as it replays the others."""
+    try:
+        with _rwkv_state_cache_write_lock:
+            metadata = _read_rwkv_state_cache_metadata(reviewer)
+            cache_dir = _rwkv_state_cache_dir(reviewer)
+            if (
+                metadata is None
+                or cache_dir is None
+                or _RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY not in metadata
+                or not _rwkv_state_cache_metadata_names_history(metadata, history)
+            ):
+                return
+            updated = dict(metadata)
+            updated.pop(_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY, None)
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(updated, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
+    except Exception:
+        logger.warning(
+            "failed to mark the RWKV state cache deltas as replayed", exc_info=True
+        )
+
+
+def _rwkv_state_cache_metadata_names_history(
+    metadata: Mapping[str, object],
+    history: RwkvHistoricalReviewInputs | RwkvResidentStateIdentity,
+) -> bool:
+    return (
+        (_int_value(metadata.get("lastReviewId")) or 0) == history.last_review_id
+        and (_int_value(metadata.get("reviewCount")) or 0) == history.review_count
+        and metadata.get("historyHash") == history.history_hash
+    )
+
+
+@dataclass
+class _RwkvIdleSaveChain:
+    """The idle save of one open collection (`_save_rwkv_state_cache_tail`)."""
+
+    col: object
+    running: bool = False
+    # the collection marker the last finished save looked at: the same
+    # collection gives the same answer, so it is not asked again
+    settled_mod: int | None = None
+    # the next save waits until then after other writes interrupted a save
+    not_before: float = 0.0
+
+
+_rwkv_idle_save_chain: _RwkvIdleSaveChain | None = None
+# how long the idle save waits after other writes to the collection
+# interrupted it (the FSRS-7 prediction pass writes for minutes at a time)
+_RWKV_IDLE_SAVE_BUSY_RETRY_SECS = 30.0
+
+
+def _arm_rwkv_state_cache_idle_save(mw: object) -> None:
+    """Starts the idle save for the open collection, once per collection.
+
+    The start-up restore reads the reviews answered after the stored state
+    from the collection, and before that runs the history fingerprint, which
+    reads every review (1.3-1.6 s on 868k reviews in Andrew's log) while the
+    first card can wait for it. The idle save does that work while the user
+    is away instead, and records the collection marker it saw: the next
+    start-up then finds the collection as the stored cache names it and
+    restores without either read ("validated RWKV state cache from unchanged
+    collection marker")."""
+    global _rwkv_idle_save_chain
+
+    col = getattr(mw, "col", None)
+    if col is None:
+        return
+    chain = _rwkv_idle_save_chain
+    if chain is not None and chain.col is col:
+        return
+    chain = _RwkvIdleSaveChain(col=col)
+    _rwkv_idle_save_chain = chain
+    _schedule_rwkv_idle_save_check(mw, chain)
+
+
+def _schedule_rwkv_idle_save_check(mw: object, chain: _RwkvIdleSaveChain) -> None:
+    progress = getattr(mw, "progress", None)
+    timer = getattr(progress, "timer", None)
+    if not callable(timer):
+        return
+    timer(
+        RECORDINGS_PASS_CHECK_MS,
+        lambda: _check_rwkv_idle_save(mw, chain),
+        False,
+        requiresCollection=False,
+        parent=cast(QWidget | None, mw),
+    )
+
+
+def _check_rwkv_idle_save(mw: object, chain: _RwkvIdleSaveChain) -> None:
+    if _rwkv_idle_save_chain is not chain or getattr(mw, "col", None) is not chain.col:
+        # another collection is open, or none: this chain ends
+        return
+    if _rwkv_idle_save_due(mw, chain):
+        taskman = getattr(mw, "taskman", None)
+        run_in_background = getattr(taskman, "run_in_background", None)
+        if callable(run_in_background):
+            chain.running = True
+
+            def done(future: Future[str]) -> None:
+                chain.running = False
+                try:
+                    future.result()
+                except Exception:
+                    logger.exception("the RWKV state cache idle save failed")
+
+            # Not the collection worker, and not counted as a pass the
+            # close waits for: the close marks the collection, the save
+            # stops at its next step and writes nothing after the mark
+            # (`_write_unless_closing`), so a close never waits for it.
+            run_in_background(
+                lambda: _save_rwkv_state_cache_tail(mw, chain),
+                done,
+                uses_collection=False,
+            )
+    _schedule_rwkv_idle_save_check(mw, chain)
+
+
+def _rwkv_idle_save_due(mw: object, chain: _RwkvIdleSaveChain) -> bool:
+    if chain.running or time.monotonic() < chain.not_before:
+        return False
+    since_input = _seconds_since_input(mw)
+    if since_input is not None and since_input < RECORDINGS_PASS_IDLE_SECS:
+        return False
+    is_enabled = getattr(mw, "isEnabled", None)
+    if callable(is_enabled) and not is_enabled():
+        # a sync, the close or a modal wait
+        return False
+    if getattr(mw, "state", None) == "review":
+        return False
+    if rwkv_state_cache_loading(mw) or _rwkv_recordings_pass_running:
+        return False
+    # the rebuild saves the stored cache itself
+    with _rwkv_exact_rebuild_lock:
+        if _rwkv_exact_rebuild_wanted_locked():
+            return False
+        thread = _rwkv_exact_rebuild_thread
+    return thread is None or not thread.is_alive()
+
+
+def _rwkv_collection_change_marker(col: object) -> tuple[int, int] | None:
+    """The collection's modification time and the number of rows its
+    connection has changed so far. An undo sets the modification time back;
+    the count only grows, so equal markers mean that nothing was written in
+    between."""
+    first = getattr(getattr(col, "db", None), "first", None)
+    if not callable(first):
+        return None
+    try:
+        row = first("select mod, total_changes() from col")
+    except Exception:
+        return None
+    if (
+        not isinstance(row, (list, tuple))
+        or len(row) != 2
+        or not all(isinstance(value, int) for value in row)
+    ):
+        return None
+    return int(row[0]), int(row[1])
+
+
+def _save_rwkv_state_cache_tail(  # noqa: PLR0911
+    mw: object,
+    chain: _RwkvIdleSaveChain,
+) -> str:
+    """Brings the stored state cache up to the collection while the user is
+    away, the way the next start-up restore would: the history fingerprint
+    proves that the stored state is the start of the history, the reviews
+    after it are read with the stored per-card state and appended to the
+    deltas log, and the metadata names them with the collection marker read
+    before the fingerprint. Nothing is replayed and nothing is saved from the
+    resident state, which the live answers built.
+
+    Nothing is written unless the collection marker is the same after the
+    reads as before them (nothing was written in between, so every read saw
+    the one collection the marker names), the reviews read end where the
+    fingerprint says the history ends, and the stored metadata is still the
+    one it validated. Returns what it did, for the log."""
+    col = chain.col
+    started = time.monotonic()
+
+    def outcome(text: str, *, settled_mod: int | None = None) -> str:
+        if settled_mod is not None:
+            chain.settled_mod = settled_mod
+        logger.debug(
+            "RWKV state cache idle save: %s elapsed_ms=%.1f",
+            text,
+            (time.monotonic() - started) * 1000,
+        )
+        return text
+
+    def stopped() -> str | None:
+        if getattr(mw, "col", None) is not col or _collection_is_closing(col):
+            return "the collection closed"
+        since_input = _seconds_since_input(mw)
+        if since_input is not None and since_input < RECORDINGS_PASS_IDLE_SECS:
+            return "the user came back"
+        return None
+
+    if reason := stopped():
+        return reason
+    before = _rwkv_collection_change_marker(col)
+    if before is None:
+        return "no collection marker"
+    collection_mod = before[0]
+    if collection_mod == chain.settled_mod:
+        return "nothing new"
+    cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
+    if cache_dir is None or getattr(mw, "col", None) is not col:
+        return "no stored cache"
+    profile_folder = str(cache_dir.parent)
+    # pinned to this collection and its profile folder: the close takes
+    # `mw.col` away before it marks the collection as closing
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=col,
+            pm=SimpleNamespace(profileFolder=lambda: profile_folder),
+        )
+    )
+    metadata = _read_rwkv_state_cache_metadata(reviewer)
+    if (
+        metadata is None
+        or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+        or not _rwkv_state_cache_uses_current_model_key(metadata)
+    ):
+        return outcome("no current stored cache", settled_mod=collection_mod)
+    if metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True:
+        # saved before a delete or a move: the next start keeps it as it is
+        # and the exact rebuild saves the new state
+        return outcome(
+            "the stored cache predates a history change", settled_mod=collection_mod
+        )
+    if _int_value(metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY)) == collection_mod:
+        return outcome("the stored cache is current", settled_mod=collection_mod)
+    try:
+        replay_key = _rwkv_replay_semantics_key(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+    except Exception:
+        return outcome("no replay key", settled_mod=collection_mod)
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer, metadata, replay_key=replay_key
+    ):
+        return outcome("the stored cache does not fit", settled_mod=collection_mod)
+    fingerprint_started = time.monotonic()
+    fingerprint = _rwkv_historical_review_fingerprint(
+        reviewer,
+        ignored_review_ids=_rwkv_state_cache_ignored_review_ids(metadata),
+        expected_identity=_rwkv_stored_history_identity(metadata),
+    )
+    # An undo took out a review an earlier idle save appended: the stored
+    # history is no start of the history any more. Go back to the stored
+    # cache as it was before those saves, as the restore would.
+    working = metadata
+    rolled_back = False
+    if not _rwkv_fingerprint_accepts(fingerprint) and (
+        before_idle_saves := _rwkv_metadata_before_idle_saves(metadata)
+    ):
+        if reason := stopped():
+            return outcome(reason)
+        working = before_idle_saves
+        rolled_back = True
+        fingerprint = _rwkv_historical_review_fingerprint(
+            reviewer,
+            ignored_review_ids=_rwkv_state_cache_ignored_review_ids(working),
+            expected_identity=_rwkv_stored_history_identity(working),
+        )
+    fingerprint_ms = (time.monotonic() - fingerprint_started) * 1000
+    if reason := stopped():
+        return outcome(reason)
+    if fingerprint is None or not _rwkv_fingerprint_accepts(fingerprint):
+        if _rwkv_collection_change_marker(col) != before:
+            return outcome("the collection changed during the fingerprint")
+        return outcome(
+            "the stored state is not the start of the history",
+            settled_mod=collection_mod,
+        )
+
+    read_started = time.monotonic()
+    tail: RwkvHistoricalReviewInputs | None = None
+    snapshot_review_id = 0
+    if not fingerprint.history_is_valid:
+        stored = _read_unchanged_rwkv_state_cache_binary(
+            reviewer,
+            backend=_reviewer_backend,
+            cache_dir=cache_dir,
+            metadata=working,
+        )
+        if stored is None:
+            return outcome("the stored cache did not read", settled_mod=collection_mod)
+        if reason := stopped():
+            return outcome(reason)
+        stored_history = stored.history
+        try:
+            tail = _historical_rwkv_review_inputs(
+                reviewer,
+                after_review_id=stored_history.last_review_id,
+                previous_review_id_by_card=stored_history.previous_review_id_by_card,
+                previous_interval_days_by_card=(
+                    stored_history.previous_interval_days_by_card
+                ),
+                review_count_by_card=stored_history.review_count_by_card,
+                previous_history_hash=stored_history.history_hash,
+                previous_replay_key=stored_history.replay_key,
+                ignored_review_ids=frozenset(stored_history.ignored_review_ids),
+                between_steps=_split_whole_history_query,
+            )
+        except Exception:
+            logger.debug("RWKV idle save: the new reviews did not read", exc_info=True)
+            return outcome("the new reviews did not read")
+        snapshot_review_id = (
+            _int_value(working.get("snapshotReviewId")) or stored_history.last_review_id
+        )
+    read_ms = (time.monotonic() - read_started) * 1000
+    if _rwkv_collection_change_marker(col) != before:
+        chain.not_before = time.monotonic() + _RWKV_IDLE_SAVE_BUSY_RETRY_SECS
+        return outcome("the collection changed during the reads")
+    if tail is not None and not (
+        tail.reviews
+        and tail.last_review_id == fingerprint.identity.last_review_id
+        and tail.review_count == fingerprint.identity.review_count
+        and tail.history_hash == fingerprint.identity.history_hash
+        and tail.replay_key == replay_key
+    ):
+        logger.warning(
+            "RWKV idle save: the new reviews do not end where the fingerprint "
+            "ends the history: reviews=%s last_review_id=%s/%s review_count=%s/%s",
+            len(tail.reviews),
+            tail.last_review_id,
+            fingerprint.identity.last_review_id,
+            tail.review_count,
+            fingerprint.identity.review_count,
+        )
+        return outcome("the new reviews disagree", settled_mod=collection_mod)
+
+    base = _rwkv_idle_save_base(metadata)
+    if base is None:
+        try:
+            deltas_bytes = (cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE).stat().st_size
+        except OSError:
+            return outcome("no deltas log", settled_mod=collection_mod)
+        base = {
+            "lastReviewId": _int_value(metadata.get("lastReviewId")) or 0,
+            "reviewCount": _int_value(metadata.get("reviewCount")) or 0,
+            "historyHash": metadata.get("historyHash"),
+            "deltasBytes": deltas_bytes,
+        }
+    unrecorded_after = (
+        None
+        if rolled_back
+        else _int_value(metadata.get(_RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY))
+    )
+    saved_last_review_id = _int_value(working.get("lastReviewId")) or 0
+    truncate_to = cast(int, base["deltasBytes"]) if rolled_back else None
+    written = [False]
+
+    def commit() -> None:
+        if tail is None:
+            written[0] = _write_rwkv_state_cache_metadata_if_unchanged(
+                reviewer,
+                metadata,
+                {**working, _RWKV_STATE_CACHE_COLLECTION_MOD_KEY: collection_mod},
+                truncate_deltas_to=truncate_to,
+            )
+            return
+        written[0] = _append_rwkv_state_cache_deltas(
+            reviewer,
+            tail,
+            snapshot_review_id=snapshot_review_id,
+            expected_metadata=metadata,
+            collection_mod=collection_mod,
+            unrecorded_after_review_id=(
+                min(unrecorded_after, saved_last_review_id)
+                if unrecorded_after is not None
+                else saved_last_review_id
+            ),
+            idle_save_base=base,
+            truncate_deltas_to=truncate_to,
+        )
+
+    try:
+        _write_unless_closing(col, commit)
+    except _CollectionClosing:
+        return outcome("the collection closed")
+    if not written[0]:
+        return outcome("the stored cache changed")
+    return outcome(
+        f"saved: new_reviews={len(tail.reviews) if tail else 0} "
+        f"rolled_back={rolled_back} "
+        f"fingerprint_ms={fingerprint_ms:.1f} read_ms={read_ms:.1f}",
+        settled_mod=collection_mod,
+    )
+
+
+def _rwkv_stored_history_identity(
+    metadata: Mapping[str, object],
+) -> _RwkvHistoryPrefixIdentity:
+    return _RwkvHistoryPrefixIdentity(
+        last_review_id=_int_value(metadata.get("lastReviewId")) or 0,
+        review_count=_int_value(metadata.get("reviewCount")) or 0,
+        history_hash=cast(str, metadata.get("historyHash")),
+    )
+
+
+def _rwkv_fingerprint_accepts(
+    fingerprint: _RwkvHistoricalReviewFingerprint | None,
+) -> bool:
+    return fingerprint is not None and (
+        fingerprint.history_is_valid or fingerprint.history_prefix_is_valid
+    )
+
+
+def _rwkv_idle_save_base(metadata: Mapping[str, object]) -> dict[str, object] | None:
+    base = metadata.get(_RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY)
+    if not isinstance(base, dict):
+        return None
+    last_review_id = _int_value(base.get("lastReviewId"))
+    review_count = _int_value(base.get("reviewCount"))
+    deltas_bytes = _int_value(base.get("deltasBytes"))
+    history_hash = base.get("historyHash")
+    if (
+        last_review_id is None
+        or review_count is None
+        or deltas_bytes is None
+        or deltas_bytes < len(_RWKV_STATE_CACHE_DELTAS_MAGIC)
+        or not _rwkv_history_hash_is_valid(history_hash)
+    ):
+        return None
+    return {
+        "lastReviewId": last_review_id,
+        "reviewCount": review_count,
+        "historyHash": history_hash,
+        "deltasBytes": deltas_bytes,
+    }
+
+
+def _rwkv_metadata_before_idle_saves(
+    metadata: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The stored cache's metadata as it was before the idle saves appended
+    to it, or None when none did. It names no collection marker: it is never
+    the collection as it is now."""
+    base = _rwkv_idle_save_base(metadata)
+    if base is None:
+        return None
+    rolled = {
+        key: value
+        for key, value in metadata.items()
+        if key
+        not in (
+            _RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY,
+            _RWKV_STATE_CACHE_UNRECORDED_AFTER_KEY,
+            _RWKV_STATE_CACHE_COLLECTION_MOD_KEY,
+        )
+    }
+    rolled["lastReviewId"] = base["lastReviewId"]
+    rolled["reviewCount"] = base["reviewCount"]
+    rolled["historyHash"] = base["historyHash"]
+    return rolled
+
+
+def _roll_back_rwkv_idle_saves(
+    reviewer: object,
+    cache_dir: Path,
+    metadata: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Puts the stored cache back as it was before the idle saves appended
+    to it (`_RWKV_STATE_CACHE_IDLE_SAVE_BASE_KEY`): the deltas log cut to its
+    length then, and the metadata naming its history then. For a restore
+    whose history check failed because an undo took out a review an idle
+    save appended. None when there is nothing to go back to or the stored
+    cache changed."""
+    rolled = _rwkv_metadata_before_idle_saves(metadata)
+    base = _rwkv_idle_save_base(metadata)
+    if rolled is None or base is None:
+        return None
+    try:
+        with _rwkv_state_cache_write_lock:
+            if _read_rwkv_state_cache_metadata(reviewer) != metadata:
+                return None
+            # the log first: a log without the appended reviews is read
+            # only through a metadata that never reaches past the base
+            _truncate_rwkv_delta_records(
+                cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE,
+                cast(int, base["deltasBytes"]),
+            )
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(rolled, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
+    except Exception:
+        logger.warning(
+            "failed to take the RWKV state cache back before the idle saves",
+            exc_info=True,
+        )
+        return None
+    logger.info(
+        "RWKV state cache taken back to before the idle saves: last_review_id=%s",
+        base["lastReviewId"],
+    )
+    return rolled
+
+
+def _truncate_rwkv_delta_records(path: Path, length: int) -> None:
+    with path.open("r+b") as file:
+        file.seek(0, os.SEEK_END)
+        if length < len(_RWKV_STATE_CACHE_DELTAS_MAGIC) or length > file.tell():
+            raise ValueError("the RWKV delta log is shorter than its idle-save base")
+        if length == file.tell():
+            return
+        file.truncate(length)
+        file.flush()
+        os.fsync(file.fileno())
+
+
+def _write_rwkv_state_cache_metadata_if_unchanged(
+    reviewer: object,
+    expected: Mapping[str, object],
+    updated: Mapping[str, object],
+    *,
+    truncate_deltas_to: int | None = None,
+) -> bool:
+    cache_dir = _rwkv_state_cache_dir(reviewer)
+    if cache_dir is None:
+        return False
+    with _rwkv_state_cache_write_lock:
+        if _read_rwkv_state_cache_metadata(reviewer) != expected:
+            return False
+        if truncate_deltas_to is not None:
+            _truncate_rwkv_delta_records(
+                cache_dir / _RWKV_STATE_CACHE_DELTAS_FILE, truncate_deltas_to
+            )
+        _atomic_write(
+            cache_dir / _RWKV_STATE_CACHE_META_FILE,
+            json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf8"),
+        )
+    return True
 
 
 def _log_scoped_rwkv_state_cache_write_skip(
@@ -17090,6 +17760,19 @@ def _read_rwkv_state_cache_binary(
         )
         if stored is not None:
             return stored
+        # an undo took out a review an idle save appended: the stored cache
+        # as it was before those saves is still the start of the history
+        if rolled := _roll_back_rwkv_idle_saves(reviewer, cache_dir, metadata):
+            metadata = rolled
+            stored = _read_rwkv_state_cache_from_rust_fingerprint(
+                reviewer,
+                backend=backend,
+                cache_dir=cache_dir,
+                metadata=metadata,
+                ignored_review_ids=existing_ignored_review_ids,
+            )
+            if stored is not None:
+                return stored
     try:
         current_history = _historical_rwkv_review_inputs(
             reviewer,
@@ -18180,38 +18863,43 @@ def _refresh_rwkv_state_cache_collection_mod(
 ) -> None:
     """Record the collection marker after confirming the cache history identity."""
 
-    try:
-        collection_mod = _rwkv_collection_modified(reviewer)
-        if collection_mod is None:
-            return
-        metadata = _read_rwkv_state_cache_metadata(reviewer)
-        if (
-            metadata is None
-            or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
-            or (_int_value(metadata.get("lastReviewId")) or 0) != history.last_review_id
-            or (_int_value(metadata.get("reviewCount")) or 0) != history.review_count
-            or metadata.get("historyHash") != history.history_hash
-            or metadata.get("replayKey") != history.replay_key
-            or metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY) == collection_mod
-        ):
-            return
-        cache_dir = _rwkv_state_cache_dir(reviewer)
-        if cache_dir is None:
-            return
-        updated = {
-            **metadata,
-            _RWKV_STATE_CACHE_COLLECTION_MOD_KEY: collection_mod,
-        }
-        _atomic_write(
-            cache_dir / _RWKV_STATE_CACHE_META_FILE,
-            json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf8"),
-        )
-        logger.debug("updated RWKV state cache collection marker")
-    except Exception:
-        logger.warning(
-            "failed to update RWKV state cache collection marker",
-            exc_info=True,
-        )
+    with _rwkv_state_cache_write_lock:
+        try:
+            collection_mod = _rwkv_collection_modified(reviewer)
+            if collection_mod is None:
+                return
+            metadata = _read_rwkv_state_cache_metadata(reviewer)
+            if (
+                metadata is None
+                or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+                or (_int_value(metadata.get("lastReviewId")) or 0)
+                != history.last_review_id
+                or (_int_value(metadata.get("reviewCount")) or 0)
+                != history.review_count
+                or metadata.get("historyHash") != history.history_hash
+                or metadata.get("replayKey") != history.replay_key
+                or metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY) == collection_mod
+            ):
+                return
+            cache_dir = _rwkv_state_cache_dir(reviewer)
+            if cache_dir is None:
+                return
+            updated = {
+                **metadata,
+                _RWKV_STATE_CACHE_COLLECTION_MOD_KEY: collection_mod,
+            }
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(updated, separators=(",", ":"), sort_keys=True).encode(
+                    "utf8"
+                ),
+            )
+            logger.debug("updated RWKV state cache collection marker")
+        except Exception:
+            logger.warning(
+                "failed to update RWKV state cache collection marker",
+                exc_info=True,
+            )
 
 
 def _rwkv_state_cache_checkpoint_entries(
