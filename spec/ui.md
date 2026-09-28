@@ -2594,3 +2594,27 @@ from a background read too, without this check.
 `test_a_refresh_that_returns_on_the_open_deck_list_still_draws_it`,
 `test_refresh_draws_from_the_top_on_another_screen`
 (`qt/tests/test_deckbrowser.py`).
+
+## ui.late-dom-done-ignored
+
+Given a web view loading a page it built itself (every screen drawn with
+`stdHtml`), when the page before it reports that its document is done
+after the new load has started, the report is ignored: the new page's
+queued scripts run only when the new page reports its own document done.
+Each such page load has its own number, which the page sends back with its
+report. A page loaded from its own address (Stats, the deck options) has
+no number and is matched by that.
+
+**Why:** a screen change right after another screen's page load (Study
+pressed while the deck list was still loading) let the old page's late
+report start the new page's scripts. They ran on the old page (the
+reviewer's "_showQuestion is not defined"), and the new page's own report
+found none left: the review screen stayed blank. Measured on a copy of
+Andrew's collection (2026-09-28), Study 40 ms after the RWKV start-up
+restore ended: main left the review screen blank in 7 of 10 runs.
+Upstream Anki has the same race.
+
+**Pinned by:** `test_a_late_dom_done_of_the_page_before_does_not_run_the_new_pages_actions`,
+`test_a_plain_dom_done_counts_only_for_a_page_without_a_load_number`,
+`test_the_load_number_is_read_from_the_page_url`
+(`qt/tests/test_webview_dom_done.py`).

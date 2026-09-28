@@ -92,6 +92,13 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             info.setHttpHeader(b"Authorization", f"Bearer {_APIKEY}".encode("utf-8"))
 
 
+def page_load_number(query: str) -> str | None:
+    """The `load` number of a page URL's query (AnkiWebView._setHtml), which
+    the page sends back with its domDone; None for a page without one."""
+    load = re.search(r"(?:^|&)load=(\d+)(?:&|$)", query)
+    return load.group(1) if load else None
+
+
 def _create_bridge_script() -> QWebEngineScript:
     qwebchannel = ":/qtwebchannel/qwebchannel.js"
     jsfile = QFile(qwebchannel)
@@ -115,9 +122,12 @@ def _create_bridge_script() -> QWebEngineScript:
                 }
             
                 channel.objects.py.cmd(arg, resultCB);
-                return false;                   
+                return false;
             }
-            pycmd("domDone");
+            // the load this page came from, so that a late domDone of the
+            // page before cannot count for the next one (AnkiWebView._setHtml)
+            var clankiLoad = new URLSearchParams(window.location.search).get("load");
+            pycmd(clankiLoad ? "domDone:" + clankiLoad : "domDone");
     """
         + READY_JS
         + """
@@ -533,6 +543,10 @@ class AnkiWebView(QWebEngineView):
 
         self._domDone = True
         self._pendingActions: list[tuple[str, Sequence[Any]]] = []
+        # every page _setHtml() loads gets its own number; the page sends it
+        # back with its domDone (see _onBridgeCmd)
+        self._load_serial = 0
+        self._expected_load: str | None = None
         self.requiresCol = True
         self._disable_zoom = False
         self._uses_dynamic_styling = False
@@ -684,7 +698,13 @@ class AnkiWebView(QWebEngineView):
 
         webview_id = id(self)
         mw.mediaServer.set_page_html(webview_id, html, context)
-        self.load_url(QUrl(f"{mw.serverURL()}_anki/legacyPageData?id={webview_id}"))
+        self._load_serial += 1
+        self.load_url(
+            QUrl(
+                f"{mw.serverURL()}_anki/legacyPageData?id={webview_id}"
+                f"&load={self._load_serial}"
+            )
+        )
 
         # work around webengine stealing focus on setHtml()
         # fixme: check which if any qt versions this is still required on
@@ -695,6 +715,9 @@ class AnkiWebView(QWebEngineView):
         page_reveal().load_started(self)
         # allow queuing actions when loading url directly
         self._domDone = False
+        # a page without a load number (a page of its own URL) sends a plain
+        # domDone, as every page did before
+        self._expected_load = page_load_number(url.query())
         self.allow_drops = False
         super().load(url)
 
@@ -972,7 +995,20 @@ html {{ {font} }}
             focus_proxy.installEventFilter(self)
             self._filterSet = True
 
-        if cmd == "domDone":
+        if cmd == "domDone" or cmd.startswith("domDone:"):
+            load = cmd.partition(":")[2] or None
+            if load != self._expected_load:
+                # the page before the one loading now (spec
+                # ui.late-dom-done-ignored): running the new page's queued
+                # actions now would run them on the old page, and the new
+                # page's own domDone would find none left, so a review
+                # screen stayed blank ("_showQuestion is not defined")
+                logger.debug(
+                    "ignored a domDone of an earlier page: load=%s expected=%s",
+                    load,
+                    self._expected_load,
+                )
+                return
             self._domDone = True
             self._maybeRunActions()
         elif cmd == "close":
