@@ -17166,12 +17166,16 @@ class _RwkvIdleSaveChain:
     settled_mod: int | None = None
     # the next save waits until then after other writes interrupted a save
     not_before: float = 0.0
+    # saves in a row that other writes interrupted: each waits twice as long
+    interrupted: int = 0
 
 
 _rwkv_idle_save_chain: _RwkvIdleSaveChain | None = None
 # how long the idle save waits after other writes to the collection
-# interrupted it (the FSRS-7 prediction pass writes for minutes at a time)
+# interrupted it (the FSRS-7 prediction pass writes for minutes at a time),
+# doubled for each interruption in a row, up to the longest wait
 _RWKV_IDLE_SAVE_BUSY_RETRY_SECS = 30.0
+_RWKV_IDLE_SAVE_BUSY_RETRY_MAX_SECS = 600.0
 
 
 def _arm_rwkv_state_cache_idle_save(mw: object) -> None:
@@ -17307,6 +17311,7 @@ def _save_rwkv_state_cache_tail(  # noqa: PLR0911
     def outcome(text: str, *, settled_mod: int | None = None) -> str:
         if settled_mod is not None:
             chain.settled_mod = settled_mod
+            chain.interrupted = 0
         logger.debug(
             "RWKV state cache idle save: %s elapsed_ms=%.1f",
             text,
@@ -17439,7 +17444,11 @@ def _save_rwkv_state_cache_tail(  # noqa: PLR0911
         )
     read_ms = (time.monotonic() - read_started) * 1000
     if _rwkv_collection_change_marker(col) != before:
-        chain.not_before = time.monotonic() + _RWKV_IDLE_SAVE_BUSY_RETRY_SECS
+        chain.not_before = time.monotonic() + min(
+            _RWKV_IDLE_SAVE_BUSY_RETRY_SECS * 2**chain.interrupted,
+            _RWKV_IDLE_SAVE_BUSY_RETRY_MAX_SECS,
+        )
+        chain.interrupted += 1
         return outcome("the collection changed during the reads")
     if tail is not None and not (
         tail.reviews

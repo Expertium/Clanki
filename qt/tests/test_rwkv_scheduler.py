@@ -24392,7 +24392,22 @@ def test_the_idle_save_writes_nothing_after_a_write_during_its_reads(
     assert outcome == "the collection changed during the reads"
     assert _stored_cache_files(reviewer) == before
     assert chain.settled_mod is None
-    assert chain.not_before > time.monotonic()
+    assert chain.not_before > time.monotonic() + 25
+    # interrupted again: it waits twice as long
+    chain.not_before = 0.0
+    assert (
+        rwkv_scheduler._save_rwkv_state_cache_tail(reviewer.mw, chain)
+        == "the collection changed during the reads"
+    )
+    assert chain.not_before > time.monotonic() + 55
+    assert chain.interrupted == 2
+    # a save that finishes starts the waits again from the shortest
+    collection.during_fingerprint = None
+    chain.not_before = 0.0
+    assert rwkv_scheduler._save_rwkv_state_cache_tail(reviewer.mw, chain).startswith(
+        "saved: new_reviews=2 "
+    )
+    assert chain.interrupted == 0
 
 
 def test_the_idle_save_never_overwrites_a_change_made_while_it_read(
