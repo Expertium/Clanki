@@ -177,12 +177,9 @@ pub(crate) fn refresh_fsrs_review_predictions_of_preset(
     if !delete_stale_fsrs_predictions_in_parts(preset, batch_rows, hold)? {
         return Ok(0);
     }
-    let mut read = None;
-    hold(&mut |col| {
-        read = col.fsrs_review_prediction_read(preset)?;
-        Ok(())
-    })?;
-    let Some(read) = read else {
+    let Some(read) =
+        fsrs_review_prediction_read_in_parts(preset, PREDICTION_READ_PART_CARDS, hold)?
+    else {
         return Ok(0);
     };
     let coverage = read.coverage.clone();
@@ -209,8 +206,167 @@ pub(crate) fn refresh_fsrs_review_predictions_of_preset(
         }
         None => 0,
     };
-    hold(&mut |col| col.record_fsrs_prediction_coverage(&coverage))?;
+    record_fsrs_prediction_coverage_in_parts(&coverage, PREDICTION_COVERAGE_PART_CARDS, hold)?;
     Ok(written)
+}
+
+/// Cards per part of the two reads of a preset that a pass makes with the
+/// collection held: its reviews before the fit, and its uncovered reviews
+/// after the write. In one piece each held the collection for up to 350 and
+/// 630 ms on a large preset of Andrew's collection (247k reviews over 42k
+/// cards), and a click in the reviewer waited for it. With these sizes a
+/// part of either read holds it for about 20 ms at most there, less than
+/// the preset's search (about 30 ms); the count looks up every review in the
+/// prediction cache, so its parts are smaller.
+pub(crate) const PREDICTION_READ_PART_CARDS: usize = 1_024;
+pub(crate) const PREDICTION_COVERAGE_PART_CARDS: usize = 256;
+/// Reads in parts that a write may interrupt before a read is made in one
+/// piece instead.
+const PREDICTION_READ_ATTEMPTS: usize = 3;
+
+/// [`Collection::fsrs_review_prediction_read`], with the collection held for
+/// the search, then for the reviews of `part_cards` cards at a time, then to
+/// finish (spec ui.stats-fsrs-predictions-ready). The parts are one read
+/// only when nothing wrote to the collection between the first hold and the
+/// last (`SqliteStorage::change_stamp`); after a write the read starts over,
+/// and a collection that keeps changing is read in one piece. Either way the
+/// result is that of one read.
+pub(crate) fn fsrs_review_prediction_read_in_parts(
+    preset: DeckConfigId,
+    part_cards: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<Option<FsrsReviewPredictionRead>> {
+    for _ in 0..PREDICTION_READ_ATTEMPTS {
+        let mut start = None;
+        hold(&mut |col| {
+            start = Some((
+                col.storage.change_stamp(),
+                col.fsrs_review_prediction_read_cards(preset)?,
+            ));
+            Ok(())
+        })?;
+        let (stamp, found) = start.or_invalid("preset never read")?;
+        let Some((config, cards)) = found else {
+            return Ok(None);
+        };
+        let Some(cards) = cards else {
+            // a whole-collection search: one piece
+            break;
+        };
+        let mut revlogs = vec![];
+        let mut unchanged = true;
+        for part in cards.chunks(part_cards.max(1)) {
+            hold(&mut |col| {
+                unchanged = col.storage.change_stamp() == stamp;
+                if unchanged {
+                    revlogs.extend(
+                        col.storage
+                            .get_revlog_entries_of_cards_in_card_order(part)?,
+                    );
+                }
+                Ok(())
+            })?;
+            if !unchanged {
+                break;
+            }
+        }
+        if !unchanged {
+            continue;
+        }
+        let mut config = Some(config);
+        let mut read = None;
+        hold(&mut |col| {
+            if col.storage.change_stamp() == stamp {
+                let config = config.take().or_invalid("preset read twice")?;
+                read =
+                    Some(col.fsrs_review_prediction_read_of(config, std::mem::take(&mut revlogs))?);
+            }
+            Ok(())
+        })?;
+        if read.is_some() {
+            return Ok(read);
+        }
+    }
+    let mut read = None;
+    hold(&mut |col| {
+        read = col.fsrs_review_prediction_read(preset)?;
+        Ok(())
+    })?;
+    Ok(read)
+}
+
+/// [`Collection::record_fsrs_prediction_coverage`], with the collection held
+/// to check the preset, then for the uncovered reviews of `part_cards` of its
+/// decks' cards at a time, then to record them (spec
+/// ui.stats-fsrs-predictions-ready). As in
+/// [`fsrs_review_prediction_read_in_parts`], a write between the first hold
+/// and the last starts the count over, and a collection that keeps changing
+/// is counted in one piece: what is recorded is always one count.
+pub(crate) fn record_fsrs_prediction_coverage_in_parts(
+    coverage: &FsrsPredictionCoverageJob,
+    part_cards: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<()> {
+    let decks = &coverage.key.decks;
+    for _ in 0..PREDICTION_READ_ATTEMPTS {
+        let mut start = None;
+        hold(&mut |col| {
+            start = Some((
+                col.storage.change_stamp(),
+                col.fsrs_prediction_coverage_is_current(coverage)?,
+            ));
+            Ok(())
+        })?;
+        let (stamp, current) = start.or_invalid("coverage never checked")?;
+        if !current {
+            return Ok(());
+        }
+        let mut uncovered: HashMap<DeckId, UncoveredReviews> = HashMap::new();
+        let mut after = Some(i64::MIN);
+        let mut unchanged = true;
+        while let (Some(from), true) = (after, unchanged) {
+            hold(&mut |col| {
+                unchanged = col.storage.change_stamp() == stamp;
+                if unchanged {
+                    let (part, next) = col
+                        .storage
+                        .uncovered_fsrs_review_predictions_of_decks_part(
+                            decks,
+                            coverage.newest_review,
+                            from,
+                            part_cards,
+                        )?;
+                    for (deck, reviews) in part {
+                        uncovered.entry(deck).or_default().add(reviews);
+                    }
+                    after = next;
+                }
+                Ok(())
+            })?;
+        }
+        if !unchanged {
+            continue;
+        }
+        let mut uncovered: Vec<_> = uncovered.into_iter().collect();
+        uncovered.sort_unstable_by_key(|(deck, _)| *deck);
+        let mut recorded = false;
+        hold(&mut |col| {
+            if col.storage.change_stamp() == stamp {
+                col.storage.set_fsrs_prediction_coverage(
+                    decks,
+                    coverage.key.preset,
+                    &coverage.selection,
+                    &uncovered,
+                )?;
+                recorded = true;
+            }
+            Ok(())
+        })?;
+        if recorded {
+            return Ok(());
+        }
+    }
+    hold(&mut |col| col.record_fsrs_prediction_coverage(coverage))
 }
 
 /// Cards per part while the deletion gathers a stale preset's reviews: a
@@ -573,6 +729,32 @@ impl Collection {
         // the reviews the optimizer trains this preset on (spec
         // ui.stats-fsrs-predictions-ready)
         let revlogs = self.revlog_for_srs(fsrs_optimizer_search(&config)?.as_str())?;
+        self.fsrs_review_prediction_read_of(config, revlogs)
+            .map(Some)
+    }
+
+    /// The first step of [`fsrs_review_prediction_read_in_parts`]: the
+    /// preset, and the cards whose reviews its read takes. None when the
+    /// preset is gone; no cards for a whole-collection search, which is read
+    /// in one piece.
+    fn fsrs_review_prediction_read_cards(
+        &mut self,
+        preset: DeckConfigId,
+    ) -> Result<Option<(DeckConfig, Option<Vec<CardId>>)>> {
+        let Some(config) = self.storage.get_deck_config(preset)? else {
+            return Ok(None);
+        };
+        let cards = self.cards_for_srs(fsrs_optimizer_search(&config)?.as_str())?;
+        Ok(Some((config, cards)))
+    }
+
+    /// [`Self::fsrs_review_prediction_read`] from the preset and the
+    /// reviews its search reads.
+    fn fsrs_review_prediction_read_of(
+        &mut self,
+        config: DeckConfig,
+        revlogs: Vec<RevlogEntry>,
+    ) -> Result<FsrsReviewPredictionRead> {
         // a search filter can reach cards of other presets: those reviews
         // train the folds, but only the preset's own reviews get rows
         let own_reviews = if config.inner.param_search.trim().is_empty() {
@@ -597,7 +779,7 @@ impl Collection {
                 .query_row("select coalesce(max(id), 0) from revlog", [], |row| {
                     row.get(0)
                 })?;
-        Ok(Some(FsrsReviewPredictionRead {
+        Ok(FsrsReviewPredictionRead {
             coverage: FsrsPredictionCoverageJob {
                 key: key.clone(),
                 selection: coverage_selection(&config),
@@ -609,7 +791,7 @@ impl Collection {
             own_reviews,
             ignore_revlogs_before: ignore_revlogs_before_ms_from_config(&config)?,
             num_relearning_steps: config.inner.relearn_steps.len(),
-        }))
+        })
     }
 
     /// Writes one batch of a job's rows, unless its preset was saved or its
@@ -653,10 +835,7 @@ impl Collection {
         &mut self,
         coverage: &FsrsPredictionCoverageJob,
     ) -> Result<()> {
-        let Some(config) = self.storage.get_deck_config(coverage.key.preset)? else {
-            return Ok(());
-        };
-        if self.fsrs_review_prediction_job_key(&config)? != coverage.key {
+        if !self.fsrs_prediction_coverage_is_current(coverage)? {
             return Ok(());
         }
         let decks = &coverage.key.decks;
@@ -669,6 +848,18 @@ impl Collection {
             &coverage.selection,
             &uncovered,
         )
+    }
+
+    /// False when the preset is gone, was saved or its decks changed since
+    /// the pass read it.
+    fn fsrs_prediction_coverage_is_current(
+        &mut self,
+        coverage: &FsrsPredictionCoverageJob,
+    ) -> Result<bool> {
+        let Some(config) = self.storage.get_deck_config(coverage.key.preset)? else {
+            return Ok(false);
+        };
+        Ok(self.fsrs_review_prediction_job_key(&config)? == coverage.key)
     }
 
     fn fsrs_review_prediction_job_key(
@@ -1891,6 +2082,288 @@ mod test {
                     before - fold_rows(&col)
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// The fields of two reads of a preset, for comparing them.
+    fn read_fields(
+        read: &FsrsReviewPredictionRead,
+    ) -> (
+        &FsrsReviewPredictionJobKey,
+        &FsrsReviewPredictionJobKey,
+        &str,
+        i64,
+        &[f32],
+        &[RevlogEntry],
+        &Option<HashSet<RevlogId>>,
+        TimestampMillis,
+        usize,
+    ) {
+        (
+            &read.key,
+            &read.coverage.key,
+            read.coverage.selection.as_str(),
+            read.coverage.newest_review,
+            &read.params,
+            &read.revlogs,
+            &read.own_reviews,
+            read.ignore_revlogs_before,
+            read.num_relearning_steps,
+        )
+    }
+
+    /// A preset's default decks and a second deck of it, and a preset whose
+    /// search reaches cards of the first one: 9 cards in all.
+    fn collection_for_reads_in_parts() -> Result<(Collection, DeckConfigId)> {
+        let mut col = Collection::new();
+        let second = DeckAdder::new("second").add(&mut col);
+        let searching = DeckAdder::new("searching")
+            .with_config(|config| config.name = "Searching".to_string())
+            .add(&mut col);
+        for later in 0..4 {
+            card_with_reviews_days_later(&mut col, DeckId(1), later);
+            card_with_reviews_days_later(&mut col, second.id, later);
+        }
+        card_with_reviews_in(&mut col, searching.id);
+        let searching_preset = searching.config_id().unwrap();
+        let mut config = col.storage.get_deck_config(searching_preset)?.unwrap();
+        config.inner.param_search = "deck:*".to_string();
+        col.storage.update_deck_conf(&config)?;
+        Ok((col, searching_preset))
+    }
+
+    /// The collection is free between the parts of a preset's read, and the
+    /// parts give the read of one piece, whatever their size: the same
+    /// reviews in the same order, the same own reviews, key and coverage.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn a_preset_read_in_parts_is_the_read_in_one_piece() -> Result<()> {
+        let (mut col, searching) = collection_for_reads_in_parts()?;
+        for preset in [DeckConfigId(1), searching] {
+            let whole = col.fsrs_review_prediction_read(preset)?.unwrap();
+            assert!(!whole.revlogs.is_empty());
+            let cards = col
+                .cards_for_srs(
+                    fsrs_optimizer_search(&col.storage.get_deck_config(preset)?.unwrap())?.as_str(),
+                )?
+                .unwrap()
+                .len();
+            for part_cards in [1, 2, 3, 7, 1_000] {
+                let mut holds = 0;
+                let in_parts =
+                    fsrs_review_prediction_read_in_parts(preset, part_cards, &mut |step| {
+                        holds += 1;
+                        step(&mut col)
+                    })?
+                    .unwrap();
+                assert_eq!(
+                    read_fields(&in_parts),
+                    read_fields(&whole),
+                    "preset={preset:?} part_cards={part_cards}"
+                );
+                // the search, the parts, the finish: never one hold for all
+                assert_eq!(holds, 1 + cards.div_ceil(part_cards) + 1);
+            }
+        }
+        assert!(
+            fsrs_review_prediction_read_in_parts(DeckConfigId(999), 2, &mut |step| step(&mut col))?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// A write between two parts would mix two collections in one read, so
+    /// the read starts over; a collection that keeps changing is read in one
+    /// piece. Either way the read is one read of the collection as it is at
+    /// the end.
+    #[test]
+    fn a_write_between_the_parts_makes_the_preset_read_again() -> Result<()> {
+        let (mut col, _) = collection_for_reads_in_parts()?;
+        let preset = DeckConfigId(1);
+        let mut holds = 0;
+        let read = fsrs_review_prediction_read_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            if holds == 2 {
+                // a card's new review, in a part the read has passed
+                card_with_reviews_days_later(&mut col, DeckId(1), 10);
+            }
+            step(&mut col)
+        })?
+        .unwrap();
+        let whole = col.fsrs_review_prediction_read(preset)?.unwrap();
+        assert_eq!(read_fields(&read), read_fields(&whole));
+        // the first read stopped at its first part; the second is whole:
+        // the search, 9 cards in parts of 2, the finish
+        assert_eq!(holds, 2 + (1 + 5 + 1));
+
+        let mut holds = 0;
+        let read = fsrs_review_prediction_read_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            rated_card(&mut col, 5 + holds);
+            step(&mut col)
+        })?
+        .unwrap();
+        let whole = col.fsrs_review_prediction_read(preset)?.unwrap();
+        assert_eq!(read_fields(&read), read_fields(&whole));
+        // three reads that stopped at their first part, then one piece
+        assert_eq!(holds, 3 * 2 + 1);
+        Ok(())
+    }
+
+    /// The coverage recorded in parts is the coverage recorded in one piece,
+    /// whatever the size of the parts, and the collection is free between
+    /// them.
+    // Pins spec/ui.md#ui.stats-fsrs-predictions-ready
+    #[test]
+    fn coverage_recorded_in_parts_is_the_coverage_of_one_piece() -> Result<()> {
+        let (mut col, other, _) = collection_with_three_presets()?;
+        let second = DeckAdder::new("second").add(&mut col);
+        for days_ago in [45, 35, 25] {
+            rated_card_in(&mut col, second.id, days_ago);
+        }
+        for preset in [DeckConfigId(1), other.config_id().unwrap()] {
+            let coverage = col.fsrs_review_prediction_read(preset)?.unwrap().coverage;
+            col.record_fsrs_prediction_coverage(&coverage)?;
+            let whole = col.storage.fsrs_prediction_coverage()?;
+            assert!(!whole.is_empty());
+            let cards: usize = coverage
+                .key
+                .decks
+                .iter()
+                .map(|deck| col.storage.all_cards_in_single_deck(*deck).unwrap().len())
+                .sum();
+            for part_cards in [1, 2, 3, 7, 1_000] {
+                col.storage
+                    .set_fsrs_prediction_coverage(&coverage.key.decks, preset, "", &[])?;
+                assert_ne!(col.storage.fsrs_prediction_coverage()?, whole);
+                let mut holds = 0;
+                record_fsrs_prediction_coverage_in_parts(&coverage, part_cards, &mut |step| {
+                    holds += 1;
+                    step(&mut col)
+                })?;
+                assert_eq!(
+                    col.storage.fsrs_prediction_coverage()?,
+                    whole,
+                    "preset={preset:?} part_cards={part_cards}"
+                );
+                // the check, the parts (one more when the last is full),
+                // the record
+                assert_eq!(holds, 1 + (cards / part_cards + 1) + 1);
+            }
+        }
+        Ok(())
+    }
+
+    /// A write between two parts of the coverage count starts it over; a
+    /// collection that keeps changing is counted in one piece. A preset
+    /// saved since the pass read it records nothing.
+    #[test]
+    fn a_write_between_the_parts_makes_the_coverage_count_again() -> Result<()> {
+        let (mut col, _, _) = collection_with_three_presets()?;
+        let preset = DeckConfigId(1);
+        let coverage = col.fsrs_review_prediction_read(preset)?.unwrap().coverage;
+        let days_ago = std::cell::Cell::new(100);
+        let review_now = |col: &mut Collection| {
+            days_ago.set(days_ago.get() + 1);
+            rated_card(col, days_ago.get());
+        };
+
+        let mut holds = 0;
+        record_fsrs_prediction_coverage_in_parts(&coverage, 2, &mut |step| {
+            holds += 1;
+            if holds == 2 {
+                review_now(&mut col);
+            }
+            step(&mut col)
+        })?;
+        let in_parts = col.storage.fsrs_prediction_coverage()?;
+        col.record_fsrs_prediction_coverage(&coverage)?;
+        assert_eq!(in_parts, col.storage.fsrs_prediction_coverage()?);
+        // the first count stopped at its first part; the second is whole:
+        // 6 cards in parts of 2 (one more, the last being full), the record
+        assert_eq!(holds, 2 + (1 + 4 + 1));
+
+        let mut holds = 0;
+        record_fsrs_prediction_coverage_in_parts(&coverage, 2, &mut |step| {
+            holds += 1;
+            review_now(&mut col);
+            step(&mut col)
+        })?;
+        let in_parts = col.storage.fsrs_prediction_coverage()?;
+        col.record_fsrs_prediction_coverage(&coverage)?;
+        assert_eq!(in_parts, col.storage.fsrs_prediction_coverage()?);
+        assert_eq!(holds, 3 * 2 + 1);
+
+        // saved since the read: nothing is recorded, in one hold
+        col.storage
+            .set_fsrs_prediction_coverage(&coverage.key.decks, preset, "", &[])?;
+        let mut config = col.storage.get_deck_config(preset)?.unwrap();
+        config.mtime_secs = TimestampSecs(config.mtime_secs.0 + 10);
+        col.storage.update_deck_conf(&config)?;
+        let mut holds = 0;
+        record_fsrs_prediction_coverage_in_parts(&coverage, 2, &mut |step| {
+            holds += 1;
+            step(&mut col)
+        })?;
+        assert_eq!(holds, 1);
+        assert!(col.storage.fsrs_prediction_coverage()?.is_empty());
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: every hold of one preset's pass
+    /// (`refresh_fsrs_review_predictions_of_preset`) on the preset with the
+    /// most reviews, in order. Prints the holds over 5 ms and the longest
+    /// ones. Point `ANKI_STALE_PRESETS_BENCH_COL` at a COPY of a collection
+    /// and run `cargo test -p anki --release bench_prediction_pass_holds --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_prediction_pass_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_PRESETS_BENCH_COL")
+            .expect("set ANKI_STALE_PRESETS_BENCH_COL to a copy of a collection");
+        let mut col = crate::collection::CollectionBuilder::new(path).build()?;
+        let preset = match std::env::var("ANKI_BENCH_PRESET") {
+            Ok(id) => DeckConfigId(id.parse().unwrap()),
+            Err(_) => {
+                let mut biggest = (0, DeckConfigId(1));
+                for config in col.storage.all_deck_config()? {
+                    let reviews = col
+                        .revlog_for_srs(preset_search(&config.name).as_str())?
+                        .len();
+                    biggest = biggest.max((reviews, config.id));
+                }
+                biggest.1
+            }
+        };
+        for round in 0..3 {
+            let mut holds: Vec<f64> = vec![];
+            let at = Instant::now();
+            let written = refresh_fsrs_review_predictions_of_preset(
+                preset,
+                PREDICTION_WRITE_BATCH_ROWS,
+                &mut |step| {
+                    let held = Instant::now();
+                    let result = step(&mut col);
+                    holds.push(held.elapsed().as_secs_f64() * 1000.0);
+                    result
+                },
+            )?;
+            let over: Vec<String> = holds
+                .iter()
+                .enumerate()
+                .filter(|(_, ms)| **ms > 5.0)
+                .map(|(i, ms)| format!("{i}:{ms:.1}"))
+                .collect();
+            println!(
+                "round {round} preset {} rows {written} holds {} total {:.0} ms; over 5 ms: {}",
+                preset.0,
+                holds.len(),
+                at.elapsed().as_secs_f64() * 1000.0,
+                over.join(" ")
+            );
         }
         Ok(())
     }

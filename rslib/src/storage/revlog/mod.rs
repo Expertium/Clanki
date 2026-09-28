@@ -1112,6 +1112,59 @@ impl SqliteStorage {
             .collect()
     }
 
+    /// `uncovered_fsrs_review_predictions_of_decks` for the next
+    /// `part_cards` cards of the decks after card `after_card`, and the card
+    /// the next part starts after (None at the end). The parts of all the
+    /// cards, added up, are the whole count.
+    pub(crate) fn uncovered_fsrs_review_predictions_of_decks_part(
+        &self,
+        decks: &[DeckId],
+        up_to: i64,
+        after_card: i64,
+        part_cards: usize,
+    ) -> Result<UncoveredReviewsPart> {
+        if decks.is_empty() {
+            return Ok((vec![], None));
+        }
+        let part_cards = part_cards.max(1);
+        let mut deck_ids = String::new();
+        write_comma_separated_ids(&mut deck_ids, decks.iter().map(|deck| deck.0));
+        let cards: Vec<i64> = self
+            .db
+            .prepare_cached(&format!(
+                "select id from cards where did in ({deck_ids}) and id > ?1
+                 order by id limit ?2"
+            ))?
+            .query_and_then((after_card, part_cards as i64), |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let next = (cards.len() == part_cards)
+            .then(|| cards.last().copied())
+            .flatten();
+        if cards.is_empty() {
+            return Ok((vec![], next));
+        }
+        let table =
+            Self::qualified_retrievability_cache_table(FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE);
+        let mut card_ids = String::new();
+        write_comma_separated_ids(&mut card_ids, cards);
+        let counts = self
+            .db
+            .prepare(&format!(
+                "select c.did, count(*), max(r.id) from cards c
+                 join revlog r on r.cid = c.id
+                 where c.id in ({card_ids}) and c.did in ({deck_ids})
+                   and r.id <= ?1 and r.ease > 0
+                   and not exists (
+                       select 1 from {table} t
+                       where t.revlog_id = r.id and t.sample_role = 'validation_fold'
+                   )
+                 group by c.did"
+            ))?
+            .query_and_then((up_to,), uncovered_reviews_of_deck)?
+            .collect::<Result<_>>()?;
+        Ok((counts, next))
+    }
+
     fn ensure_fsrs_prediction_coverage_schema(&self) -> Result<()> {
         let table = Self::qualified_retrievability_cache_table(FSRS_PREDICTION_COVERAGE_TABLE);
         self.db.execute_batch(&format!(
@@ -1902,6 +1955,28 @@ impl SqliteStorage {
             .prepare_cached(concat!(
                 include_str!("get.sql"),
                 " where cid in (select cid from search_cids) order by cid, id"
+            ))?
+            .query_and_then([], row_to_revlog_entry)?
+            .collect()
+    }
+
+    /// The review log entries of `cards`, ordered by card, then by review:
+    /// for ascending `cards`, one part of what
+    /// `get_revlog_entries_for_searched_cards_in_card_order` returns for a
+    /// search that finds them.
+    pub(crate) fn get_revlog_entries_of_cards_in_card_order(
+        &self,
+        cards: &[CardId],
+    ) -> Result<Vec<RevlogEntry>> {
+        if cards.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut ids = String::new();
+        write_comma_separated_ids(&mut ids, cards.iter().map(|card| card.0));
+        self.db
+            .prepare(&format!(
+                "{} where cid in ({ids}) order by cid, id",
+                include_str!("get.sql")
             ))?
             .query_and_then([], row_to_revlog_entry)?
             .collect()

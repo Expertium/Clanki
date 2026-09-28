@@ -758,6 +758,25 @@ impl Collection {
             .get_revlog_entries_for_searched_cards_in_card_order()
     }
 
+    /// The cards whose reviews `revlog_for_srs` reads for `search`, in
+    /// ascending order: their entries, card after card, are its result. None
+    /// for a whole-collection search, which also reads the entries of
+    /// deleted cards.
+    pub(crate) fn cards_for_srs(
+        &mut self,
+        search: impl TryIntoSearch,
+    ) -> Result<Option<Vec<CardId>>> {
+        let search = search.try_into_search()?;
+        if let Node::Group(nodes) = &search {
+            if let &[Node::Search(SearchNode::WholeCollection)] = &nodes[..] {
+                return Ok(None);
+            }
+        }
+        let mut cards = self.search_cards(search, SortMode::NoOrder)?;
+        cards.sort_unstable();
+        Ok(Some(cards))
+    }
+
     /// Used for exporting revlogs for algorithm research.
     pub fn export_dataset(&mut self, min_entries: usize, target_path: &Path) -> Result<()> {
         let revlog_entries = self.storage.get_revlog_entries_for_export_dataset()?;
