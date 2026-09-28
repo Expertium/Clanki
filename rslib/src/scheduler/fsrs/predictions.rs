@@ -102,9 +102,11 @@ where
     Ok(written)
 }
 
-/// Review-log rows per part of the stale-preset read: about 15 ms of the
-/// collection on a fast machine.
-pub(crate) const STALE_PRESETS_PART_ROWS: usize = 32_768;
+/// Review-log rows per part of the stale-preset read: about 10 ms of the
+/// collection on Andrew's collection (868k reviews). With 32,768 rows a
+/// part held it for 35-38 ms, and 150 ms while an RWKV rebuild used the
+/// machine; the whole read takes as long with either size.
+pub(crate) const STALE_PRESETS_PART_ROWS: usize = 8_192;
 /// Reads in parts that a write may interrupt before the stale presets are
 /// read in one piece instead.
 const STALE_PRESETS_READ_ATTEMPTS: usize = 3;
