@@ -720,24 +720,13 @@ impl Collection {
             enable_scheduling_penalties,
         } = input;
         let revlogs = self.revlog_for_srs(search)?;
-        let training_items = fsrs_items_for_training(revlogs, ignore_revlogs_before);
-        let target_counts = training_items.target_counts();
-        let TrainingItemsForFsrs {
-            items,
-            card_ids,
-            revlog_ids,
-            prediction_sources,
-        } = training_items;
-        Ok(PreparedComputeParams {
-            current_params: current_params.to_vec(),
+        Ok(prepared_compute_params(
+            revlogs,
+            ignore_revlogs_before,
+            current_params,
             num_of_relearning_steps,
             enable_scheduling_penalties,
-            items,
-            item_card_ids: card_ids.unwrap_or_default(),
-            item_revlog_ids: revlog_ids.unwrap_or_default(),
-            fsrs_prediction_sources: prediction_sources,
-            target_counts,
-        })
+        ))
     }
 
     pub(crate) fn revlog_for_srs(
@@ -756,6 +745,25 @@ impl Collection {
             .col
             .storage
             .get_revlog_entries_for_searched_cards_in_card_order()
+    }
+
+    /// The cards whose reviews `revlog_for_srs` reads for `search`, in
+    /// ascending order: their entries, card after card, are its result. None
+    /// for a whole-collection search, which also reads the entries of
+    /// deleted cards.
+    pub(crate) fn cards_for_srs(
+        &mut self,
+        search: impl TryIntoSearch,
+    ) -> Result<Option<Vec<CardId>>> {
+        let search = search.try_into_search()?;
+        if let Node::Group(nodes) = &search {
+            if let &[Node::Search(SearchNode::WholeCollection)] = &nodes[..] {
+                return Ok(None);
+            }
+        }
+        let mut cards = self.search_cards(search, SortMode::NoOrder)?;
+        cards.sort_unstable();
+        Ok(Some(cards))
     }
 
     /// Used for exporting revlogs for algorithm research.
@@ -938,6 +946,35 @@ pub struct ComputeAllParamsPresetProgress {
     pub finished: bool,
     pub skipped: bool,
     pub phase: ComputeParamsProgressPhase,
+}
+
+/// [`Collection::prepare_compute_params`] from the reviews its search has
+/// read: needs no collection.
+pub(crate) fn prepared_compute_params(
+    revlogs: Vec<RevlogEntry>,
+    ignore_revlogs_before: TimestampMillis,
+    current_params: &[f32],
+    num_of_relearning_steps: usize,
+    enable_scheduling_penalties: bool,
+) -> PreparedComputeParams {
+    let training_items = fsrs_items_for_training(revlogs, ignore_revlogs_before);
+    let target_counts = training_items.target_counts();
+    let TrainingItemsForFsrs {
+        items,
+        card_ids,
+        revlog_ids,
+        prediction_sources,
+    } = training_items;
+    PreparedComputeParams {
+        current_params: current_params.to_vec(),
+        num_of_relearning_steps,
+        enable_scheduling_penalties,
+        items,
+        item_card_ids: card_ids.unwrap_or_default(),
+        item_revlog_ids: revlog_ids.unwrap_or_default(),
+        fsrs_prediction_sources: prediction_sources,
+        target_counts,
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug)]

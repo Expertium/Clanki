@@ -22227,6 +22227,7 @@ def _rwkv_preset_routing_config_key(
         logger.debug("failed to read deck routing for RWKV replay identity")
         return []
 
+    known = _deck_config_ids_of_decks(decks)
     routing: list[list[object]] = []
     for raw_deck in raw_decks:
         raw_deck_id = (
@@ -22236,8 +22237,11 @@ def _rwkv_preset_routing_config_key(
         )
         if not isinstance(raw_deck_id, int) or isinstance(raw_deck_id, bool):
             continue
-        config = _deck_config_for_deck_id(reviewer, raw_deck_id)
-        config_id = config.get("id") if isinstance(config, dict) else None
+        if raw_deck_id in known:
+            config_id: object = known[raw_deck_id]
+        else:
+            config = _deck_config_for_deck_id(reviewer, raw_deck_id)
+            config_id = config.get("id") if isinstance(config, dict) else None
         routing.append(
             [
                 raw_deck_id,
@@ -22246,6 +22250,55 @@ def _rwkv_preset_routing_config_key(
         )
 
     return sorted(routing, key=lambda item: cast(int, item[0]))
+
+
+def _deck_config_ids_of_decks(decks: object) -> dict[int, int]:
+    """The id of the config `_deck_config_for_deck_id` gives each deck, read
+    with two backend calls for all decks instead of two per deck: a normal
+    deck's own preset when it exists, a filtered deck's own id (its config
+    is the deck itself). A deck whose preset is missing, and so falls back
+    to the default one, is left out, and the caller asks for it alone, as
+    is every deck when the two reads fail.
+
+    With one call per deck the routing key made 245 backend calls on
+    Andrew's collection (122 decks): 12.7 ms, and each call waits for the
+    collection when a background read holds it, so a Deck Options save
+    during an RWKV rebuild spent 50-680 ms on this key.
+    """
+    all_decks = getattr(decks, "all", None)
+    all_config = getattr(decks, "all_config", None)
+    if not callable(all_decks) or not callable(all_config):
+        return {}
+    try:
+        configs = all_config()
+        deck_dicts = all_decks()
+    except Exception:
+        logger.debug("failed to read decks and presets for the RWKV routing key")
+        return {}
+    config_ids = {
+        config["id"]
+        for config in configs
+        if isinstance(config, dict)
+        and isinstance(config.get("id"), int)
+        and not isinstance(config.get("id"), bool)
+    }
+    known: dict[int, int] = {}
+    for deck in deck_dicts:
+        if not isinstance(deck, dict):
+            continue
+        deck_id = deck.get("id")
+        if not isinstance(deck_id, int) or isinstance(deck_id, bool):
+            continue
+        if "conf" not in deck:
+            known[deck_id] = deck_id
+            continue
+        try:
+            config_id = int(deck["conf"])
+        except (TypeError, ValueError):
+            continue
+        if config_id in config_ids:
+            known[deck_id] = config_id
+    return known
 
 
 def _rwkv_replay_semantics_key(

@@ -1046,7 +1046,10 @@ def test_the_deck_list_and_overview_start_the_report_after_the_counts(
             "counts",
             (HeatmapView.overview, True),
         ]
-        # the counts' success hands the draw to the report
+        # the counts' success hands the draw to the report, while the main
+        # window still shows the overview (spec
+        # ui.overview-refresh-after-leaving)
+        mw.state = "overview"
         successes[1](False)
         early, _draw = heatmap.draw_after_early_report.call_args.args
         assert early == "r"

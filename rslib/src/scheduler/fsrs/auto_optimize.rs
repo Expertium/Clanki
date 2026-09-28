@@ -23,9 +23,12 @@ use crate::scheduler::fsrs::memory_state::UpdateMemoryStateRequest;
 use crate::scheduler::fsrs::params::compute_params_from_prepared;
 use crate::scheduler::fsrs::params::fsrs_optimizer_search;
 use crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config;
+use crate::scheduler::fsrs::params::prepared_compute_params;
 use crate::scheduler::fsrs::params::PrepareComputeParamsInput;
 use crate::scheduler::fsrs::params::PreparedComputeParams;
+use crate::scheduler::fsrs::predictions::PREDICTION_READ_PART_CARDS;
 use crate::scheduler::fsrs::HISTORICAL_RETENTION;
+use crate::scheduler::rwkv::RwkvCollectionHold;
 use crate::search::Node;
 use crate::search::SearchNode;
 use crate::storage::comma_separated_ids;
@@ -106,6 +109,95 @@ impl FsrsAutoOptimizeJob {
     }
 }
 
+/// Cards per part of the review read of a due preset: about 20 ms of the
+/// collection at most for the largest preset of Andrew's collection, as the
+/// prediction pass's read (`PREDICTION_READ_PART_CARDS`).
+pub(crate) const AUTO_OPTIMIZE_READ_PART_CARDS: usize = PREDICTION_READ_PART_CARDS;
+/// Reads in parts that a write may interrupt before a read is made in one
+/// piece instead.
+const AUTO_OPTIMIZE_READ_ATTEMPTS: usize = 3;
+
+/// [`Collection::fsrs_auto_optimize_job`], with the collection held for the
+/// checks and the search, then for the reviews of `part_cards` cards at a
+/// time, then to check nothing changed; the training items are made without
+/// it (spec deck-options.fsrs-auto-optimize). In one piece, the read and the
+/// items of the largest preset of Andrew's collection held the collection
+/// for about half a second. The parts are one read only when nothing wrote
+/// to the collection between the first hold and the last
+/// (`SqliteStorage::change_stamp`); after a write the read starts over, and a
+/// collection that keeps changing is read in one piece.
+pub(crate) fn fsrs_auto_optimize_job_in_parts(
+    preset: DeckConfigId,
+    part_cards: usize,
+    hold: &mut RwkvCollectionHold,
+) -> Result<Option<FsrsAutoOptimizeJob>> {
+    for _ in 0..AUTO_OPTIMIZE_READ_ATTEMPTS {
+        let mut start = None;
+        hold(&mut |col| {
+            let stamp = col.storage.change_stamp();
+            let found = match col.fsrs_auto_optimize_due_preset(preset)? {
+                Some(config) => {
+                    let search = fsrs_optimizer_search(&config)?;
+                    let cards = col.cards_for_srs(search.as_str())?;
+                    let key = FsrsAutoOptimizeJobKey::of(col.state.open_id, &config);
+                    Some((config, key, cards))
+                }
+                None => None,
+            };
+            start = Some((stamp, found));
+            Ok(())
+        })?;
+        let (stamp, found) = start.or_invalid("preset never read")?;
+        let Some((config, key, cards)) = found else {
+            return Ok(None);
+        };
+        let Some(cards) = cards else {
+            // a whole-collection search: one piece
+            break;
+        };
+        let mut revlogs = vec![];
+        let mut unchanged = true;
+        for part in cards.chunks(part_cards.max(1)) {
+            hold(&mut |col| {
+                unchanged = col.storage.change_stamp() == stamp;
+                if unchanged {
+                    revlogs.extend(
+                        col.storage
+                            .get_revlog_entries_of_cards_in_card_order(part)?,
+                    );
+                }
+                Ok(())
+            })?;
+            if !unchanged {
+                break;
+            }
+        }
+        if unchanged {
+            hold(&mut |col| {
+                unchanged = col.storage.change_stamp() == stamp;
+                Ok(())
+            })?;
+        }
+        if !unchanged {
+            continue;
+        }
+        let prepared = prepared_compute_params(
+            revlogs,
+            ignore_revlogs_before_ms_from_config(&config)?,
+            config.fsrs_params(),
+            config.inner.relearn_steps.len(),
+            true,
+        );
+        return Ok(Some(FsrsAutoOptimizeJob { key, prepared }));
+    }
+    let mut job = None;
+    hold(&mut |col| {
+        job = col.fsrs_auto_optimize_job(preset)?;
+        Ok(())
+    })?;
+    Ok(job)
+}
+
 impl Collection {
     /// The presets that are due, in id order. Under RWKV too: the Stats
     /// graphs compare RWKV with FSRS-7, and FSRS-7 needs current parameters
@@ -136,15 +228,9 @@ impl Collection {
         &mut self,
         preset: DeckConfigId,
     ) -> Result<Option<FsrsAutoOptimizeJob>> {
-        if !self.auto_optimize_applies()? {
-            return Ok(None);
-        }
-        let Some(config) = self.storage.get_deck_config(preset)? else {
+        let Some(config) = self.fsrs_auto_optimize_due_preset(preset)? else {
             return Ok(None);
         };
-        if !config.fsrs_auto_optimize_due(self.timing_today()?.days_elapsed) {
-            return Ok(None);
-        }
         // the same review set as "Optimize All Presets"
         let search = fsrs_optimizer_search(&config)?;
         let current_params = config.fsrs_params().to_vec();
@@ -159,6 +245,23 @@ impl Collection {
             key: FsrsAutoOptimizeJobKey::of(self.state.open_id, &config),
             prepared,
         }))
+    }
+
+    /// The preset, when it exists and is due.
+    fn fsrs_auto_optimize_due_preset(
+        &mut self,
+        preset: DeckConfigId,
+    ) -> Result<Option<DeckConfig>> {
+        if !self.auto_optimize_applies()? {
+            return Ok(None);
+        }
+        let Some(config) = self.storage.get_deck_config(preset)? else {
+            return Ok(None);
+        };
+        if !config.fsrs_auto_optimize_due(self.timing_today()?.days_elapsed) {
+            return Ok(None);
+        }
+        Ok(Some(config))
     }
 
     /// Saves the trained parameters as a save in deck options would: the
@@ -481,6 +584,198 @@ mod test {
         assert_eq!(after.inner.fsrs_params_7, before.inner.fsrs_params_7);
         assert_eq!(after.inner.fsrs_last_optimized_day, None);
         assert_eq!(after.mtime_secs, before.mtime_secs);
+        Ok(())
+    }
+
+    /// A card of the default deck with three reviews, `later` days closer
+    /// to today; its review ids are unique however fast cards are added.
+    fn card_with_three_reviews(col: &mut Collection, later: i64) {
+        let note = NoteAdder::basic(col).add(col);
+        let card = col
+            .storage
+            .all_cards_of_note(note.id)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let now = TimestampMillis::now().0 + card.id.0 % 100_000;
+        for (days_ago, interval) in [(40, 0), (39, 3), (30, 10)] {
+            col.storage
+                .add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(now - (days_ago - later) * 86_400_000),
+                        cid: card.id,
+                        button_chosen: 3,
+                        review_kind: if interval == 0 {
+                            RevlogReviewKind::Learning
+                        } else {
+                            RevlogReviewKind::Review
+                        },
+                        interval,
+                        ease_factor: 2500,
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+    }
+
+    fn job_fields(
+        job: &FsrsAutoOptimizeJob,
+    ) -> (
+        &FsrsAutoOptimizeJobKey,
+        &[f32],
+        crate::scheduler::fsrs::params::FsrsReviewPredictionContext,
+        (usize, usize, usize),
+    ) {
+        let counts = job.prepared.target_counts;
+        (
+            &job.key,
+            &job.prepared.current_params,
+            crate::scheduler::fsrs::params::FsrsReviewPredictionContext::from_prepared(
+                &job.prepared,
+            ),
+            (
+                counts.total_targets,
+                counts.long_term_targets,
+                counts.short_term_targets,
+            ),
+        )
+    }
+
+    /// The collection is free between the parts of a due preset's read, and
+    /// the parts give the job of one piece, whatever their size.
+    // Pins spec/deck-options.md#deck-options.fsrs-auto-optimize
+    #[test]
+    fn a_job_read_in_parts_is_the_job_read_in_one_piece() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        for later in 0..7 {
+            card_with_three_reviews(&mut col, later);
+        }
+        let preset = DeckConfigId(1);
+        let whole = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        assert!(!whole.prepared.items.is_empty());
+        for part_cards in [1, 2, 3, 7, 1_000] {
+            let mut holds = 0;
+            let in_parts = fsrs_auto_optimize_job_in_parts(preset, part_cards, &mut |step| {
+                holds += 1;
+                step(&mut col)
+            })?
+            .expect("a job");
+            assert_eq!(
+                job_fields(&in_parts),
+                job_fields(&whole),
+                "part_cards={part_cards}"
+            );
+            // the checks and the search, the parts, the last check
+            assert_eq!(holds, 1 + 7usize.div_ceil(part_cards) + 1);
+        }
+
+        // a write between two parts reads again; a collection that keeps
+        // changing is read in one piece
+        let mut holds = 0;
+        let in_parts = fsrs_auto_optimize_job_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            if holds == 2 {
+                card_with_three_reviews(&mut col, 10);
+            }
+            step(&mut col)
+        })?
+        .expect("a job");
+        let whole = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        assert_eq!(job_fields(&in_parts), job_fields(&whole));
+        assert_eq!(holds, 2 + (1 + 4 + 1));
+        let mut holds = 0;
+        let in_parts = fsrs_auto_optimize_job_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            card_with_three_reviews(&mut col, 10 + holds);
+            step(&mut col)
+        })?
+        .expect("a job");
+        let whole = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        assert_eq!(job_fields(&in_parts), job_fields(&whole));
+        assert_eq!(holds, 3 * 2 + 1);
+
+        // no job for a preset that is not due, in one hold
+        let job = col.fsrs_auto_optimize_job(preset)?.expect("a job");
+        col.apply_fsrs_auto_optimize(job.key, vec![], 0)?;
+        let mut holds = 0;
+        assert!(fsrs_auto_optimize_job_in_parts(preset, 2, &mut |step| {
+            holds += 1;
+            step(&mut col)
+        })?
+        .is_none());
+        assert_eq!(holds, 1);
+        Ok(())
+    }
+
+    /// A measurement harness, not a test: how long one due preset's
+    /// optimization holds the collection, in one piece and in parts: the
+    /// read (`fsrs_auto_optimize_job`), then the save
+    /// (`apply_fsrs_auto_optimize`). Works on a COPY of a collection
+    /// (`ANKI_STALE_PRESETS_BENCH_COL`), preset `ANKI_BENCH_PRESET`; the
+    /// preset is made due before each round and its parameters are put back
+    /// after it. With `ANKI_BENCH_CHANGE_PARAMS` set, the trained parameters
+    /// are moved a little before the save, so that it updates the cards'
+    /// memory states. Run `cargo test -p anki --release
+    /// bench_auto_optimize_holds -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_auto_optimize_holds() -> Result<()> {
+        use std::time::Instant;
+
+        let path = std::env::var("ANKI_STALE_PRESETS_BENCH_COL")
+            .expect("set ANKI_STALE_PRESETS_BENCH_COL to a copy of a collection");
+        let preset = DeckConfigId(
+            std::env::var("ANKI_BENCH_PRESET")
+                .expect("set ANKI_BENCH_PRESET")
+                .parse()
+                .unwrap(),
+        );
+        let mut col = CollectionBuilder::new(path).build()?;
+        let original = col.storage.get_deck_config(preset)?.unwrap();
+        let ms = |at: Instant| at.elapsed().as_secs_f64() * 1000.0;
+        for round in 0..3 {
+            let mut config = original.clone();
+            config.inner.fsrs_last_optimized_day = Some(1);
+            col.storage.update_deck_conf(&config)?;
+            let at = Instant::now();
+            let whole = col.fsrs_auto_optimize_job(preset)?.expect("due");
+            let whole_ms = ms(at);
+            let mut longest = 0f64;
+            let at = Instant::now();
+            let job = fsrs_auto_optimize_job_in_parts(
+                preset,
+                AUTO_OPTIMIZE_READ_PART_CARDS,
+                &mut |step| {
+                    let held = Instant::now();
+                    let result = step(&mut col);
+                    longest = longest.max(ms(held));
+                    result
+                },
+            )?
+            .expect("due");
+            let parts_ms = ms(at);
+            drop(whole);
+            let at = Instant::now();
+            let (key, mut params, items) = job.params()?;
+            let train_ms = ms(at);
+            if std::env::var("ANKI_BENCH_CHANGE_PARAMS").is_ok() {
+                // as when the week's reviews move the parameters: the save
+                // then updates the memory states of the preset's cards
+                params[0] *= 1.01;
+            }
+            let at = Instant::now();
+            let changed = col.apply_fsrs_auto_optimize(key, params, items)?;
+            let apply_ms = ms(at);
+            println!(
+                "round {round}: read in one piece {whole_ms:.1} ms; in parts {parts_ms:.1} ms, \
+                 longest part {longest:.1} ms; training {train_ms:.0} ms; save {apply_ms:.1} ms \
+                 (changed {changed})"
+            );
+            col.storage.update_deck_conf(&original)?;
+        }
         Ok(())
     }
 }
