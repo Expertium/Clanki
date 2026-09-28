@@ -22,9 +22,7 @@ def _reference_routing_key(reviewer: Any) -> list[list[object]]:
     for raw_deck in reviewer.mw.col.decks.all_names_and_ids():
         config = rwkv._deck_config_for_deck_id(reviewer, raw_deck.id)
         config_id = config.get("id") if isinstance(config, dict) else None
-        routing.append(
-            [raw_deck.id, config_id if isinstance(config_id, int) else None]
-        )
+        routing.append([raw_deck.id, config_id if isinstance(config_id, int) else None])
     return sorted(routing, key=lambda item: item[0])
 
 
