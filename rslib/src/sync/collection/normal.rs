@@ -14,6 +14,7 @@ use crate::error;
 use crate::error::AnkiError;
 use crate::error::SyncError;
 use crate::error::SyncErrorKind;
+use crate::prelude::TimestampMillis;
 use crate::prelude::Usn;
 use crate::progress::ThrottlingProgressHandler;
 use crate::revlog::RevlogId;
@@ -79,6 +80,22 @@ impl NormalSyncer<'_> {
     }
 
     pub async fn sync(&mut self) -> error::Result<SyncOutput> {
+        let modified_before = self
+            .col
+            .storage
+            .get_collection_timestamps()?
+            .collection_change;
+        let mut output = self.sync_inner().await?;
+        output.collection_modified_before = modified_before;
+        output.collection_modified_after = self
+            .col
+            .storage
+            .get_collection_timestamps()?
+            .collection_change;
+        Ok(output)
+    }
+
+    async fn sync_inner(&mut self) -> error::Result<SyncOutput> {
         debug!("fetching meta...");
         let local = self.col.sync_meta()?;
         let local_bytes = local.collection_bytes;
@@ -247,6 +264,12 @@ pub struct SyncOutput {
     pub remote_non_review_collection_changed: bool,
     /// The collection's algorithm, when the pass after the sync changed it.
     pub algorithm_changed: Option<AlgorithmChangedBySync>,
+    /// The collection's modification time when the sync began and when it
+    /// ended, read while it held the collection. A sync that brought
+    /// nothing leaves every row the RWKV replay reads as it was, so a stored
+    /// RWKV state cache current at the first is current at the second.
+    pub collection_modified_before: TimestampMillis,
+    pub collection_modified_after: TimestampMillis,
 }
 
 /// A change of the collection's algorithm that a normal sync brought.
@@ -269,6 +292,8 @@ impl From<ClientSyncState> for SyncOutput {
             remote_review_ids: vec![],
             remote_non_review_collection_changed: false,
             algorithm_changed: None,
+            collection_modified_before: TimestampMillis(0),
+            collection_modified_after: TimestampMillis(0),
         }
     }
 }

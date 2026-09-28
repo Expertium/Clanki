@@ -1904,6 +1904,45 @@ async fn sync_does_not_unforget_a_card() -> Result<()> {
     .await
 }
 
+/// A normal sync reports the collection's modification time when it began
+/// and when it ended. After a sync that brought nothing, the RWKV state cache
+/// that was current at the first is current at the second, and Clanki moves
+/// its marker, so the next start-up skips the history check.
+#[tokio::test]
+async fn a_sync_reports_the_modification_time_it_began_and_ended_with() -> Result<()> {
+    with_active_server(|client| async move {
+        let ctx = SyncTestContext::new(client);
+        upload_download(&ctx).await?;
+        let mut col1 = ctx.col1();
+
+        // a change the sync uploads, and nothing on the server
+        let nt = col1.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        note.set_field(0, "uploaded")?;
+        col1.add_note(&mut note, DeckId(1))?;
+        let before = col1.storage.get_collection_timestamps()?.collection_change;
+        let out = ctx.normal_sync(&mut col1).await;
+        let after = col1.storage.get_collection_timestamps()?.collection_change;
+        assert_eq!(out.required, SyncActionRequired::NoChanges);
+        assert!(!out.remote_collection_changed);
+        assert_ne!(before, after);
+        assert_eq!(out.collection_modified_before, before);
+        assert_eq!(out.collection_modified_after, after);
+
+        // nothing to do: the same time twice
+        let out = ctx.normal_sync(&mut col1).await;
+        assert_eq!(out.collection_modified_before, after);
+        assert_eq!(out.collection_modified_after, after);
+        assert_eq!(
+            col1.storage.get_collection_timestamps()?.collection_change,
+            after
+        );
+
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn sanity_check_should_roll_back_and_force_full_sync() -> Result<()> {
     with_active_server(|client| async move {
