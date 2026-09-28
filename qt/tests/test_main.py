@@ -289,6 +289,77 @@ def test_sync_skips_rwkv_refresh_without_remote_collection_changes(
     ]
 
 
+@pytest.mark.parametrize(
+    "changes, kept",
+    [
+        (aqt.sync.RemoteCollectionChanges(normal_sync_finished=True), True),
+        # an error, a cancel or a full sync cannot say that nothing changed
+        (aqt.sync.RemoteCollectionChanges(), False),
+        (
+            aqt.sync.RemoteCollectionChanges(
+                normal_sync_finished=True, non_review_collection_changed=True
+            ),
+            False,
+        ),
+    ],
+)
+def test_only_a_finished_sync_that_brought_nothing_keeps_the_rwkv_state(
+    monkeypatch, changes: aqt.sync.RemoteCollectionChanges, kept: bool
+) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(
+        models=SimpleNamespace(_clear_cache=lambda: calls.append("clear models"))
+    )
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", lambda: None)
+    monkeypatch.setattr(
+        aqt.main.gui_hooks, "sync_did_finish", lambda: calls.append("sync finish")
+    )
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(changes)
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "keep_rwkv_state_through_next_reset",
+        lambda _mw: calls.append("keep"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "drop_unused_rwkv_state_keep",
+        lambda _mw: calls.append("drop"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, on_done, **_kwargs: on_done(),
+    )
+
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+
+    if kept:
+        assert calls == [
+            "keep",
+            "clear models",
+            "sync finish",
+            "reset",
+            "drop",
+            "done",
+        ]
+    else:
+        assert calls == ["clear models", "sync finish", "reset", "done"]
+
+
 def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
     monkeypatch,
 ) -> None:

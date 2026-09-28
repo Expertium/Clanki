@@ -1351,6 +1351,64 @@ def test_grade_now_excluded_batch_preserves_undo_and_redo(
     assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
 
 
+def test_a_sync_that_brought_nothing_keeps_the_resident_state_through_its_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reset after a sync that brought nothing keeps RWKV-Curve's state;
+    a change made between the keep and the reset, or a later reset, does
+    not."""
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_reviewer(rpc=rpc)
+    reviewer.mw.reviewer = reviewer
+    mod = [123]
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda _sql: mod[0])
+    refreshed: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_ready_rwkv_state_cache_collection_mod",
+        refreshed.append,
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.25}
+    everything = collection_pb2.OpChanges(
+        card=True, note=True, deck=True, deck_config=True, study_queues=True
+    )
+
+    rwkv_scheduler.keep_rwkv_state_through_next_reset(reviewer.mw)
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    rwkv_scheduler.drop_unused_rwkv_state_keep(reviewer.mw)
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == (
+        resident_identity
+    )
+    # the queue scores go, as after any queue change; the stored state's
+    # collection marker follows the sync's new modification time
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+    assert len(refreshed) == 1
+
+    # the keep served one reset only
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+    # a keep the reset never used does not stand for a later change
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler.keep_rwkv_state_through_next_reset(reviewer.mw)
+    rwkv_scheduler.drop_unused_rwkv_state_keep(reviewer.mw)
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+    # a change between the keep and the reset throws the state away
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler.keep_rwkv_state_through_next_reset(reviewer.mw)
+    mod[0] = 124
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
 def test_reviewer_undo_skips_its_queue_invalidation_once() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_reviewer(rpc=rpc)

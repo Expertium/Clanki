@@ -44,6 +44,18 @@ class RemoteCollectionChanges:
     collection_changed: bool = False
     review_ids: tuple[int, ...] = ()
     non_review_collection_changed: bool = False
+    # a normal sync ran to its end; False after an error, a cancel or a full
+    # sync, when the flags above cannot say that nothing changed
+    normal_sync_finished: bool = False
+
+    def nothing_changed(self) -> bool:
+        """The sync finished and brought nothing: every row it could touch
+        is as it was before."""
+        return (
+            self.normal_sync_finished
+            and not self.collection_changed
+            and not self.non_review_collection_changed
+        )
 
 
 def algorithm_change_notice(out: SyncOutput) -> str | None:
@@ -178,6 +190,7 @@ def sync_collection(
                     non_review_collection_changed=(
                         out.remote_non_review_collection_changed
                     ),
+                    normal_sync_finished=True,
                 )
             )
         elif not ask_for_full_sync:
