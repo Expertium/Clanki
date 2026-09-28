@@ -2088,20 +2088,20 @@ mod test {
         Ok(())
     }
 
-    /// The fields of two reads of a preset, for comparing them.
-    fn read_fields(
-        read: &FsrsReviewPredictionRead,
-    ) -> (
-        &FsrsReviewPredictionJobKey,
-        &FsrsReviewPredictionJobKey,
-        &str,
+    /// The fields of a read of a preset, for comparing two reads.
+    type ReadFields<'a> = (
+        &'a FsrsReviewPredictionJobKey,
+        &'a FsrsReviewPredictionJobKey,
+        &'a str,
         i64,
-        &[f32],
-        &[RevlogEntry],
-        &Option<HashSet<RevlogId>>,
+        &'a [f32],
+        &'a [RevlogEntry],
+        &'a Option<HashSet<RevlogId>>,
         TimestampMillis,
         usize,
-    ) {
+    );
+
+    fn read_fields(read: &FsrsReviewPredictionRead) -> ReadFields<'_> {
         (
             &read.key,
             &read.coverage.key,
