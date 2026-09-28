@@ -20364,7 +20364,7 @@ def _historical_rwkv_review_rows(
                 steps.step()
                 return whole
         parts = []
-        for low, high in _card_id_ranges(col, HISTORY_QUERY_PARTS):
+        for low, high in _card_id_ranges(col, HISTORY_QUERY_PARTS, after_review_id):
             steps.step()
             parts.append(
                 _historical_rwkv_review_rows_query(
@@ -20769,14 +20769,33 @@ def _split_whole_history_query() -> None:
     while the user works (spec sched.rwkv-startup-no-window)."""
 
 
-def _card_id_ranges(col: Any, parts: int) -> list[tuple[int, int]]:
+def _card_id_ranges(
+    col: Any, parts: int, after_review_id: int | None = None
+) -> list[tuple[int, int]]:
     """Up to `parts` consecutive, inclusive card-id ranges that together cover
     every card with a review, with about the same number of reviews each (the
-    query's time follows the reviews, not the cards)."""
-    counts = col.db.all("select cid, count() from revlog group by cid order by cid")
+    query's time follows the reviews, not the cards).
+
+    With `after_review_id`, the ranges cover only the cards with a review
+    after it, the only cards such a read looks at, and a range holds as many
+    reviews as a range of the whole history. Counting every card's reviews
+    for a read of the last few took 133-154 ms on 1.3M reviews, while the
+    first card after start-up waited for that read; the ranges of the few
+    cards take about 1 ms, and a short tail is one query."""
+    if after_review_id is None:
+        counts = col.db.all("select cid, count() from revlog group by cid order by cid")
+        total = sum(count for _, count in counts)
+    else:
+        counts = col.db.all(
+            "select cid, count() from revlog"
+            " where cid in (select cid from revlog where id > ?)"
+            " group by cid order by cid",
+            int(after_review_id),
+        )
+        total = col.db.scalar("select count() from revlog")
     if not counts:
         return []
-    per_part = -(-sum(count for _, count in counts) // parts)
+    per_part = -(-total // parts)
     ranges: list[tuple[int, int]] = []
     start: int | None = None
     filled = 0

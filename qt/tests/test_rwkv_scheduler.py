@@ -17825,12 +17825,19 @@ def _rwkv_cache_reviewer(
                     for review_id, prediction, *_ in rwkv_retrievability_rows
                     if review_id in requested_ids
                 ]
-            if sql == "select cid, count() from revlog group by cid order by cid":
-                # the card-id ranges a split whole-history query runs in
-                # (spec sched.rwkv-startup-no-window)
+            if sql.startswith("select cid, count() from revlog"):
+                # the card-id ranges a split history query runs in (spec
+                # sched.rwkv-startup-no-window): every card, or after a
+                # review id only the cards with a later review
+                recent = (
+                    {row[1] for row in rows if row[0] > cast(int, args[0])}
+                    if "where cid in" in sql
+                    else None
+                )
                 counts: dict[int, int] = {}
                 for row in rows:
-                    counts[row[1]] = counts.get(row[1], 0) + 1
+                    if recent is None or row[1] in recent:
+                        counts[row[1]] = counts.get(row[1], 0) + 1
                 return sorted(counts.items())
             assert "from revlog r" in sql
             active = re.search(r"and r\.id in \(([^)]*)\)", sql)
@@ -17878,6 +17885,8 @@ def _rwkv_cache_reviewer(
             if "select crt from col" in sql:
                 assert args == ()
                 return 12345
+            if sql == "select count() from revlog":
+                return len(rows)
             if "sample_role =" in sql:
                 assert len(args) == 2
                 last_review_id, sample_role = args
