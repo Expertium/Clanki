@@ -526,7 +526,7 @@ PAGE_FAILED_COMMAND = "clankiPageFailed:"
 
 @dataclasses.dataclass
 class _OpenPage:
-    """A page from stdHtml(into_open_page=True) that is open in the web view:
+    """A page from stdHtml(shares_frame=True) that is open in the web view:
     what a later page must share with it to be drawn into it."""
 
     # the head and the document's attributes, all but the screen's own
@@ -553,7 +553,7 @@ class _StagedPage:
 class AnkiWebView(QWebEngineView):
     allow_drops = False
     _kind: AnkiWebViewKind
-    # the page stdHtml(into_open_page=True) drew last, while it is open
+    # the page stdHtml(shares_frame=True) drew last, while it is open
     _open_page: _OpenPage | None = None
     _staged_page: _StagedPage | None = None
 
@@ -852,20 +852,23 @@ html {{ {font} }}
         context: Any | None = None,
         default_css: bool = True,
         held: bool = False,
+        shares_frame: bool = False,
         into_open_page: bool = False,
     ) -> None:
         """`held`: the page stays hidden until it is ready and every other
         held page is ready too; then they all appear in the same frame (spec
         ui.screen-one-frame, aqt.page_reveal).
 
-        `into_open_page` (held pages only): if the page open in the web view
-        came from such a call too and has the same frame (head and document
-        attributes, apart from the screen's own style sheets and scripts),
-        the new body is drawn into it instead of loading a new page
-        (webview.ts); it looks the same as a freshly loaded page. Used by
-        the deck list, a deck's overview and their bottom bar. Not when an
-        add-on handles webview_will_set_content: its content goes into a
-        freshly loaded page, as always."""
+        `shares_frame` (held pages only): a later page of the same frame
+        (head and document attributes, apart from the screen's own style
+        sheets and scripts) may be drawn into this one. `into_open_page`
+        (implies `shares_frame`): if the page open in the web view shares
+        this page's frame, the new body is drawn into it instead of loading
+        a new page (webview.ts); it looks the same as a freshly loaded page.
+        The deck list shares its frame; a deck's overview and its bottom bar
+        are drawn into the open page. Neither when an add-on handles
+        webview_will_set_content: its content goes into a freshly loaded
+        page, as always."""
         css = (["css/webview.css"] if default_css else []) + (
             [] if css is None else css
         )
@@ -887,15 +890,16 @@ html {{ {font} }}
             csstxt = self.bundledCSS("css/webview.css")
             csstxt += f"<style>{self.standard_css()}</style>"
 
-        into_open_page = (
-            into_open_page
+        shares_frame = (
+            (shares_frame or into_open_page)
             and held
             and only_builtin_handlers(gui_hooks.webview_will_set_content)
         )
+        into_open_page = into_open_page and shares_frame
         frame_css = csstxt
         screen_css = [self.bundledCSS(fname) for fname in web_content.css]
         scripts = [self.bundledScript(fname) for fname in web_content.js]
-        if into_open_page:
+        if shares_frame:
             # what a page drawn into this one swaps and keeps (webview.ts)
             screen_css = [
                 tag.replace("<link ", f"<link {_SCREEN_CSS_ATTRIBUTE} ", 1)
@@ -975,18 +979,23 @@ html {{ {font} }}
             page_context = PageContext.DECK_OPTIONS
         else:
             page_context = PageContext.UNKNOWN
-        if not into_open_page:
+        if not shares_frame:
             self.setHtml(html, page_context)
             return
         frame += f"\n{lang_dir}"
         css_urls = tuple(self.webBundlePath(fname) for fname in web_content.css)
         js_urls = [self.webBundlePath(fname) for fname in web_content.js]
         loaded = _OpenPage(frame, css_urls, frozenset(js_urls))
-        if not self._stage_into_open_page(
+        if into_open_page and self._stage_into_open_page(
             token, web_content.body, loaded, js_urls, html, page_context
         ):
-            self.setHtml(html, page_context)
-            self._open_page = loaded
+            return
+        self.setHtml(html, page_context)
+        self._open_page = loaded
+
+    def drawing_into_open_page(self) -> bool:
+        """A page is being drawn into the open page, not yet shown."""
+        return self._staged_page is not None
 
     def _stage_into_open_page(
         self,

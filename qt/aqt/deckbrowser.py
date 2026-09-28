@@ -356,8 +356,10 @@ class DeckBrowser:
             context=self,
             # with the bottom bar, in one finished frame (spec ui.screen-one-frame)
             held=True,
-            # an add-on that decorates the page gets a freshly loaded one
-            into_open_page=all(
+            # a deck's overview can be drawn into this page (a deck list drawn
+            # into the open page shows no sooner than a loaded one); not with
+            # an add-on that decorates the page
+            shares_frame=all(
                 _only_builtin_handlers(hook)
                 for hook in (
                     gui_hooks.deck_browser_will_render_content,

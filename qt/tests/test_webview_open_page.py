@@ -54,6 +54,7 @@ class _View:
 
     stdHtml = webview.AnkiWebView.stdHtml
     _stage_into_open_page = webview.AnkiWebView._stage_into_open_page
+    drawing_into_open_page = webview.AnkiWebView.drawing_into_open_page
     _load_instead = webview.AnkiWebView._load_instead
     _on_page_staged = webview.AnkiWebView._on_page_staged
     show_staged_page = webview.AnkiWebView.show_staged_page
@@ -333,3 +334,40 @@ def test_the_deck_list_and_overview_load_a_new_page_for_an_add_on(
         gui_hooks.overview_did_refresh, "_hooks", [lambda overview: None]
     )
     assert draw() is False
+
+
+def test_a_page_that_only_shares_its_frame_is_loaded_and_can_be_drawn_into(
+    reveal: _Reveal,
+) -> None:
+    # the deck list: loaded, marked, and the overview drawn into it
+    view = _View(reveal)
+    view.stdHtml(
+        "<p>decks</p>", css=["css/deckbrowser.css"], held=True, shares_frame=True
+    )
+    assert len(view.loads) == 1 and "data-clanki-screen-css" in view.loads[0]
+    token = view.loads[0].split(f'{HOLD_ATTRIBUTE}="')[1].split('"')[0]
+    view.loaded()
+    reveal.page_ready(view, f"{token}:10")
+    view.stdHtml(
+        "<p>decks</p>", css=["css/deckbrowser.css"], held=True, shares_frame=True
+    )
+    assert len(view.loads) == 2
+    view.loaded()
+    _draw(view, "<p>deck</p>", css="css/overview.css")
+    assert len(view.loads) == 2
+    assert view.drawing_into_open_page()
+
+
+def test_the_bottom_bar_is_drawn_into_its_open_page_with_the_main_page() -> None:
+    from aqt.toolbar import BottomBar
+
+    for main_drawn in (True, False):
+        web = MagicMock()
+        mw = MagicMock()
+        mw.web.drawing_into_open_page.return_value = main_drawn
+        bar: Any = SimpleNamespace(web=web, _centerBody=BottomBar._centerBody, mw=mw)
+        BottomBar.draw(
+            bar, buf="<button>", link_handler=lambda url: None, web_context=object()
+        )
+        assert web.stdHtml.call_args.kwargs["shares_frame"] is True
+        assert web.stdHtml.call_args.kwargs["into_open_page"] is main_drawn
