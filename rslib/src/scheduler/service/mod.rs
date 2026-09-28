@@ -66,6 +66,8 @@ use crate::deckconfig::FsrsVersion;
 use crate::prelude::*;
 use crate::scheduler::advance_postpone::AdvancePostponeRequest;
 use crate::scheduler::answering::PreviewDelays;
+use crate::scheduler::fsrs::auto_optimize::fsrs_auto_optimize_job_in_parts;
+use crate::scheduler::fsrs::auto_optimize::AUTO_OPTIMIZE_READ_PART_CARDS;
 use crate::scheduler::fsrs::batch::ComputeParamsBatchInput;
 use crate::scheduler::fsrs::memory_state::fsrs_next_states_s90;
 use crate::scheduler::fsrs::params::ComputeParamsRequest;
@@ -1402,7 +1404,13 @@ impl crate::services::BackendSchedulerService for Backend {
         input: scheduler::RefreshFsrsReviewPredictionsRequest,
     ) -> Result<generic::Bool> {
         let preset = DeckConfigId(input.deck_config_id);
-        let Some(job) = self.with_col(|col| col.fsrs_auto_optimize_job(preset))? else {
+        // the reviews are read one part at a time, so a click waits for a
+        // part at most (spec deck-options.fsrs-auto-optimize)
+        let Some(job) =
+            fsrs_auto_optimize_job_in_parts(preset, AUTO_OPTIMIZE_READ_PART_CARDS, &mut |step| {
+                self.with_col_for_a_part(|col| step(col))
+            })?
+        else {
             return Ok(false.into());
         };
         let (key, params, fsrs_items) = job.params()?;

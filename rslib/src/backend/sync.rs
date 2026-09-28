@@ -79,6 +79,8 @@ impl From<SyncOutput> for anki_proto::sync::SyncCollectionResponse {
             algorithm_changed_by_fsrs_off: o
                 .algorithm_changed
                 .is_some_and(|change| change.fsrs_turned_off),
+            collection_modified_before: o.collection_modified_before.0,
+            collection_modified_after: o.collection_modified_after.0,
         }
     }
 }

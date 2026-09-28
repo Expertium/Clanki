@@ -252,6 +252,7 @@ class DeckBrowser:
         if not reuse:
             self.cancel_rwkv_count_refresh()
             generation = self._rwkv_count_generation
+            started_on_deck_list = self.mw.state == "deckBrowser"
             from aqt.review_heatmap import (
                 EarlyReport,
                 HeatmapView,
@@ -295,6 +296,8 @@ class DeckBrowser:
             def success(output: RenderData) -> None:
                 if generation != self._rwkv_count_generation:
                     return
+                if self._left_the_deck_list(started_on_deck_list):
+                    return
                 self._apply_pending_collapse(output.tree)
                 self._render_data = output
                 self._rwkv_pending_deck_ids = self._deck_ids_in_rwkv_scopes(
@@ -308,6 +311,9 @@ class DeckBrowser:
             def draw(output: RenderData) -> None:
                 if generation != self._rwkv_count_generation:
                     return
+                # the draw can wait up to 100 ms for the heatmap report
+                if self._left_the_deck_list(started_on_deck_list):
+                    return
                 keep = keep_position and self._page_is_drawn()
                 if keep and self._redraw_tree_in_place():
                     # the counts changed in the open page; nothing moved
@@ -315,6 +321,9 @@ class DeckBrowser:
                 elif keep:
 
                     def draw_at_offset(offset: int | None) -> None:
+                        # the page answers the scroll position a moment later
+                        if self._left_the_deck_list(started_on_deck_list):
+                            return
                         self.__renderPage(offset)
                         start_rwkv_counts(output)
 
@@ -371,6 +380,19 @@ class DeckBrowser:
         if offset is not None:
             self._scrollToOffset(offset)
         gui_hooks.deck_browser_did_render(self)
+
+    def _left_the_deck_list(self, started_on_deck_list: bool) -> bool:
+        """The main window left the deck list while its counts were read (for
+        example Study during the refresh at the end of the RWKV start-up
+        restore). Drawing it now would cover the review screen, which then
+        stays blank (spec ui.deck-list-refresh-after-leaving); the next showing
+        of the deck list reads the counts again. A refresh asked for while
+        another screen was open (an add-on can do that) still draws, as
+        before."""
+        if not started_on_deck_list or self.mw.state == "deckBrowser":
+            return False
+        self._refresh_needed = True
+        return True
 
     def _rwkv_count_refresh_active(self, generation: int) -> bool:
         return (

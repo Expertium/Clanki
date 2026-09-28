@@ -1337,9 +1337,25 @@ title="{}" {}>{}</button>""".format(
         def on_collection_sync_finished() -> None:
             from aqt import rwkv_scheduler
 
+            # A sync that brought nothing leaves the review history as it
+            # was, so the reset below keeps RWKV-Curve's prepared state. It
+            # threw it away before, and the first answer after every such
+            # sync waited 2-3 s for the history to be read again.
+            keep_rwkv_state = remote_collection_changes.nothing_changed()
+            if keep_rwkv_state:
+                rwkv_scheduler.keep_rwkv_state_through_next_reset(self)
             self.col.models._clear_cache()
             gui_hooks.sync_did_finish()
             self.reset()
+            if keep_rwkv_state:
+                rwkv_scheduler.drop_unused_rwkv_state_keep(self)
+                # the stored state cache, current when the sync began, is
+                # current now: the next start-up skips the history check
+                rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+                    self,
+                    before=remote_collection_changes.collection_modified_before,
+                    after=remote_collection_changes.collection_modified_after,
+                )
 
             def finish_sync() -> None:
                 after_sync()

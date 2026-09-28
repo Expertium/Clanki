@@ -185,3 +185,45 @@ def test_a_sync_that_must_not_ask_leaves_a_full_sync_to_the_user(
     aqt.sync.sync_collection(mw, lambda: finished.append(True))
     done[1](SimpleNamespace(result=lambda: out))
     assert len(asked) == 1
+
+
+def test_a_finished_sync_passes_on_the_times_it_began_and_ended_with(
+    monkeypatch,
+) -> None:
+    """The collection's modification time when the normal sync began and
+    when it ended, as the sync read them, reach the caller: after a sync that
+    brought nothing, the stored RWKV state cache's marker moves from the one
+    to the other."""
+    from anki.sync import SyncOutput
+
+    done: list[object] = []
+    mw = _mw()
+    mw.taskman = SimpleNamespace(
+        with_progress=lambda _task, on_done, **_kwargs: done.append(on_done)
+    )
+    mw.col._load_scheduler = lambda: None
+    mw.pm.set_host_number = lambda _number: None
+    mw.media_syncer = SimpleNamespace(start_monitoring=lambda: None)
+    monkeypatch.setattr(aqt.sync, "QTimer", _Timer)
+    monkeypatch.setattr(aqt.sync, "qconnect", lambda _signal, _handler: None)
+    monkeypatch.setattr(aqt.sync, "tooltip", lambda **_kwargs: None)
+    changes: list[aqt.sync.RemoteCollectionChanges] = []
+
+    aqt.sync.sync_collection(
+        mw, lambda: None, on_remote_collection_changes=changes.append
+    )
+    out = SyncOutput(
+        required=SyncOutput.NO_CHANGES,
+        collection_modified_before=1_000,
+        collection_modified_after=2_000,
+    )
+    done[0](SimpleNamespace(result=lambda: out))
+
+    assert changes == [
+        aqt.sync.RemoteCollectionChanges(
+            normal_sync_finished=True,
+            collection_modified_before=1_000,
+            collection_modified_after=2_000,
+        )
+    ]
+    assert changes[0].nothing_changed()

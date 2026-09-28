@@ -80,6 +80,11 @@ message SyncCollectionResponse {
   string algorithm_changed_to = 9;
   // True when that change came from another device turning FSRS off.
   bool algorithm_changed_by_fsrs_off = 10;
+  // The collection's modification time when the sync began and when it
+  // ended (0 when unknown). After a sync that brought nothing, a stored
+  // RWKV state cache that was current at the first is current at the second.
+  int64 collection_modified_before = 11;
+  int64 collection_modified_after = 12;
 }
 
 message MediaSyncStatusResponse {

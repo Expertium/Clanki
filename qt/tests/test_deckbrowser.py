@@ -575,6 +575,51 @@ def test_refresh_draws_from_the_top_on_another_screen(refreshable):
     assert page.offset_requests == [] and page.scrolls() == [] and page.swaps() == []
 
 
+def test_a_refresh_that_returns_after_study_does_not_draw_the_deck_list(refreshable):
+    """Pins spec/ui.md#ui.deck-list-refresh-after-leaving: the end of the
+    RWKV start-up restore refreshes the open deck list, and Study was pressed
+    while its counts were read. The late counts drew the deck list over the
+    review screen, which stayed blank ("_showQuestion is not defined")."""
+    browser, page = refreshable.browser, refreshable.page
+    refreshable.state.tree = _tree(new=7)
+
+    browser.refresh()
+    browser.mw.state = "review"
+    refreshable.deliver()
+
+    assert page.html == [] and page.swaps() == [] and page.offset_requests == []
+    # the next showing of the deck list reads the counts again
+    assert browser._refresh_needed
+
+
+def test_a_late_draw_that_waits_for_the_scroll_position_stops_after_study(
+    refreshable,
+):
+    browser, page = refreshable.browser, refreshable.page
+    # the stats section differs, so the page is drawn again at its position
+    refreshable.state.studied_today = "studied more today"
+
+    browser.refresh()
+    refreshable.deliver()
+    assert len(page.offset_requests) == 1
+    browser.mw.state = "review"
+    page.offset_requests[0](180)
+
+    assert page.html == [] and page.scrolls() == []
+    assert browser._refresh_needed
+
+
+def test_a_refresh_that_returns_on_the_open_deck_list_still_draws_it(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    refreshable.state.tree = _tree(new=7)
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert len(page.swaps()) == 1
+    assert not browser._refresh_needed
+
+
 def test_a_collapse_during_a_refresh_survives_the_refresh(refreshable):
     browser, page = refreshable.browser, refreshable.page
 
