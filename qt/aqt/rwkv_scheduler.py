@@ -3523,6 +3523,21 @@ def _mark_collection_change_reconciled(reviewer: object) -> None:
         setattr(reviewer, _RWKV_RECONCILED_COLLECTION_CHANGE_PENDING_ATTR, pending)
 
 
+def keep_rwkv_state_through_next_reset(mw: object) -> None:
+    """The next study-queue change keeps the resident state, as after a
+    change this module reconciled itself: the caller knows that the review
+    history did not change (a sync that brought nothing). The keep holds
+    only while the collection's modification time stays the same, so a
+    change made in between still throws the state away."""
+    _mark_collection_change_reconciled(SimpleNamespace(mw=mw))
+
+
+def drop_unused_rwkv_state_keep(mw: object) -> None:
+    """Drops a keep that no study-queue change used, so that it cannot
+    stand for a later change."""
+    _consume_reconciled_collection_change(SimpleNamespace(mw=mw))
+
+
 def _consume_reconciled_collection_change(reviewer: object) -> bool:
     owner = _reconciled_collection_change_owner(reviewer)
     pending = getattr(
