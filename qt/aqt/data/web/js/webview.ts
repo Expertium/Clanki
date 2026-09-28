@@ -46,28 +46,11 @@ let clankiStaged: ClankiStagedPage | null = null;
 // and goes with the content.
 const clankiFrameHead = new Set<Node>(Array.from(document.head.childNodes));
 
-function clankiAddedTo(parent: Node, run: () => void): Node[] {
+async function clankiAddedTo(parent: Node, run: () => Promise<void>): Promise<Node[]> {
     const before = new Set(Array.from(parent.childNodes));
-    run();
+    await run();
     return Array.from(parent.childNodes).filter((node) => !before.has(node));
 }
-const clankiSources = new Map<string, Promise<string>>();
-
-function clankiSource(url: string): Promise<string> {
-    let source = clankiSources.get(url);
-    if (!source) {
-        source = fetch(url).then((response) => {
-            if (!response.ok) {
-                throw new Error(`${url}: ${response.status}`);
-            }
-            return response.text();
-        });
-        clankiSources.set(url, source);
-        source.catch(() => clankiSources.delete(url));
-    }
-    return source;
-}
-
 function clankiScreenSheets(): HTMLLinkElement[] {
     return Array.from(
         document.querySelectorAll<HTMLLinkElement>("link[data-clanki-screen-css]"),
@@ -104,24 +87,37 @@ function clankiSheet(href: string): Promise<HTMLLinkElement> {
     });
 }
 
-function clankiAbsolute(src: string): string {
-    return new URL(src, document.baseURI).href;
-}
-
-/** Run `old` (a script that was inserted, not parsed, so never runs) as a
- * new inline script: `source` is the text of its file, if it has one. */
-function clankiRun(old: HTMLScriptElement, source?: string): void {
+/** Run `old`, a script that was inserted, not parsed, and so never runs:
+ * a copy of it runs, and the promise is kept once it has run (a script with
+ * a file, from the cache, as when the page is parsed). */
+function clankiRun(old: HTMLScriptElement): Promise<void> {
     const script = document.createElement("script");
     for (const attribute of Array.from(old.attributes)) {
-        if (attribute.name !== "src") {
-            script.setAttribute(attribute.name, attribute.value);
-        }
+        script.setAttribute(attribute.name, attribute.value);
     }
-    const src = old.getAttribute("src");
-    script.text = src === null
-        ? old.text
-        : `${source}\n//# sourceURL=${clankiAbsolute(src)}`;
-    old.replaceWith(script);
+    if (!script.hasAttribute("src")) {
+        script.text = old.text;
+        old.replaceWith(script);
+        return Promise.resolve();
+    }
+    return clankiLoad(script, null, (node) => old.replaceWith(node));
+}
+
+/** Put `script` in the page with `insert`, and keep the promise once its
+ * file (`src`, or its own) has run. */
+function clankiLoad(
+    script: HTMLScriptElement,
+    src: string | null,
+    insert: (node: HTMLScriptElement) => void,
+): Promise<void> {
+    return new Promise((resolve, reject) => {
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`${script.src}: not loaded`));
+        if (src !== null) {
+            script.src = src;
+        }
+        insert(script);
+    });
 }
 
 /** Put the staged page in place of the current one. With `undo`, only for a
@@ -197,14 +193,8 @@ async function clankiStagePage(
     try {
         const template = document.createElement("template");
         template.innerHTML = body;
-        const files = Array.from(template.content.querySelectorAll("script"))
-            .map((script) => script.getAttribute("src"))
-            .filter((src): src is string => src !== null)
-            .map(clankiAbsolute);
-        const [sheets] = await Promise.all([
-            Promise.all(css.map(clankiSheet)),
-            Promise.all(frameScripts.concat(files).map(clankiSource)),
-        ]);
+        const files = template.content.querySelectorAll("script[src]").length;
+        const sheets = await Promise.all(css.map(clankiSheet));
         // the new content, built and its scripts run where it is not seen and
         // takes no room; first in the body, so that its ids are the ones found
         const box = document.createElement("div");
@@ -216,38 +206,30 @@ async function clankiStagePage(
         const content = Array.from(document.body.childNodes).find(
             (node) => !clankiIsFrame(node),
         ) ?? null;
-        const sources = new Map<string, string>();
-        for (const url of frameScripts.concat(files)) {
-            sources.set(url, await clankiSource(url));
-        }
-        const frameHead = clankiAddedTo(document.head, () => {
+        const frameHead = await clankiAddedTo(document.head, async () => {
             for (const url of frameScripts) {
                 const script = document.createElement("script");
                 script.setAttribute("data-clanki-frame", "");
-                script.setAttribute("src", url);
-                document.body.insertBefore(script, content);
-                clankiRun(script, sources.get(url));
+                await clankiLoad(script, url, (node) => document.body.insertBefore(node, content));
             }
         });
         frameHead.forEach((node) => clankiFrameHead.add(node));
         document.body.insertBefore(box, document.body.firstChild);
         const head: Node[] = [];
-        const added = clankiAddedTo(document.body, () => {
-            head.push(...clankiAddedTo(document.head, () => {
-                for (const script of Array.from(box.querySelectorAll("script"))) {
-                    const src = script.getAttribute("src");
-                    clankiRun(
-                        script,
-                        src === null ? undefined : sources.get(clankiAbsolute(src)),
-                    );
-                }
-            }));
+        const added = await clankiAddedTo(document.body, async () => {
+            head.push(
+                ...await clankiAddedTo(document.head, async () => {
+                    for (const script of Array.from(box.querySelectorAll("script"))) {
+                        await clankiRun(script);
+                    }
+                }),
+            );
         });
         // what the scripts added to the body is the new content's too
         box.append(...added);
         const staged: ClankiStagedPage = { token, box, sheets, head };
         let height = document.documentElement.offsetHeight;
-        if (!files.length && !box.querySelector("script")) {
+        if (!files && !box.querySelector("script")) {
             // the height the page will have, for the web view that takes it
             // (the bottom bar)
             const undo = clankiPlace(staged, true);
