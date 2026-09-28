@@ -292,7 +292,14 @@ def test_sync_skips_rwkv_refresh_without_remote_collection_changes(
 @pytest.mark.parametrize(
     "changes, kept",
     [
-        (aqt.sync.RemoteCollectionChanges(normal_sync_finished=True), True),
+        (
+            aqt.sync.RemoteCollectionChanges(
+                normal_sync_finished=True,
+                collection_modified_before=5,
+                collection_modified_after=9,
+            ),
+            True,
+        ),
         # an error, a cancel or a full sync cannot say that nothing changed
         (aqt.sync.RemoteCollectionChanges(), False),
         (
@@ -341,6 +348,11 @@ def test_only_a_finished_sync_that_brought_nothing_keeps_the_rwkv_state(
     )
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
+        "carry_rwkv_state_cache_marker_through_sync",
+        lambda _mw, *, before, after: calls.append(f"carry {before} {after}"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
         "refresh_rwkv_state_after_sync",
         lambda _mw, on_done, **_kwargs: on_done(),
     )
@@ -348,12 +360,14 @@ def test_only_a_finished_sync_that_brought_nothing_keeps_the_rwkv_state(
     mw._sync_collection_and_media(lambda: calls.append("done"))
 
     if kept:
+        # the stored state cache's marker moves with the sync's own times
         assert calls == [
             "keep",
             "clear models",
             "sync finish",
             "reset",
             "drop",
+            "carry 5 9",
             "done",
         ]
     else:

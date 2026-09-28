@@ -1349,6 +1349,13 @@ title="{}" {}>{}</button>""".format(
             self.reset()
             if keep_rwkv_state:
                 rwkv_scheduler.drop_unused_rwkv_state_keep(self)
+                # the stored state cache, current when the sync began, is
+                # current now: the next start-up skips the history check
+                rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+                    self,
+                    before=remote_collection_changes.collection_modified_before,
+                    after=remote_collection_changes.collection_modified_after,
+                )
 
             def finish_sync() -> None:
                 after_sync()

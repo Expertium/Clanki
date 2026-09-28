@@ -17641,6 +17641,58 @@ def _truncate_rwkv_delta_records(path: Path, length: int) -> None:
         os.fsync(file.fileno())
 
 
+def carry_rwkv_state_cache_marker_through_sync(
+    mw: object,
+    *,
+    before: int,
+    after: int,
+) -> None:
+    """A normal sync that brought nothing changes the collection's
+    modification time and no row the RWKV replay reads: it uploads the
+    session's changes and marks them as uploaded. So a stored state cache
+    that was current when the sync began (its marker is `before`) is current
+    when it ends, and its marker becomes `after`. The sync read both times
+    while it held the collection, so no other change can hide between them.
+
+    Without this, the sync on close after a session left the stored marker
+    behind, and the next start-up ran the history fingerprint again. The
+    caller calls this only after a sync that brought nothing
+    (`RemoteCollectionChanges.nothing_changed`)."""
+    if before <= 0 or after <= 0 or before == after:
+        return
+    reviewer = SimpleNamespace(mw=mw)
+    try:
+        cache_dir = _rwkv_state_cache_dir(reviewer)
+        if cache_dir is None:
+            return
+        with _rwkv_state_cache_write_lock:
+            metadata = _read_rwkv_state_cache_metadata(reviewer)
+            if (
+                metadata is None
+                or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+                or _int_value(metadata.get(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY))
+                != before
+                or metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+            ):
+                return
+            _atomic_write(
+                cache_dir / _RWKV_STATE_CACHE_META_FILE,
+                json.dumps(
+                    {**metadata, _RWKV_STATE_CACHE_COLLECTION_MOD_KEY: after},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf8"),
+            )
+        logger.debug(
+            "RWKV state cache marker carried through a sync that brought nothing"
+        )
+    except Exception:
+        logger.warning(
+            "failed to carry the RWKV state cache marker through a sync",
+            exc_info=True,
+        )
+
+
 def _write_rwkv_state_cache_metadata_if_unchanged(
     reviewer: object,
     expected: Mapping[str, object],

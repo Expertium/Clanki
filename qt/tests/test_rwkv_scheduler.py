@@ -24521,3 +24521,41 @@ def test_the_idle_save_waits_for_the_user_and_for_other_rwkv_work(
     mw._rwkv_state_cache_loading = False
     assert rwkv_scheduler._rwkv_idle_save_due(mw, chain) is True
 
+
+def test_a_sync_that_brought_nothing_carries_a_current_marker_along(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The sync on close uploads the session's answers and changes the
+    collection's modification time. The idle save made the stored cache
+    current before it, so the marker moves to the time the sync ended with,
+    and the next start restores without the history check. A marker that was
+    not current when the sync began, or a cache saved before a history
+    change, stays as it is."""
+    collection, reviewer, _rows = _saved_idle_reviewer(monkeypatch, tmp_path)
+    assert _idle_save(reviewer)[0].startswith("saved: new_reviews=2 ")
+    saved_mod = collection.mod
+
+    def marker() -> object:
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+        assert metadata is not None
+        return metadata["collectionMod"]
+
+    # a marker that was already behind when the sync began
+    rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+        reviewer.mw, before=saved_mod - 1, after=saved_mod + 50
+    )
+    assert marker() == saved_mod
+
+    # the sync began where the idle save left the collection
+    rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+        reviewer.mw, before=saved_mod, after=saved_mod + 50
+    )
+    assert marker() == saved_mod + 50
+
+    # a cache saved before a delete or a move is never made current
+    rwkv_scheduler._mark_rwkv_state_cache_history_changed(reviewer)
+    rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+        reviewer.mw, before=saved_mod + 50, after=saved_mod + 90
+    )
+    assert marker() == saved_mod + 50
