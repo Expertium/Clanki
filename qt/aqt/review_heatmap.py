@@ -1026,6 +1026,9 @@ HTML_HEATMAP = f"""
             return rhInit.call(this, settings);
         }}}};
     }}}}
+    // for this calendar only: a later one drawn into the same page
+    // (aqt.webview, into_open_page) says again whether it animates
+    window.rhStill = false;
     window.reviewHeatmap = new ReviewHeatmap({{options}});
     reviewHeatmap.create({{data}});
 </script>

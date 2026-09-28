@@ -2,6 +2,8 @@
  * License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html */
 
 $(init);
+// a deck list drawn into the open page (webview.ts) has not loaded
+window.addEventListener("clanki-page-shown", init);
 
 function init() {
     $("tr.deck").draggable({

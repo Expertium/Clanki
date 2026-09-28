@@ -592,5 +592,6 @@ class BottomBar(Toolbar):
             context=web_context,
             # appears with the main page drawn with it (spec ui.screen-one-frame)
             held=True,
+            into_open_page=True,
         )
         self.web.adjustHeightToFit()

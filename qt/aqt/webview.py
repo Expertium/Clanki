@@ -508,9 +508,54 @@ def setup_spare_web_page() -> None:
     gui_hooks.profile_will_close.append(_spare_page.on_profile_will_close)
 
 
+def only_builtin_handlers(hook: Any) -> bool:
+    """True when every handler of a gui hook comes from Clanki itself (the
+    aqt and anki packages), not from an add-on."""
+    return all(
+        getattr(handler, "__module__", "").startswith(("aqt.", "anki."))
+        for handler in getattr(hook, "_hooks", [])
+    )
+
+
+# marks what a page drawn into the open one keeps and swaps (webview.ts)
+_FRAME_SCRIPT_ATTRIBUTE = "data-clanki-frame"
+_SCREEN_CSS_ATTRIBUTE = "data-clanki-screen-css"
+PAGE_READY_COMMAND = "clankiPageReady:"
+PAGE_FAILED_COMMAND = "clankiPageFailed:"
+
+
+@dataclasses.dataclass
+class _OpenPage:
+    """A page from stdHtml(into_open_page=True) that is open in the web view:
+    what a later page must share with it to be drawn into it."""
+
+    # the head and the document's attributes, all but the screen's own
+    # style sheets and scripts
+    frame: str
+    # the screen's style sheets, in order
+    css: tuple[str, ...]
+    # every script of the frame the page has run
+    scripts: frozenset[str]
+
+
+@dataclasses.dataclass
+class _StagedPage:
+    """A page being drawn into the open one."""
+
+    token: str
+    html: str
+    context: PageContext
+    open_page: _OpenPage
+    # the page a fresh load of `html` gives, if the swap fails
+    loaded_page: _OpenPage
+
+
 class AnkiWebView(QWebEngineView):
     allow_drops = False
     _kind: AnkiWebViewKind
+    # the page stdHtml(into_open_page=True) drew last, while it is open
+    _open_page: _OpenPage | None = None
+    _staged_page: _StagedPage | None = None
 
     def __init__(
         self,
@@ -692,6 +737,8 @@ class AnkiWebView(QWebEngineView):
             oldFocus.setFocus()
 
     def load_url(self, url: QUrl) -> None:
+        self._open_page = None
+        self._staged_page = None
         page_reveal().load_started(self)
         # allow queuing actions when loading url directly
         self._domDone = False
@@ -805,10 +852,20 @@ html {{ {font} }}
         context: Any | None = None,
         default_css: bool = True,
         held: bool = False,
+        into_open_page: bool = False,
     ) -> None:
         """`held`: the page stays hidden until it is ready and every other
         held page is ready too; then they all appear in the same frame (spec
-        ui.screen-one-frame, aqt.page_reveal)."""
+        ui.screen-one-frame, aqt.page_reveal).
+
+        `into_open_page` (held pages only): if the page open in the web view
+        came from such a call too and has the same frame (head and document
+        attributes, apart from the screen's own style sheets and scripts),
+        the new body is drawn into it instead of loading a new page
+        (webview.ts); it looks the same as a freshly loaded page. Used by
+        the deck list, a deck's overview and their bottom bar. Not when an
+        add-on handles webview_will_set_content: its content goes into a
+        freshly loaded page, as always."""
         css = (["css/webview.css"] if default_css else []) + (
             [] if css is None else css
         )
@@ -830,8 +887,26 @@ html {{ {font} }}
             csstxt = self.bundledCSS("css/webview.css")
             csstxt += f"<style>{self.standard_css()}</style>"
 
-        csstxt += "\n".join(self.bundledCSS(fname) for fname in web_content.css)
-        jstxt = "\n".join(self.bundledScript(fname) for fname in web_content.js)
+        into_open_page = (
+            into_open_page
+            and held
+            and only_builtin_handlers(gui_hooks.webview_will_set_content)
+        )
+        frame_css = csstxt
+        screen_css = [self.bundledCSS(fname) for fname in web_content.css]
+        scripts = [self.bundledScript(fname) for fname in web_content.js]
+        if into_open_page:
+            # what a page drawn into this one swaps and keeps (webview.ts)
+            screen_css = [
+                tag.replace("<link ", f"<link {_SCREEN_CSS_ATTRIBUTE} ", 1)
+                for tag in screen_css
+            ]
+            scripts = [
+                tag.replace("<script ", f"<script {_FRAME_SCRIPT_ATTRIBUTE} ", 1)
+                for tag in scripts
+            ]
+        csstxt += "\n".join(screen_css)
+        jstxt = "\n".join(scripts)
 
         from aqt import mw
 
@@ -845,9 +920,22 @@ html {{ {font} }}
             doc_class = ""
             bs_theme = "light"
         hold_attribute = ""
+        token = ""
+        frame = "\n".join(
+            (
+                doc_class,
+                bs_theme,
+                f"{self.title}",  # as in the page's <title>
+                mw.baseHTML(),
+                frame_css,
+                web_content.head,
+                body_class,
+            )
+        )
         if held:
             doc_class = f"{doc_class} {HOLD_CLASS}".strip()
-            hold_attribute = f' {HOLD_ATTRIBUTE}="{page_reveal().hold(self)}"'
+            token = page_reveal().hold(self)
+            hold_attribute = f' {HOLD_ATTRIBUTE}="{token}"'
             head = HOLD_CSS + head
 
         if is_rtl(anki.lang.current_lang):
@@ -887,7 +975,153 @@ html {{ {font} }}
             page_context = PageContext.DECK_OPTIONS
         else:
             page_context = PageContext.UNKNOWN
-        self.setHtml(html, page_context)
+        if not into_open_page:
+            self.setHtml(html, page_context)
+            return
+        frame += f"\n{lang_dir}"
+        css_urls = tuple(self.webBundlePath(fname) for fname in web_content.css)
+        js_urls = [self.webBundlePath(fname) for fname in web_content.js]
+        loaded = _OpenPage(frame, css_urls, frozenset(js_urls))
+        if not self._stage_into_open_page(
+            token, web_content.body, loaded, js_urls, html, page_context
+        ):
+            self.setHtml(html, page_context)
+            self._open_page = loaded
+
+    def _stage_into_open_page(
+        self,
+        token: str,
+        body: str,
+        loaded: _OpenPage,
+        js_urls: list[str],
+        html: str,
+        context: PageContext,
+    ) -> bool:
+        """Start drawing `body` into the open page, to be shown with the other
+        held pages (aqt.page_reveal). False where it cannot be: another
+        frame, screen style sheets that are neither the same nor all
+        replaced, or a page that is still loading or being drawn."""
+        open_page = self._open_page
+        if (
+            open_page is None
+            or open_page.frame != loaded.frame
+            or not self._domDone
+            or self._pendingActions
+            or self._staged_page is not None
+            or not page_reveal().is_held(self)
+        ):
+            return False
+        # the same screen style sheets, or all of them new: either way they
+        # end up in the order of a freshly loaded page
+        if open_page.css != loaded.css and set(open_page.css) & set(loaded.css):
+            return False
+        from aqt import mw
+
+        new_scripts = [url for url in js_urls if url not in open_page.scripts]
+        self._staged_page = _StagedPage(
+            token,
+            html,
+            context,
+            _OpenPage(loaded.frame, loaded.css, open_page.scripts | loaded.scripts),
+            loaded,
+        )
+        page_reveal().draw_into_open_page(self)
+        # as setHtml(): earlier actions are dropped, later ones wait for the
+        # new page
+        self._pendingActions = []
+        self._domDone = False
+        self.set_open_links_externally(True)
+        self.allow_drops = False
+        self.show()
+        # a reload shows the new page
+        mw.mediaServer.set_page_html(id(self), html, context)
+        args = ", ".join(
+            json.dumps(value) for value in (token, body, list(loaded.css), new_scripts)
+        )
+        page = self.page()
+        assert page is not None
+        page.runJavaScript(
+            f"typeof clankiStagePage === 'function' && (clankiStagePage({args}), true)",
+            lambda started: None if started else self._load_instead(token),
+        )
+        return True
+
+    def _load_instead(self, token: str) -> None:
+        """The staged page `token` cannot be drawn into the open page: load it
+        as a new page instead, still held."""
+        staged = self._staged_page
+        if staged is None or staged.token != token or sip.isdeleted(self):
+            return
+        self._staged_page = None
+        page_reveal().load_instead(self, token)
+        # actions queued meanwhile run once the new page is loaded
+        self._setHtml(staged.html, staged.context)
+        self._open_page = staged.loaded_page
+
+    def _on_page_staged(self, message: str) -> None:
+        token = message.partition(":")[0]
+        staged = self._staged_page
+        if staged is not None and staged.token == token:
+            page_reveal().page_ready(self, message)
+
+    def show_staged_page(
+        self, token: str, then: Callable[[], None] | None = None
+    ) -> None:
+        """Show the staged page `token` (aqt.page_reveal) and run the actions
+        queued for it; the ones that need no answer in the same task, so that
+        no frame shows the page without them. `then` runs when it is shown
+        (or given up)."""
+        staged = self._staged_page
+        if staged is None or staged.token != token or sip.isdeleted(self):
+            if then:
+                then()
+            return
+        scripts = []
+        while self._pendingActions:
+            name, args = self._pendingActions[0]
+            if name != "eval" or args[1] is not None:
+                break
+            scripts.append(args[0])
+            self._pendingActions.pop(0)
+
+        def shown(ok: bool) -> None:
+            try:
+                after_show(ok)
+            finally:
+                if then:
+                    then()
+
+        def after_show(ok: bool) -> None:
+            if sip.isdeleted(self) or self._staged_page is not staged:
+                return
+            self._staged_page = None
+            if not ok:
+                # the page lost what was staged (it was reloaded): load the
+                # new page, with the actions it has not run
+                self._pendingActions[:0] = [("eval", (js, None)) for js in scripts]
+                reloaded = page_reveal().hold(self)
+                self._setHtml(
+                    staged.html.replace(
+                        f'{HOLD_ATTRIBUTE}="{token}"',
+                        f'{HOLD_ATTRIBUTE}="{reloaded}"',
+                        1,
+                    ),
+                    staged.context,
+                )
+                self._open_page = staged.loaded_page
+                return
+            self._open_page = staged.open_page
+            self._domDone = True
+            self._maybeRunActions()
+            self.update()
+
+        page = self.page()
+        assert page is not None
+        page.runJavaScript(
+            f"clankiShowPage({json.dumps(token)})"
+            f" && (clankiRunAll({json.dumps(scripts)}), true)",
+            shown,
+        )
 
     @classmethod
     def webBundlePath(cls, path: str) -> str:
@@ -977,6 +1211,10 @@ html {{ {font} }}
             self._maybeRunActions()
         elif cmd == "close":
             self.onEsc()
+        elif cmd.startswith(PAGE_READY_COMMAND):
+            self._on_page_staged(cmd.removeprefix(PAGE_READY_COMMAND))
+        elif cmd.startswith(PAGE_FAILED_COMMAND):
+            self._load_instead(cmd.removeprefix(PAGE_FAILED_COMMAND))
         elif cmd.startswith(READY_COMMAND):
             # after domDone and so after the actions it ran: a held page is
             # shown after them (a scroll to the old position, for one)
