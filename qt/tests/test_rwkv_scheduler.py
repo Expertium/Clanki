@@ -24754,3 +24754,50 @@ def test_the_build_records_the_marker_of_its_history_read(
     assert rwkv_scheduler._rwkv_metadata_collection_marker(
         metadata
     ) == rwkv_scheduler._rwkv_collection_marker(reviewer.mw.col)
+
+
+@pytest.mark.parametrize(
+    "change", ["answer during the replay", "write during the read"]
+)
+def test_the_exact_rebuild_records_the_marker_of_its_history_read(
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    """The exact rebuild saves the history it read, not the answers given
+    while it replayed (the swap replays those into the runtime only). So its
+    save records the marker read around that read, never the marker of the
+    moment it saves, which already counts the answers: the next start would
+    take a stored history without them for the collection's. A change during
+    the read itself leaves no marker at all."""
+    mw, _old, log = _rebuild_mw(monkeypatch)
+    read_marker = rwkv_scheduler._RwkvCollectionMarker(100, (2, 2000, 3000, 1, 0, 0))
+    later_marker = rwkv_scheduler._RwkvCollectionMarker(200, (3, 3000, 6000, 1, 0, 0))
+    reads = {"n": 0}
+
+    def marker(_col: object) -> rwkv_scheduler._RwkvCollectionMarker:
+        reads["n"] += 1
+        if change == "write during the read":
+            # before the read, then after it
+            return read_marker if reads["n"] == 1 else later_marker
+        return later_marker if "tail read" in log else read_marker
+
+    saved: list[object] = []
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_collection_marker", marker)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_save_reviewer_backend_cache",
+        lambda _r, history, **kwargs: saved.append(
+            (history.last_review_id, kwargs.get("collection_marker"))
+        ),
+    )
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+
+    assert rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    # the tail (review 3000) was replayed at the swap; the save is the read
+    assert "tail read" in log
+    if change == "answer during the replay":
+        assert saved == [(2000, read_marker)]
+    else:
+        assert saved == [(2000, None)]
