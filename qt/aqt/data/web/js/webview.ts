@@ -158,7 +158,7 @@ function clankiPlace(staged: ClankiStagedPage, undo: boolean): () => void {
                 node.remove();
             }
         }
-        return () => {};
+        return () => undefined;
     }
     return () => {
         staged.box.append(...content);
