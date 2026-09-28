@@ -234,6 +234,63 @@ def test_the_history_query_in_parts_reads_the_same_rows_and_can_stop(
         col.close()
 
 
+def test_a_tail_read_in_parts_reads_the_same_rows_from_the_recent_cards_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read after a review id splits only the cards with a later review
+    into parts: the same rows as the single query, with no count of every
+    card's reviews first."""
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_backend_historical_rwkv_review_rows",
+        lambda col, **_kwargs: None,
+    )
+    col = Collection(str(tmp_path / "rwkv-replay-tail.anki2"))
+    try:
+        learning = (3, 0, 2500)
+        shapes = [
+            [learning, RATED_REVIEW, RATED_RELEARNING, RATED_REVIEW],
+            [RATED_REVIEW, RATED_REVIEW, FORGET, RATED_REVIEW, RATED_RELEARNING],
+            [learning, learning, RATED_REVIEW, FORGET, learning, RATED_REVIEW],
+            [RATED_REVIEW, RATED_RELEARNING],
+        ]
+        card_ids = [1_700_000_000_000 + n * 7_919 for n in range(25)]
+        for n, card_id in enumerate(card_ids):
+            _add_card_with_history(col, card_id, shapes[n % 4])
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        review_ids = col.db.list("select id from revlog order by id")
+
+        for after in (review_ids[-4], review_ids[len(review_ids) // 2], review_ids[-1]):
+            single = rwkv_scheduler._historical_rwkv_review_rows(
+                reviewer, after_review_id=after
+            )
+            parts = rwkv_scheduler._historical_rwkv_review_rows(
+                reviewer, after_review_id=after, between_parts=lambda: None
+            )
+            assert [tuple(row) for row in parts] == [tuple(row) for row in single]
+            recent = set(col.db.list("select cid from revlog where id > ?", after))
+            ranges = rwkv_scheduler._card_id_ranges(
+                col, rwkv_scheduler.HISTORY_QUERY_PARTS, after
+            )
+            covered = {
+                card_id
+                for card_id in card_ids
+                if any(low <= card_id <= high for low, high in ranges)
+            }
+            assert recent <= covered
+            # a range starts and ends on a card with a later review
+            assert all(low in recent and high in recent for low, high in ranges)
+        assert single == [] and ranges == []
+
+        # parts as large as the whole history's: a short tail is one query
+        few = rwkv_scheduler._card_id_ranges(
+            col, rwkv_scheduler.HISTORY_QUERY_PARTS // 16, review_ids[-4]
+        )
+        assert len(few) == 1
+    finally:
+        col.close()
+
+
 def test_the_backend_reads_the_same_whole_history_rows_as_the_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
