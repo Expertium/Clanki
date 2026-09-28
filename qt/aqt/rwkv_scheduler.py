@@ -16079,7 +16079,11 @@ def _restore_reviewer_backend_cache(
             )
         # the deltas the idle save appended were never replayed: they go
         # through the replay a restore gives the reviews it reads after the
-        # stored state, which saves each one's curve source
+        # stored state, which saves each one's curve source. Without the
+        # snapshots that replay takes below: those are asked for only when
+        # the state comes from a recovery checkpoint (whose stored history
+        # carries no deltas, so nothing is split here) or from another model
+        # key (the save after it writes the whole state either way).
         replayed_delta_count = _rwkv_replayed_delta_count(
             stored_metadata, stored_history
         )
