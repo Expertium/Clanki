@@ -2568,3 +2568,29 @@ overview on the main thread, so it has no such read to come back late.
 **Pinned by:** `test_a_count_refresh_that_returns_after_study_does_not_draw_the_overview`,
 `test_a_count_refresh_on_the_open_overview_still_draws_it`
 (`qt/tests/test_overview.py`).
+
+## ui.deck-list-refresh-after-leaving
+
+Given the open deck list reading its counts in the background, when the
+user leaves the deck list before the counts come back (Study, a deck, or
+any other screen), the counts are dropped: the deck list is not drawn,
+and the next showing of the deck list reads them again. This holds at
+every late step of the draw: when the counts arrive, when the heatmap
+report they wait for arrives, and when the page returns its scroll
+position. A refresh that was asked for while another screen was open (an
+add-on can do that) still draws, as before.
+
+**Why:** the end of the RWKV start-up restore refreshes the open deck
+list. A Study press while its counts were read started the review screen,
+and the late counts then drew the deck list over it: the review screen
+stayed blank ("_showQuestion is not defined"). Measured on a copy of
+Andrew's collection (2026-09-28): Study 40 ms after the restore ended left
+the review screen blank in 3 of 3 runs. It is the deck-list form of
+`ui.overview-refresh-after-leaving`. Upstream Anki draws the deck list
+from a background read too, without this check.
+
+**Pinned by:** `test_a_refresh_that_returns_after_study_does_not_draw_the_deck_list`,
+`test_a_late_draw_that_waits_for_the_scroll_position_stops_after_study`,
+`test_a_refresh_that_returns_on_the_open_deck_list_still_draws_it`,
+`test_refresh_draws_from_the_top_on_another_screen`
+(`qt/tests/test_deckbrowser.py`).
