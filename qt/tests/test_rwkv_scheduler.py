@@ -6989,6 +6989,11 @@ def test_reviewer_rwkv_cache_refreshes_collection_marker_from_resident_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A change the replay does not read (a note edit) moves the marker's
+    modification time; the review log and the cards must still be what the
+    stored marker says. A raw write (AnkiConnect insertReviews, changeDeck)
+    changes them and not the modification time: the marker then stays, and
+    the next start checks the history."""
     collection_mod = 2
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -6999,25 +7004,38 @@ def test_reviewer_rwkv_cache_refreshes_collection_marker_from_resident_identity(
     identity = _rwkv_resident_identity()
     cache_dir = tmp_path / "rwkv-state-cache"
     cache_dir.mkdir()
-    rwkv_scheduler._atomic_write(
-        cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE,
-        json.dumps(
-            {
-                "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
-                "lastReviewId": identity.last_review_id,
-                "reviewCount": identity.review_count,
-                "historyHash": identity.history_hash,
-                "replayKey": identity.replay_key,
-                "collectionMod": 1,
-            }
-        ).encode("utf8"),
-    )
 
+    def store(content: list[int]) -> None:
+        rwkv_scheduler._atomic_write(
+            cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE,
+            json.dumps(
+                {
+                    "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
+                    "lastReviewId": identity.last_review_id,
+                    "reviewCount": identity.review_count,
+                    "historyHash": identity.history_hash,
+                    "replayKey": identity.replay_key,
+                    "collectionMod": 1,
+                    "collectionContent": content,
+                }
+            ).encode("utf8"),
+        )
+
+    def stored_mod() -> object:
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+        assert metadata is not None
+        return metadata["collectionMod"]
+
+    # the review log and the cards as the fake collection has them
+    store([0, 0, 0, 2, 0, 0])
     rwkv_scheduler._refresh_rwkv_state_cache_collection_mod(reviewer, identity)
+    assert stored_mod() == collection_mod
 
-    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
-    assert metadata is not None
-    assert metadata["collectionMod"] == collection_mod
+    # a raw deck move since the marker was stored
+    store([0, 0, 0, 2, 0, 0])
+    reviewer.mw.col.cards_marker[1] += 1
+    rwkv_scheduler._refresh_rwkv_state_cache_collection_mod(reviewer, identity)
+    assert stored_mod() == 1
 
 
 def test_reviewer_rwkv_cache_rebuilds_when_cached_prefix_contents_change(
@@ -17932,6 +17950,25 @@ def _rwkv_cache_reviewer(
                 )
             return sum(1 for row in rows if row[0] <= last_review_id)
 
+        def first(self, sql: str) -> list[int] | None:
+            # the collection marker (`_RWKV_COLLECTION_MARKER_SQL`): the
+            # modification time as the test sets it, the review log from the
+            # rows, and the cards from `cards_marker` (a raw deck move)
+            assert "from col c" in sql
+            mod = rwkv_scheduler._rwkv_collection_modified(
+                SimpleNamespace(mw=SimpleNamespace(col=col))
+            )
+            if mod is None:
+                return None
+            ids = [cast(int, row[0]) for row in rows]
+            return [
+                mod,
+                len(ids),
+                max(ids, default=0),
+                sum(review_id % 1_000_000_007 for review_id in ids),
+                *col.cards_marker,
+            ]
+
         def execute(self, sql: str) -> None:
             pytest.fail(f"unexpected DB execute: {sql}")
 
@@ -18030,6 +18067,7 @@ def _rwkv_cache_reviewer(
         rwkv_retrievability_rows=rwkv_retrievability_rows,
         review_prediction_rows=review_prediction_rows,
         saved_deck_configs=saved_deck_configs,
+        cards_marker=[2, 0, 0],
     )
     mw = SimpleNamespace(
         col=col,
@@ -24030,13 +24068,13 @@ def test_a_sync_that_changed_the_collection_takes_the_mark_off(
 
 class _IdleSaveCollection:
     """What the idle save and the start-up restore see of the collection
-    between two starts: its modification time, the rows its connection has
-    changed, and the Rust history fingerprint, computed from the same rows
-    the fake DB answers with (whole history, prefix check)."""
+    between two starts: its modification time (the fake DB builds the
+    collection marker from it, the rows and the cards marker), and the Rust
+    history fingerprint, computed from the same rows the fake DB answers with
+    (whole history, prefix check)."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.mod = 100
-        self.changes = 1
         self.fingerprints: list[object] = []
         self.during_fingerprint: Callable[[], None] | None = None
         monkeypatch.setattr(
@@ -24046,17 +24084,11 @@ class _IdleSaveCollection:
             rwkv_scheduler, "_rwkv_collection_modified", lambda _reviewer: self.mod
         )
         monkeypatch.setattr(
-            rwkv_scheduler,
-            "_rwkv_collection_change_marker",
-            lambda _col: (self.mod, self.changes),
-        )
-        monkeypatch.setattr(
             rwkv_scheduler, "_rwkv_historical_review_fingerprint", self.fingerprint
         )
 
     def change(self) -> None:
         self.mod += 100
-        self.changes += 7
 
     def fingerprint(
         self,
@@ -24149,7 +24181,8 @@ def test_the_idle_save_lets_the_next_start_skip_the_history_fingerprint(
     outcome, chain = _idle_save(new_flow)
 
     assert outcome.startswith("saved: new_reviews=2 ")
-    assert chain.settled_mod == collection.mod
+    assert chain.settled_marker is not None
+    assert chain.settled_marker.mod == collection.mod
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(new_flow)
     assert metadata is not None
     assert metadata["collectionMod"] == collection.mod
@@ -24234,7 +24267,6 @@ def test_an_undo_after_the_idle_save_leaves_the_next_start_exact(
 
     rows.pop()
     collection.mod = mod_after_first_answer
-    collection.changes += 3
     whole_reads: list[object] = []
     real_read = rwkv_scheduler._historical_rwkv_review_inputs
 
@@ -24351,7 +24383,8 @@ def test_the_idle_save_leaves_a_cache_saved_before_a_history_change(
     assert outcome == "the stored cache predates a history change"
     assert collection.fingerprints == []
     assert _stored_cache_files(reviewer) == before
-    assert chain.settled_mod == collection.mod
+    assert chain.settled_marker is not None
+    assert chain.settled_marker.mod == collection.mod
 
 
 def test_the_idle_save_writes_nothing_when_the_stored_state_is_not_the_start(
@@ -24375,23 +24408,23 @@ def test_the_idle_save_writes_nothing_after_a_write_during_its_reads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An answer, an undo and its redo, or any other write while it reads:
+    """A change of the review log or the cards while it reads, also a raw
+    one that leaves the modification time as it was (AnkiConnect changeDeck):
     the reads may not all see one collection, so it writes nothing, and it
-    waits a while before it tries again (another pass may be writing)."""
+    waits a while before it tries again (another pass may be writing). An
+    undo and its redo need the user, and a key press stops the save."""
     collection, reviewer, _rows = _saved_idle_reviewer(monkeypatch, tmp_path)
     before = _stored_cache_files(reviewer)
 
     def write() -> None:
-        # a row written and the modification time the same again, as after
-        # an undo and a redo: only the change count tells
-        collection.changes += 1
+        reviewer.mw.col.cards_marker[1] += 1
 
     collection.during_fingerprint = write
     outcome, chain = _idle_save(reviewer)
 
     assert outcome == "the collection changed during the reads"
     assert _stored_cache_files(reviewer) == before
-    assert chain.settled_mod is None
+    assert chain.settled_marker is None
     assert chain.not_before > time.monotonic() + 25
     # interrupted again: it waits twice as long
     chain.not_before = 0.0
@@ -24474,7 +24507,7 @@ def test_the_idle_save_stops_for_the_close_and_for_the_user(
     assert outcome == (
         "the collection closed" if stop == "close" else "the user came back"
     )
-    assert chain.settled_mod is None
+    assert chain.settled_marker is None
     assert _stored_cache_files(reviewer) == before
 
 
@@ -24547,7 +24580,7 @@ def test_a_sync_that_brought_nothing_carries_a_current_marker_along(
     and the next start restores without the history check. A marker that was
     not current when the sync began, or a cache saved before a history
     change, stays as it is."""
-    collection, reviewer, _rows = _saved_idle_reviewer(monkeypatch, tmp_path)
+    collection, reviewer, rows = _saved_idle_reviewer(monkeypatch, tmp_path)
     assert _idle_save(reviewer)[0].startswith("saved: new_reviews=2 ")
     saved_mod = collection.mod
 
@@ -24562,6 +24595,15 @@ def test_a_sync_that_brought_nothing_carries_a_current_marker_along(
     )
     assert marker() == saved_mod
 
+    # a raw write before the sync (AnkiConnect insertReviews): the review
+    # log is not what the stored marker says, whatever the times say
+    rows.append(((43 * 86_400 + 5) * 1000, 2, 20, 100, 3, 1234, 1, 4, 2500))
+    rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+        reviewer.mw, before=saved_mod, after=saved_mod + 50
+    )
+    assert marker() == saved_mod
+    rows.pop()
+
     # the sync began where the idle save left the collection
     rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
         reviewer.mw, before=saved_mod, after=saved_mod + 50
@@ -24574,3 +24616,141 @@ def test_a_sync_that_brought_nothing_carries_a_current_marker_along(
         reviewer.mw, before=saved_mod + 50, after=saved_mod + 90
     )
     assert marker() == saved_mod + 50
+
+
+@pytest.mark.parametrize("raw_write", ["insertReviews", "changeDeck"])
+def test_a_raw_write_after_the_idle_save_is_not_taken_for_an_unchanged_collection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw_write: str,
+) -> None:
+    """A write through col.db outside a transaction leaves the collection's
+    modification time as it was: AnkiConnect's insertReviews adds reviews,
+    its changeDeck moves cards. The stored marker also names the review log
+    and the cards, so the next start does not take the stored history as the
+    collection's: it checks the history, and the restored state has the new
+    review."""
+    collection, reviewer, rows = _saved_idle_reviewer(monkeypatch, tmp_path)
+    assert _idle_save(reviewer)[0].startswith("saved: new_reviews=2 ")
+    if raw_write == "insertReviews":
+        rows.append(((43 * 86_400 + 5) * 1000, 2, 20, 100, 3, 1234, 1, 4, 2500))
+    else:
+        reviewer.mw.col.cards_marker[1] += 1
+
+    collection.fingerprints.clear()
+    runtime, identity = _restart(reviewer)
+
+    assert len(collection.fingerprints) == 1
+    current = rwkv_scheduler._historical_rwkv_review_inputs(reviewer)
+    assert identity is not None
+    assert (identity.last_review_id, identity.review_count) == (
+        current.last_review_id,
+        current.review_count,
+    )
+    if raw_write == "insertReviews":
+        assert identity.review_count == 6
+        assert [review.identity.card_id for review in runtime.answered_inputs][-1] == 2
+
+
+def test_the_idle_save_waits_after_every_stop_that_other_writes_caused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A stop because something wrote waits before the next try, also when
+    the history check itself said no (the ~1 s check ran every 5 s while an
+    FSRS-7 pass wrote for minutes), and when the marker could not be read."""
+    collection, reviewer, rows = _saved_idle_reviewer(monkeypatch, tmp_path)
+    # the stored state is no start of the history, and something writes
+    # while the check runs
+    rows[0] = (*rows[0][:4], 1, *rows[0][5:])
+    collection.during_fingerprint = lambda: reviewer.mw.col.cards_marker.__setitem__(
+        1, reviewer.mw.col.cards_marker[1] + 1
+    )
+    outcome, chain = _idle_save(reviewer)
+    assert outcome == "the collection changed during the fingerprint"
+    assert chain.not_before > time.monotonic() + 25
+    assert chain.settled_marker is None
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_collection_marker", lambda _col: None)
+    chain = rwkv_scheduler._RwkvIdleSaveChain(col=reviewer.mw.col)
+    assert (
+        rwkv_scheduler._save_rwkv_state_cache_tail(reviewer.mw, chain)
+        == "no collection marker"
+    )
+    assert chain.not_before > time.monotonic() + 25
+
+
+def test_a_restore_records_the_marker_it_read_before_it_checked_the_history(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every save records the marker read before its history read, and only
+    when the collection is still the same after it: a change in between is
+    never named by a marker whose history does not have it. Here a raw deck
+    move during the restore's history check: no marker, and the next start
+    checks the history again."""
+    collection, reviewer, _rows = _saved_idle_reviewer(monkeypatch, tmp_path)
+
+    def move() -> None:
+        reviewer.mw.col.cards_marker[1] += 1
+        collection.during_fingerprint = None
+
+    collection.during_fingerprint = move
+    _restart(reviewer)
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert "collectionContent" not in metadata
+    assert "collectionMod" not in metadata
+
+    # without a change, the restore records the marker it read
+    collection.fingerprints.clear()
+    _restart(reviewer)
+    assert len(collection.fingerprints) == 1
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert rwkv_scheduler._rwkv_metadata_collection_marker(
+        metadata
+    ) == rwkv_scheduler._rwkv_collection_marker(reviewer.mw.col)
+    collection.fingerprints.clear()
+    _restart(reviewer)
+    assert collection.fingerprints == []
+
+
+def test_the_build_records_the_marker_of_its_history_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The start-up build (and the exact rebuild, the same way) records the
+    marker read around its history read, never the one of the moment it
+    saves: an answer given while it read is in no marker."""
+    collection = _IdleSaveCollection(monkeypatch)
+    rows = _idle_save_rows()
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    real_read = rwkv_scheduler._historical_rwkv_review_inputs
+    answer_during_read = {"yes": True}
+
+    def read(*args: Any, **kwargs: Any) -> object:
+        history = real_read(*args, **kwargs)
+        if answer_during_read["yes"]:
+            answer_during_read["yes"] = False
+            rows.append(_session_rows()[0])
+            collection.change()
+        return history
+
+    monkeypatch.setattr(rwkv_scheduler, "_historical_rwkv_review_inputs", read)
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert "collectionMod" not in metadata
+    assert "collectionContent" not in metadata
+
+    # nothing during the read: the marker of the read
+    rows.pop()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert rwkv_scheduler._rwkv_metadata_collection_marker(
+        metadata
+    ) == rwkv_scheduler._rwkv_collection_marker(reviewer.mw.col)
