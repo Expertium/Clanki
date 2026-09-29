@@ -274,9 +274,9 @@ def test_qa_transition_block_is_independent_of_operation_block() -> None:
 
     assert reviewer._review_actions_are_blocked() is False
     assert calls == [
-        "setReviewerTransitionActive(true);",
+        "globalThis.setReviewerTransitionActive?.(true);",
         "update",
-        "setReviewerTransitionActive(false);",
+        "globalThis.setReviewerTransitionActive?.(false);",
     ]
 
 
@@ -315,7 +315,7 @@ def test_show_answer_ignored_until_current_question_rendered(monkeypatch) -> Non
 
     assert reviewer.state == "answer"
     assert calls == [
-        "_setQAInteractionEnabled(false);",
+        "globalThis._setQAInteractionEnabled?.(false);",
         '_showAnswer("back", null, "answer:2:123");',
     ]
 
@@ -2325,6 +2325,49 @@ def test_study_queue_refresh_while_rwkv_undo_restored_card_is_active_is_ignored(
     assert dirty is False
 
 
+# Pins spec/scheduling.md#sched.redo-moves-on-from-the-redone-card: an undo put
+# card 456 back on screen and a redo answers it again. The queue refresh after
+# the redo shows the next card; it is not ignored.
+def test_redo_of_the_undo_restored_card_shows_the_next_card(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the redone card must not stay on screen")
+
+    def prepare_then_next(*args: object, **kwargs: object) -> None:
+        assert kwargs == {"fade_after": True, "show_next_card": True}
+        calls.append("prepare")
+
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "reviewer_queue_order_enabled",
+        lambda reviewer: True,
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_invalidate_reviewer_transient_scores_after_redo",
+        lambda reviewer, card_ids: None,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = SimpleNamespace(id=456, load=lambda: None)
+    reviewer.state = "question"
+    reviewer._refresh_needed = None
+    reviewer._rwkv_undo_restored_card_active = True
+    reviewer.nextCard = fail
+    reviewer._prepare_rwkv_queue_order_then_next_card = prepare_then_next
+    reviewer.mw = SimpleNamespace(fade_in_webview=fail)
+
+    aqt.rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [456])
+    changes = OpChanges()
+    changes.study_queues = True
+    dirty = reviewer.op_executed(changes, handler=None, focused=True)
+
+    assert calls == ["prepare"]
+    assert reviewer._refresh_needed is None
+    assert dirty is False
+
+
 def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     monkeypatch,
 ) -> None:
@@ -2371,8 +2414,8 @@ def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     dirty = reviewer.op_executed(changes, handler=None, focused=False)
 
     assert calls == [
-        "main:_setQAInteractionEnabled(false);",
-        "bottom:setReviewerTransitionActive(true);",
+        "main:globalThis._setQAInteractionEnabled?.(false);",
+        "bottom:globalThis.setReviewerTransitionActive?.(true);",
         'main:_clearQAForTransition("transition:1:456");',
         "prepare",
         "next",
@@ -2459,10 +2502,10 @@ def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
     assert reviewer.state == "transition"
     assert reviewer._review_actions_are_blocked()
     assert main_scripts == [
-        "_setQAInteractionEnabled(false);",
+        "globalThis._setQAInteractionEnabled?.(false);",
         '_clearQAForTransition("transition:5:456");',
     ]
-    assert bottom_scripts == ["setReviewerTransitionActive(true);"]
+    assert bottom_scripts == ["globalThis.setReviewerTransitionActive?.(true);"]
     assert deferred_cache_restores == ["reviewer card deleted"]
     assert calls == []
     assert len(jobs) == 1

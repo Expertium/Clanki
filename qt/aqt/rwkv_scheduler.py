@@ -367,6 +367,13 @@ _reviewer_backend_cold_fallback_generations: dict[tuple[int, int], int] = {}
 _reviewer_backend_resident_ignored_review_ids: dict[
     tuple[int, int], tuple[int, ...]
 ] = {}
+# The replay semantics key each resident state was built under, set and kept
+# as the ignored reviews above are. A live answer makes the state's identity
+# unknown (None in `_reviewer_backend_warmup_states`), not its semantics: a
+# change of the semantics throws the state away or makes it wait for the
+# exact rebuild. It counts only while its key is in
+# `_reviewer_backend_warmup_states`.
+_reviewer_backend_resident_replay_keys: dict[tuple[int, int], str] = {}
 _resolved_preset_id_cache: dict[tuple[int, str | None], dict[int, str]] = {}
 _rwkv_review_queue_score_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_target_maps: dict[int, dict[int, float]] = {}
@@ -1136,6 +1143,7 @@ class _ReviewerBackendTemporaryOperation:
     previous_state_present: bool
     previous_identity: RwkvResidentStateIdentity | None
     previous_ignored_review_ids: tuple[int, ...] = ()
+    previous_replay_key: str | None = None
 
     def is_current(self) -> bool:
         return _reviewer_backend_warmup_is_current(
@@ -1302,7 +1310,15 @@ def full_sync_reopened(mw: object) -> None:
     rebuild's wants and its undo entries go, as at a profile open, and the
     next screen that reads the per-review recordings counts them again. The
     passes start again by the usual ways: the post-sync refresh, a screen
-    that asks for the rows, the next FSRS-7 pass."""
+    that asks for the rows, the next FSRS-7 pass.
+
+    The reopen is a new open of the file: its undo steps start from nothing
+    and count from 1 again. So every undo entry of the old open goes, the
+    resident state's answer frames too: an undo of an unrelated change
+    whose count is an old answer's would otherwise roll that card's RWKV
+    state back to before the answer. Nothing given to the old open (queue
+    scores and curves, Stats and card info scores) is in the new one, so
+    those caches go as well. The .colpkg export reopens the same way."""
     col = getattr(mw, "col", None)
     if col is not None:
         try:
@@ -1311,17 +1327,123 @@ def full_sync_reopened(mw: object) -> None:
             pass
     _reset_rwkv_exact_rebuild()
     _forget_that_the_recordings_are_current()
+    _forget_the_undo_entries_of_the_last_open()
+    _invalidate_rwkv_review_input_caches(mw)
+    forget_rwkv_stats_scores()
+
+
+def _forget_the_undo_entries_of_the_last_open() -> None:
+    global _rwkv_exact_rebuild_swap_undo_counter
+
+    backend = _reviewer_backend
+    forget_undo_frames = getattr(backend, "forget_undo_frames", None)
+    with _reviewer_backend_state_lock:
+        if callable(forget_undo_frames):
+            forget_undo_frames()
+        _rwkv_collection_mutation_undo_entries.clear()
+        _rwkv_collection_mutation_redo_entries.clear()
+    with _rwkv_exact_rebuild_lock:
+        _rwkv_exact_rebuild_swap_undo_counter = None
+    _rwkv_history_change_undo_entries.clear()
+    _rwkv_history_change_redo_entries.clear()
+
+
+# True from a full upload or .colpkg export that kept the resident RWKV state
+# through its reopen (`keep_rwkv_state_through_reopen`) until
+# `full_sync_finished`
+_rwkv_state_kept_through_reopen = False
+
+
+def keep_rwkv_state_through_reopen(mw: object) -> bool:
+    """After a full upload or a .colpkg export reopened the collection (spec
+    sync.full-upload-keeps-rwkv-state): whether the resident RWKV state
+    stays. On the main thread, right after the reopen and before
+    `full_sync_reopened`, which drops the exact rebuild's wants.
+
+    Neither changes a row the RWKV replay reads. The export only copies the
+    file. The upload clears the graves and the pending sync numbers of the
+    notes, cards, review log, tags, decks, deck presets and notetypes, and
+    moves the collection's sync number, schema time, last sync time and
+    modification time; the reopen then gives a new open. The replay reads the
+    review log, each card's note and home deck, and the preset settings its
+    semantics key covers. So the state the resident state was of before the
+    close is the one the collection gives after the reopen, success or
+    failure, as a cancel or a failed upload leaves the same file.
+
+    The state stays only when it is ready, waits for no exact rebuild, and
+    the replay semantics key it was built under still matches the
+    collection's (the rule of the other keeps). Live answers leave its
+    identity unknown but not its key (`_reviewer_backend_resident_replay_keys`),
+    so a state that took answers stays too. The next study-queue change then
+    keeps it, as after a sync that brought nothing
+    (`keep_rwkv_state_through_next_reset`), and `full_sync_finished` starts
+    the maintenance the post-sync refresh would have started. Returns
+    whether it stays."""
+    global _rwkv_state_kept_through_reopen
+
+    kept = _resident_state_survives_reopen(SimpleNamespace(mw=mw))
+    _rwkv_state_kept_through_reopen = kept
+    if kept:
+        keep_rwkv_state_through_next_reset(mw)
+        logger.debug("RWKV resident state kept through the reopen")
+    return kept
+
+
+def _resident_state_survives_reopen(reviewer: object) -> bool:
+    # the reopen drops the exact rebuild's wants, so a state that waits for
+    # the rebuild cannot stay
+    if rwkv_exact_rebuild_pending():
+        return False
+    return _replay_semantics_still_match_resident_state(reviewer)
+
+
+def rwkv_state_kept_through_reopen() -> bool:
+    """Whether the full upload that runs now kept the resident RWKV state:
+    the post-sync refresh is then not needed."""
+    return _rwkv_state_kept_through_reopen
+
+
+def collection_package_exported(mw: object) -> None:
+    """The .colpkg export reopened the collection, after an export or a
+    failure (spec sync.full-upload-keeps-rwkv-state). On the main thread.
+
+    The export stopped the background passes as a full upload does
+    (`begin_full_sync`); they start again here. The resident state stays
+    when `keep_rwkv_state_through_reopen` allows it; otherwise the state is
+    restored or built in the background, as at start-up, with no window."""
+    kept = keep_rwkv_state_through_reopen(mw)
+    full_sync_reopened(mw)
+    if kept:
+        # no study-queue change follows the export to use the keep
+        drop_unused_rwkv_state_keep(mw)
+    else:
+        reviewer = SimpleNamespace(mw=mw)
+        _invalidate_reviewer_backend_state(reviewer, reason=".colpkg export")
+        if (
+            _rwkv_collection_config_state(reviewer).review_enabled
+            and rwkv_model_available()
+        ):
+            load_rwkv_state_cache_with_progress(mw, build_if_unavailable=True)
+    full_sync_finished(mw)
 
 
 def full_sync_finished(mw: object) -> None:
     """The full sync and what follows it on the main thread (the post-sync
     refresh starts there) are done: the full sync gives up the loading flag.
-    A refresh that started holds the flag itself, so it stays set."""
-    global _full_sync_operation
+    A refresh that started holds the flag itself, so it stays set. When the
+    resident state stayed through the reopen, no refresh ran: the
+    maintenance it starts when it ends starts here."""
+    global _full_sync_operation, _rwkv_state_kept_through_reopen
 
     operation, _full_sync_operation = _full_sync_operation, None
+    kept, _rwkv_state_kept_through_reopen = _rwkv_state_kept_through_reopen, False
     if operation is not None:
         _set_rwkv_state_cache_loading(mw, False, operation=operation)
+    if kept:
+        try:
+            start_rwkv_maintenance_if_needed(mw)
+        except Exception:
+            logger.exception("failed to start RWKV maintenance after a full sync")
     # the FSRS-7 pass stopped for the full sync, or waited: ask again
     try:
         from aqt import fsrs_predictions
@@ -3017,6 +3139,12 @@ class RwkvStatefulReviewerBackend:
             before_curve_prediction=before_curve_prediction,
         )
 
+    def forget_undo_frames(self) -> None:
+        """The collection reopened: its undo steps start again from nothing,
+        so no frame of the old open may stand for one of them."""
+        self._undo_frames.clear()
+        self._redo_frames.clear()
+
     def answer_undone(
         self,
         counter: int,
@@ -3550,6 +3678,13 @@ def apply_reviewer_redo_card_ids(reviewer: object, card_ids: Sequence[int]) -> N
         return
 
     _invalidate_reviewer_transient_scores_after_redo(reviewer, valid_card_ids)
+    if getattr(getattr(reviewer, "card", None), "id", None) in valid_card_ids:
+        # An undo put this card back on screen and the redo answered it
+        # again. It leaves the screen as after any answer: while the reviewer
+        # still counted it as undo-restored, the queue refresh that follows
+        # the redo was ignored and the card stayed, to be answered a second
+        # time (spec sched.redo-moves-on-from-the-redone-card).
+        setattr(reviewer, "_rwkv_undo_restored_card_active", False)
     queue = getattr(reviewer, _RWKV_REVIEW_UNDO_CARD_IDS_ATTR, None)
     if isinstance(queue, list):
         for card_id in valid_card_ids:
@@ -4201,6 +4336,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
         )
     _reviewer_backend_warmup_states.clear()
     _reviewer_backend_resident_ignored_review_ids.clear()
+    _reviewer_backend_resident_replay_keys.clear()
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_collection_mutation_undo_entries.clear()
@@ -4539,6 +4675,7 @@ def _claim_reviewer_backend_temporary_operation(
             previous_ignored_review_ids = (
                 _reviewer_backend_resident_ignored_review_ids.pop(key, ())
             )
+            previous_replay_key = _reviewer_backend_resident_replay_keys.pop(key, None)
             _reviewer_backend_warmup_pending_generations[key] = generation
 
         claimed = True
@@ -4550,6 +4687,7 @@ def _claim_reviewer_backend_temporary_operation(
             previous_state_present=previous_state_present,
             previous_identity=previous_identity,
             previous_ignored_review_ids=previous_ignored_review_ids,
+            previous_replay_key=previous_replay_key,
         )
     finally:
         if not claimed:
@@ -4579,6 +4717,10 @@ def _finish_reviewer_backend_temporary_operation(
             _reviewer_backend_resident_ignored_review_ids[operation.key] = (
                 operation.previous_ignored_review_ids
             )
+            if operation.previous_replay_key is not None:
+                _reviewer_backend_resident_replay_keys[operation.key] = (
+                    operation.previous_replay_key
+                )
         elif current:
             _reviewer_backend_warmup_states.pop(operation.key, None)
             _clear_rwkv_review_queue_score_cache()
@@ -11933,6 +12075,7 @@ def _publish_reviewer_backend_state(
             _reviewer_backend_resident_ignored_review_ids[key] = (
                 identity.ignored_review_ids
             )
+            _reviewer_backend_resident_replay_keys[key] = identity.replay_key
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _exact_rwkv_state_published()
             return True
@@ -11965,6 +12108,7 @@ def _publish_kept_reviewer_backend_state(
             return False
         _reviewer_backend_warmup_states[key] = None
         _reviewer_backend_resident_ignored_review_ids[key] = identity.ignored_review_ids
+        _reviewer_backend_resident_replay_keys[key] = identity.replay_key
         _reviewer_backend_cold_fallback_generations.pop(key, None)
         return True
 
@@ -23209,9 +23353,14 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
     rather than rebuilt. Anything the key does not cover cannot make the
     resident state wrong without making every stored cache wrong too, so the
     two follow one rule rather than two.
+
+    A state that took live answers counts too: an answer leaves the state's
+    identity unknown, not the key it was built under
+    (`_resident_state_replay_key`). With the identity alone, any answer in
+    the session made this refuse.
     """
-    identity = _rwkv_ready_state_cache_history_identity(reviewer)
-    if identity is None:
+    replay_key = _resident_state_replay_key(reviewer)
+    if replay_key is None:
         return False
     try:
         current = _rwkv_replay_semantics_key(
@@ -23224,7 +23373,27 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
             exc_info=True,
         )
         return False
-    return current == identity.replay_key
+    return current == replay_key
+
+
+def _resident_state_replay_key(reviewer: object) -> str | None:
+    """The replay semantics key the resident RWKV state was built under, or
+    None when no ready state is resident. Live answers make the state's
+    identity unknown (None in `_reviewer_backend_warmup_states`) but keep its
+    key in `_reviewer_backend_resident_replay_keys`."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return None
+    with _reviewer_backend_state_lock:
+        if (
+            key not in _reviewer_backend_warmup_states
+            or key in _reviewer_backend_warmup_pending_generations
+        ):
+            return None
+        identity = _reviewer_backend_warmup_states[key]
+        if identity is not None:
+            return identity.replay_key
+        return _reviewer_backend_resident_replay_keys.get(key)
 
 
 def fsrs_preset_resolution_did_change(mw: object) -> None:

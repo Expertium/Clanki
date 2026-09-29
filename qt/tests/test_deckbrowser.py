@@ -99,7 +99,8 @@ def _collapsible(browser, monkeypatch):
     browser._rendered_stats = browser._renderStats()
     scripts: list[str] = []
     reloads: list[bool] = []
-    browser.web = SimpleNamespace(eval=scripts.append)
+    browser.web = SimpleNamespace(eval=scripts.append, content_serial=1)
+    browser._drawn_content_serial = 1
     browser._renderPage = lambda reuse=False: reloads.append(reuse)
     browser.mw = SimpleNamespace(
         advanced_ui=lambda: True,
@@ -391,10 +392,17 @@ class _Page:
         self.offset_requests: list = []
         self.buttons = 0
         self.held: list[bool] = []
+        # AnkiWebView.content_serial: changes with every page shown
+        self.content_serial = 0
 
     def stdHtml(self, html, css=None, js=None, context=None, held=False, **kwargs):
         self.html.append(html)
         self.held.append(held)
+        self.content_serial += 1
+
+    def show_another_page(self):
+        """A deck's overview is loaded into the web view."""
+        self.content_serial += 1
 
     def eval(self, script):
         self.scripts.append(script)
@@ -642,3 +650,77 @@ def test_a_collapse_during_a_refresh_survives_the_refresh(refreshable):
     refreshable.state.tree = _tree(collapsed=True)
     refreshable.deliver()
     assert browser._pending_collapse == {}
+
+
+def _quick_switch_back_to_the_deck_list(refreshable):
+    """The user opens a deck, then goes back to the deck list before the
+    overview is done: the state is set first, the deck list is drawn later.
+    A refresh that keeps the scroll position (the one at the end of the RWKV
+    start-up restore, or after an operation) starts after show()."""
+    browser, page = refreshable.browser, refreshable.page
+    browser.mw.state = "overview"
+    page.show_another_page()
+    browser.mw.state = "deckBrowser"
+    browser.show()
+    browser.refresh()
+
+
+def test_a_refresh_after_a_quick_switch_draws_the_deck_list_over_the_overview(
+    refreshable,
+):
+    """The deck table was swapped into the overview, which has no
+    replaceDeckTree ("replaceDeckTree is not defined"), and the deck list was
+    never drawn: the overview stayed on screen in the deck list state."""
+    page = refreshable.page
+
+    _quick_switch_back_to_the_deck_list(refreshable)
+    refreshable.deliver()  # the draw of show(): superseded by the refresh
+    refreshable.deliver()
+
+    assert page.swaps() == []
+    assert len(page.html) == 1 and page.offset_requests == []
+    # the page drawn is the page on screen again
+    assert refreshable.browser._page_is_drawn()
+
+
+def test_a_refresh_after_the_overview_is_drawn_into_the_deck_list_page_draws_it(
+    refreshable,
+):
+    # the overview keeps the load number of the page it was drawn into; the
+    # web view's content serial still changes
+    page = refreshable.page
+
+    refreshable.browser.mw.state = "overview"
+    page.show_another_page()
+    refreshable.browser.mw.state = "deckBrowser"
+    refreshable.browser.refresh()
+    refreshable.deliver()
+
+    assert page.swaps() == [] and len(page.html) == 1
+
+
+def test_a_collapse_while_the_page_is_not_the_deck_list_draws_it(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    page.show_another_page()
+
+    browser._collapse(1)
+
+    # the page is drawn again, at the offset of the open page
+    assert page.swaps() == [] and len(page.offset_requests) == 1
+    page.offset_requests[0](0)
+    assert len(page.html) == 1
+    assert browser._page_is_drawn()
+
+
+def test_the_deck_table_is_swapped_after_the_deck_list_page_was_drawn(refreshable):
+    browser, page = refreshable.browser, refreshable.page
+    # a drawn page of the deck list is followed by a swap
+    page.show_another_page()
+    browser.show()
+    refreshable.deliver()
+    page.html.clear()
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert len(page.swaps()) == 1 and page.html == []

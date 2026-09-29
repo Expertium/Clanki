@@ -1409,15 +1409,209 @@ def test_a_sync_that_brought_nothing_keeps_the_resident_state_through_its_reset(
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exact",
+        "took answers",
+        "replay key changed",
+        "answers, replay key changed",
+        "waits for the exact rebuild",
+        "no state",
+    ],
+)
+def test_a_full_upload_keeps_the_resident_state_through_its_reopen(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: a full upload
+    changes nothing the RWKV replay reads, so the reset after its reopen
+    keeps a ready resident state whose replay semantics still match, also
+    one whose identity live answers left unknown. A state that waits for the
+    exact rebuild, or whose semantics key changed, goes, and the post-sync
+    refresh builds it as before."""
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda _sql: 123)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_ready_rwkv_state_cache_collection_mod",
+        lambda _r: None,
+    )
+    resident_identity = _rwkv_resident_identity()
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda _reviewer, **_kwargs: (
+            "another-replay"
+            if "replay key changed" in case
+            else resident_identity.replay_key
+        ),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_state_kept_through_reopen", False)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_resident_replay_keys", {})
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    if case != "no state":
+        assert rwkv_scheduler._publish_reviewer_backend_state(
+            warmup_key, resident_identity, expected_generation=0
+        )
+    if "answers" in case or case == "waits for the exact rebuild":
+        rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+            reviewer, reason="review answered"
+        )
+    if case == "waits for the exact rebuild":
+        monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_forced", True)
+    everything = collection_pb2.OpChanges(
+        card=True, note=True, deck=True, deck_config=True, study_queues=True
+    )
+
+    kept = rwkv_scheduler.keep_rwkv_state_through_reopen(reviewer.mw)
+    rwkv_scheduler.full_sync_reopened(reviewer.mw)
+    # the reset that follows the reopen
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    rwkv_scheduler.drop_unused_rwkv_state_keep(reviewer.mw)
+
+    assert kept is (case in ("exact", "took answers"))
+    assert rwkv_scheduler.rwkv_state_kept_through_reopen() is kept
+    assert (warmup_key in rwkv_scheduler._reviewer_backend_warmup_states) is kept
+
+    # the keep served that reset only
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+def test_a_reopen_forgets_the_undo_frames_of_the_last_open() -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: the reopen after
+    a full sync or a .colpkg export starts the undo counts again, so an undo
+    in the new open whose count is an old answer's does not roll that
+    answer back out of the resident state."""
+    runtime = _SharedReviewRuntime()
+    backend = RwkvStatefulReviewerBackend(runtime)
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    counter = _UndoCounter(reviewer)
+    card_a = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card_b = _rwkv_card(card_id=2, note_id=20, duration_millis=5678)
+    card_c = _rwkv_card(card_id=3, note_id=30, duration_millis=6789)
+    counter.set(1)
+    record_reviewer_answer(reviewer, card_a, ease=3)
+    counter.set(2)
+    record_reviewer_answer(reviewer, card_b, ease=4)
+    assert update_reviewer_scheduling_states(SchedulingStates(), reviewer, card_c)
+    assert current_reviewer_retrievability(reviewer, card_c) == pytest.approx(0.65)
+
+    rwkv_scheduler.full_sync_reopened(reviewer.mw)
+    # the new open's first undoable change (a flag, say) has count 1
+    counter.set(1)
+
+    assert record_collection_undo(_undo_result(counter=1, next_counter=2)) == []
+    assert record_collection_undo(_undo_result(counter=2, next_counter=3)) == []
+    assert runtime.runtime_review_count == 2
+    update_reviewer_scheduling_states(SchedulingStates(), reviewer, card_c)
+    assert current_reviewer_retrievability(reviewer, card_c) == pytest.approx(0.65)
+
+
+@pytest.mark.parametrize("kept", [True, False])
+def test_the_end_of_a_full_sync_that_kept_the_state_starts_the_maintenance(
+    monkeypatch: pytest.MonkeyPatch, kept: bool
+) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: without a
+    post-sync refresh, the maintenance it starts when it ends (the re-read of
+    a history with skipped synced reviews) starts when the full sync ends."""
+    from aqt import fsrs_predictions
+
+    started: list[object] = []
+    monkeypatch.setattr(
+        rwkv_scheduler, "start_rwkv_maintenance_if_needed", started.append
+    )
+    monkeypatch.setattr(fsrs_predictions, "ensure_ready", lambda _mw: None)
+    monkeypatch.setattr(rwkv_scheduler, "_full_sync_operation", None)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_state_kept_through_reopen", kept)
+    mw = SimpleNamespace()
+
+    rwkv_scheduler.full_sync_finished(mw)
+
+    assert started == ([mw] if kept else [])
+    assert rwkv_scheduler.rwkv_state_kept_through_reopen() is False
+
+
+@pytest.mark.parametrize("kept", [True, False])
+def test_a_colpkg_export_keeps_the_state_or_restores_it_without_a_window(
+    monkeypatch: pytest.MonkeyPatch, kept: bool
+) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: after the .colpkg
+    export reopened the collection, the resident state stays when it may;
+    otherwise it is restored or built in the background, as at start-up.
+    Then the passes may run again."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler, "full_sync_reopened", lambda _mw: calls.append("reopened")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_resident_state_survives_reopen", lambda _reviewer: kept
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "keep_rwkv_state_through_next_reset",
+        lambda _mw: calls.append("keep"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "drop_unused_rwkv_state_keep", lambda _mw: calls.append("drop")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_invalidate_reviewer_backend_state",
+        lambda _reviewer, *, reason: calls.append("invalidate"),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_model_available", lambda: True)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "load_rwkv_state_cache_with_progress",
+        lambda _mw, *, build_if_unavailable: calls.append(
+            f"quiet restore, build={build_if_unavailable}"
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "full_sync_finished",
+        lambda _mw: calls.append(
+            f"passes may run, kept={rwkv_scheduler.rwkv_state_kept_through_reopen()}"
+        ),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_state_kept_through_reopen", False)
+
+    rwkv_scheduler.collection_package_exported(SimpleNamespace())
+
+    if kept:
+        assert calls == ["keep", "reopened", "drop", "passes may run, kept=True"]
+    else:
+        assert calls == [
+            "reopened",
+            "invalidate",
+            "quiet restore, build=True",
+            "passes may run, kept=False",
+        ]
+
+
+@pytest.mark.parametrize("answered", [False, True])
 @pytest.mark.parametrize("replay_key_changed", [False, True])
 def test_the_refresh_after_an_fsrs_optimization_keeps_the_resident_state(
-    monkeypatch: pytest.MonkeyPatch, replay_key_changed: bool
+    monkeypatch: pytest.MonkeyPatch, replay_key_changed: bool, answered: bool
 ) -> None:
     """An FSRS-7 optimization that changed parameters refreshes every screen
     with cards, presets and study queues marked as changed. It wrote nothing
     the RWKV replay reads, so RWKV-Curve's state stays, unless the replay
     semantics key (the preset settings the replay does read) no longer
-    matches the state's."""
+    matches the state's. An answer before the optimization leaves the state's
+    identity unknown, not its key, so the state stays then too."""
     import aqt.fsrs_predictions as fsrs_predictions
     from aqt import gui_hooks
 
@@ -1437,10 +1631,17 @@ def test_the_refresh_after_an_fsrs_optimization_keeps_the_resident_state(
             "another-replay" if replay_key_changed else resident_identity.replay_key
         ),
     )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_resident_replay_keys", {})
     set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
     warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
     assert warmup_key is not None
-    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        warmup_key, resident_identity, expected_generation=0
+    )
+    if answered:
+        rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+            reviewer, reason="review answered"
+        )
     # the main window's handler of the hook
     monkeypatch.setattr(
         gui_hooks,
@@ -1521,6 +1722,32 @@ def test_reviewer_redo_skips_generic_invalidation_and_updates_session() -> None:
     )
     assert rwkv_scheduler._rwkv_review_queue_score_maps == {100: {1: 0.25}}
     assert rpc.card_info_calls[-1] == {"card_id": 2, "retrievability": None}
+
+
+# Pins spec/scheduling.md#sched.redo-moves-on-from-the-redone-card.
+def test_redo_of_the_undo_restored_card_on_screen_lets_it_leave() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=2)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is False
+
+
+# Pins spec/scheduling.md#sched.redo-moves-on-from-the-redone-card.
+def test_redo_of_another_card_keeps_the_undo_restored_card_on_screen() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=5)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is True
 
 
 def test_async_reviewer_queue_result_rejects_changed_queue_context() -> None:
@@ -22413,6 +22640,40 @@ def test_a_config_change_the_replay_cannot_see_keeps_the_resident_state(
         # this is the one test here that leaves resident state behind on
         # purpose, and the dicts are module-level: a later test would find a
         # warmed-up state that its own collection never built
+        rwkv_scheduler._reviewer_backend_warmup_states.pop(warmup_key, None)
+
+
+def test_a_config_change_the_replay_cannot_see_keeps_a_state_that_took_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-014 again, after an answer: the answer leaves the state's identity
+    unknown, not the replay key it was built under, so Preferences saved in
+    the middle of a review keep the state then too."""
+    backend = RwkvStatefulReviewerBackend(_CacheRuntime())
+    set_reviewer_backend(backend)
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_resident_replay_keys", {})
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    resident_identity = _rwkv_resident_identity(replay_key="canonical-replay")
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        warmup_key, resident_identity, expected_generation=0
+    )
+    rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+        reviewer, reason="review answered"
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "canonical-replay",
+    )
+
+    try:
+        rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+
+        assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    finally:
         rwkv_scheduler._reviewer_backend_warmup_states.pop(warmup_key, None)
 
 

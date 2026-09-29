@@ -95,6 +95,8 @@ def _get_addons_label() -> str:
 
 class DeckBrowser:
     _render_data: RenderData
+    # the web view's content_serial right after the deck list drew its page
+    _drawn_content_serial: int | None = None
 
     def __init__(self, mw: AnkiQt) -> None:
         self.mw = mw
@@ -376,6 +378,7 @@ class DeckBrowser:
                 )
             ),
         )
+        self._drawn_content_serial = self.web.content_serial
         self._drawButtons()
         if offset is not None:
             self._scrollToOffset(offset)
@@ -530,12 +533,19 @@ class DeckBrowser:
         )
 
     def _page_is_drawn(self) -> bool:
-        """True when a deck list is the page on screen, so that its scroll
-        position can be read and put back. An add-on may call refresh() from
-        another screen, whose page has no deck list to keep in place."""
+        """True when the deck list is the page on screen (or the page that is
+        loading), so that its scroll position can be read and put back and its
+        table swapped. An add-on may call refresh() from another screen, whose
+        page has no deck list to keep in place. The state alone is not enough:
+        the main window sets it before it draws, so after a quick switch from
+        a deck's overview to the deck list the page can still be the overview
+        (`replaceDeckTree` is not defined there, and the deck list would never
+        be drawn)."""
         return (
             getattr(self, "_rendered_stats", None) is not None
             and getattr(self.mw, "state", None) == "deckBrowser"
+            and self._drawn_content_serial is not None
+            and self._drawn_content_serial == self.web.content_serial
         )
 
     def _apply_pending_collapse(self, tree: DeckTreeNode) -> None:
@@ -796,6 +806,13 @@ class DeckBrowser:
         not run when inserted this way), and no add-on listens to the hooks
         that decorate a freshly loaded page. Otherwise the caller reloads."""
         if getattr(self, "_rendered_stats", None) is None:
+            return False
+        # the page must be the deck list's own: another page has no
+        # replaceDeckTree, and the swap would leave that page on screen
+        if (
+            self._drawn_content_serial is None
+            or self._drawn_content_serial != self.web.content_serial
+        ):
             return False
         if not all(
             _only_builtin_handlers(hook)

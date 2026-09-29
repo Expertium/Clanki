@@ -62,6 +62,7 @@ class _View:
     _queueAction = webview.AnkiWebView._queueAction
     _open_page = None
     _staged_page = None
+    _content_serial = 0
 
     def __init__(self, reveal: PageReveal) -> None:
         self.reveal = reveal
@@ -95,6 +96,7 @@ class _View:
 
     def _setHtml(self, html: str, context: Any) -> None:
         # load_url(): a load forgets the open page
+        self._content_serial += 1
         self._open_page = None
         self._staged_page = None
         self.reveal.load_started(self)
@@ -208,6 +210,26 @@ def test_a_page_with_the_same_frame_is_staged_in_the_open_page_and_shown_with_th
     assert any(js == show_js(other_token) for js, _ in other.page().scripts)
     assert view._domDone and view._staged_page is None
     assert view._open_page.css == ("http://s/_anki/css/overview.css",)
+
+
+def test_the_content_serial_changes_for_a_staged_page_and_for_a_loaded_one(
+    reveal: _Reveal,
+) -> None:
+    """A screen that drew a page knows from the content serial whether the
+    page on screen is still its own. A page drawn into the open page keeps the
+    load number, so the serial has to change for it too."""
+    view = _View(reveal)
+    _open(view, reveal)
+    loaded = view._content_serial
+
+    _draw(view, "<p>two</p>", css="css/overview.css")
+    assert len(view.loads) == 1
+    staged = view._content_serial
+    assert staged != loaded
+
+    # a page that cannot be staged (it is still being drawn) is loaded
+    _draw(view, "<p>three</p>", css="css/other.css")
+    assert view._content_serial not in (loaded, staged)
 
 
 def test_another_frame_or_mixed_screen_sheets_or_an_add_on_load_a_new_page(
