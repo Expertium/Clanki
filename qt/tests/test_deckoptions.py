@@ -407,8 +407,28 @@ def views():
         mw.app.activeModalWidget.return_value = None
         mw.col.decks.get_current_id.return_value = 9
         mw.progress.single_shot.side_effect = lambda ms, fn: timers.append(fn)
+        tasks: list = []
+
+        def run_in_background(task, on_done, **kwargs):  # type: ignore[no-untyped-def]
+            def run() -> None:
+                future: Future = Future()
+                try:
+                    future.set_result(task())
+                except Exception as exc:
+                    future.set_exception(exc)
+                on_done(future)
+
+            if keeper.hold_tasks:  # type: ignore[attr-defined]
+                tasks.append(run)
+            else:
+                run()
+
+        mw.taskman.run_in_background.side_effect = run_in_background
         keeper = _DeckOptionsWebViews()
         keeper.timers = timers  # type: ignore[attr-defined]
+        keeper.tasks = tasks  # type: ignore[attr-defined]
+        keeper.hold_tasks = False  # type: ignore[attr-defined]
+        keeper.mw = mw  # type: ignore[attr-defined]
         keeper.loading = loading  # type: ignore[attr-defined]
         yield keeper
 
@@ -435,6 +455,35 @@ def test_the_spare_waits_while_the_fsrs_prediction_pass_holds_the_collection(
         views.timers.pop()()
     assert views._spare is None
     # it tries again later, by itself
+    views.timers.pop()()
+    assert views._spare is not None
+
+
+def test_the_warm_up_reads_the_current_deck_off_the_main_thread(views) -> None:
+    """The Stats window's queries or a background pass can hold the
+    collection; a read on the main thread froze the window until they let go
+    (425-1,041 ms measured while Stats opened)."""
+    views.hold_tasks = True
+    views.on_profile_did_open()
+    views.timers.pop()()
+    views.mw.col.decks.get_current_id.assert_not_called()
+    assert views._spare is None
+
+    views.tasks.pop()()
+    spare = views._spare
+    assert spare.loads == [f"deck-options/9?g={spare.generation}"]
+
+
+def test_the_spare_waits_when_things_changed_during_the_read(views) -> None:
+    views.hold_tasks = True
+    views.on_profile_did_open()
+    views.timers.pop()()
+    views.mw.state = "review"
+    views.tasks.pop()()
+    assert views._spare is None
+    # it tries again later, by itself
+    views.mw.state = "deckBrowser"
+    views.hold_tasks = False
     views.timers.pop()()
     assert views._spare is not None
 

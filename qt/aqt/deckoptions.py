@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 from urllib.parse import parse_qs, urlparse
 
 import aqt
@@ -165,27 +166,53 @@ class _DeckOptionsWebViews:
         aqt.mw.progress.single_shot(delay_ms, lambda: self._warm(profile))
 
     def _warm(self, profile: int) -> None:
-        from aqt import rwkv_scheduler
-
         mw = aqt.mw
         if profile != self._profile or mw.col is None or self._spare is not None:
             return
-        # Stay out of the way of start-up work and of reviewing: making the
-        # view costs the main thread a little. The FSRS-7 prediction pass
-        # holds the collection for seconds at a time, and the warm-up reads
-        # the current deck on the main thread, which would freeze the window
-        # until the pass let go (4.4 s measured).
-        if (
+        if self._should_wait():
+            self._warm_later(self.WARM_RETRY_MS)
+            return
+        # The current deck is read on the collection worker, not on the main
+        # thread: the Stats window's queries or a background pass can hold the
+        # collection, and the window froze until they let go (425-1,041 ms
+        # measured while Stats opened).
+        mw.taskman.run_in_background(
+            lambda: DeckId(mw.col.decks.get_current_id()),
+            lambda future: self._make_spare(profile, future),
+        )
+
+    def _should_wait(self) -> bool:
+        """Stay out of the way of start-up work and of reviewing: making the
+        view costs the main thread a little. The FSRS-7 prediction pass holds
+        the collection for seconds at a time; when the warm-up still read the
+        current deck on the main thread, that froze the window until the pass
+        let go (4.4 s measured)."""
+        from aqt import rwkv_scheduler
+
+        mw = aqt.mw
+        return bool(
             rwkv_scheduler.rwkv_state_cache_loading(mw)
             or aqt.fsrs_predictions.is_holding_collection()
             or mw.state not in ("deckBrowser", "overview")
             or mw.app.activeModalWidget() is not None
-        ):
+        )
+
+    def _make_spare(self, profile: int, future: Future[DeckId]) -> None:
+        mw = aqt.mw
+        if profile != self._profile or mw.col is None or self._spare is not None:
+            return
+        try:
+            deck_id = future.result()
+        except Exception:
+            self._warm_later(self.WARM_RETRY_MS)
+            return
+        # the read waited in the worker's queue: things may have changed
+        if self._should_wait():
             self._warm_later(self.WARM_RETRY_MS)
             return
         self._spare = _DeckOptionsWebView()
         self._spare_ready = False
-        self._load(self._spare, DeckId(mw.col.decks.get_current_id()))
+        self._load(self._spare, deck_id)
 
     # opening and closing
 
