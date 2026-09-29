@@ -56,7 +56,14 @@ pub struct SqliteStorage {
     /// What the open found wrong with the sidecar databases, and did about
     /// it (spec database.sidecar-recovery).
     pub(crate) sidecar_recovery: SidecarRecovery,
+    /// Which open of a collection this is, in this process (`change_stamp`).
+    open_serial: u64,
 }
+
+/// Counts the opens of a collection in this process: no two storages share a
+/// serial, even when a full sync closes the collection and opens the new file
+/// in its place.
+static OPEN_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) const RETRIEVABILITY_CACHE_DB_SCHEMA: &str = "retrievability_cache";
 
@@ -196,6 +203,7 @@ impl SqliteStorage {
         Ok(Some(Self {
             db,
             sidecar_recovery: SidecarRecovery::default(),
+            open_serial: OPEN_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }))
     }
 }
@@ -610,15 +618,19 @@ fn trace(event: TraceEvent) {
 
 impl SqliteStorage {
     /// Differs after anything wrote to the collection, or to a database
-    /// attached to it: the connection's identity and the rows it changed
-    /// since it opened. The collection is opened in exclusive mode, so every
-    /// write goes through this connection. A read done in parts, with the
-    /// collection free in between, is one read when the stamp is the same
-    /// before the first part and after the last.
-    pub(crate) fn change_stamp(&self) -> (usize, u64) {
-        // SAFETY: the handle's address is read, never the handle
-        let connection = unsafe { self.db.handle() } as usize;
-        (connection, self.db.total_changes())
+    /// attached to it: which open of the collection this is, and the rows its
+    /// connection changed since it opened. The collection is opened in
+    /// exclusive mode, so every write goes through this connection. A read
+    /// done in parts, with the collection free in between, is one read when
+    /// the stamp is the same before the first part and after the last.
+    ///
+    /// The open is told apart by a serial, not by the connection's address:
+    /// after a full sync closes the collection and opens the downloaded file,
+    /// the new connection can get the old one's address, and its count of
+    /// changes starts again at 0, so a read in parts that spanned the sync
+    /// could have taken the old and the new rows as one read.
+    pub(crate) fn change_stamp(&self) -> (u64, u64) {
+        (self.open_serial, self.db.total_changes())
     }
 
     pub(crate) fn open_or_create(
@@ -678,6 +690,7 @@ impl SqliteStorage {
         let storage = Self {
             db,
             sidecar_recovery,
+            open_serial: OPEN_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
 
         if create || upgrade {
@@ -1062,6 +1075,35 @@ mod collection_lock_test {
     fn a_collection_in_memory_has_no_second_reader() {
         let col = crate::collection::Collection::new();
         assert!(col.storage.open_retrievability_cache_reader().is_none());
+    }
+}
+
+#[cfg(test)]
+mod change_stamp_test {
+    use crate::collection::CollectionBuilder;
+    use crate::error::Result;
+
+    /// A read in parts must not take two opens of a collection for one: a
+    /// full sync closes the collection and opens the downloaded file, whose
+    /// connection can get the old one's address and starts counting its
+    /// changes at 0 again.
+    #[test]
+    fn a_reopened_collection_never_has_the_stamp_of_the_old_open() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("col.anki2");
+        let col = CollectionBuilder::new(&path).build()?;
+        let before = col.storage.change_stamp();
+        col.close(None)?;
+
+        let mut stamps = vec![before];
+        for _ in 0..5 {
+            let col = CollectionBuilder::new(&path).build()?;
+            let stamp = col.storage.change_stamp();
+            assert!(!stamps.contains(&stamp), "an open repeated a stamp");
+            stamps.push(stamp);
+            col.close(None)?;
+        }
+        Ok(())
     }
 }
 
