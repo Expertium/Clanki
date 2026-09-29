@@ -1187,9 +1187,44 @@ impl RwkvHistoricalFingerprintJob {
 /// ms) six calls in a row waited 61 ms behind the read, with 1,024 rows 19
 /// ms. The read takes as long in total.
 pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 1_024;
-/// Reads in parts that a write may interrupt before the fingerprint reads
-/// the collection in one piece instead.
-const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
+/// When the read in parts gives up and reads the collection in one piece. A
+/// write interrupts the read in parts, and a user who clicks through decks
+/// writes every ~150 ms (the current deck): after three quick restarts the
+/// read went to one piece and held the collection ~900 ms (868k reviews),
+/// and the next click waited for all of it. So after a write the read waits
+/// until the collection has been quiet for `quiet` before it starts over,
+/// and reads in one piece only after `min_reads` interrupted reads and
+/// `budget` since the start: a collection that keeps changing is still read
+/// in the end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RwkvReadRestarts {
+    pub quiet: std::time::Duration,
+    pub poll: std::time::Duration,
+    pub budget: std::time::Duration,
+    pub min_reads: usize,
+}
+
+pub(crate) const RWKV_READ_RESTARTS: RwkvReadRestarts = RwkvReadRestarts {
+    quiet: std::time::Duration::from_millis(250),
+    poll: std::time::Duration::from_millis(25),
+    budget: std::time::Duration::from_secs(5),
+    min_reads: 3,
+};
+
+#[cfg(test)]
+thread_local! {
+    /// Tests set short times here (`rwkv_read_restarts`).
+    pub(crate) static TEST_RWKV_READ_RESTARTS: std::cell::Cell<Option<RwkvReadRestarts>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn rwkv_read_restarts() -> RwkvReadRestarts {
+    #[cfg(test)]
+    if let Some(restarts) = TEST_RWKV_READ_RESTARTS.with(|restarts| restarts.get()) {
+        return restarts;
+    }
+    RWKV_READ_RESTARTS
+}
 
 /// Runs one step of a read with the collection held: the backend passes a
 /// step to its collection lock, which is free between two steps.
@@ -1200,16 +1235,21 @@ pub(crate) type RwkvCollectionHold<'a> =
 /// held for one part of the review log at a time, then runs `last` with the
 /// collection held and the rows. The parts are one read only when nothing
 /// wrote to the collection between the first and the last
-/// (`SqliteStorage::change_stamp`); after a write the read starts over. None
-/// after RWKV_FINGERPRINT_READ_ATTEMPTS reads that a write interrupted: the
-/// caller then reads in one piece. Also returns how many parts were read.
+/// (`SqliteStorage::change_stamp`); after a write the read starts over, once
+/// nothing has written for a short time (`RwkvReadRestarts`). None when the
+/// writes did not stop: the caller then reads in one piece. Also returns how
+/// many parts were read.
 pub(crate) fn rwkv_historical_rows_in_parts<T>(
     ignored_review_ids: &[RevlogId],
     part_rows: usize,
     hold: &mut RwkvCollectionHold,
     mut last: impl FnMut(&mut Collection, Vec<RwkvHistoricalReviewRow>, Vec<i64>) -> Result<T>,
 ) -> Result<Option<(T, usize)>> {
-    for _ in 0..RWKV_FINGERPRINT_READ_ATTEMPTS {
+    let restarts = rwkv_read_restarts();
+    let started = std::time::Instant::now();
+    let mut reads = 0;
+    loop {
+        reads += 1;
         let mut reader = None;
         let mut stamp = None;
         hold(&mut |col| {
@@ -1221,15 +1261,15 @@ pub(crate) fn rwkv_historical_rows_in_parts<T>(
             Ok(())
         })?;
         let (Some(mut reader), Some(stamp)) = (reader, stamp) else {
-            continue;
+            return Ok(None);
         };
         let mut parts = 0;
-        let mut unchanged = true;
+        let mut now_stamp = stamp;
         let mut done = false;
-        while unchanged && !done {
+        while now_stamp == stamp && !done {
             hold(&mut |col| {
-                unchanged = col.storage.change_stamp() == stamp;
-                if unchanged {
+                now_stamp = col.storage.change_stamp();
+                if now_stamp == stamp {
                     done = col
                         .storage
                         .rwkv_historical_review_rows_part(&mut reader, Some(part_rows))?;
@@ -1238,26 +1278,43 @@ pub(crate) fn rwkv_historical_rows_in_parts<T>(
             })?;
             parts += 1;
         }
-        if !unchanged {
-            continue;
-        }
-        // the rows are put together with the collection free: over 868k
-        // reviews that took 10-25 ms of it
-        let mut rows = Some(reader.finish());
-        let mut result = None;
-        hold(&mut |col| {
-            if col.storage.change_stamp() == stamp {
-                let (rows, active_ignored_review_ids) =
-                    rows.take().or_invalid("replay rows read twice")?;
-                result = Some(last(col, rows, active_ignored_review_ids)?);
+        if now_stamp == stamp {
+            // the rows are put together with the collection free: over 868k
+            // reviews that took 10-25 ms of it
+            let mut rows = Some(reader.finish());
+            let mut result = None;
+            hold(&mut |col| {
+                now_stamp = col.storage.change_stamp();
+                if now_stamp == stamp {
+                    let (rows, active_ignored_review_ids) =
+                        rows.take().or_invalid("replay rows read twice")?;
+                    result = Some(last(col, rows, active_ignored_review_ids)?);
+                }
+                Ok(())
+            })?;
+            if let Some(result) = result {
+                return Ok(Some((result, parts)));
             }
-            Ok(())
-        })?;
-        if let Some(result) = result {
-            return Ok(Some((result, parts)));
+        }
+        if reads >= restarts.min_reads && started.elapsed() >= restarts.budget {
+            return Ok(None);
+        }
+        // a write interrupted the read: wait until nothing has written for
+        // `quiet`, or the budget is spent, before the read starts over
+        let mut quiet_since = std::time::Instant::now();
+        while quiet_since.elapsed() < restarts.quiet && started.elapsed() < restarts.budget {
+            std::thread::sleep(restarts.poll);
+            let mut polled = now_stamp;
+            hold(&mut |col| {
+                polled = col.storage.change_stamp();
+                Ok(())
+            })?;
+            if polled != now_stamp {
+                now_stamp = polled;
+                quiet_since = std::time::Instant::now();
+            }
         }
     }
-    Ok(None)
 }
 
 /// `Collection::rwkv_historical_review_fingerprint`, with the collection held
@@ -1852,12 +1909,56 @@ mod test {
         Ok(())
     }
 
+    /// Sets the read's restart times for this thread until dropped.
+    struct TestReadRestarts;
+
+    impl TestReadRestarts {
+        fn set(quiet_ms: u64, budget_ms: u64) -> Self {
+            TEST_RWKV_READ_RESTARTS.with(|restarts| {
+                restarts.set(Some(RwkvReadRestarts {
+                    quiet: std::time::Duration::from_millis(quiet_ms),
+                    poll: std::time::Duration::from_millis(1),
+                    budget: std::time::Duration::from_millis(budget_ms),
+                    min_reads: RWKV_READ_RESTARTS.min_reads,
+                }))
+            });
+            TestReadRestarts
+        }
+    }
+
+    impl Drop for TestReadRestarts {
+        fn drop(&mut self) {
+            TEST_RWKV_READ_RESTARTS.with(|restarts| restarts.set(None));
+        }
+    }
+
+    /// A collection with history, and a function that adds one review after
+    /// the last one and returns its id.
+    fn collection_and_review_now(
+    ) -> Result<(Collection, impl FnMut(&mut Collection) -> Result<i64>)> {
+        let (col, _) = collection_with_late_history_starts()?;
+        let card = col.storage.all_cards()?.remove(0);
+        let mut last_review_id =
+            col.storage
+                .db
+                .query_row("select max(id) from revlog", [], |row| row.get::<_, i64>(0))?;
+        let review_now = move |col: &mut Collection| {
+            last_review_id += 1_000;
+            add_review(col, &card, last_review_id, 5)?;
+            Ok(last_review_id)
+        };
+        Ok((col, review_now))
+    }
+
     /// A write between two parts would mix two collections in one read, so
     /// the read starts over; a collection that keeps changing is read in one
     /// piece. Either way the fingerprint is that of one read of the
-    /// collection as the fingerprint finds it at the end.
+    /// collection as the fingerprint finds it at the end. With no quiet time
+    /// and no budget, the read in parts gives up after the least number of
+    /// reads.
     #[test]
     fn a_write_between_the_parts_makes_the_fingerprint_read_again() -> Result<()> {
+        let _restarts = TestReadRestarts::set(0, 0);
         let (mut col, _) = collection_with_late_history_starts()?;
         let card = col.storage.all_cards()?.remove(0);
         let last_review_id = std::cell::Cell::new(col.storage.db.query_row(
@@ -1901,6 +2002,106 @@ mod test {
         );
         assert_eq!(fingerprint.last_review_id, last_review_id.get());
         assert_eq!(holds, 3 * 2 + 1);
+        Ok(())
+    }
+
+    /// Writes that interrupt more reads than the least number, within the
+    /// budget, do not send the read to one piece: a burst of clicks ends and
+    /// the read in parts then finishes. The rows are those of one read of
+    /// the collection as the read finds it at the end.
+    #[test]
+    fn many_interrupted_reads_within_the_budget_still_read_in_parts() -> Result<()> {
+        let _restarts = TestReadRestarts::set(0, 60_000);
+        let (mut col, mut review_now) = collection_and_review_now()?;
+        // a review before each of the first 20 holds: the reader and the
+        // first part of each read, so 10 reads are interrupted
+        let mut holds = 0;
+        let mut last_review_id = 0;
+        let read = rwkv_historical_rows_in_parts(
+            &[],
+            4,
+            &mut |step| {
+                holds += 1;
+                if holds <= 20 {
+                    last_review_id = review_now(&mut col)?;
+                }
+                step(&mut col)
+            },
+            |_, rows, _| Ok(rows),
+        )?;
+        let (rows, _) = read.expect("the read in parts gave up within its budget");
+        assert_eq!(rows, col.storage.rwkv_historical_review_rows(&[])?.0);
+        assert_eq!(rows.last().unwrap().review_id, last_review_id);
+        // 10 interrupted reads of 2 holds, then the reader, the cards, the
+        // 11 + 20 review-log rows and the last hold
+        assert_eq!(holds, 10 * 2 + (1 + 1 + (31 / 4 + 1) + 1));
+        Ok(())
+    }
+
+    /// After a write the read waits until the collection is quiet before it
+    /// starts over, so writes during the wait do not start and stop reads.
+    #[test]
+    fn the_read_starts_over_once_the_collection_is_quiet() -> Result<()> {
+        let _restarts = TestReadRestarts::set(30, 60_000);
+        let (mut col, mut review_now) = collection_and_review_now()?;
+        // the first part of the first read and the next 10 holds (polls of
+        // the wait) write
+        let mut holds = 0;
+        let mut last_review_id = 0;
+        let read = rwkv_historical_rows_in_parts(
+            &[],
+            4,
+            &mut |step| {
+                holds += 1;
+                if (2..=12).contains(&holds) {
+                    last_review_id = review_now(&mut col)?;
+                }
+                step(&mut col)
+            },
+            |_, rows, _| Ok(rows),
+        )?;
+        let (rows, _) = read.expect("the read in parts gave up within its budget");
+        assert_eq!(rows, col.storage.rwkv_historical_review_rows(&[])?.0);
+        assert_eq!(rows.last().unwrap().review_id, last_review_id);
+        // one interrupted read (2 holds), the polls, one whole read: the
+        // polls are more than the 10 that wrote, as the wait needs 30 ms
+        // without a write after them
+        let whole_read = 1 + 1 + (22 / 4 + 1) + 1;
+        let polls = holds - 2 - whole_read;
+        assert!(polls > 10, "polls={polls}");
+        Ok(())
+    }
+
+    /// A collection that never stops changing is still read: after the
+    /// budget, in one piece.
+    #[test]
+    fn a_collection_that_keeps_changing_is_read_in_one_piece_after_the_budget() -> Result<()> {
+        let _restarts = TestReadRestarts::set(5, 50);
+        let (mut col, mut review_now) = collection_and_review_now()?;
+        let started = std::time::Instant::now();
+        let read = rwkv_historical_rows_in_parts(
+            &[],
+            4,
+            &mut |step| {
+                review_now(&mut col)?;
+                step(&mut col)
+            },
+            |_, rows, _| Ok(rows),
+        )?;
+        assert!(read.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        let mut last_review_id = 0;
+        let fingerprint =
+            rwkv_historical_review_fingerprint_in_parts(Default::default(), 4, &mut |step| {
+                last_review_id = review_now(&mut col)?;
+                step(&mut col)
+            })?;
+        assert_eq!(
+            fingerprint,
+            col.rwkv_historical_review_fingerprint(Default::default())?
+        );
+        assert_eq!(fingerprint.last_review_id, last_review_id);
         Ok(())
     }
 
