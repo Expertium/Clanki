@@ -3584,6 +3584,20 @@ def keep_rwkv_state_through_next_reset(mw: object) -> None:
     _mark_collection_change_reconciled(SimpleNamespace(mw=mw))
 
 
+def keep_rwkv_state_through_fsrs_optimization(mw: object) -> bool:
+    """`keep_rwkv_state_through_next_reset` for the refresh after an FSRS-7
+    optimization that changed parameters: it writes the presets' FSRS-7
+    parameters and the cards' FSRS-7 memory states (and, with rescheduling,
+    their due dates), none of which the RWKV replay reads. The keep is made
+    only while the replay semantics key, which covers every preset setting
+    the replay does read, still matches the resident state's. Returns
+    whether it was made."""
+    if not _replay_semantics_still_match_resident_state(SimpleNamespace(mw=mw)):
+        return False
+    keep_rwkv_state_through_next_reset(mw)
+    return True
+
+
 def drop_unused_rwkv_state_keep(mw: object) -> None:
     """Drops a keep that no study-queue change used, so that it cannot
     stand for a later change."""

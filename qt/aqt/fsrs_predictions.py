@@ -409,8 +409,16 @@ def _refresh_screens(mw: Any, col: Any) -> None:
 
     if mw.col is not col:
         return
+    from aqt import rwkv_scheduler
+
+    # the optimization wrote nothing the RWKV replay reads, so RWKV-Curve's
+    # prepared state stays; throwing it away made the next answer wait for a
+    # restore (about 3.5 s on 868k reviews)
+    kept = rwkv_scheduler.keep_rwkv_state_through_fsrs_optimization(mw)
     changes = OpChanges(card=True, deck_config=True, study_queues=True)
     gui_hooks.operation_did_execute(changes, None)
+    if kept:
+        rwkv_scheduler.drop_unused_rwkv_state_keep(mw)
     gui_hooks.state_did_reset()
 
 

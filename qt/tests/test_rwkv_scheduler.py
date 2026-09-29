@@ -1409,6 +1409,60 @@ def test_a_sync_that_brought_nothing_keeps_the_resident_state_through_its_reset(
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
 
 
+@pytest.mark.parametrize("replay_key_changed", [False, True])
+def test_the_refresh_after_an_fsrs_optimization_keeps_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch, replay_key_changed: bool
+) -> None:
+    """An FSRS-7 optimization that changed parameters refreshes every screen
+    with cards, presets and study queues marked as changed. It wrote nothing
+    the RWKV replay reads, so RWKV-Curve's state stays, unless the replay
+    semantics key (the preset settings the replay does read) no longer
+    matches the state's."""
+    import aqt.fsrs_predictions as fsrs_predictions
+    from aqt import gui_hooks
+
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace(scalar=lambda _sql: 123)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_ready_rwkv_state_cache_collection_mod",
+        lambda _r: None,
+    )
+    resident_identity = _rwkv_resident_identity()
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda _reviewer, **_kwargs: (
+            "another-replay" if replay_key_changed else resident_identity.replay_key
+        ),
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    # the main window's handler of the hook
+    monkeypatch.setattr(
+        gui_hooks,
+        "operation_did_execute",
+        lambda changes, handler: rwkv_scheduler.study_queues_did_change(
+            reviewer.mw, handler, changes
+        ),
+    )
+    monkeypatch.setattr(gui_hooks, "state_did_reset", lambda: None)
+
+    fsrs_predictions._refresh_screens(reviewer.mw, reviewer.mw.col)
+
+    kept = warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert kept is not replay_key_changed
+    # no keep is left behind for a later change
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw, None, collection_pb2.OpChanges(card=True, study_queues=True)
+    )
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
 def test_reviewer_undo_skips_its_queue_invalidation_once() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_reviewer(rpc=rpc)
