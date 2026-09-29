@@ -18791,6 +18791,12 @@ def _read_rwkv_state_cache_saved_before_history_change(
     review_count = _int_value(metadata.get("reviewCount"))
     if not last_review_id or not review_count:
         return None
+    # The kept path must never be used without scheduling the exact rebuild.
+    # This check cannot see a swap before the saved state's last review (an
+    # old review deleted on one device and an older-dated one synced from
+    # another leave the count and the last id the same); only the forced
+    # exact rebuild that always follows a kept state makes it exact.
+    #
     # Only the number of reviews up to the saved state's last review and the
     # last of them count here, not their hash: `_rwkv_history_prefix_identity`
     # hashes every review of that prefix in Python, which took 11.6 s on
