@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from anki.collection import Collection
 from aqt import rwkv_scheduler as rwkv
 
@@ -117,3 +119,78 @@ def test_decks_without_the_bulk_reads_are_read_one_by_one() -> None:
     )
     reviewer = SimpleNamespace(mw=SimpleNamespace(col=SimpleNamespace(decks=decks)))
     assert rwkv._rwkv_preset_routing_config_key(reviewer) == [[10, 7], [11, 11]]
+
+
+def test_the_configs_read_for_all_decks_are_the_configs_read_deck_by_deck(
+    tmp_path: Path,
+) -> None:
+    col = _collection_with_every_kind_of_deck(tmp_path)
+    try:
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        configs = rwkv._deck_configs_of_decks(reviewer)
+        for deck in col.decks.all():
+            assert configs[deck["id"]] == rwkv._deck_config_for_deck_id(
+                reviewer, deck["id"]
+            )
+        # a normal deck's preset has `dyn` False; a filtered deck is its own
+        assert configs[1]["dyn"] is False
+        assert "conf" not in configs[_filtered_deck_id(col)]
+        # each deck gets its own dict, so a caller may change one
+        assert configs[col.decks.id("B")] is not configs[col.decks.id("B::C")]
+    finally:
+        col.close()
+
+
+def test_a_deck_whose_preset_is_gone_is_left_to_the_deck_by_deck_read(
+    tmp_path: Path,
+) -> None:
+    col = _collection_with_every_kind_of_deck(tmp_path)
+    try:
+        reviewer = SimpleNamespace(mw=SimpleNamespace(col=col))
+        deck_id = col.decks.id("A")
+        assert deck_id
+        deck = col.decks.get(deck_id)
+        assert deck
+        deck["conf"] = 999_999
+        col.decks.save(deck)
+        assert deck_id not in rwkv._deck_configs_of_decks(reviewer)
+        config = rwkv._deck_config_for_deck_id(reviewer, deck_id)
+        assert isinstance(config, dict) and config["id"] == 1
+    finally:
+        col.close()
+
+
+def test_the_deck_list_count_scopes_take_three_backend_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    col = _collection_with_every_kind_of_deck(tmp_path)
+    try:
+        for index in range(20):
+            col.decks.id(f"More::{index}")
+        deck_b = col.decks.get(col.decks.id("B"))
+        assert deck_b
+        other = int(deck_b["conf"])
+        # RWKV-Instant on for the "Other" preset only: "B" and its subtree
+        # are one scope
+        monkeypatch.setattr(
+            rwkv,
+            "_rwkv_review_instant_order_enabled",
+            lambda config: config["id"] == other,
+        )
+        mw = SimpleNamespace(col=col)
+        tree = col.sched.deck_due_tree()
+        calls = 0
+        real = col._backend._run_command
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            return real(*args, **kwargs)
+
+        col._backend._run_command = counted  # type: ignore[method-assign]
+        scopes = rwkv.deck_browser_rwkv_count_scope_ids(mw, tree)
+        assert scopes == (deck_b["id"],)
+        # the current deck, the presets, the decks
+        assert calls == 3
+    finally:
+        col.close()
