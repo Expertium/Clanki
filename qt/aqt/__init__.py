@@ -12,23 +12,42 @@ from collections.abc import Callable
 from inspect import isclass
 from typing import TYPE_CHECKING, Any, Union, cast
 
-try:
-    import ssl
 
-    import truststore
+def _use_system_certificates() -> None:
+    try:
+        import ssl as ssl_module
 
+        import truststore as truststore_module
+    except ModuleNotFoundError:
+        print(
+            "Python module truststore is not installed. System certificate store and custom SSL certificates may not work. See: https://github.com/ankitects/anki/issues/3016"
+        )
+        return
+    # `aqt.ssl` and `aqt.truststore` are names an add-on may use
+    globals().update(ssl=ssl_module, truststore=truststore_module)
     # The system certificate store for every later TLS context. Only the ssl
     # half of truststore.inject_into_ssl(): its urllib3/requests half imports
     # both (~80 ms of every start) to patch their copies of ssl.SSLContext,
     # but a urllib3 or requests imported after this line copies truststore's
     # class by itself. Only if one is already imported does it need the rest.
-    ssl.SSLContext = truststore.SSLContext  # type: ignore[misc,assignment]
+    ssl_module.SSLContext = truststore_module.SSLContext  # type: ignore[misc,assignment]
     if "urllib3" in sys.modules or "requests" in sys.modules:
-        truststore.inject_into_ssl()
-except ModuleNotFoundError:
-    print(
-        "Python module truststore is not installed. System certificate store and custom SSL certificates may not work. See: https://github.com/ankitects/anki/issues/3016"
-    )
+        truststore_module.inject_into_ssl()
+
+
+if sys.platform == "win32":
+    # The first `platform.system()` and `platform.win32_ver()` ask WMI (45 and
+    # 19 ms). truststore and `plat_desc()` (aqt.sync) call them while `aqt`
+    # is imported: ask in another thread while the other modules are
+    # imported, so that those calls find the answer cached.
+    import platform
+    import threading
+
+    def _ask_platform() -> None:
+        platform.system()
+        platform.win32_ver()
+
+    threading.Thread(target=_ask_platform, daemon=True).start()
 
 if sys.version_info[0] < 3 or sys.version_info[1] < 9:
     raise Exception("Anki requires Python 3.9+")
@@ -46,6 +65,7 @@ if "--syncserver" in sys.argv:
     from anki.syncserver import run_sync_server
     from anki.utils import is_mac
 
+    _use_system_certificates()
     # does not return
     run_sync_server()
 
@@ -110,6 +130,8 @@ def is_portable() -> bool:
 def application_name() -> str:
     return f"{APP_NAME} Portable" if is_portable() else APP_NAME
 
+
+_use_system_certificates()
 
 from aqt.main import AnkiQt  # isort:skip
 from aqt.profiles import ProfileManager, VideoDriver  # isort:skip

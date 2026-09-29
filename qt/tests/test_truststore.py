@@ -49,3 +49,26 @@ def test_a_requests_imported_before_aqt_is_patched_too() -> None:
         """
     )
     assert out == "True"
+
+
+def test_no_tls_context_is_made_while_aqt_is_imported_before_the_store_is_set() -> None:
+    """The system store is set a little after `import aqt` begins (its
+    platform query runs in a thread meanwhile). A TLS context made before
+    that would use the default store."""
+    out = _run(
+        """
+        import ssl, sys
+        made = []
+        original = ssl.SSLContext.__new__
+
+        def watched(cls, *args, **kwargs):
+            made.append("truststore" in sys.modules)
+            return original(cls, *args, **kwargs)
+
+        ssl.SSLContext.__new__ = watched
+        import aqt, aqt.main
+        print(made)
+        print(aqt.ssl is ssl, aqt.truststore.__name__)
+        """
+    )
+    assert out.splitlines() == ["[]", "True truststore"]
