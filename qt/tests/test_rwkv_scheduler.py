@@ -1469,6 +1469,32 @@ def test_reviewer_redo_skips_generic_invalidation_and_updates_session() -> None:
     assert rpc.card_info_calls[-1] == {"card_id": 2, "retrievability": None}
 
 
+# Pins spec/scheduling.md#sched.redo-moves-on-from-the-redone-card.
+def test_redo_of_the_undo_restored_card_on_screen_lets_it_leave() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=2)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is False
+
+
+# Pins spec/scheduling.md#sched.redo-moves-on-from-the-redone-card.
+def test_redo_of_another_card_keeps_the_undo_restored_card_on_screen() -> None:
+    reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
+    reviewer.mw.reviewer = reviewer
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.card = SimpleNamespace(id=5)
+    reviewer._rwkv_undo_restored_card_active = True
+
+    rwkv_scheduler.apply_reviewer_redo_card_ids(reviewer, [2])
+
+    assert reviewer._rwkv_undo_restored_card_active is True
+
+
 def test_async_reviewer_queue_result_rejects_changed_queue_context() -> None:
     rpc = _RwkvQueueScoreRpc()
     reviewer = _rwkv_reviewer(
