@@ -1181,9 +1181,12 @@ impl RwkvHistoricalFingerprintJob {
     }
 }
 
-/// Review-log rows per part of the fingerprint's read: about 25 ms of the
-/// collection on a fast machine.
-pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 16_384;
+/// Review-log rows per part of the fingerprint's read: about 1.3 ms of the
+/// collection on a fast machine. A click waits for the part in progress on
+/// each backend call it makes and a click makes several: with 16,384 rows (25
+/// ms) six calls in a row waited 61 ms behind the read, with 1,024 rows 19
+/// ms. The read takes as long in total.
+pub(crate) const RWKV_FINGERPRINT_PART_ROWS: usize = 1_024;
 /// Reads in parts that a write may interrupt before the fingerprint reads
 /// the collection in one piece instead.
 const RWKV_FINGERPRINT_READ_ATTEMPTS: usize = 3;
@@ -1238,12 +1241,14 @@ pub(crate) fn rwkv_historical_rows_in_parts<T>(
         if !unchanged {
             continue;
         }
-        let mut reader = Some(reader);
+        // the rows are put together with the collection free: over 868k
+        // reviews that took 10-25 ms of it
+        let mut rows = Some(reader.finish());
         let mut result = None;
         hold(&mut |col| {
             if col.storage.change_stamp() == stamp {
                 let (rows, active_ignored_review_ids) =
-                    reader.take().or_invalid("replay rows read twice")?.finish();
+                    rows.take().or_invalid("replay rows read twice")?;
                 result = Some(last(col, rows, active_ignored_review_ids)?);
             }
             Ok(())
