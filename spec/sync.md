@@ -262,3 +262,57 @@ so, without a modal window ("No waiting windows", CLAUDE.md item 11).
 (`rslib/src/sync/collection/tests.rs`);
 `test_a_sync_that_changed_the_algorithm_says_so_once`
 (`qt/tests/test_sync.py`).
+
+## sync.full-sync-stops-background-passes
+
+Given a full sync (a download or an upload) that begins while RWKV or FSRS-7
+background work runs (the start-up restore or build of the RWKV state, the
+recording pass, the exact rebuild, the idle save of the stored state, the
+FSRS-7 prediction and auto-optimize pass), the sync first stops that work,
+the way the close does (`ui.close-stops-rwkv-work`): each pass stops at its
+next check, a writer drops the rows of its unfinished batch, and the sync
+waits at most 10 seconds for the passes before it takes the collection. A
+pass still inside one long call after that stops at its next check all the
+same, and writes nothing into the collection the sync brought. A pass that
+the full sync stopped shows no message; a build stopped this way does not
+say that the review history could not be read. The FSRS-7 pass does not
+start while the full sync runs.
+
+When the sync has reopened the collection, nothing the passes knew of the
+old collection carries over: the exact rebuild's wanted work and its undo
+entries go, as at a profile open, and the post-sync refresh builds the RWKV
+state of the collection as it is now. The FSRS-7 pass is asked for again;
+it waits for that refresh.
+
+Given any sync that changed the collection while the start-up restore or
+build of the RWKV state runs, the post-sync refresh takes over: the restore
+or build ends without a message and without starting a build of its own,
+and the FSRS-7 pass keeps waiting until the refresh has ended. Between two
+presets the FSRS-7 pass waits while a restore, build or post-sync refresh of
+the RWKV state runs.
+
+Given a close that stopped waiting for the exact rebuild, the first rebuild
+request of the collection opened next starts a rebuild for that collection.
+The old collection's rebuild thread does not take the request.
+
+**Why:** bug hunt of 2026-09-26, reproduced on 2026-09-29 with a local sync
+server: a full download 45 seconds into the start-up build of a collection
+of 868,034 reviews showed "Your review history could not be read.". The
+stopped build also let the FSRS-7 pass start during the post-sync refresh;
+the pass's new parameters threw the refresh's state away after 9 seconds, so
+there was no RWKV state after the sync, and the stored state still belonged
+to the old collection. A full sync keeps the same collection object, so the
+checks a pass made against a closed profile could not see it.
+
+**Pinned by:** `test_a_full_sync_stops_the_background_passes_first`
+(`qt/tests/test_sync.py`);
+`test_a_full_sync_stops_the_recording_pass_and_the_writers`,
+`test_a_pass_that_outlived_the_full_sync_wait_still_stops`,
+`test_a_build_that_a_full_sync_stopped_reports_nothing`,
+`test_a_build_superseded_by_the_post_sync_refresh_leaves_it_the_flag`,
+`test_a_build_that_fails_by_itself_still_says_so`,
+`test_a_full_sync_drops_the_rebuild_the_old_collection_wanted`,
+`test_the_rebuild_thread_of_a_closed_profile_takes_no_new_request`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_a_full_sync_stops_the_pass_and_asks_for_it_again`
+(`qt/tests/test_fsrs_predictions.py`).

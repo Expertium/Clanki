@@ -337,10 +337,17 @@ def full_download(
     qconnect(timer.timeout, on_timer)
     timer.start(150)
 
+    from aqt import rwkv_scheduler
+
     # hook needs to be called early, on the main thread
     gui_hooks.collection_will_temporarily_close(mw.col)
+    col = mw.col
+    rwkv_scheduler.begin_full_sync(mw)
 
     def download() -> None:
+        # the background passes stop before the file is replaced (spec
+        # sync.full-sync-stops-background-passes)
+        rwkv_scheduler.wait_for_background_work_before_full_sync(col)
         mw.create_backup_now()
         mw.col.close_for_full_sync()
         mw.col.full_upload_or_download(
@@ -350,13 +357,17 @@ def full_download(
     def on_future_done(fut: Future) -> None:
         timer.stop()
         mw.reopen(after_full_sync=True)
+        rwkv_scheduler.full_sync_reopened(mw)
         mw.reset()
         try:
             fut.result()
         except Exception as err:
             handle_sync_error(mw, err)
         mw.media_syncer.start_monitoring()
-        return on_done(True)
+        try:
+            return on_done(True)
+        finally:
+            rwkv_scheduler.full_sync_finished(mw)
 
     mw.taskman.with_progress(
         download,
@@ -367,7 +378,11 @@ def full_download(
 def full_upload(
     mw: aqt.main.AnkiQt, server_usn: int | None, on_done: Callable[[bool], None]
 ) -> None:
+    from aqt import rwkv_scheduler
+
     gui_hooks.collection_will_temporarily_close(mw.col)
+    col = mw.col
+    rwkv_scheduler.begin_full_sync(mw)
     mw.col.close_for_full_sync()
 
     label = tr.sync_uploading_to_ankiweb()
@@ -382,21 +397,28 @@ def full_upload(
     def on_future_done(fut: Future) -> None:
         timer.stop()
         mw.reopen(after_full_sync=True)
+        rwkv_scheduler.full_sync_reopened(mw)
         mw.reset()
         try:
-            fut.result()
-        except Exception as err:
-            handle_sync_error(mw, err)
+            try:
+                fut.result()
+            except Exception as err:
+                handle_sync_error(mw, err)
+                return on_done(True)
+            mw.media_syncer.start_monitoring()
             return on_done(True)
-        mw.media_syncer.start_monitoring()
-        return on_done(True)
+        finally:
+            rwkv_scheduler.full_sync_finished(mw)
 
-    mw.taskman.with_progress(
-        lambda: mw.col.full_upload_or_download(
+    def upload() -> None:
+        # the background passes stop before the file is sent (spec
+        # sync.full-sync-stops-background-passes)
+        rwkv_scheduler.wait_for_background_work_before_full_sync(col)
+        mw.col.full_upload_or_download(
             auth=mw.pm.sync_auth(), server_usn=server_usn, upload=True
-        ),
-        on_future_done,
-    )
+        )
+
+    mw.taskman.with_progress(upload, on_future_done)
 
 
 def sync_login(

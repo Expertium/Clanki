@@ -2,7 +2,8 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """Pins the sync half of spec/ui.md#ui.close-says-what-it-waits-for, and
-spec/sync.md#sync.algorithm-change-notice."""
+spec/sync.md#sync.algorithm-change-notice and
+spec/sync.md#sync.full-sync-stops-background-passes."""
 
 from __future__ import annotations
 
@@ -227,3 +228,72 @@ def test_a_finished_sync_passes_on_the_times_it_began_and_ended_with(
         )
     ]
     assert changes[0].nothing_changed()
+
+
+def _full_sync_mw(order: list[str]) -> Any:
+    tasks: list[tuple[Any, Any]] = []
+    mw = _mw()
+    mw.taskman = SimpleNamespace(
+        with_progress=lambda task, on_done, **_kwargs: tasks.append((task, on_done))
+    )
+    mw.col.close_for_full_sync = lambda: order.append("close")
+    mw.col.full_upload_or_download = lambda **_kwargs: order.append("transfer")
+    mw.create_backup_now = lambda: order.append("backup")
+    mw.reopen = lambda after_full_sync: order.append("reopen")
+    mw.reset = lambda: None
+    mw.media_syncer = SimpleNamespace(start_monitoring=lambda: None)
+    mw.tasks = tasks
+    return mw
+
+
+def test_a_full_sync_stops_the_background_passes_first(monkeypatch) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: a full
+    download or upload stops the RWKV and FSRS-7 passes before the
+    collection closes, waits for them off the main thread before the file
+    is replaced or sent, lets them run again once the collection has
+    reopened, and gives the loading flag back after the post-sync work
+    began."""
+    from aqt import rwkv_scheduler
+
+    monkeypatch.setattr(aqt.sync, "QTimer", _Timer)
+    monkeypatch.setattr(aqt.sync, "qconnect", lambda _signal, _handler: None)
+    monkeypatch.setattr(
+        aqt.sync.gui_hooks, "collection_will_temporarily_close", lambda _col: None
+    )
+    for full_sync in (aqt.sync.full_download, aqt.sync.full_upload):
+        order: list[str] = []
+        monkeypatch.setattr(
+            rwkv_scheduler, "begin_full_sync", lambda mw: order.append("stop passes")
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "wait_for_background_work_before_full_sync",
+            lambda col: order.append("wait for passes"),
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "full_sync_reopened",
+            lambda mw: order.append("passes may run"),
+        )
+        monkeypatch.setattr(
+            rwkv_scheduler, "full_sync_finished", lambda mw: order.append("flag back")
+        )
+        mw = _full_sync_mw(order)
+
+        full_sync(mw, None, lambda _changed: order.append("post-sync work"))
+        task, on_done = mw.tasks[0]
+        task()
+        on_done(SimpleNamespace(result=lambda: None))
+
+        steps = [step for step in order if step != "backup"]
+        assert steps == [
+            "stop passes",
+            *(["close"] if full_sync is aqt.sync.full_upload else []),
+            "wait for passes",
+            *(["close"] if full_sync is aqt.sync.full_download else []),
+            "transfer",
+            "reopen",
+            "passes may run",
+            "post-sync work",
+            "flag back",
+        ], full_sync.__name__

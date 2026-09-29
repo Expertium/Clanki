@@ -23862,6 +23862,277 @@ def test_the_close_stops_the_exact_rebuild(monkeypatch: pytest.MonkeyPatch) -> N
     assert rwkv_scheduler._reviewer_backend is backend
 
 
+@pytest.fixture
+def full_sync_state() -> Iterator[None]:
+    """A test of the full sync leaves no full sync running behind it."""
+    yield
+    rwkv_scheduler._full_sync_operation = None
+
+
+def test_a_full_sync_stops_the_recording_pass_and_the_writers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full_sync_state: None
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: a full sync
+    keeps mw.col and puts another collection under it. The recording pass
+    stops before the sync takes the collection, no row of the old history
+    reaches the collection after the sync began, and the writers write
+    again once the collection has reopened."""
+    col = _ClosingCol()
+    mw = SimpleNamespace(
+        col=col,
+        pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+        state="deckBrowser",
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_run_on_main", lambda mw, fn: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "recordings_pass_rest_seconds", lambda mw, seconds: 0.0
+    )
+    failures: list[str] = []
+    monkeypatch.setattr(
+        rwkv_scheduler.logger,
+        "exception",
+        lambda message, *args: failures.append(message),
+    )
+    running = threading.Event()
+
+    def recompute(mw: object, *, between_batches: Callable[[], None], **_: Any) -> bool:
+        writer = rwkv_scheduler._RwkvReviewRetrievabilityCacheWriter(
+            SimpleNamespace(mw=mw)
+        )
+        for review_id in range(1, 10_000):
+            writer.record_many([(review_id, 0.5)])
+            writer.flush()
+            running.set()
+            time.sleep(0.005)
+            between_batches()
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    assert running.wait(5)
+    rwkv_scheduler.begin_full_sync(mw)
+    assert rwkv_scheduler.wait_for_background_work_before_full_sync(col, timeout=5)
+
+    assert not rwkv_scheduler.rwkv_recordings_pass_running()
+    written = list(col.stored)
+    time.sleep(0.05)
+    assert col.stored == written
+    assert failures == []
+
+    # the collection has reopened: a writer writes again
+    rwkv_scheduler.full_sync_reopened(mw)
+    writer = rwkv_scheduler._RwkvReviewRetrievabilityCacheWriter(SimpleNamespace(mw=mw))
+    writer.record_many([(99_999, 0.5)])
+    writer.flush()
+    assert col.stored[-1] == 99_999
+
+
+def test_a_pass_that_outlived_the_full_sync_wait_still_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, full_sync_state: None
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: a recording
+    pass stuck in one long call when the full sync stopped waiting for it
+    does not go on in the collection the sync brought: it stops at its next
+    check, even though the collection is open again by then."""
+    col = _ClosingCol()
+    mw = SimpleNamespace(
+        col=col,
+        pm=SimpleNamespace(profileFolder=lambda: str(tmp_path)),
+        state="deckBrowser",
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_run_on_main", lambda mw, fn: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "recordings_pass_rest_seconds", lambda mw, seconds: 0.0
+    )
+    in_long_call = threading.Event()
+    release = threading.Event()
+    batches_after: list[int] = []
+
+    def recompute(mw: object, *, between_batches: Callable[[], None], **_: Any) -> bool:
+        in_long_call.set()
+        release.wait(5)
+        for batch in range(3):
+            between_batches()
+            batches_after.append(batch)
+        return True
+
+    monkeypatch.setattr(rwkv_scheduler, "recompute_rwkv_calibration_data", recompute)
+    rwkv_scheduler.recompute_rwkv_calibration_data_in_background(mw)
+    assert in_long_call.wait(5)
+
+    rwkv_scheduler.begin_full_sync(mw)
+    assert not rwkv_scheduler.wait_for_background_work_before_full_sync(
+        col, timeout=0.05
+    )
+    rwkv_scheduler.full_sync_reopened(mw)
+    release.set()
+    deadline = time.monotonic() + 5
+    while rwkv_scheduler.rwkv_recordings_pass_running():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    assert batches_after == []
+
+
+def test_a_build_that_a_full_sync_stopped_reports_nothing(
+    monkeypatch: pytest.MonkeyPatch, full_sync_state: None
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: the
+    start-up build that a full sync stops did not fail. It says nothing, and
+    it leaves the loading flag to the full sync, so the FSRS-7 pass does not
+    start while the collection is being replaced."""
+    shown: list[str] = []
+    monkeypatch.setattr(
+        "aqt.utils.tooltip", lambda *args, **kwargs: shown.append("tooltip")
+    )
+    monkeypatch.setattr(
+        "aqt.utils.show_warning", lambda *args, **kwargs: shown.append("warning")
+    )
+    drawn: list[bool] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_refresh_active_rwkv_count_view",
+        lambda mw: drawn.append(True) or True,
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+
+    def build(mw_: object, **_: Any) -> bool:
+        # the user presses Sync while the build replays; the full sync
+        # stops it
+        rwkv_scheduler.begin_full_sync(mw)
+        return False
+
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", build)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, quiet=True)
+
+    assert shown == []
+    assert drawn == []
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+    rwkv_scheduler.full_sync_reopened(mw)
+    asked: list[object] = []
+    monkeypatch.setattr("aqt.fsrs_predictions.ensure_ready", asked.append)
+    rwkv_scheduler.full_sync_finished(mw)
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+    # the FSRS-7 pass is asked for again
+    assert asked == [mw]
+
+
+def test_a_build_superseded_by_the_post_sync_refresh_leaves_it_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: a sync that
+    changed the collection starts the post-sync refresh while the start-up
+    build still runs. The build then ends without a state; it says nothing,
+    and it does not clear the loading flag that the refresh holds. Only the
+    refresh clears it."""
+    shown: list[str] = []
+    monkeypatch.setattr(
+        "aqt.utils.tooltip", lambda *args, **kwargs: shown.append("tooltip")
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    refresh: list[int] = []
+
+    def build(mw_: object, **_: Any) -> bool:
+        # the refresh takes the flag while the build replays
+        refresh.append(rwkv_scheduler._set_rwkv_state_cache_loading(mw, True))
+        return False
+
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", build)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, quiet=True)
+
+    assert shown == []
+    assert rwkv_scheduler.rwkv_state_cache_loading(mw)
+    rwkv_scheduler._set_rwkv_state_cache_loading(mw, False, operation=refresh[0])
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+
+def test_a_build_that_fails_by_itself_still_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule above is for a build that newer work took over. A build that
+    fails with nothing newer running still says that the review history
+    could not be read."""
+    shown: list[str] = []
+    monkeypatch.setattr(
+        "aqt.utils.tooltip", lambda *args, **kwargs: shown.append("tooltip")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_refresh_active_rwkv_count_view", lambda mw: True
+    )
+    mw = SimpleNamespace(col=SimpleNamespace())
+    monkeypatch.setattr(rwkv_scheduler, "warm_up_rwkv_state", lambda mw, **_: False)
+
+    rwkv_scheduler.build_rwkv_state_cache_with_progress(mw, quiet=True)
+
+    assert shown == ["tooltip"]
+    assert not rwkv_scheduler.rwkv_state_cache_loading(mw)
+
+
+def test_a_full_sync_drops_the_rebuild_the_old_collection_wanted(
+    no_exact_rebuild_thread: list[object], full_sync_state: None
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: the exact
+    rebuild's wants and history-change undo entries describe the collection
+    the full sync replaced; they go, as at a profile open."""
+    mw = SimpleNamespace(col=SimpleNamespace())
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+
+    rwkv_scheduler.begin_full_sync(mw)
+    rwkv_scheduler.full_sync_reopened(mw)
+
+    assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+    # a rebuild still running reads that its history moved, and stops
+    assert rwkv_scheduler._rwkv_exact_rebuild_generation != generation
+
+
+def test_the_rebuild_thread_of_a_closed_profile_takes_no_new_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/sync.md#sync.full-sync-stops-background-passes: the close
+    waits at most 10 seconds for the exact rebuild. A rebuild thread of the
+    old profile still alive after that does not take the first rebuild
+    request of the next profile, which it would drop when it sees its own
+    collection gone; a new thread starts for the new collection."""
+    release = threading.Event()
+    ran_for: list[object] = []
+
+    def run(mw: object) -> None:
+        ran_for.append(getattr(mw, "col", None))
+        if len(ran_for) == 1:
+            # stuck in one long call of the old profile
+            release.wait(5)
+        with rwkv_scheduler._rwkv_exact_rebuild_lock:
+            rwkv_scheduler._rwkv_exact_rebuild_thread_ends_locked()
+
+    monkeypatch.setattr(rwkv_scheduler, "_run_exact_rwkv_rebuilds", run)
+    old, new = SimpleNamespace(), SimpleNamespace()
+    mw = SimpleNamespace(col=old)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    old_thread = rwkv_scheduler._rwkv_exact_rebuild_thread
+    assert old_thread is not None
+    deadline = time.monotonic() + 5
+    while not ran_for:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    # the profile switch: the old thread is still in its call
+    mw.col = new
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    deadline = time.monotonic() + 2
+    while len(ran_for) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ran_for == [old, new]
+    assert old_thread.is_alive()
+    release.set()
+    old_thread.join(timeout=5)
+
+
 def _saved_state_then_rerouted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

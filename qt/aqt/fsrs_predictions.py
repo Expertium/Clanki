@@ -113,9 +113,28 @@ _failure_reported = False
 
 
 def rwkv_startup_busy(mw: Any) -> bool:
-    """True while the RWKV state cache is loading or building. That load
-    holds the collection, so the pass must not queue in front of it."""
+    """True while the RWKV state cache is loading or building, or a full
+    sync replaces the collection. That load holds the collection, so the
+    pass must not queue in front of it."""
     return bool(getattr(mw, "_rwkv_state_cache_loading", False))
+
+
+def _full_syncs_begun() -> int:
+    """How many full syncs have begun in this process (spec
+    sync.full-sync-stops-background-passes). A full sync keeps mw.col and
+    puts another collection under it, so `mw.col is col` cannot see it."""
+    from aqt import rwkv_scheduler
+
+    return rwkv_scheduler.full_syncs_begun()
+
+
+# the count above when the running pass began
+_pass_full_syncs = 0
+
+
+def _replaced() -> bool:
+    """A full sync has begun since the running pass began."""
+    return _full_syncs_begun() != _pass_full_syncs
 
 
 def reset_failure_report() -> None:
@@ -231,10 +250,12 @@ def _wait_for_a_pause(mw: Any, col: Any) -> bool:
     all while the user works: every key press starts the countdown again.
     """
     while True:
-        if mw.col is not col:
+        if mw.col is not col or _replaced():
             return False
         since_input = seconds_since_input(mw)
-        if since_input is None or since_input >= USER_IDLE_SECS:
+        if (
+            since_input is None or since_input >= USER_IDLE_SECS
+        ) and not rwkv_startup_busy(mw):
             return True
         # in short pieces, so that a profile closing under the wait stops
         # the pass at once instead of up to USER_IDLE_SECS later
@@ -267,10 +288,15 @@ def _rest_after(mw: Any, col: Any, started: float) -> bool:
     collection inside a backend call and gives it back when that call
     returns, so there is no lock to hand back for the length of the rest.
     """
-    if mw.col is not col:
+    if mw.col is not col or _replaced():
         return False
     time.sleep(rest_seconds(mw, time.monotonic() - started))
-    return mw.col is col
+    # a restore, build or post-sync refresh of the RWKV state that began
+    # meanwhile goes first: new FSRS-7 parameters would throw its state away
+    # (spec sync.full-sync-stops-background-passes)
+    while rwkv_startup_busy(mw) and mw.col is col and not _replaced():
+        time.sleep(START_WAIT_CHECK_SECS)
+    return mw.col is col and not _replaced()
 
 
 @contextmanager
@@ -284,7 +310,8 @@ def _holding() -> Iterator[None]:
 
 
 def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
-    global _running
+    global _running, _pass_full_syncs
+    _pass_full_syncs = _full_syncs_begun()
     try:
         # the pass does not begin until the user has paused: asking which
         # presets are stale holds the collection too
@@ -354,9 +381,10 @@ def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
         # here, not after the try: a pass that returns early (a close during
         # its wait for a pause, a same-day pass with no preset due) asks
         # again too
-        if mw.col is not col:
-            # a profile that opened while this pass still ran found it
-            # running and asked for nothing; ask for it now
+        if mw.col is not col or _replaced():
+            # a profile that opened, or a full sync that ended, while this
+            # pass still ran found it running and asked for nothing; ask for
+            # it now
             ensure_ready(mw)
         elif full_pass_requested:
             # a parameter change while this pass ran: its predictions are
@@ -367,8 +395,8 @@ def _run(mw: Any, col: Any, only_if_due: bool = False) -> None:
 def _collection_closed(mw: Any, col: Any) -> bool:
     """True when the pass's collection is no longer open: the profile
     closed or switched (mw.col moved on), or a full sync closed it in place
-    (its db is gone)."""
-    return mw.col is not col or col.db is None
+    (its db is gone) or has begun to replace it."""
+    return mw.col is not col or col.db is None or _replaced()
 
 
 def _auto_optimize(mw: Any, col: Any, presets: list[int]) -> bool | None:
