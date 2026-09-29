@@ -274,9 +274,9 @@ def test_qa_transition_block_is_independent_of_operation_block() -> None:
 
     assert reviewer._review_actions_are_blocked() is False
     assert calls == [
-        "setReviewerTransitionActive(true);",
+        "globalThis.setReviewerTransitionActive?.(true);",
         "update",
-        "setReviewerTransitionActive(false);",
+        "globalThis.setReviewerTransitionActive?.(false);",
     ]
 
 
@@ -315,7 +315,7 @@ def test_show_answer_ignored_until_current_question_rendered(monkeypatch) -> Non
 
     assert reviewer.state == "answer"
     assert calls == [
-        "_setQAInteractionEnabled(false);",
+        "globalThis._setQAInteractionEnabled?.(false);",
         '_showAnswer("back", null, "answer:2:123");',
     ]
 
@@ -2414,8 +2414,8 @@ def test_study_queue_refresh_advances_past_deleted_rwkv_undo_restored_card(
     dirty = reviewer.op_executed(changes, handler=None, focused=False)
 
     assert calls == [
-        "main:_setQAInteractionEnabled(false);",
-        "bottom:setReviewerTransitionActive(true);",
+        "main:globalThis._setQAInteractionEnabled?.(false);",
+        "bottom:globalThis.setReviewerTransitionActive?.(true);",
         'main:_clearQAForTransition("transition:1:456");',
         "prepare",
         "next",
@@ -2502,10 +2502,10 @@ def test_deleted_card_is_cleared_and_blocked_while_rwkv_queue_refreshes(
     assert reviewer.state == "transition"
     assert reviewer._review_actions_are_blocked()
     assert main_scripts == [
-        "_setQAInteractionEnabled(false);",
+        "globalThis._setQAInteractionEnabled?.(false);",
         '_clearQAForTransition("transition:5:456");',
     ]
-    assert bottom_scripts == ["setReviewerTransitionActive(true);"]
+    assert bottom_scripts == ["globalThis.setReviewerTransitionActive?.(true);"]
     assert deferred_cache_restores == ["reviewer card deleted"]
     assert calls == []
     assert len(jobs) == 1

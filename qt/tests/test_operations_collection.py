@@ -334,7 +334,7 @@ def test_undo_without_rwkv_frame_redraws_before_unblocking(monkeypatch) -> None:
     monkeypatch.setattr(collection_ops, "tooltip", lambda *args, **kwargs: None)
 
     collection_ops.undo(parent=parent)
-    assert "_setQAInteractionEnabled(false);" in scripts
+    assert "globalThis._setQAInteractionEnabled?.(false);" in scripts
     # A completion from the previous card must not release the undo's block.
     reviewer.set_review_actions_blocked(False)
     reviewer.onEnterKey()
