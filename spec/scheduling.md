@@ -2614,3 +2614,23 @@ whole-collection map costs about 2 s.
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_the_page_joins_the_running_job_and_the_result_is_kept`
 (`qt/tests/test_total_knowledge.py`).
+
+## sched.redo-moves-on-from-the-redone-card
+
+Given an undo that put an answered card back on the Study screen, when a redo
+answers that card again, the Study screen leaves the card and shows the next
+one, as it does after any answer. The card is not shown a second time and is
+not answered a second time. After two undos in a row, the first redo shows the
+card the first undo put back and the second redo shows the next card of the
+queue.
+
+**Why:** the reviewer kept the card on screen after the redo, because it still
+counted the card as restored by the undo. A second answer of that card then
+wrote a second review to the review log and scheduled the card twice.
+
+**Pinned by:**
+`test_redo_of_the_undo_restored_card_shows_the_next_card`
+(`qt/tests/test_reviewer.py`);
+`test_redo_of_the_undo_restored_card_on_screen_lets_it_leave`,
+`test_redo_of_another_card_keeps_the_undo_restored_card_on_screen`
+(`qt/tests/test_rwkv_scheduler.py`).
