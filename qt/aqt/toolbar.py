@@ -313,16 +313,18 @@ class BottomWebView(ToolbarWebView):
             # delay to account for reflow
             def cb(height: int | None):
                 # "When QWebEnginePage is deleted, the callback is triggered with an invalid value"
-                if height is not None:
+                if height is not None and self.mw.state == "review":
                     self.animate_height(height)
 
-            self.mw.progress.single_shot(
-                50,
-                lambda: self.evalWithCallback(
-                    "document.documentElement.offsetHeight", cb
-                ),
-                False,
-            )
+            def measure() -> None:
+                # Leaving the review screen shows the bar while the state is
+                # still "review": by now the next screen draws its own bar,
+                # and the review bar's height would leave a strip under the
+                # old page (spec ui.review-exit-bottom-bar-height)
+                if self.mw.state == "review":
+                    self.evalWithCallback("document.documentElement.offsetHeight", cb)
+
+            self.mw.progress.single_shot(50, measure, False)
         else:
             self.adjustHeightToFit()
 

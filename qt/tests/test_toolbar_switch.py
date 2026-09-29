@@ -50,6 +50,62 @@ def later(monkeypatch: pytest.MonkeyPatch) -> list:
     return calls
 
 
+def _bottom_bar(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list, list]:
+    """A bottom bar on the Study screen, with its timer and its page under
+    the test's control."""
+    monkeypatch.setattr(toolbar_module.ToolbarWebView, "show", lambda self: None)
+    timers: list = []
+    heights: list = []
+    bar: Any = toolbar_module.BottomWebView.__new__(toolbar_module.BottomWebView)
+    bar.mw = SimpleNamespace(
+        state="review",
+        progress=SimpleNamespace(
+            single_shot=lambda ms, fn, requires_collection=True: timers.append(fn)
+        ),
+    )
+    bar.animate_height = heights.append
+    bar.evalWithCallback = lambda js, cb: cb(67)
+    return bar, timers, heights
+
+
+def test_leaving_the_study_screen_does_not_give_the_bar_the_study_height(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaving the Study screen shows the bottom bar while the state is still
+    "review". The bar's delayed measure then gave it the Study page's height
+    (67 px) after the deck list had begun to draw: for ~130 ms a 4 px strip
+    of background showed under the old Study page."""
+    bar, timers, heights = _bottom_bar(monkeypatch)
+
+    toolbar_module.BottomWebView.show(bar)
+    bar.mw.state = "deckBrowser"
+    timers.pop()()
+
+    assert heights == []
+
+
+def test_the_study_screen_still_measures_its_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bar, timers, heights = _bottom_bar(monkeypatch)
+
+    toolbar_module.BottomWebView.show(bar)
+    timers.pop()()
+
+    assert heights == [67]
+
+    # a measure that comes back after the Study screen was left is dropped
+    def late(js: str, cb: Any) -> None:
+        bar.mw.state = "overview"
+        cb(67)
+
+    bar.evalWithCallback = late
+    toolbar_module.BottomWebView.show(bar)
+    timers.pop()()
+
+    assert heights == [67]
+
+
 def test_an_expected_page_holds_the_others_until_it_is_drawn_and_ready() -> None:
     reveal = _Reveal()
     main, bottom = _web(), _web()
