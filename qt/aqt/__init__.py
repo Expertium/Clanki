@@ -375,6 +375,19 @@ class AnkiApp(QApplication):
         )
     )
 
+    # the events that change the global cursor (eventFilter)
+    _CURSOR_ENTER_EVENTS = (QEvent.Type.Enter, QEvent.Type.HoverEnter)
+    _CURSOR_LEAVE_EVENTS = (QEvent.Type.HoverLeave, QEvent.Type.Leave)
+    _POINTER_CLASSES = (
+        QPushButton,
+        QCheckBox,
+        QRadioButton,
+        QMenu,
+        QSlider,
+        QToolButton,
+        QTabBar,
+    )
+
     def __init__(self, argv: list[str]) -> None:
         QApplication.__init__(self, argv)
         # when the user last pressed a key, clicked or scrolled (monotonic)
@@ -471,11 +484,13 @@ class AnkiApp(QApplication):
     def eventFilter(self, src: Any, evt: QEvent | None) -> bool:
         assert evt is not None
 
-        if evt.type() in self._INPUT_EVENTS:
+        # every event of the application passes here: ask its type once
+        kind = evt.type()
+        if kind in self._INPUT_EVENTS:
             self.last_input_at = time.monotonic()
 
         # Handle Close shortcut here because modal dialogs disable main-window shortcuts
-        if (is_mac or is_lin) and evt.type() == QEvent.Type.KeyPress:
+        if (is_mac or is_lin) and kind == QEvent.Type.KeyPress:
             key_event = cast(QKeyEvent, evt)
             if not key_event.isAutoRepeat():
                 mods = cast(int, key_event.modifiers().value)
@@ -490,17 +505,8 @@ class AnkiApp(QApplication):
                         mw._close_active_window()
                     return True
 
-        pointer_classes = (
-            QPushButton,
-            QCheckBox,
-            QRadioButton,
-            QMenu,
-            QSlider,
-            QToolButton,
-            QTabBar,
-        )
-        if evt.type() in [QEvent.Type.Enter, QEvent.Type.HoverEnter]:
-            if (isinstance(src, pointer_classes) and src.isEnabled()) or (
+        if kind in self._CURSOR_ENTER_EVENTS:
+            if (isinstance(src, self._POINTER_CLASSES) and src.isEnabled()) or (
                 isinstance(src, QComboBox) and not src.isEditable()
             ):
                 self.setOverrideCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -508,9 +514,7 @@ class AnkiApp(QApplication):
                 self.restoreOverrideCursor()
             return False
 
-        elif evt.type() in [QEvent.Type.HoverLeave, QEvent.Type.Leave] or isinstance(
-            evt, QCloseEvent
-        ):
+        elif kind in self._CURSOR_LEAVE_EVENTS or isinstance(evt, QCloseEvent):
             self.restoreOverrideCursor()
             return False
 
