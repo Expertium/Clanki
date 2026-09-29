@@ -1123,9 +1123,10 @@ the whole history behind the "review history after sync" window for 99 s;
 now no window opens, the first answer is ready in 0.6 s, and the rebuild
 swaps in 96 s later in the background. After a close right after the upload,
 the next open built the whole history for 180 s while the first card waited
-about 195 s; now it keeps the stored state and the first card waits 15 s. A
-Sync that brought one review from another device showed the window for 99 s;
-now 29 s. In each case the state after the exact rebuild gave the same
+about 195 s; now it keeps the stored state and the first card waits 1.3 s
+(15 s while the exact checks still came first). A Sync that brought one
+review from another device showed the window for 99 s; now 14 s. In each
+case the state after the exact rebuild gave the same
 RWKV-Curve values, bit for bit, for 300 queued cards as a build from the
 whole history. The RWKV session accepted these rules (2026-09-29): an upload
 changes no row the replay reads; the review-count check catches a synced
