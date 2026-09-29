@@ -44,9 +44,15 @@ class _Filter:
 
     def __call__(self, source: Any, kind: Any) -> bool:
         import aqt
-        from aqt.qt import QCloseEvent, QEvent
+        from aqt.qt import QCloseEvent, QEvent, QKeyEvent, Qt
 
-        event = QCloseEvent() if kind == QEvent.Type.Close else QEvent(kind)
+        if kind == QEvent.Type.Close:
+            event: QEvent = QCloseEvent()
+        elif kind == QEvent.Type.KeyPress:
+            # the filter reads a key press's key on Linux and macOS
+            event = QKeyEvent(kind, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
+        else:
+            event = QEvent(kind)
         return aqt.AnkiApp.eventFilter(self.app, source, event)  # type: ignore[arg-type]
 
 
