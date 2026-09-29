@@ -2,13 +2,16 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """Pins the sync half of spec/ui.md#ui.close-says-what-it-waits-for, and
-spec/sync.md#sync.algorithm-change-notice and
-spec/sync.md#sync.full-sync-stops-background-passes."""
+spec/sync.md#sync.algorithm-change-notice,
+spec/sync.md#sync.full-sync-stops-background-passes and
+spec/sync.md#sync.full-upload-keeps-rwkv-state."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 import anki.lang
 
@@ -297,3 +300,95 @@ def test_a_full_sync_stops_the_background_passes_first(monkeypatch) -> None:
             "post-sync work",
             "flag back",
         ], full_sync.__name__
+
+
+def _patch_full_sync_rwkv(monkeypatch, order: list[str], *, kept: bool) -> None:
+    from aqt import rwkv_scheduler
+
+    monkeypatch.setattr(aqt.sync, "QTimer", _Timer)
+    monkeypatch.setattr(aqt.sync, "qconnect", lambda _signal, _handler: None)
+    monkeypatch.setattr(
+        aqt.sync.gui_hooks, "collection_will_temporarily_close", lambda _col: None
+    )
+    monkeypatch.setattr(rwkv_scheduler, "begin_full_sync", lambda mw: None)
+    monkeypatch.setattr(
+        rwkv_scheduler, "wait_for_background_work_before_full_sync", lambda col: None
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "full_sync_reopened",
+        lambda mw: order.append("passes may run"),
+    )
+
+    def keep(_mw: Any) -> bool:
+        order.append("keep the state")
+        return kept
+
+    monkeypatch.setattr(rwkv_scheduler, "keep_rwkv_state_through_reopen", keep)
+    monkeypatch.setattr(
+        rwkv_scheduler, "drop_unused_rwkv_state_keep", lambda mw: order.append("drop")
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "full_sync_finished", lambda mw: order.append("flag back")
+    )
+    monkeypatch.setattr(
+        aqt.sync, "handle_sync_error", lambda _mw, _err: order.append("error shown")
+    )
+
+
+@pytest.mark.parametrize("kept", [True, False])
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_full_upload_keeps_the_rwkv_state_through_its_reopen(
+    monkeypatch, kept: bool, fails: bool
+) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: after a full
+    upload, also a failed or cancelled one, the reset that follows the
+    reopen keeps the resident RWKV state when the keep is allowed."""
+    order: list[str] = []
+    _patch_full_sync_rwkv(monkeypatch, order, kept=kept)
+    mw = _full_sync_mw(order)
+    mw.reset = lambda: order.append("reset")
+
+    def result() -> None:
+        if fails:
+            raise Exception("upload failed")
+
+    aqt.sync.full_upload(mw, None, lambda _changed: order.append("post-sync work"))
+    task, on_done = mw.tasks[0]
+    task()
+    on_done(SimpleNamespace(result=result))
+
+    assert order[order.index("reopen") :] == [
+        "reopen",
+        "keep the state",
+        "passes may run",
+        "reset",
+        *(["drop"] if kept else []),
+        *(["error shown"] if fails else []),
+        "post-sync work",
+        "flag back",
+    ]
+
+
+def test_a_full_download_does_not_keep_the_rwkv_state(monkeypatch) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: a download
+    brings another file, so its reset throws the state away and the
+    post-sync refresh builds it again."""
+    order: list[str] = []
+    _patch_full_sync_rwkv(monkeypatch, order, kept=True)
+    mw = _full_sync_mw(order)
+    mw.reset = lambda: order.append("reset")
+
+    aqt.sync.full_download(mw, None, lambda _changed: order.append("post-sync work"))
+    task, on_done = mw.tasks[0]
+    task()
+    on_done(SimpleNamespace(result=lambda: None))
+
+    assert "keep the state" not in order
+    assert order[order.index("reopen") :] == [
+        "reopen",
+        "passes may run",
+        "reset",
+        "post-sync work",
+        "flag back",
+    ]

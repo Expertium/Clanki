@@ -280,8 +280,9 @@ start while the full sync runs.
 
 When the sync has reopened the collection, nothing the passes knew of the
 old collection carries over: the exact rebuild's wanted work and its undo
-entries go, as at a profile open, and the post-sync refresh builds the RWKV
-state of the collection as it is now. The FSRS-7 pass is asked for again;
+entries go, as at a profile open, and after a download the post-sync refresh
+builds the RWKV state of the collection as it is now (an upload keeps it:
+`sync.full-upload-keeps-rwkv-state`). The FSRS-7 pass is asked for again;
 it waits for that refresh.
 
 Given any sync that changed the collection while the start-up restore or
@@ -316,3 +317,54 @@ checks a pass made against a closed profile could not see it.
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_a_full_sync_stops_the_pass_and_asks_for_it_again`
 (`qt/tests/test_fsrs_predictions.py`).
+
+## sync.full-upload-keeps-rwkv-state
+
+Given a full upload (after the conflict question, or to an empty server)
+while the resident RWKV state is exact and its replay semantics key still
+matches the collection's, the state stays through the reopen and through
+the reset after the sync, and no post-sync refresh runs: no "review history
+after sync" window opens, and the first answer after the upload waits for
+nothing. The same holds when the upload fails or is cancelled. The upload
+changes only sync bookkeeping in the local file (graves, pending sync
+numbers, the collection's sync number, schema time, last sync time and
+modification time), none of which the replay reads. A state that is not
+exact, or whose semantics key no longer matches, goes, and the post-sync
+refresh builds it as before. A full download always goes through the
+refresh. When the refresh does not run, the maintenance it starts when it
+ends (the re-read of a history with skipped synced reviews) starts when the
+full sync ends.
+
+Given File > Export > Anki Collection Package (.colpkg), which closes the
+collection and opens it again, the export does the same as a full upload:
+the RWKV and FSRS-7 background passes stop before the close
+(`sync.full-sync-stops-background-passes`), and after the reopen, also after
+a failed export, the resident state stays under the same rule. When it
+cannot stay, it is restored or built in the background, as at start-up,
+with no window. A build that the export stopped says nothing.
+
+Given any such reopen (a full sync or the export), the undo steps of the
+new open count from 1 again, so the RWKV undo entries of the old open go:
+an undo in the new open never rolls an answer of the old open out of the
+resident state.
+
+**Why:** measured on 2026-09-29 with a local sync server and a collection
+of 868,308 reviews: after a full upload the post-sync refresh threw the
+state away and restored it behind a window for 1.8 s, although the
+collection held the same reviews. A .colpkg export during the start-up build
+showed "Your review history could not be read." and left no state; after an
+export with the state kept, undoing a flag change whose undo count was an
+earlier answer's rolled that answer out of the RWKV state.
+
+**Pinned by:** `test_a_full_upload_keeps_the_rwkv_state_through_its_reopen`,
+`test_a_full_download_does_not_keep_the_rwkv_state`
+(`qt/tests/test_sync.py`);
+`test_a_full_upload_that_kept_the_rwkv_state_skips_the_post_sync_refresh`
+(`qt/tests/test_main.py`);
+`test_a_full_upload_keeps_the_resident_state_through_its_reopen`,
+`test_a_reopen_forgets_the_undo_frames_of_the_last_open`,
+`test_the_end_of_a_full_sync_that_kept_the_state_starts_the_maintenance`,
+`test_a_colpkg_export_keeps_the_state_or_restores_it_without_a_window`
+(`qt/tests/test_rwkv_scheduler.py`);
+`test_a_colpkg_export_stops_the_passes_and_keeps_the_rwkv_state`
+(`qt/tests/test_colpkg_export.py`).
