@@ -397,8 +397,14 @@ def full_upload(
     def on_future_done(fut: Future) -> None:
         timer.stop()
         mw.reopen(after_full_sync=True)
+        # the upload changed nothing the RWKV replay reads, whether it
+        # succeeded or not: the resident state stays, and no post-sync
+        # refresh runs (spec sync.full-upload-keeps-rwkv-state)
+        kept = rwkv_scheduler.keep_rwkv_state_through_reopen(mw)
         rwkv_scheduler.full_sync_reopened(mw)
         mw.reset()
+        if kept:
+            rwkv_scheduler.drop_unused_rwkv_state_keep(mw)
         try:
             try:
                 fut.result()

@@ -440,6 +440,77 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
     ]
 
 
+@pytest.mark.parametrize(
+    "upload_kept, still_kept",
+    [(True, True), (True, False), (False, False)],
+)
+def test_a_full_upload_that_kept_the_rwkv_state_skips_the_post_sync_refresh(
+    monkeypatch, upload_kept: bool, still_kept: bool
+) -> None:
+    """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: after a full
+    upload that kept the resident RWKV state through its reopen, the reset
+    after the sync keeps it too, checked again, and no post-sync refresh (no
+    window) runs. A full download, or an upload whose state can no longer be
+    kept, refreshes as before."""
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(models=SimpleNamespace(_clear_cache=lambda: None))
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", lambda: None)
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_did_finish", lambda: None)
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        # what a full sync reports
+        on_remote_collection_changes(
+            aqt.sync.RemoteCollectionChanges(
+                collection_changed=True, non_review_collection_changed=True
+            )
+        )
+        on_done()
+
+    def keep(_mw: object) -> bool:
+        calls.append("keep")
+        return still_kept
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "rwkv_state_kept_through_reopen", lambda: upload_kept
+    )
+    monkeypatch.setattr(aqt.rwkv_scheduler, "keep_rwkv_state_through_reopen", keep)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "drop_unused_rwkv_state_keep",
+        lambda _mw: calls.append("drop"),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "forget_rwkv_state_cache_history_change",
+        lambda _mw, *, reason: None,
+    )
+
+    def refresh(_mw: object, on_done: Callable[[], None], **_kwargs: object) -> None:
+        calls.append("rwkv refresh")
+        on_done()
+
+    monkeypatch.setattr(aqt.rwkv_scheduler, "refresh_rwkv_state_after_sync", refresh)
+
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+
+    if upload_kept and still_kept:
+        assert calls == ["keep", "reset", "drop", "done"]
+    elif upload_kept:
+        assert calls == ["keep", "reset", "rwkv refresh", "done"]
+    else:
+        assert calls == ["reset", "rwkv refresh", "done"]
+
+
 def test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off(
     monkeypatch,
 ) -> None:

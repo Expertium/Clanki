@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import aqt.forms
 import aqt.main
 from anki.collection import (
+    Collection,
     DeckIdLimit,
     ExportAnkiPackageOptions,
     ExportLimit,
@@ -239,26 +240,39 @@ class ColpkgExporter(Exporter):
         return tr.exporting_anki_collection_package()
 
     def export(self, mw: aqt.main.AnkiQt, options: ExportOptions) -> None:
+        from aqt import rwkv_scheduler
+
         options = gui_hooks.exporter_will_export(options, self)
         parent = _export_parent(mw, options)
 
-        def on_success(_: None) -> None:
+        def reopen() -> None:
             mw.reopen()
+            rwkv_scheduler.collection_package_exported(mw)
+
+        def on_success(_: None) -> None:
+            reopen()
             gui_hooks.exporter_did_export(options, self)
             _show_exported_tooltip(mw, options, tr.exporting_collection_exported())
 
         def on_failure(exception: Exception) -> None:
-            mw.reopen()
+            reopen()
             show_exception(parent=parent, exception=exception)
 
-        gui_hooks.collection_will_temporarily_close(mw.col)
-        QueryOp(
-            parent=parent,
-            op=lambda col: col.export_collection_package(
+        def export(col: Collection) -> None:
+            # the background passes stop before the collection closes, as
+            # for a full upload (spec sync.full-upload-keeps-rwkv-state)
+            rwkv_scheduler.wait_for_background_work_before_full_sync(col)
+            col.export_collection_package(
                 options.out_path,
                 include_media=options.include_media,
                 legacy=options.legacy_support,
-            ),
+            )
+
+        gui_hooks.collection_will_temporarily_close(mw.col)
+        rwkv_scheduler.begin_full_sync(mw)
+        QueryOp(
+            parent=parent,
+            op=export,
             success=on_success,
         ).with_backend_progress(export_progress_update).failure(
             on_failure

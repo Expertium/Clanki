@@ -1342,13 +1342,22 @@ title="{}" {}>{}</button>""".format(
             # threw it away before, and the first answer after every such
             # sync waited 2-3 s for the history to be read again.
             keep_rwkv_state = remote_collection_changes.nothing_changed()
+            # a full upload changed nothing the replay reads either, and
+            # kept the state through its reopen: it stays through this reset
+            # too, checked again (spec sync.full-upload-keeps-rwkv-state)
+            kept_through_upload = (
+                not keep_rwkv_state
+                and rwkv_scheduler.rwkv_state_kept_through_reopen()
+                and rwkv_scheduler.keep_rwkv_state_through_reopen(self)
+            )
             if keep_rwkv_state:
                 rwkv_scheduler.keep_rwkv_state_through_next_reset(self)
             self.col.models._clear_cache()
             gui_hooks.sync_did_finish()
             self.reset()
-            if keep_rwkv_state:
+            if keep_rwkv_state or kept_through_upload:
                 rwkv_scheduler.drop_unused_rwkv_state_keep(self)
+            if keep_rwkv_state:
                 # the stored state cache, current when the sync began, is
                 # current now: the next start-up skips the history check
                 rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
@@ -1367,7 +1376,11 @@ title="{}" {}>{}</button>""".format(
                 rwkv_scheduler.forget_rwkv_state_cache_history_change(
                     self, reason="sync changed the collection"
                 )
-            if refresh_rwkv_state and remote_collection_changes.collection_changed:
+            if (
+                refresh_rwkv_state
+                and remote_collection_changes.collection_changed
+                and not kept_through_upload
+            ):
                 ignored_review_candidates = (
                     ()
                     if remote_collection_changes.non_review_collection_changed
