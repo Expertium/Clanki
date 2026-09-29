@@ -1065,7 +1065,8 @@ A close before the swap stops the rebuild (`ui.close-stops-rwkv-work`), so
 the stored state cache still holds the state from before the change. The
 change marks the stored cache for this case, and the next save of an exact
 state leaves the mark out. When the next profile open (or a review-time
-restore) finds that the stored state does not match the history, and:
+restore) finds that the collection changed since the stored state was
+saved, and:
 
 - the stored cache has the mark,
 - the replay key and the ignored reviews are the same as the stored ones,
@@ -1077,8 +1078,17 @@ then it restores the stored state, replays the reviews after it with the
 routing they have now, and keeps it as above: the answer buttons are ready
 at once, the state is never saved and never marks the stored cache as
 current, and the exact rebuild starts once the restore is over. The open
-logs one info line when it does this. In every other case the start-up build
-runs as before (`sched.rwkv-state-cache-startup-build`).
+logs one info line when it does this. With the mark, these checks come
+before the checks that could show the stored state exact (the history
+fingerprint and the recovery from an older checkpoint), which took 15-28 s
+on a large collection while the first card waited. They can only give the
+exact state sooner, never another one, since the exact rebuild always
+follows. So a mark whose change reached no replayed review, or a checkpoint
+that could have given the exact state after a long replay, now gives the
+kept state and one rebuild in the background that ends in the exact state.
+When one of the three checks fails, the restore runs every exact check as
+before, and in every other case the start-up build runs as before
+(`sched.rwkv-state-cache-startup-build`).
 
 Only the save of an exact state takes the mark off: the exact rebuild's
 swap, the start-up build, or a restore of a stored state that matches the
@@ -1182,6 +1192,7 @@ are thousands of days long, on the flat tail of the curve.
 `test_the_close_stops_the_exact_rebuild`,
 `test_a_state_saved_before_a_history_change_is_kept_at_the_next_open`,
 `test_a_state_saved_before_a_history_change_is_not_kept_when_reviews_changed`,
+`test_a_marked_stored_state_is_read_before_the_exact_checks`,
 `test_a_history_change_that_keeps_the_state_marks_the_stored_cache`,
 `test_a_state_kept_at_open_is_never_saved_and_a_second_open_keeps_it_again`,
 `test_changes_after_a_kept_state_add_up_and_keep_the_rebuild_due`,

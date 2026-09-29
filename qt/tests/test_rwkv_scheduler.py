@@ -24403,6 +24403,56 @@ def test_a_state_saved_before_a_history_change_is_kept_at_the_next_open(
     assert no_exact_rebuild_thread == [reviewer.mw]
 
 
+@pytest.mark.parametrize("reviews_changed", [False, True])
+def test_a_marked_stored_state_is_read_before_the_exact_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+    reviews_changed: bool,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: with
+    the mark, the restore tries the kept state before the exact checks (the
+    history fingerprint and the checkpoint recovery), which took 15-28 s on
+    a large collection while the first card waited. When the kept state's
+    own checks fail (a review gone from before its last review), the whole
+    sequence of exact checks runs as before."""
+    reviewer, rows, _review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=True
+    )
+    if reviews_changed:
+        del rows[0]
+    exact_checks: list[str] = []
+    fingerprint = rwkv_scheduler._read_rwkv_state_cache_from_rust_fingerprint
+    for_history = rwkv_scheduler._read_rwkv_state_cache_binary_for_history
+
+    def spy_fingerprint(*args: Any, **kwargs: Any) -> Any:
+        exact_checks.append("fingerprint")
+        return fingerprint(*args, **kwargs)
+
+    def spy_for_history(*args: Any, **kwargs: Any) -> Any:
+        exact_checks.append("checkpoints")
+        return for_history(*args, **kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache_from_rust_fingerprint", spy_fingerprint
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "_read_rwkv_state_cache_binary_for_history", spy_for_history
+    )
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+
+    ready = rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer)
+
+    if reviews_changed:
+        assert ready is False
+        assert exact_checks == ["fingerprint", "checkpoints"]
+        assert no_exact_rebuild_thread == []
+    else:
+        assert ready is True
+        assert exact_checks == []
+        assert no_exact_rebuild_thread == [reviewer.mw]
+
+
 def test_a_state_saved_before_a_history_change_is_not_kept_when_reviews_changed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

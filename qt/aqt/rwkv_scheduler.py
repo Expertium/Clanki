@@ -18375,6 +18375,25 @@ def _read_rwkv_state_cache_binary(
         if stored is not None:
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
+    if (
+        keep_after_history_change
+        and not changes_ignored_review_ids
+        and metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+    ):
+        # the mark first: the exact checks below took 15-28 s on a large
+        # collection (a checkpoint recovery replays much of the history)
+        # while the first card waited. The kept state's own checks decide;
+        # when they fail, the whole sequence below runs as before.
+        stored = _read_marked_rwkv_state_cache(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            ignored_review_ids=existing_ignored_review_ids,
+            dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        )
+        if stored is not None:
+            return stored
     if not changes_ignored_review_ids:
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
             reviewer,
@@ -18441,6 +18460,49 @@ def _read_rwkv_state_cache_binary(
             current_history=current_history,
         )
     return stored
+
+
+def _read_marked_rwkv_state_cache(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    ignored_review_ids: tuple[int, ...],
+    dynamic_preset_replay_enabled: bool | None,
+) -> RwkvStoredStateCache | None:
+    """The stored state saved before a history change, read before any exact
+    check (spec sched.rwkv-history-change-keeps-state): the replay key, the
+    ignored reviews and the reviews up to its last review must be the same
+    as the collection's now. It then predicts until the exact rebuild swaps
+    in; the exact checks could only give the exact state sooner, never
+    another one. None when a check fails."""
+
+    try:
+        current_history = _historical_rwkv_review_inputs(
+            reviewer,
+            ignored_review_ids=frozenset(ignored_review_ids),
+            between_steps=_split_whole_history_query,
+        )
+    except Exception:
+        logger.exception("failed to read the RWKV replay history")
+        return None
+    if current_history.ignored_review_ids != ignored_review_ids:
+        return None
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        replay_key=current_history.replay_key,
+    ):
+        return None
+    return _read_rwkv_state_cache_saved_before_history_change(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+        current_history=current_history,
+    )
 
 
 def _read_rwkv_state_cache_binary_for_history(  # noqa: PLR0911
