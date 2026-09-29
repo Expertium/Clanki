@@ -1210,6 +1210,10 @@ def stop_background_work_for_close(
     drops the rows of its unfinished batch; a stopped pass has saved how far
     its rows reach, so the next session goes on from there.
     """
+    return _stop_background_work(col, timeout, why="the close")
+
+
+def _stop_background_work(col: object, timeout: float, *, why: str) -> bool:
     try:
         _closing_collections.add(col)
     except TypeError:
@@ -1224,16 +1228,107 @@ def stop_background_work_for_close(
             left = deadline - time.monotonic()
             if left <= 0:
                 logger.info(
-                    "the close did not wait longer for %s RWKV background pass(es)",
+                    "%s did not wait longer for %s RWKV background pass(es)",
+                    why,
                     _background_passes,
                 )
                 return False
             _background_passes_changed.wait(left)
     logger.debug(
-        "RWKV background passes stopped for the close: waited_ms=%.1f",
+        "RWKV background passes stopped for %s: waited_ms=%.1f",
+        why,
         (time.monotonic() - started) * 1000,
     )
     return True
+
+
+# How many full syncs have begun in this process. A full sync keeps the same
+# Collection object (mw.col) and puts another file under it, so a pass that
+# compares mw.col with the collection it began with cannot see it; it
+# compares this count as well (spec sync.full-sync-stops-background-passes).
+_full_syncs_begun = 0
+# the loading-flag operation a running full sync holds (see
+# `_set_rwkv_state_cache_loading`), None when no full sync runs
+_full_sync_operation: int | None = None
+
+
+def full_syncs_begun() -> int:
+    return _full_syncs_begun
+
+
+def full_sync_running() -> bool:
+    return _full_sync_operation is not None
+
+
+def begin_full_sync(mw: object) -> None:
+    """A full sync is about to replace the collection (spec
+    sync.full-sync-stops-background-passes). On the main thread, before the
+    sync closes the collection.
+
+    The RWKV and FSRS-7 background passes stop, as for the close: the
+    collection is marked, a pass stops at its next check, and a writer drops
+    its rows. The full sync also takes the loading flag, so that a start-up
+    build it stops does not report a failure and the FSRS-7 pass does not
+    start while the collection is being replaced."""
+    global _full_syncs_begun, _full_sync_operation
+
+    _full_syncs_begun += 1
+    _full_sync_operation = _set_rwkv_state_cache_loading(mw, True)
+    col = getattr(mw, "col", None)
+    if col is not None:
+        try:
+            _closing_collections.add(col)
+        except TypeError:
+            pass
+    logger.debug("RWKV background passes stop for a full sync")
+
+
+def wait_for_background_work_before_full_sync(
+    col: object,
+    timeout: float = CLOSE_STOPS_PASSES_TIMEOUT_SECS,
+) -> bool:
+    """Off the main thread, before the full sync takes the collection: waits
+    at most `timeout` seconds for the passes that `begin_full_sync` stopped.
+    After that no write of theirs reaches the collection either."""
+    return _stop_background_work(col, timeout, why="a full sync")
+
+
+def full_sync_reopened(mw: object) -> None:
+    """The full sync has reopened the collection, with the file it brought
+    or the one it sent. On the main thread, before the post-sync refresh
+    starts.
+
+    Nothing the passes knew of the old collection carries over: the exact
+    rebuild's wants and its undo entries go, as at a profile open, and the
+    next screen that reads the per-review recordings counts them again. The
+    passes start again by the usual ways: the post-sync refresh, a screen
+    that asks for the rows, the next FSRS-7 pass."""
+    col = getattr(mw, "col", None)
+    if col is not None:
+        try:
+            _closing_collections.discard(col)
+        except TypeError:
+            pass
+    _reset_rwkv_exact_rebuild()
+    _forget_that_the_recordings_are_current()
+
+
+def full_sync_finished(mw: object) -> None:
+    """The full sync and what follows it on the main thread (the post-sync
+    refresh starts there) are done: the full sync gives up the loading flag.
+    A refresh that started holds the flag itself, so it stays set."""
+    global _full_sync_operation
+
+    operation, _full_sync_operation = _full_sync_operation, None
+    if operation is not None:
+        _set_rwkv_state_cache_loading(mw, False, operation=operation)
+    # the FSRS-7 pass stopped for the full sync, or waited: ask again
+    try:
+        from aqt import fsrs_predictions
+
+        fsrs_predictions.ensure_ready(mw)
+    except Exception:
+        logger.exception("failed to ask for the FSRS-7 pass after a full sync")
 
 
 def _write_unless_closing(col: object | None, write: Callable[[], object]) -> None:
@@ -5112,6 +5207,11 @@ _rwkv_exact_rebuild_forced = False
 # bumped by every request; a rebuild whose generation moved starts again
 _rwkv_exact_rebuild_generation = 0
 _rwkv_exact_rebuild_thread: threading.Thread | None = None
+# the collection open when that thread was started. A thread of a profile
+# that has closed (after the close stopped waiting for it) or of a
+# collection a full sync replaced never takes a request of the collection
+# open now; a new thread is started instead.
+_rwkv_exact_rebuild_thread_col: object | None = None
 # the undo step current when the last rebuild swapped in: an undo of an
 # earlier answer has no rollback frame in the new runtime
 _rwkv_exact_rebuild_swap_undo_counter: int | None = None
@@ -5543,10 +5643,11 @@ def request_exact_rwkv_rebuild(
     same history: a running rebuild already reads it, and goes on."""
 
     global _rwkv_exact_rebuild_generation, _rwkv_exact_rebuild_forced
-    global _rwkv_exact_rebuild_thread
+    global _rwkv_exact_rebuild_thread, _rwkv_exact_rebuild_thread_col
 
     if mw is None:
         return
+    col = getattr(mw, "col", None)
     with _rwkv_exact_rebuild_lock:
         _rwkv_exact_rebuild_forced = _rwkv_exact_rebuild_forced or forced
         if history_moved:
@@ -5555,8 +5656,18 @@ def request_exact_rwkv_rebuild(
             logger.debug("RWKV exact rebuild no longer needed")
             return
         running = _rwkv_exact_rebuild_thread
-        if running is not None and running.is_alive():
+        if (
+            running is not None
+            and running.is_alive()
+            and _rwkv_exact_rebuild_thread_col is col
+            and not _collection_is_closing(col)
+        ):
             return
+        if running is not None and running.is_alive():
+            # it rebuilds a collection that has closed, or that a full sync
+            # is replacing: it stops at its next check, and never takes
+            # this request with it
+            logger.debug("RWKV exact rebuild of another collection still ends")
         thread = threading.Thread(
             target=_run_exact_rwkv_rebuilds,
             args=(mw,),
@@ -5564,6 +5675,7 @@ def request_exact_rwkv_rebuild(
             daemon=True,
         )
         _rwkv_exact_rebuild_thread = thread
+        _rwkv_exact_rebuild_thread_col = col
     logger.debug("RWKV exact rebuild started")
     thread.start()
 
@@ -5627,10 +5739,11 @@ def _rwkv_exact_rebuild_thread_ends_locked() -> None:
     """The rebuild thread has decided to end: a request from now on starts a
     new one. It is decided under the lock, so a request that comes while the
     thread is still ending is not left to it."""
-    global _rwkv_exact_rebuild_thread
+    global _rwkv_exact_rebuild_thread, _rwkv_exact_rebuild_thread_col
 
     if _rwkv_exact_rebuild_thread is threading.current_thread():
         _rwkv_exact_rebuild_thread = None
+        _rwkv_exact_rebuild_thread_col = None
 
 
 def _rwkv_exact_rebuild_collection_gone(mw: object, col: object) -> bool:
@@ -13174,11 +13287,17 @@ def recompute_rwkv_calibration_data_in_background(mw: object) -> None:
         return
 
     started = time.monotonic()
+    full_syncs = _full_syncs_begun
 
     def collection_open() -> bool:
         """False once the profile has closed under the pass, or its close
-        has begun (spec ui.close-stops-rwkv-work)."""
-        return getattr(mw, "col", None) is col and not _collection_is_closing(col)
+        has begun (spec ui.close-stops-rwkv-work), or a full sync has begun
+        to replace it (spec sync.full-sync-stops-background-passes)."""
+        return (
+            getattr(mw, "col", None) is col
+            and not _collection_is_closing(col)
+            and _full_syncs_begun == full_syncs
+        )
 
     def progress(label: str, value: int | None, maximum: int | None) -> None:
         # the pass stops once the profile has closed under it
@@ -14185,8 +14304,39 @@ def rwkv_state_cache_loading(mw: object) -> bool:
     return _reviewer_backend_warmup_pending(SimpleNamespace(mw=mw))
 
 
-def _set_rwkv_state_cache_loading(mw: object, loading: bool) -> None:
-    setattr(mw, "_rwkv_state_cache_loading", loading)
+# Each restore, build or post-sync refresh of the state, and each full sync,
+# that sets the loading flag gets a number, and only the newest one clears
+# the flag. A start-up build that a post-sync refresh superseded ended while
+# the refresh ran and cleared the flag under it; the FSRS-7 pass then
+# started, and its new parameters threw the refresh's state away, so no
+# RWKV state was left after the sync (spec
+# sync.full-sync-stops-background-passes).
+_rwkv_state_cache_operation = 0
+_rwkv_state_cache_operation_lock = threading.Lock()
+
+
+def _set_rwkv_state_cache_loading(
+    mw: object, loading: bool, *, operation: int | None = None
+) -> int:
+    """Sets the loading flag and returns the new operation's number, or
+    clears it: always without `operation`, and with it only when that
+    operation is still the newest."""
+    global _rwkv_state_cache_operation
+
+    with _rwkv_state_cache_operation_lock:
+        if loading:
+            _rwkv_state_cache_operation += 1
+        elif operation is not None and operation != _rwkv_state_cache_operation:
+            return _rwkv_state_cache_operation
+        setattr(mw, "_rwkv_state_cache_loading", loading)
+        return _rwkv_state_cache_operation
+
+
+def _rwkv_state_cache_operation_superseded(operation: int | None) -> bool:
+    """Whether a newer operation (a restore, a build, a post-sync refresh or
+    a full sync) took the loading flag after `operation`."""
+    with _rwkv_state_cache_operation_lock:
+        return operation is not None and operation != _rwkv_state_cache_operation
 
 
 def _refresh_active_rwkv_count_view(mw: object) -> bool:
@@ -14224,7 +14374,18 @@ def _finish_rwkv_state_cache_operation(
     *,
     ready: bool,
     prewarm_reason: str,
+    operation: int | None = None,
 ) -> None:
+    if _rwkv_state_cache_operation_superseded(operation):
+        # a newer restore, build, post-sync refresh or full sync holds the
+        # flag, and draws the screens when it ends (spec
+        # sync.full-sync-stops-background-passes)
+        logger.debug(
+            "RWKV state cache operation superseded: %s ready=%s",
+            prewarm_reason,
+            ready,
+        )
+        return
     _set_rwkv_state_cache_loading(mw, False)
     if getattr(mw, "col", None) is None:
         # the close took the collection: nothing may read it now (spec
@@ -14781,6 +14942,11 @@ def load_rwkv_state_cache_with_progress(
 
     def finish(loaded: bool) -> None:
         if build_if_unavailable and not loaded:
+            if _rwkv_state_cache_operation_superseded(operation):
+                # a full sync or a post-sync refresh took over: it builds
+                # the state of the collection as it is now
+                logger.debug("RWKV state cache startup load superseded")
+                return
             _set_rwkv_state_cache_loading(mw, False)
             _start_rwkv_state_cache_build(mw)
             return
@@ -14788,9 +14954,10 @@ def load_rwkv_state_cache_with_progress(
             mw,
             ready=loaded,
             prewarm_reason="startup cache load",
+            operation=operation,
         )
 
-    _set_rwkv_state_cache_loading(mw, True)
+    operation = _set_rwkv_state_cache_loading(mw, True)
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
@@ -14958,7 +15125,7 @@ def refresh_rwkv_state_after_sync(
         reviewer,
         reason="post-sync refresh",
     )
-    _set_rwkv_state_cache_loading(mw, True)
+    operation = _set_rwkv_state_cache_loading(mw, True)
 
     start = time.monotonic()
 
@@ -14997,7 +15164,7 @@ def refresh_rwkv_state_after_sync(
             logger.exception("RWKV post-sync state refresh failed")
             ready = False
 
-        _set_rwkv_state_cache_loading(mw, False)
+        _set_rwkv_state_cache_loading(mw, False, operation=operation)
 
         logger.info(
             "RWKV post-sync state refresh finished: ready=%s elapsed_ms=%.1f",
@@ -15098,6 +15265,17 @@ def build_rwkv_state_cache_with_progress(
         parent: QWidget | None,
         elapsed_ms: float,
     ) -> None:
+        if _rwkv_state_cache_operation_superseded(operation):
+            # a full sync or a post-sync refresh took over while this build
+            # ran: it did not fail, and the newer work reports (spec
+            # sync.full-sync-stops-background-passes)
+            _finish_rwkv_state_cache_operation(
+                mw,
+                ready=result.ready,
+                prewarm_reason="state cache build",
+                operation=operation,
+            )
+            return
         if result.ready and result.persistence_error is not None:
             cache_dir = _rwkv_state_cache_dir(SimpleNamespace(mw=mw))
             error_text = (
@@ -15134,9 +15312,10 @@ def build_rwkv_state_cache_with_progress(
             mw,
             ready=result.ready,
             prewarm_reason="state cache build",
+            operation=operation,
         )
 
-    _set_rwkv_state_cache_loading(mw, True)
+    operation = _set_rwkv_state_cache_loading(mw, True)
     taskman = getattr(mw, "taskman", None)
     with_progress = getattr(taskman, "with_progress", None)
     if not callable(with_progress):
@@ -15148,6 +15327,7 @@ def build_rwkv_state_cache_with_progress(
                 mw,
                 ready=False,
                 prewarm_reason="state cache build",
+                operation=operation,
             )
             raise
         finish(
@@ -15182,11 +15362,16 @@ def build_rwkv_state_cache_with_progress(
             try:
                 result = future.result()
             except Exception:
+                superseded = _rwkv_state_cache_operation_superseded(operation)
                 _finish_rwkv_state_cache_operation(
                     mw,
                     ready=False,
                     prewarm_reason="state cache build",
+                    operation=operation,
                 )
+                if superseded:
+                    logger.debug("RWKV state cache build stopped", exc_info=True)
+                    return
                 logger.exception("RWKV state cache build failed")
                 tooltip(_tr().qt_misc_review_history_failed(), parent=parent)
                 return
@@ -15215,6 +15400,7 @@ def build_rwkv_state_cache_with_progress(
                 mw,
                 ready=False,
                 prewarm_reason="state cache build",
+                operation=operation,
             )
             raise
 

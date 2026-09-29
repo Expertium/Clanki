@@ -705,3 +705,54 @@ def test_the_next_profile_gets_its_pass_when_the_old_one_was_waiting(
         time.sleep(0.01)
     assert old_backend.calls == 0
     assert new_backend.refreshed == [1]
+
+
+# Pins spec/sync.md#sync.full-sync-stops-background-passes
+def test_a_full_sync_stops_the_pass_and_asks_for_it_again() -> None:
+    """A full sync keeps mw.col and puts another collection under it, so
+    `mw.col is col` cannot see it. The pass stops before its next preset,
+    says nothing and leaves the day open; once the sync has ended it is
+    asked for again, and runs in the collection the sync brought."""
+    from aqt import rwkv_scheduler
+
+    mw: SimpleNamespace
+
+    class _SyncedBackend(_Backend):
+        def refresh_fsrs_review_predictions(self, deck_config_id: int) -> int:
+            written = super().refresh_fsrs_review_predictions(deck_config_id)
+            if len(self.refreshed) == 1:
+                # the user downloads from AnkiWeb during the first preset
+                rwkv_scheduler.begin_full_sync(mw)
+            return written
+
+    started, release = _quiet()
+    backend = _SyncedBackend(started, release, presets=[11, 22])
+    mw = _mw(backend)
+    try:
+        predictions.ensure_ready(mw)
+        deadline = time.monotonic() + 5
+        while predictions.is_running():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert backend.refreshed == [11]
+        assert not mw.reported_failures
+        assert predictions.LAST_PASS_DAY_KEY not in mw.pm.profile
+
+        # no pass starts while the full sync runs
+        predictions.ensure_ready(mw)
+        time.sleep(0.1)
+        assert backend.refreshed == [11]
+    finally:
+        rwkv_scheduler.full_sync_reopened(mw)
+        rwkv_scheduler.full_sync_finished(mw)
+    deadline = time.monotonic() + 10
+    while predictions.LAST_PASS_DAY_KEY not in mw.pm.profile:
+        assert time.monotonic() < deadline, backend.refreshed
+        time.sleep(0.01)
+    # the pass after the sync did every preset (the fake says both are
+    # still stale, so a request that came during the sync may add one more)
+    assert backend.refreshed[:3] == [11, 11, 22]
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+    while predictions.is_running():
+        time.sleep(0.01)
