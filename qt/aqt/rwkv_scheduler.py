@@ -18791,8 +18791,20 @@ def _read_rwkv_state_cache_saved_before_history_change(
     review_count = _int_value(metadata.get("reviewCount"))
     if not last_review_id or not review_count:
         return None
-    prefix = _rwkv_history_prefix_identity(current_history, last_review_id)
-    if prefix.last_review_id != last_review_id or prefix.review_count != review_count:
+    # Only the number of reviews up to the saved state's last review and the
+    # last of them count here, not their hash: `_rwkv_history_prefix_identity`
+    # hashes every review of that prefix in Python, which took 11.6 s on
+    # 868,309 reviews when a sync had brought one newer review. The review
+    # ids are in review order.
+    if last_review_id == current_history.last_review_id:
+        prefix_count = current_history.review_count
+        prefix_last_review_id = last_review_id
+    else:
+        prefix_count = bisect.bisect_right(current_history.review_ids, last_review_id)
+        prefix_last_review_id = (
+            current_history.review_ids[prefix_count - 1] if prefix_count else 0
+        )
+    if prefix_last_review_id != last_review_id or prefix_count != review_count:
         # the review log itself changed before the saved state's last review
         return None
     stored = _read_unchanged_rwkv_state_cache_binary(
