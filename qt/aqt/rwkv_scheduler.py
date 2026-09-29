@@ -8987,12 +8987,17 @@ def deck_browser_rwkv_count_scope_ids(
         )
 
     scopes: list[tuple[int, bool]] = []
+    deck_configs = _deck_configs_of_decks(reviewer)
 
     def collect(node: DeckTreeNode) -> None:
         deck_id = getattr(node, "deck_id", None)
         if not isinstance(deck_id, int):
             return
-        deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+        deck_config = (
+            deck_configs[deck_id]
+            if deck_id in deck_configs
+            else _deck_config_for_deck_id(reviewer, deck_id)
+        )
         enabled = isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
             deck_config
         )
@@ -11627,6 +11632,54 @@ def _deck_config_for_deck_id(
     except Exception:
         logger.debug("failed to read deck config for RWKV review input")
         return None
+
+
+def _deck_configs_of_decks(reviewer: object) -> dict[int, dict[str, object]]:
+    """The config `_deck_config_for_deck_id` gives each deck, read with two
+    backend calls for all decks instead of two per deck: a normal deck's own
+    preset (a copy, with `dyn` False), a filtered deck's own dict. A deck
+    whose preset is missing, and so falls back to the default one, is left
+    out, and the caller asks for it alone, as is every deck when the two
+    reads fail.
+
+    Each backend call waits for the collection when a background read holds
+    it, one part of the review log at a time: the deck list's data phase, one
+    call per deck, waited 240-740 ms behind such a read."""
+    decks = getattr(_collection(reviewer), "decks", None)
+    all_decks = getattr(decks, "all", None)
+    all_config = getattr(decks, "all_config", None)
+    if not callable(all_decks) or not callable(all_config):
+        return {}
+    try:
+        configs = all_config()
+        deck_dicts = all_decks()
+    except Exception:
+        logger.debug("failed to read decks and presets for RWKV deck configs")
+        return {}
+    configs_by_id = {
+        config["id"]: config
+        for config in configs
+        if isinstance(config, dict)
+        and isinstance(config.get("id"), int)
+        and not isinstance(config.get("id"), bool)
+    }
+    result: dict[int, dict[str, object]] = {}
+    for deck in deck_dicts:
+        if not isinstance(deck, dict):
+            continue
+        deck_id = deck.get("id")
+        if not isinstance(deck_id, int) or isinstance(deck_id, bool):
+            continue
+        if "conf" not in deck:
+            result[deck_id] = deck
+            continue
+        try:
+            config = configs_by_id.get(int(deck["conf"]))
+        except (TypeError, ValueError):
+            continue
+        if config is not None:
+            result[deck_id] = {**config, "dyn": False}
+    return result
 
 
 def _reviewer_backend_warmed_up(reviewer: object) -> bool:
