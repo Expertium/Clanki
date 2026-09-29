@@ -2601,6 +2601,34 @@ from a background read too, without this check.
 `test_refresh_draws_from_the_top_on_another_screen`
 (`qt/tests/test_deckbrowser.py`).
 
+## ui.deck-list-swaps-only-its-own-page
+
+Given a refresh of the deck list that keeps the scroll position, or a
+collapse, or a Simple/Advanced switch, the deck table is swapped in place
+only when the page in the main web view (or the page loading into it) is
+the page the deck list drew last. Otherwise the deck list is drawn in full
+(a refresh at the top of the page, a collapse at the position of the open
+page). Any page that the web view loads or draws after the deck list drew
+counts as another page, a deck's overview drawn into the deck list's page
+included.
+
+**Why:** the main window sets its state before it draws. After a quick
+switch from a deck's overview to the deck list, a refresh that keeps the
+position found the state "deck list" and swapped the table into the
+overview: `replaceDeckTree is not defined`, or (when the overview was drawn
+into the deck list's page) no error at all, and the deck list was never
+drawn. The overview stayed on screen in the deck list state. Offscreen, tiny
+profile (2026-09-29): open a deck, go back to the deck list, refresh at
+once: the overview stayed in 6 of 12 tries before the change, 0 of 12 after.
+
+**Pinned by:** `test_a_refresh_after_a_quick_switch_draws_the_deck_list_over_the_overview`,
+`test_a_refresh_after_the_overview_is_drawn_into_the_deck_list_page_draws_it`,
+`test_a_collapse_while_the_page_is_not_the_deck_list_draws_it`,
+`test_the_deck_table_is_swapped_after_the_deck_list_page_was_drawn`
+(`qt/tests/test_deckbrowser.py`),
+`test_the_content_serial_changes_for_a_staged_page_and_for_a_loaded_one`
+(`qt/tests/test_webview_open_page.py`).
+
 ## ui.late-dom-done-ignored
 
 Given a web view loading a page it built itself (every screen drawn with

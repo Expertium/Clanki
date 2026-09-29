@@ -591,6 +591,7 @@ class AnkiWebView(QWebEngineView):
         # every page _setHtml() loads gets its own number; the page sends it
         # back with its domDone (see _onBridgeCmd)
         self._load_serial = 0
+        self._content_serial = 0
         self._expected_load: str | None = None
         self.requiresCol = True
         self._disable_zoom = False
@@ -756,7 +757,17 @@ class AnkiWebView(QWebEngineView):
         if oldFocus:
             oldFocus.setFocus()
 
+    @property
+    def content_serial(self) -> int:
+        """Changes each time the web view is asked to show other content: a
+        page load of any kind, or a page drawn into the open page
+        (`stdHtml(into_open_page=True)`, which keeps the load number). A
+        screen that drew a page and saw this number stay the same knows the
+        page on screen, or the page that is loading, is still its own."""
+        return self._content_serial
+
     def load_url(self, url: QUrl) -> None:
+        self._content_serial += 1
         self._open_page = None
         self._staged_page = None
         page_reveal().load_started(self)
@@ -1049,6 +1060,7 @@ html {{ {font} }}
             return False
         from aqt import mw
 
+        self._content_serial += 1
         new_scripts = [url for url in js_urls if url not in open_page.scripts]
         self._staged_page = _StagedPage(
             token,
