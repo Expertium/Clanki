@@ -426,16 +426,20 @@ class Reviewer:
         self._set_qa_interaction_enabled(False)
         self._set_bottom_transition_active(True)
 
+    # The web view runs a script queued while a page loads on the page that
+    # comes next, so leaving the Study screen early ran these on the overview
+    # or congrats page, which has no such function (a ReferenceError in the
+    # console): an optional call does nothing there.
     def _set_qa_interaction_enabled(self, enabled: bool) -> None:
         web = getattr(self, "web", None)
         if callable(eval_js := getattr(web, "eval", None)):
-            eval_js(f"_setQAInteractionEnabled({json.dumps(enabled)});")
+            eval_js(f"globalThis._setQAInteractionEnabled?.({json.dumps(enabled)});")
 
     def _set_bottom_transition_active(self, active: bool) -> None:
         bottom = getattr(self, "bottom", None)
         bottom_web = getattr(bottom, "web", None)
         if callable(eval_js := getattr(bottom_web, "eval", None)):
-            eval_js(f"setReviewerTransitionActive({json.dumps(active)});")
+            eval_js(f"globalThis.setReviewerTransitionActive?.({json.dumps(active)});")
 
     def _finish_qa_transition(self) -> None:
         self.web.update()
