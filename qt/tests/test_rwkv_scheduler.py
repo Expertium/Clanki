@@ -1417,18 +1417,22 @@ def test_a_sync_that_brought_nothing_keeps_the_resident_state_through_its_reset(
         "replay key changed",
         "answers, replay key changed",
         "waits for the exact rebuild",
+        "waits for the exact rebuild, replay key changed",
         "no state",
     ],
 )
 def test_a_full_upload_keeps_the_resident_state_through_its_reopen(
-    monkeypatch: pytest.MonkeyPatch, case: str
+    monkeypatch: pytest.MonkeyPatch,
+    no_exact_rebuild_thread: list[object],
+    case: str,
 ) -> None:
     """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: a full upload
     changes nothing the RWKV replay reads, so the reset after its reopen
     keeps a ready resident state whose replay semantics still match, also
-    one whose identity live answers left unknown. A state that waits for the
-    exact rebuild, or whose semantics key changed, goes, and the post-sync
-    refresh builds it as before."""
+    one whose identity live answers left unknown, and one that waits for the
+    exact rebuild after a delete or a move: that rebuild is asked for again
+    after the reopen. A state whose semantics key changed goes, and the
+    post-sync refresh builds it as before."""
     reviewer = _rwkv_reviewer(rpc=_RwkvQueueScoreRpc())
     reviewer.mw.reviewer = reviewer
     reviewer.mw.col.db = SimpleNamespace(scalar=lambda _sql: 123)
@@ -1457,12 +1461,14 @@ def test_a_full_upload_keeps_the_resident_state_through_its_reopen(
         assert rwkv_scheduler._publish_reviewer_backend_state(
             warmup_key, resident_identity, expected_generation=0
         )
-    if "answers" in case or case == "waits for the exact rebuild":
+    if "answers" in case or "exact rebuild" in case:
         rwkv_scheduler._mark_reviewer_backend_identity_unknown(
             reviewer, reason="review answered"
         )
-    if case == "waits for the exact rebuild":
-        monkeypatch.setattr(rwkv_scheduler, "_rwkv_exact_rebuild_forced", True)
+    if "exact rebuild" in case:
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_exact_rebuild_divergent_cards", {7: None}
+        )
     everything = collection_pb2.OpChanges(
         card=True, note=True, deck=True, deck_config=True, study_queues=True
     )
@@ -1473,9 +1479,17 @@ def test_a_full_upload_keeps_the_resident_state_through_its_reopen(
     rwkv_scheduler.study_queues_did_change(reviewer.mw, None, everything)
     rwkv_scheduler.drop_unused_rwkv_state_keep(reviewer.mw)
 
-    assert kept is (case in ("exact", "took answers"))
+    assert kept is (case in ("exact", "took answers", "waits for the exact rebuild"))
     assert rwkv_scheduler.rwkv_state_kept_through_reopen() is kept
     assert (warmup_key in rwkv_scheduler._reviewer_backend_warmup_states) is kept
+    # the kept state waits for its exact rebuild again; nothing else asks
+    assert no_exact_rebuild_thread == (
+        [reviewer.mw] if case == "waits for the exact rebuild" else []
+    )
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending() is (
+        case == "waits for the exact rebuild"
+    )
+    assert rwkv_scheduler._rwkv_exact_rebuild_resumes_after_reopen is False
 
     # the keep served that reset only
     rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = resident_identity
@@ -8463,7 +8477,9 @@ def test_stale_post_sync_failure_does_not_clobber_newer_ready_state(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_warm_up_reviewer_backend",
-        lambda reviewer, *, progress=None, additional_ignored_review_ids=(): False,
+        lambda reviewer, *, progress=None, additional_ignored_review_ids=(), **_kw: (
+            False
+        ),
     )
     taskman = DeferredTaskman()
     reviewer.mw.taskman = taskman
@@ -24524,35 +24540,58 @@ def test_changes_after_a_kept_state_add_up_and_keep_the_rebuild_due(
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
 
 
-def test_a_sync_that_changed_the_collection_takes_the_mark_off(
+@pytest.mark.parametrize("case", ["marked", "not marked", "marked, at close"])
+def test_the_refresh_after_a_sync_keeps_a_state_saved_before_a_history_change(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     no_exact_rebuild_thread: list[object],
+    case: str,
 ) -> None:
-    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a
-    change a sync brought is not one the mark recorded. The refresh after
-    such a sync takes the mark off, so a stored state that does not match
-    the history gets the build from the whole history, as before."""
-    reviewer, _rows, _review_ids = _saved_state_then_rerouted(
-        monkeypatch, tmp_path, marked=True
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a sync
+    that brought changes leaves the mark on the stored cache. The refresh
+    after it keeps the stored state saved before a delete or a move, checked
+    against the history the sync left; it replays the reviews after that
+    state, the synced one and the local one in the order they were made,
+    and asks for the exact rebuild. The mark stays until that rebuild saves.
+    Without the mark, the refresh builds the state from the whole history,
+    as before. So does the refresh of the sync at close, after which the
+    state goes: it saves an exact state for the next open, which takes the
+    mark off."""
+    reviewer, rows, review_ids = _saved_state_then_rerouted(
+        monkeypatch, tmp_path, marked=case != "not marked"
     )
-    monkeypatch.setattr(
-        rwkv_scheduler,
-        "_rwkv_collection_config_state",
-        lambda _reviewer: SimpleNamespace(review_enabled=False),
-    )
+    # a review of card 1 made on another device, before the local answer
+    synced_id = review_ids["later"] - 1000
+    rows.append((synced_id, 1, 11, 100, 4, 1234, 1, 4, 2500))
+    rows.sort()
+    runtime = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(runtime))
+    _attach_progress_taskman(reviewer.mw)
     done: list[str] = []
 
     rwkv_scheduler.refresh_rwkv_state_after_sync(
-        reviewer.mw, lambda: done.append("done")
+        reviewer.mw,
+        lambda: done.append("done"),
+        remote_review_ids=[synced_id],
+        keep_after_history_change=case != "marked, at close",
     )
 
     assert done == ["done"]
     metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
-    assert metadata is not None and "historyChangedSinceSaved" not in metadata
-    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
-    assert rwkv_scheduler._prepare_reviewer_backend_from_cache(reviewer) is False
-    assert no_exact_rebuild_thread == []
+    assert metadata is not None
+    if case == "marked":
+        assert runtime.reviewed == [(1, 4), (2, 3)]
+        assert metadata["historyChangedSinceSaved"] is True
+        assert metadata["lastReviewId"] == review_ids["second"]
+        assert rwkv_scheduler._rwkv_ready_state_cache_history_identity(reviewer) is None
+        assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+        assert no_exact_rebuild_thread == [reviewer.mw]
+    else:
+        assert runtime.reviewed == [(1, 3), (2, 3), (1, 4), (2, 3)]
+        assert "historyChangedSinceSaved" not in metadata
+        assert metadata["lastReviewId"] == review_ids["later"]
+        assert not rwkv_scheduler.rwkv_exact_rebuild_pending()
+        assert no_exact_rebuild_thread == []
 
 
 class _IdleSaveCollection:

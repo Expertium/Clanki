@@ -1085,9 +1085,42 @@ swap, the start-up build, or a restore of a stored state that matches the
 history. So a second close before the swap leaves the marked state, and the
 open after it keeps it again. A second delete or move keeps the mark, and
 the rebuild always replays the whole history as it is then, so the changes
-add up. A sync that brought changes, the sync at profile open included, and a
-full sync take the mark off, because the mark did not record what they
-changed; a sync never sets it.
+add up. A sync never sets the mark. Besides that save, only a full download
+takes it off: the downloaded file is another collection. A full upload (also a failed or
+cancelled one) changes nothing the replay reads, and a normal sync that
+brought changes (the sync at profile open and the sync at close included) is
+covered by the checks above, which read the history as the sync left it; the
+exact rebuild replays that history, so it includes what the sync brought.
+Both leave the mark.
+
+The refresh after a sync that brought changes restores under the same rule
+as the profile open. When the stored cache has the mark and the checks above
+hold, it keeps the stored state, replays the reviews after it (the synced
+and the local ones together, in the order they were made) and asks for the
+exact rebuild; its "review history after sync" window then shows only for
+that restore. A synced review from before the stored state's last review
+fails the review-count check, and the refresh builds the state from the
+whole history, as without the mark. The refresh of the sync at profile
+close does not keep the stored state: the close stops the exact rebuild, so
+a kept state would make the next open restore it again (and the first card
+wait for that restore). It builds the state from the whole history and saves
+it, which takes the mark off, and the next open is quick.
+
+**Why:** measured on 2026-09-29 with a local sync server and a copy of
+Andrew's collection (868,308 reviews). A note with reviews deleted, then a
+sync before the exact rebuild saved. After a full upload, the refresh built
+the whole history behind the "review history after sync" window for 99 s;
+now no window opens, the first answer is ready in 0.6 s, and the rebuild
+swaps in 96 s later in the background. After a close right after the upload,
+the next open built the whole history for 180 s while the first card waited
+about 195 s; now it keeps the stored state and the first card waits 15 s. A
+Sync that brought one review from another device showed the window for 99 s;
+now 29 s. In each case the state after the exact rebuild gave the same
+RWKV-Curve values, bit for bit, for 300 queued cards as a build from the
+whole history. The RWKV session accepted these rules (2026-09-29): an upload
+changes no row the replay reads; the review-count check catches a synced
+delete or an older synced review; a synced move gets the same approximation
+as a local one, which the exact rebuild corrects.
 
 **Why:** Andrew, 2026-09-27 (B-042): "Well, that's not great. I just started
 reviewing the first card of the day". The day before, he deleted two notes
@@ -1152,12 +1185,17 @@ are thousands of days long, on the flat tail of the curve.
 `test_a_history_change_that_keeps_the_state_marks_the_stored_cache`,
 `test_a_state_kept_at_open_is_never_saved_and_a_second_open_keeps_it_again`,
 `test_changes_after_a_kept_state_add_up_and_keep_the_rebuild_due`,
-`test_a_sync_that_changed_the_collection_takes_the_mark_off`
+`test_the_refresh_after_a_sync_keeps_a_state_saved_before_a_history_change`,
+`test_a_full_upload_keeps_the_resident_state_through_its_reopen`
 (`qt/tests/test_rwkv_scheduler.py`);
 `test_answer_buttons_ask_again_when_the_rwkv_state_is_rebuilt`
 (`qt/tests/test_reviewer.py`);
-`test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off`
-(`qt/tests/test_main.py`).
+`test_only_a_full_download_takes_the_rwkv_mark_off`,
+`test_the_rwkv_refresh_keeps_a_marked_stored_state_except_at_close`,
+`test_the_sync_at_close_says_it_is_at_close`
+(`qt/tests/test_main.py`);
+`test_a_full_upload_keeps_the_rwkv_state_through_its_reopen`
+(`qt/tests/test_sync.py`).
 
 ## sched.rwkv-id-codes
 

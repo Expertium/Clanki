@@ -769,12 +769,18 @@ class AnkiQt(QMainWindow):
         self.pm.save()
         showInfo(tr.preferences_fsrs_helper_addon_disabled(), parent=self)
 
-    def reopen(self, after_full_sync: bool = False) -> None:
+    def reopen(
+        self, after_full_sync: bool = False, *, full_upload: bool = False
+    ) -> None:
+        """`full_upload`: the full sync sent this file and brought nothing,
+        also when it failed or was cancelled. Any other full sync may have
+        replaced the file."""
         self.col.reopen(after_full_sync=after_full_sync)
-        if after_full_sync:
+        if after_full_sync and not full_upload:
             from aqt import rwkv_scheduler
 
-            # a full sync replaced the collection (spec
+            # a full download replaced the collection; an upload changed no
+            # row the RWKV replay reads, so the mark stays (spec
             # sched.rwkv-history-change-keeps-state)
             rwkv_scheduler.forget_rwkv_state_cache_history_change(
                 self, reason="full sync"
@@ -790,7 +796,7 @@ class AnkiQt(QMainWindow):
 
         def before_sync() -> None:
             self.setEnabled(False)
-            self.maybe_auto_sync_on_open_close(after_sync)
+            self.maybe_auto_sync_on_open_close(after_sync, at_close=True)
 
         self.closeAllWindows(before_sync)
 
@@ -1324,9 +1330,13 @@ title="{}" {}>{}</button>""".format(
         *,
         refresh_rwkv_state: bool = True,
         ask_for_full_sync: bool = True,
+        at_close: bool = False,
     ) -> None:
         """Caller should ensure auth available. With ask_for_full_sync False,
-        a sync that finds a full sync needed stops there without asking."""
+        a sync that finds a full sync needed stops there without asking.
+        `at_close`: the sync at profile close, after which the RWKV state
+        goes; its refresh builds and saves an exact state rather than keep a
+        stored one that the next open would have to restore again."""
 
         remote_collection_changes = RemoteCollectionChanges()
 
@@ -1369,13 +1379,12 @@ title="{}" {}>{}</button>""".format(
             def finish_sync() -> None:
                 after_sync()
 
-            if remote_collection_changes.collection_changed:
-                # also when the start-up restore follows this sync: the
-                # history-change mark did not record what it brought (spec
-                # sched.rwkv-history-change-keeps-state)
-                rwkv_scheduler.forget_rwkv_state_cache_history_change(
-                    self, reason="sync changed the collection"
-                )
+            # A sync that brought changes leaves the RWKV history-change mark
+            # on the stored cache: the state the mark keeps is checked
+            # against the history as it is now, and the exact rebuild reads
+            # that history, with what the sync brought. A full download took
+            # the mark off when it reopened the collection (spec
+            # sched.rwkv-history-change-keeps-state).
             if (
                 refresh_rwkv_state
                 and remote_collection_changes.collection_changed
@@ -1390,6 +1399,7 @@ title="{}" {}>{}</button>""".format(
                     self,
                     finish_sync,
                     remote_review_ids=ignored_review_candidates,
+                    keep_after_history_change=not at_close,
                 )
             else:
                 finish_sync()
@@ -1414,12 +1424,14 @@ title="{}" {}>{}</button>""".format(
         after_sync: Callable[[bool], None],
         *,
         refresh_rwkv_state: bool = True,
+        at_close: bool = False,
     ) -> None:
         "If disabled, after_sync() is called immediately."
         if self.can_auto_sync():
             self._sync_collection_and_media(
                 lambda: after_sync(True),
                 refresh_rwkv_state=refresh_rwkv_state,
+                at_close=at_close,
             )
         else:
             after_sync(False)
