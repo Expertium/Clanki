@@ -592,5 +592,9 @@ class BottomBar(Toolbar):
             context=web_context,
             # appears with the main page drawn with it (spec ui.screen-one-frame)
             held=True,
+            shares_frame=True,
+            # with the main page: drawn into the open page when that is
+            # (a deck's overview), loaded when that is loaded
+            into_open_page=self.mw.web.drawing_into_open_page(),
         )
         self.web.adjustHeightToFit()

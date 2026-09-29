@@ -392,7 +392,7 @@ class _Page:
         self.buttons = 0
         self.held: list[bool] = []
 
-    def stdHtml(self, html, css=None, js=None, context=None, held=False):
+    def stdHtml(self, html, css=None, js=None, context=None, held=False, **kwargs):
         self.html.append(html)
         self.held.append(held)
 

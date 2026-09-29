@@ -24,6 +24,11 @@ with that token (`clankiHeld:<token>`, sent by the bridge script right after
 `domDone`). A `domDone` that arrives late from the page before it cannot
 count for the new one.
 
+A page drawn into the open page of its web view (AnkiWebView.stdHtml's
+`into_open_page`) is not loaded and never hidden: the open page stays on
+screen while the new one is staged in it, the staged page is ready when it
+says so, and showing it puts it in place of the open one.
+
 A page never stays hidden: Python shows everything still held
 HOLD_TIMEOUT_MS after the last hold began (a page whose DOM is not done by
 then is shown the moment it is), and the page's own CSS shows it after
@@ -46,6 +51,7 @@ HOLD_CLASS = "clanki-held"
 HOLD_ATTRIBUTE = "data-clanki-hold"
 HOLD_TIMEOUT_MS = 500
 CSS_TIMEOUT_MS = 2000
+SHOW_IN_TURN_TIMEOUT_MS = 200
 
 HOLD_CSS = f"""<style>
 html.{HOLD_CLASS} {{
@@ -92,6 +98,8 @@ class _Held:
         # web view takes it when the page is shown (the bottom bar)
         self.height: int | None = None
         self.fit_height = False
+        # drawn into the open page instead of loaded
+        self.into_open_page = False
 
 
 class PageReveal:
@@ -178,13 +186,27 @@ class PageReveal:
     def load_started(self, web: AnkiWebView) -> None:
         """`web` starts to load a page: the held page announced by hold(),
         or else a page that is not held."""
-        entry = self._held.get(id(web))
+        entry = self._held.get(id(web)) or self._released.get(id(web))
         if entry is not None and entry.load_pending:
             entry.load_pending = False
             return
         self._released.pop(id(web), None)
         if self._held.pop(id(web), None) is not None:
             self._show_if_all_ready()
+
+    def draw_into_open_page(self, web: AnkiWebView) -> None:
+        """The held page of `web` is drawn into its open page, not loaded."""
+        if entry := self._held.get(id(web)):
+            entry.load_pending = False
+            entry.into_open_page = True
+
+    def load_instead(self, web: AnkiWebView, token: str) -> None:
+        """The held page `token` of `web` could not be drawn into the open
+        page: it is loaded instead, still held."""
+        for entry in (self._held.get(id(web)), self._released.get(id(web))):
+            if entry is not None and entry.token == token:
+                entry.into_open_page = False
+                entry.load_pending = True
 
     def is_held(self, web: AnkiWebView) -> bool:
         return id(web) in self._held
@@ -235,22 +257,60 @@ class PageReveal:
         self._blockers = 0
         if self._timer is not None:
             self._timer.stop()
-        for fn in at_show:
-            fn()
         for entry in held:
-            if entry.dom_done:
-                self._show(entry)
-            else:
+            if not entry.dom_done:
                 self._released[id(entry.web)] = entry
+                if entry.into_open_page and not _deleted(entry.web):
+                    # not staged in time: load it, shown when its DOM is done
+                    entry.web._load_instead(entry.token)
+        # A page drawn into the open one takes a moment to show (its content
+        # is moved into place and laid out), a loaded page and a small drawn
+        # one (a bottom bar) almost none. So the drawn pages are shown one
+        # after the other, the screen's main page first, and the rest once
+        # they are done, to reach the screen together with them.
+        drawn = [entry for entry in held if entry.dom_done and entry.into_open_page]
+        rest = [entry for entry in held if entry.dom_done and not entry.into_open_page]
 
-    def _show(self, entry: _Held) -> None:
+        def show_rest() -> None:
+            for fn in at_show:
+                fn()
+            for entry in rest:
+                self._show(entry)
+
+        self._show_in_turn(drawn, show_rest)
+
+    def _show_in_turn(self, entries: list[_Held], then: Callable[[], None]) -> None:
+        if not entries:
+            then()
+            return
+        done = False
+
+        def next_one() -> None:
+            nonlocal done
+            if not done:
+                done = True
+                self._show_in_turn(entries[1:], then)
+
+        # a page that never answers holds up the others for this long only
+        QTimer.singleShot(SHOW_IN_TURN_TIMEOUT_MS, next_one)
+        self._show(entries[0], next_one)
+
+    def _show(self, entry: _Held, then: Callable[[], None] | None = None) -> None:
+        """`then` runs once the page is shown (at once for a loaded page)."""
         # straight to the page, not through the web view's queue: the page
         # has just said it is there
         if _deleted(entry.web):
+            if then:
+                then()
             return
         if entry.fit_height and entry.height is not None:
             entry.web._onHeight(entry.height)
+        if entry.into_open_page:
+            entry.web.show_staged_page(entry.token, then)
+            return
         entry.web.page().runJavaScript(show_js(entry.token))
+        if then:
+            then()
 
     def _show_if_all_ready(self) -> None:
         if not self._blockers and all(entry.ready for entry in self._held.values()):

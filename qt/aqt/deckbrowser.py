@@ -33,6 +33,7 @@ from aqt.qt import *
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
+from aqt.webview import only_builtin_handlers as _only_builtin_handlers
 
 
 class DeckBrowserBottomBar:
@@ -364,6 +365,16 @@ class DeckBrowser:
             context=self,
             # with the bottom bar, in one finished frame (spec ui.screen-one-frame)
             held=True,
+            # a deck's overview can be drawn into this page (a deck list drawn
+            # into the open page shows no sooner than a loaded one); not with
+            # an add-on that decorates the page
+            shares_frame=all(
+                _only_builtin_handlers(hook)
+                for hook in (
+                    gui_hooks.deck_browser_will_render_content,
+                    gui_hooks.deck_browser_did_render,
+                )
+            ),
         )
         self._drawButtons()
         if offset is not None:
@@ -919,12 +930,3 @@ class DeckBrowser:
 # as defined here, to tell whether an add-on has replaced them
 _DRAW_BUTTONS = DeckBrowser._drawButtons
 _DRAW_BOTTOM_BAR = BottomBar.draw
-
-
-def _only_builtin_handlers(hook: Any) -> bool:
-    """True when every handler of a gui hook comes from Clanki itself (the
-    aqt and anki packages), not from an add-on."""
-    return all(
-        getattr(handler, "__module__", "").startswith(("aqt.", "anki."))
-        for handler in getattr(hook, "_hooks", [])
-    )

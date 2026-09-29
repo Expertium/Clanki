@@ -1548,3 +1548,76 @@ def test_kept_counts_read_back_as_they_were(tmp_path: Any) -> None:
         "by deck": counts["by deck"],
         None: counts[None],
     }
+
+
+def _cards_due_in_one_scan(
+    reporter: ActivityReporter, start: int, stop: int, current_deck_only: bool
+) -> list[Any]:
+    """The forecast as the calendar first read it: the day of every card
+    computed, then compared with the range."""
+    where = ["queue IN (2,3)"]
+    dids = reporter._deck_ids(current_deck_only)
+    if dids is not None:
+        where.append(f"did IN {ids2str(dids)}")
+    rows = reporter._col.db.all(
+        f"""
+SELECT
+STRFTIME('%s', 'now', ?, 'localtime', 'start of day') + (due - ?) * 86400
+AS day, -COUNT()
+FROM cards
+WHERE {" AND ".join(where)} AND day >= ? AND day < ?
+GROUP BY day ORDER BY day""",
+        f"-{reporter._offset()} hours",
+        reporter._col.sched.today,
+        start,
+        stop,
+    )
+    return [(int(day), int(count)) for day, count in rows]
+
+
+def test_the_forecast_reads_only_the_cards_due_in_its_range(tmp_path: Any) -> None:
+    """The forecast's range is read as a range of `due` (the scheduler's
+    index), with the same days and counts as computing every card's day."""
+    from anki.collection import Collection
+
+    col = Collection(str(tmp_path / "forecast.anki2"))
+    try:
+        other = col.decks.id("Other")
+        assert other is not None
+        for index in range(60):
+            note = col.new_note(col.models.current())
+            note.fields[0] = f"front {index}"
+            col.add_note(note, DeckId(1 if index % 2 else other))
+        today = col.sched.today
+        # reviews and day-learning cards from long overdue to far ahead, a
+        # few on the same day; new and learning cards are not in it
+        for position, card_id in enumerate(col.find_cards("")):
+            queue = (2, 3, 0, 1)[position % 4]
+            due = today + (position * 7) % 97 - 40
+            col.db.execute(
+                "UPDATE cards SET queue = ?, type = 2, due = ? WHERE id = ?",
+                queue,
+                due,
+                card_id,
+            )
+        reporter = ActivityReporter(col, HeatmapSettings(), {}, None)
+        start_of_today = int(
+            col.db.scalar(
+                "SELECT STRFTIME('%s', 'now', ?, 'localtime', 'start of day')",
+                f"-{reporter._offset()} hours",
+            )
+        )
+        col.decks.select(other)
+        for first in (-50, -40, -1, 0, 1, 30):
+            for last in (0, 1, 20, 57, 60):
+                for shift in (-1, 0, 1):
+                    start = start_of_today + first * 86400 + shift
+                    stop = start_of_today + last * 86400 + shift
+                    for current_deck_only in (False, True):
+                        assert reporter._cards_due(
+                            start, stop, current_deck_only
+                        ) == _cards_due_in_one_scan(
+                            reporter, start, stop, current_deck_only
+                        ), (first, last, shift, current_deck_only)
+    finally:
+        col.close(downgrade=False)

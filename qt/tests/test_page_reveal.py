@@ -245,7 +245,9 @@ def test_the_bottom_bar_is_drawn_hidden() -> None:
     from aqt.toolbar import BottomBar
 
     web = MagicMock()
-    bar: Any = SimpleNamespace(web=web, _centerBody=BottomBar._centerBody)
+    bar: Any = SimpleNamespace(
+        web=web, _centerBody=BottomBar._centerBody, mw=MagicMock()
+    )
     BottomBar.draw(
         bar, buf="<button>", link_handler=lambda url: None, web_context=object()
     )

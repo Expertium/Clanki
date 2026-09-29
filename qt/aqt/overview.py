@@ -26,6 +26,7 @@ from aqt.page_reveal import page_reveal
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import askUserDialog, openLink, shortcut, tooltip, tr
+from aqt.webview import only_builtin_handlers
 
 
 class OverviewBottomBar:
@@ -290,6 +291,14 @@ class Overview:
             context=self,
             # with the bottom bar, in one finished frame (spec ui.screen-one-frame)
             held=True,
+            # an add-on that decorates the page gets a freshly loaded one
+            into_open_page=all(
+                only_builtin_handlers(hook)
+                for hook in (
+                    gui_hooks.overview_will_render_content,
+                    gui_hooks.overview_did_refresh,
+                )
+            ),
         )
 
     def _rwkv_pending_notice(self) -> str:

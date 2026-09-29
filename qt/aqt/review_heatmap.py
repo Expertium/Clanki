@@ -908,21 +908,36 @@ FROM checked)"""
     def _cards_due(
         self, start: int, stop: int, current_deck_only: bool
     ) -> list[Sequence[int]]:
-        """Cards due per day from today on, as negative counts."""
+        """Cards due per day from today on, as negative counts.
+
+        A card's day is the start of today plus (due - today) days. The range
+        of days is also given as a range of `due`, a day wider on both sides
+        (the division rounds toward zero), so that SQLite reads only those
+        cards through the scheduler's index instead of computing the day of
+        every card; the exact day range still decides."""
         where = ["queue IN (2,3)"]
         dids = self._deck_ids(current_deck_only)
         if dids is not None:
             where.append(f"did IN {ids2str(dids)}")
+        today = self._col.sched.today
         rows = self._col.db.all(
             f"""
-SELECT
-STRFTIME('%s', 'now', ?, 'localtime', 'start of day') + (due - ?) * 86400
-AS day, -COUNT()
-FROM cards
-WHERE {" AND ".join(where)} AND day >= ? AND day < ?
-GROUP BY day ORDER BY day""",
+WITH base AS (
+  SELECT STRFTIME('%s', 'now', ?, 'localtime', 'start of day') AS start_of_today
+)
+SELECT start_of_today + (due - ?) * 86400 AS day, -COUNT()
+FROM cards, base
+WHERE {" AND ".join(where)}
+AND due >= ? + (? - start_of_today) / 86400 - 1
+AND due <= ? + (? - start_of_today) / 86400 + 1
+AND day >= ? AND day < ?
+GROUP BY due ORDER BY due""",
             f"-{self._offset()} hours",
-            self._col.sched.today,
+            today,
+            today,
+            start,
+            today,
+            stop,
             start,
             stop,
         )
@@ -1026,6 +1041,9 @@ HTML_HEATMAP = f"""
             return rhInit.call(this, settings);
         }}}};
     }}}}
+    // for this calendar only: a later one drawn into the same page
+    // (aqt.webview, into_open_page) says again whether it animates
+    window.rhStill = false;
     window.reviewHeatmap = new ReviewHeatmap({{options}});
     reviewHeatmap.create({{data}});
 </script>
