@@ -12,6 +12,7 @@ use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Either;
 use itertools::Itertools;
+use rayon::prelude::*;
 
 use super::curve::Fsrs7Curve;
 use super::rescheduler::rescheduled_interval_days;
@@ -1270,18 +1271,38 @@ impl Collection {
         p.apply_slice_in_place(&mut fsrs_items);
         p.apply_slice_in_place(&mut starting_states);
 
-        for ((to_update, fsrs_items), starting_states) in to_update
+        // Each card's state depends on its own reviews only, so the batches
+        // are computed in parallel, each batch as before.
+        let memory_states: Vec<Vec<FsrsMemoryState>> = fsrs_items
             .chunk_into_vecs(FSRS_BATCH_SIZE)
-            .zip_eq(fsrs_items.chunk_into_vecs(FSRS_BATCH_SIZE))
             .zip_eq(starting_states.chunk_into_vecs(FSRS_BATCH_SIZE))
-        {
-            let memory_states = fsrs.memory_state_batch(fsrs_items, starting_states)?;
+            .collect_vec()
+            .into_par_iter()
+            .map(
+                |(fsrs_items, starting_states)| -> Result<Vec<FsrsMemoryState>> {
+                    Ok(fsrs
+                        .memory_state_batch(fsrs_items, starting_states)?
+                        .into_iter()
+                        .map(|state| fsrs_memory_state_for_fsrs(fsrs, state))
+                        .collect())
+                },
+            )
+            .collect::<Result<_>>()?;
 
-            for (card_id, memory_state) in to_update.into_iter().zip_eq(memory_states) {
-                let mut card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        for (to_update, memory_states) in to_update
+            .chunk_into_vecs(FSRS_BATCH_SIZE)
+            .zip_eq(memory_states)
+        {
+            // the batch's cards in one read, not one read per card
+            let mut cards: HashMap<CardId, Card> = self
+                .all_cards_for_ids(&to_update, false)?
+                .into_iter()
+                .map(|card| (card.id, card))
+                .collect();
+            for (card_id, mut memory_state) in to_update.into_iter().zip_eq(memory_states) {
+                let mut card = cards.remove(&card_id).or_not_found(card_id)?;
                 let original = card.clone();
                 set_decay_and_desired_retention(&mut card);
-                let mut memory_state = fsrs_memory_state_for_fsrs(fsrs, memory_state);
                 if let Some(stored) = card.memory_state.filter(|_| keep_stability) {
                     memory_state.stability = stored.stability;
                 }
@@ -2622,6 +2643,77 @@ mod tests {
             rows_before,
             "rescheduling must not write review-log rows"
         );
+        Ok(())
+    }
+
+    // A preset save computes the memory states in batches of 1,000 cards;
+    // over several batches, every card still gets exactly the FSRS data that
+    // computing it on its own gives.
+    #[test]
+    fn a_preset_save_gives_every_card_its_own_fsrs_data() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut cids = vec![];
+        for i in 0..2001i64 {
+            let mut note = nt.new_note();
+            note.set_field(0, format!("q{i}"))?;
+            col.add_note(&mut note, DeckId(1))?;
+            let cid = make_review_card(&mut col, note.id, 30.0)?;
+            // one to five reviews, with varied grades
+            for (n, days_ago) in [60, 35, 20, 9, 2]
+                .into_iter()
+                .take(1 + (i % 5) as usize)
+                .enumerate()
+            {
+                let base = revlog(RevlogReviewKind::Review, days_ago);
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        id: RevlogId(base.id.0 + i * 10 + n as i64),
+                        cid,
+                        ease_factor: 2500,
+                        interval: 10,
+                        button_chosen: 1 + ((i + n as i64) % 4) as u8,
+                        ..base
+                    },
+                    false,
+                )?;
+            }
+            cids.push(cid);
+        }
+
+        let output = col.get_deck_configs_for_update(DeckId(1))?;
+        let mut input = UpdateDeckConfigsRequest {
+            target_deck_id: DeckId(1),
+            configs: output
+                .all_config
+                .into_iter()
+                .map(|c| c.config.unwrap().into())
+                .collect(),
+            removed_config_ids: vec![],
+            mode: UpdateDeckConfigsMode::Normal,
+            limits: Limits::default(),
+            new_cards_ignore_review_limit: false,
+            fsrs: true,
+            load_balancer_enabled: false,
+            fsrs_short_term_with_steps_enabled: false,
+            review_fuzz_config: Default::default(),
+        };
+        input.configs[0].inner.desired_retention = 0.8;
+        col.update_deck_configs(input)?;
+
+        for cid in cids {
+            let card = col.storage.get_card(cid)?.unwrap();
+            let mut own = card.clone();
+            col.recompute_fsrs_data_for_card(&mut own)?;
+            // stored the same way (the card row rounds the state)
+            col.storage.update_card(&own)?;
+            let own = col.storage.get_card(cid)?.unwrap();
+            assert!(card.memory_state.is_some());
+            assert_eq!(card.memory_state, own.memory_state);
+            assert_eq!(card.desired_retention, Some(0.8));
+            assert_eq!(card.decay, own.decay);
+        }
         Ok(())
     }
 
