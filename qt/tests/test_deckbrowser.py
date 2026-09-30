@@ -552,6 +552,66 @@ def test_refresh_swaps_the_deck_table_in_place_when_the_page_can_stay(refreshabl
     assert 'class="review-count">9</span>' in swapped
 
 
+def test_refresh_swaps_the_deck_table_when_only_the_animation_flag_differs(
+    refreshable,
+):
+    # The calendar's first draw of a session has no "cells appear at once"
+    # flag and every later draw has one. The page that shows the calendar
+    # already shows the same stats, so the refresh at the end of the RWKV
+    # start-up load (or of a sync) must not load the page a third time.
+    from aqt import gui_hooks
+    from aqt.review_heatmap import HTML_STILL
+
+    browser, page = refreshable.browser, refreshable.page
+    drawn: list[int] = []
+
+    def add_heatmap(deck_browser, content):
+        content.stats += ("" if not drawn else HTML_STILL) + (
+            '<div id="cal-heatmap"></div>'
+        )
+        drawn.append(1)
+
+    gui_hooks.deck_browser_will_render_content.append(add_heatmap)
+    browser.show()
+    refreshable.deliver()
+    assert HTML_STILL not in page.html[-1]
+    page.html.clear()
+    page.scripts.clear()
+    refreshable.state.tree = _tree(new=7, review=9)
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert page.html == [] and page.offset_requests == []
+    assert len(page.swaps()) == 1
+    assert 'class="new-count">7</span>' in json_arg(page.swaps()[0])
+
+
+def test_refresh_draws_the_page_again_when_the_heatmap_itself_changed(refreshable):
+    from aqt import gui_hooks
+    from aqt.review_heatmap import HTML_STILL
+
+    browser, page = refreshable.browser, refreshable.page
+    drawn: list[int] = []
+
+    def add_heatmap(deck_browser, content):
+        content.stats += ("" if not drawn else HTML_STILL) + (
+            f'<div id="cal-heatmap">{len(drawn)}</div>'
+        )
+        drawn.append(1)
+
+    gui_hooks.deck_browser_will_render_content.append(add_heatmap)
+    browser.show()
+    refreshable.deliver()
+    page.html.clear()
+    page.scripts.clear()
+
+    browser.refresh()
+    refreshable.deliver()
+
+    assert page.swaps() == [] and len(page.offset_requests) == 1
+
+
 def test_refresh_keeps_the_scroll_position_of_the_open_page(refreshable):
     browser, page = refreshable.browser, refreshable.page
     # a new heatmap and a new "studied today" make the stats section differ,
