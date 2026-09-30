@@ -6,6 +6,8 @@ pub(crate) mod batch;
 pub(crate) mod curve;
 mod error;
 pub mod memory_state;
+#[cfg(all(test, windows))]
+mod optimize_bench;
 pub mod params;
 pub(crate) mod predictions;
 pub(crate) mod preset;
