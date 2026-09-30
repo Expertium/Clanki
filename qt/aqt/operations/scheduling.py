@@ -39,6 +39,7 @@ def _run_preserving_rwkv_state(
     card_ids: Sequence[int] = (),
     note_ids: Sequence[int] = (),
     require_no_preset_overlay: bool = False,
+    changes_decks: bool = False,
 ) -> _T:
     from aqt import rwkv_scheduler
 
@@ -48,6 +49,7 @@ def _run_preserving_rwkv_state(
         card_ids=card_ids,
         note_ids=note_ids,
         require_no_preset_overlay=require_no_preset_overlay,
+        changes_decks=changes_decks,
     )
 
 
@@ -430,6 +432,8 @@ def _add_or_update_filtered_deck(
         col,
         lambda: col.sched.add_or_update_filtered_deck(deck),
         require_no_preset_overlay=True,
+        # a new filtered deck
+        changes_decks=True,
     )
 
 
@@ -507,5 +511,7 @@ def custom_study(
             col,
             lambda: col.sched.custom_study(request),
             require_no_preset_overlay=True,
+            # it can make the "Custom Study Session" filtered deck
+            changes_decks=True,
         ),
     )
