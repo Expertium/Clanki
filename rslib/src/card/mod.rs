@@ -35,6 +35,22 @@ use crate::types::Usn;
 
 define_newtype!(CardId, i64);
 
+#[cfg(test)]
+thread_local! {
+    /// Makes `set_deck` compute the FSRS data of the moved cards card by
+    /// card, the way it did before it computed them together, so that a test
+    /// can compare the two.
+    pub(crate) static SET_DECK_CARD_BY_CARD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn set_deck_card_by_card_in_tests() -> bool {
+    #[cfg(test)]
+    return SET_DECK_CARD_BY_CARD.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    false
+}
+
 impl CardId {
     pub fn as_secs(self) -> TimestampSecs {
         TimestampSecs(self.0 / 1000)
@@ -398,6 +414,13 @@ impl Collection {
         let usn = self.usn()?;
         self.transact(Op::SetCardDeck, |col| {
             let mut count = 0;
+            // Without add-on preset rules, every moved card takes the target
+            // deck's preset, so its FSRS data is computed for all the cards
+            // at once, with the same result as card by card.
+            let recompute_together = fsrs_enabled
+                && !col.fsrs_preset_overlay_has_rules()?
+                && !set_deck_card_by_card_in_tests();
+            let mut moved = Vec::new();
             for mut card in col.all_cards_for_ids(cards, false)? {
                 if card.deck_id == deck_id {
                     continue;
@@ -412,6 +435,10 @@ impl Collection {
                     .filter(|_| config.inner.rwkv_review_enabled)
                     .map(|state| state.stability);
                 card.set_deck(deck_id);
+                if recompute_together {
+                    moved.push((card, original, stored_s90));
+                    continue;
+                }
                 if fsrs_enabled {
                     col.recompute_fsrs_data_for_card(&mut card)?;
                     if let (Some(s90), Some(state)) = (stored_s90, card.memory_state.as_mut()) {
@@ -419,6 +446,9 @@ impl Collection {
                     }
                 }
                 col.update_card_inner(&mut card, original, usn)?;
+            }
+            if recompute_together {
+                col.recompute_fsrs_data_for_cards_moved_into_deck(deck_id, moved, usn)?;
             }
             // Only recompute when at least one card actually moved. Besides
             // avoiding wasted work on a no-op, this prevents a set_deck call on
@@ -902,6 +932,149 @@ mod test {
             .unwrap()
             .memory_state
             .is_none());
+        Ok(())
+    }
+
+    /// Six cards in the default deck, FSRS on: two reviewed ones, one
+    /// relearning, one whose review log was removed (its state is inferred
+    /// from its interval), one new, and one reviewed card in a filtered deck.
+    fn cards_to_move(col: &mut Collection) -> Result<Vec<CardId>> {
+        use anki_proto::scheduler::card_answer::Rating;
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut ids = vec![];
+        for _ in 0..6 {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, DeckId(1))?;
+            ids.push(col.storage.card_ids_of_notes(&[note.id])?[0]);
+        }
+        let grade = |col: &mut Collection, card: CardId, rating: Rating| {
+            col.grade_now(anki_proto::scheduler::GradeNowRequest {
+                card_ids: vec![card.into()],
+                rating: rating as i32,
+                card_options: vec![],
+            })
+        };
+        grade(col, ids[0], Rating::Easy)?;
+        grade(col, ids[0], Rating::Good)?;
+        grade(col, ids[1], Rating::Good)?;
+        grade(col, ids[1], Rating::Again)?;
+        grade(col, ids[2], Rating::Easy)?;
+        col.storage
+            .db
+            .execute("delete from revlog where cid = ?", [ids[2].0])?;
+        grade(col, ids[4], Rating::Hard)?;
+        let filtered = DeckAdder::new("filtered").filtered(true).add(col);
+        let mut card = col.storage.get_card(ids[4])?.unwrap();
+        card.original_deck_id = card.deck_id;
+        card.deck_id = filtered.id;
+        card.original_due = card.due;
+        col.storage.update_card(&card)?;
+        grade(col, ids[5], Rating::Good)?;
+        Ok(ids)
+    }
+
+    /// Every card of the collection after `set_deck` (modification times
+    /// cleared), which is then undone.
+    fn cards_after_set_deck(
+        col: &mut Collection,
+        cards: &[CardId],
+        deck: DeckId,
+        card_by_card: bool,
+    ) -> Result<Vec<Card>> {
+        super::SET_DECK_CARD_BY_CARD.with(|flag| flag.set(card_by_card));
+        let moved = col.set_deck(cards, deck);
+        super::SET_DECK_CARD_BY_CARD.with(|flag| flag.set(false));
+        moved?;
+        let mut after = col.storage.get_all_cards();
+        for card in &mut after {
+            card.mtime = TimestampSecs(0);
+        }
+        col.undo()?;
+        Ok(after)
+    }
+
+    // Computing the FSRS data of all moved cards together gives every card
+    // exactly what computing it card by card gives: the memory state, the
+    // desired retention and decay, the due date and interval, the deck. Into
+    // an FSRS-7 preset with a deck-level desired retention, and into an
+    // RWKV-Curve preset, which keeps the stored S90
+    // (spec sched.rwkv-curve-s90-kept).
+    #[test]
+    fn set_deck_computes_the_moved_cards_together_as_card_by_card() -> Result<()> {
+        let mut col = Collection::new();
+        let ids = cards_to_move(&mut col)?;
+        let mut params = DEFAULT_PARAMETERS.to_vec();
+        params[23] += 0.1;
+        let fsrs7 = DeckAdder::new("fsrs7")
+            .with_config(|config| {
+                config.inner.rwkv_review_enabled = false;
+                config.inner.fsrs_params_7 = params.clone();
+                config.inner.desired_retention = 0.85;
+            })
+            .add(&mut col);
+        let mut fsrs7 = fsrs7.clone();
+        fsrs7.normal_mut()?.desired_retention = Some(0.8);
+        col.update_deck(&mut fsrs7)?;
+        let curve = DeckAdder::new("curve")
+            .with_config(|config| config.inner.rwkv_review_enabled = true)
+            .add(&mut col);
+        for deck in [fsrs7.id, curve.id] {
+            let card_by_card = cards_after_set_deck(&mut col, &ids, deck, true)?;
+            let together = cards_after_set_deck(&mut col, &ids, deck, false)?;
+            assert_eq!(together, card_by_card);
+            let with_state = together
+                .iter()
+                .filter(|card| card.deck_id == deck && card.memory_state.is_some())
+                .count();
+            assert_eq!(with_state, 5);
+        }
+        Ok(())
+    }
+
+    // The moved cards share the target deck's preset, so it and their review
+    // log are read once, not once per card; with an add-on preset rule, which
+    // can give each card its own preset, they are still read card by card.
+    #[test]
+    fn set_deck_reads_the_preset_and_review_log_once_for_all_moved_cards() -> Result<()> {
+        use crate::scheduler::fsrs::memory_state::PER_CARD_MEMORY_STATE_READS;
+        use crate::scheduler::fsrs::preset::AddonFsrsPreset;
+        use crate::scheduler::fsrs::preset::FsrsPresetOverlay;
+        use crate::scheduler::fsrs::preset::FsrsPresetRule;
+        use crate::scheduler::fsrs::preset::FSRS_PRESET_OVERLAY_CONFIG_KEY;
+
+        let per_card_reads = |col: &mut Collection, ids: &[CardId], deck, card_by_card| {
+            PER_CARD_MEMORY_STATE_READS.with(|count| count.set(0));
+            cards_after_set_deck(col, ids, deck, card_by_card)?;
+            Ok::<_, AnkiError>(PER_CARD_MEMORY_STATE_READS.with(std::cell::Cell::get))
+        };
+        let mut col = Collection::new();
+        let ids = cards_to_move(&mut col)?;
+        let target = DeckAdder::new("target").add(&mut col);
+
+        // the five cards that are not new
+        assert_eq!(per_card_reads(&mut col, &ids, target.id, true)?, 5);
+        assert_eq!(per_card_reads(&mut col, &ids, target.id, false)?, 0);
+
+        col.set_config(
+            FSRS_PRESET_OVERLAY_CONFIG_KEY,
+            &FsrsPresetOverlay {
+                presets: vec![AddonFsrsPreset {
+                    id: "addon:test:tagged".into(),
+                    name: "Tagged".into(),
+                    params: DEFAULT_PARAMETERS.to_vec(),
+                    desired_retention: 0.81,
+                    historical_retention: 0.9,
+                    ..Default::default()
+                }],
+                rules: vec![FsrsPresetRule {
+                    search: "tag:medical".into(),
+                    preset_id: "addon:test:tagged".into(),
+                }],
+                simulator_rules: Vec::new(),
+            },
+        )?;
+        assert_eq!(per_card_reads(&mut col, &ids, target.id, false)?, 5);
         Ok(())
     }
 }
