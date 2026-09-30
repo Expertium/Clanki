@@ -93,6 +93,16 @@ def _get_addons_label() -> str:
     return tr.addons_get_addons().rstrip(" .…")
 
 
+def _without_still_flag(stats: str) -> str:
+    """The stats section without the heatmap's "cells appear at once" flag.
+    The flag only tells a calendar that is created whether to animate (it is
+    left out of the first draw of a session and put into every later one), so
+    a page that shows the calendar already shows the same stats."""
+    from aqt.review_heatmap import HTML_STILL
+
+    return stats.replace(HTML_STILL, "")
+
+
 class DeckBrowser:
     _render_data: RenderData
     # the web view's content_serial right after the deck list drew its page
@@ -827,7 +837,11 @@ class DeckBrowser:
             stats=self._renderStats(),
         )
         gui_hooks.deck_browser_will_render_content(self, content)
-        if content.stats != self._rendered_stats or "<script" in content.tree.lower():
+        if (
+            _without_still_flag(content.stats)
+            != _without_still_flag(self._rendered_stats)
+            or "<script" in content.tree.lower()
+        ):
             return False
         self.web.eval(f"replaceDeckTree({json.dumps(content.tree)});")
         return True
