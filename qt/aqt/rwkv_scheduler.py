@@ -1415,35 +1415,9 @@ def keep_rwkv_state_through_reopen(mw: object) -> bool:
 
 
 def _resident_state_survives_reopen(reviewer: object) -> bool:
-    key = _reviewer_backend_warmup_key(reviewer)
-    if key is None:
-        return False
-    with _reviewer_backend_state_lock:
-        if (
-            key not in _reviewer_backend_warmup_states
-            or key in _reviewer_backend_warmup_pending_generations
-        ):
-            return False
-        identity = _reviewer_backend_warmup_states[key]
-        replay_key = (
-            identity.replay_key
-            if identity is not None
-            else _reviewer_backend_resident_replay_keys.get(key)
-        )
-    if replay_key is None:
-        return False
-    try:
-        current = _rwkv_replay_semantics_key(
-            reviewer,
-            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
-        )
-    except Exception:
-        logger.debug(
-            "failed to read the replay semantics key; the state goes",
-            exc_info=True,
-        )
-        return False
-    return current == replay_key
+    # a state that waits for its exact rebuild stays too:
+    # keep_rwkv_state_through_reopen asks for the rebuild again
+    return _replay_semantics_still_match_resident_state(reviewer)
 
 
 def rwkv_state_kept_through_reopen() -> bool:
@@ -3861,6 +3835,20 @@ def keep_rwkv_state_through_next_reset(mw: object) -> None:
     only while the collection's modification time stays the same, so a
     change made in between still throws the state away."""
     _mark_collection_change_reconciled(SimpleNamespace(mw=mw))
+
+
+def keep_rwkv_state_through_fsrs_optimization(mw: object) -> bool:
+    """`keep_rwkv_state_through_next_reset` for the refresh after an FSRS-7
+    optimization that changed parameters: it writes the presets' FSRS-7
+    parameters and the cards' FSRS-7 memory states (and, with rescheduling,
+    their due dates), none of which the RWKV replay reads. The keep is made
+    only while the replay semantics key, which covers every preset setting
+    the replay does read, still matches the resident state's. Returns
+    whether it was made."""
+    if not _replay_semantics_still_match_resident_state(SimpleNamespace(mw=mw)):
+        return False
+    keep_rwkv_state_through_next_reset(mw)
+    return True
 
 
 def drop_unused_rwkv_state_keep(mw: object) -> None:
@@ -23500,9 +23488,14 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
     rather than rebuilt. Anything the key does not cover cannot make the
     resident state wrong without making every stored cache wrong too, so the
     two follow one rule rather than two.
+
+    A state that took live answers counts too: an answer leaves the state's
+    identity unknown, not the key it was built under
+    (`_resident_state_replay_key`). With the identity alone, any answer in
+    the session made this refuse.
     """
-    identity = _rwkv_ready_state_cache_history_identity(reviewer)
-    if identity is None:
+    replay_key = _resident_state_replay_key(reviewer)
+    if replay_key is None:
         return False
     try:
         current = _rwkv_replay_semantics_key(
@@ -23515,7 +23508,27 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
             exc_info=True,
         )
         return False
-    return current == identity.replay_key
+    return current == replay_key
+
+
+def _resident_state_replay_key(reviewer: object) -> str | None:
+    """The replay semantics key the resident RWKV state was built under, or
+    None when no ready state is resident. Live answers make the state's
+    identity unknown (None in `_reviewer_backend_warmup_states`) but keep its
+    key in `_reviewer_backend_resident_replay_keys`."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return None
+    with _reviewer_backend_state_lock:
+        if (
+            key not in _reviewer_backend_warmup_states
+            or key in _reviewer_backend_warmup_pending_generations
+        ):
+            return None
+        identity = _reviewer_backend_warmup_states[key]
+        if identity is not None:
+            return identity.replay_key
+        return _reviewer_backend_resident_replay_keys.get(key)
 
 
 def fsrs_preset_resolution_did_change(mw: object) -> None:
