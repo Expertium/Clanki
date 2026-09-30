@@ -406,6 +406,7 @@ def views():
         mw.state = "deckBrowser"
         mw.app.activeModalWidget.return_value = None
         mw.col.decks.get_current_id.return_value = 9
+        mw.col.decks.is_filtered.return_value = False
         mw.progress.single_shot.side_effect = lambda ms, fn: timers.append(fn)
         tasks: list = []
 
@@ -486,6 +487,23 @@ def test_the_spare_waits_when_things_changed_during_the_read(views) -> None:
     views.hold_tasks = False
     views.timers.pop()()
     assert views._spare is not None
+
+
+def test_a_filtered_current_deck_warms_the_spare_with_the_default_deck(
+    views,
+) -> None:
+    """The page has no settings for a filtered deck: the backend refused them
+    and "deck not normal" showed in a message box after a filtered deck
+    became the current deck (a Custom Study Session, for example)."""
+    views.mw.col.decks.is_filtered.side_effect = lambda deck_id: deck_id == 9
+    spare = warmed_spare(views)
+    assert spare.loads == [f"deck-options/1?g={spare.generation}"]
+    views.mw.col.decks.is_filtered.assert_called_once_with(9)
+    # opening the window still switches the spare to the chosen deck
+    assert views.take(fake_dialog(7)) is spare
+    assert spare.evals == [
+        f'anki.deckOptionsSwitch("/deck-options/7?g={spare.generation}");'
+    ]
 
 
 def test_without_a_spare_the_window_loads_its_deck(views) -> None:
