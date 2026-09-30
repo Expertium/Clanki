@@ -12,8 +12,10 @@ use fsrs::DEFAULT_PARAMETERS;
 use fsrs::FSRS;
 use itertools::Either;
 use itertools::Itertools;
+use rayon::prelude::*;
 
 use super::curve::Fsrs7Curve;
+use super::preset::FsrsPreset;
 use super::rescheduler::rescheduled_interval_days;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
@@ -62,10 +64,72 @@ pub struct ComputeMemoryPresetProgress {
     pub saving: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The cards whose preset and review log this thread read one card at a
+    /// time to compute their FSRS data (a test counts them).
+    pub(crate) static PER_CARD_MEMORY_STATE_READS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 struct ComputedMemoryState {
     memory_state: Option<FsrsMemoryState>,
     desired_retention: f32,
     decay: f32,
+}
+
+/// The FSRS data of `card` under `fsrs_preset` (whose model is `fsrs`) from
+/// its review log `revlog`, in review order. Without a usable review, the
+/// state is inferred from the card's interval and ease when
+/// `infer_from_current_card_state`, else there is none.
+fn computed_memory_state(
+    card: &Card,
+    fsrs_preset: &FsrsPreset,
+    fsrs: &FSRS,
+    revlog: Vec<RevlogEntry>,
+    infer_from_current_card_state: bool,
+) -> Result<ComputedMemoryState> {
+    let desired_retention = fsrs_preset.desired_retention;
+    let historical_retention = fsrs_preset.historical_retention;
+    let params = &fsrs_preset.params;
+    let decay = get_decay_from_params(params);
+    let revlog_count = revlog.len();
+    let item = fsrs_item_for_memory_state(
+        fsrs,
+        params,
+        revlog,
+        historical_retention,
+        fsrs_preset.ignore_revlogs_before_ms(),
+    )?;
+    let memory_state = if item.is_some() || infer_from_current_card_state {
+        let mut card = card.clone();
+        card.set_memory_state(fsrs, params, item, historical_retention)?;
+        card.memory_state
+    } else {
+        None
+    };
+    tracing::debug!(
+        card_id = card.id.0,
+        preset_id = ?fsrs_preset.id,
+        preset_name = fsrs_preset.name.as_str(),
+        params_len = params.len(),
+        params_fingerprint = format_args!("{:016x}", params_fingerprint(params)),
+        desired_retention = round_to_two_decimals(desired_retention),
+        historical_retention = round_to_two_decimals(historical_retention),
+        decay = round_to_two_decimals(decay),
+        revlog_count,
+        computed_s90 = memory_state.map(|state| round_to_two_decimals(state.stability)),
+        computed_internal_stability =
+            memory_state.map(|state| round_to_two_decimals(state.stability_internal)),
+        computed_difficulty = memory_state.map(|state| round_to_two_decimals(state.difficulty)),
+        "computed FSRS memory state"
+    );
+
+    Ok(ComputedMemoryState {
+        memory_state,
+        desired_retention,
+        decay,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1516,50 +1580,79 @@ impl Collection {
         infer_from_current_card_state: bool,
     ) -> Result<ComputedMemoryState> {
         let fsrs_preset = self.fsrs_preset_for_card(card)?;
-        let desired_retention = fsrs_preset.desired_retention;
-        let historical_retention = fsrs_preset.historical_retention;
-        let params = &fsrs_preset.params;
-        let decay = get_decay_from_params(params);
-        let fsrs = FSRS::new(params)?;
+        let fsrs = FSRS::new(&fsrs_preset.params)?;
+        #[cfg(test)]
+        PER_CARD_MEMORY_STATE_READS.with(|count| count.set(count.get() + 1));
         let mut revlog = self.storage.get_revlog_entries_for_card(card.id)?;
-        let revlog_count = revlog.len();
         revlog.sort_unstable_by_key(|entry| entry.id);
-        let item = fsrs_item_for_memory_state(
+        computed_memory_state(
+            card,
+            &fsrs_preset,
             &fsrs,
-            params,
             revlog,
-            historical_retention,
-            fsrs_preset.ignore_revlogs_before_ms(),
-        )?;
-        let memory_state = if item.is_some() || infer_from_current_card_state {
-            let mut card = card.clone();
-            card.set_memory_state(&fsrs, params, item, historical_retention)?;
-            card.memory_state
-        } else {
-            None
-        };
-        tracing::debug!(
-            card_id = card.id.0,
-            preset_id = ?fsrs_preset.id,
-            preset_name = fsrs_preset.name.as_str(),
-            params_len = params.len(),
-            params_fingerprint = format_args!("{:016x}", params_fingerprint(params)),
-            desired_retention = round_to_two_decimals(desired_retention),
-            historical_retention = round_to_two_decimals(historical_retention),
-            decay = round_to_two_decimals(decay),
-            revlog_count,
-            computed_s90 = memory_state.map(|state| round_to_two_decimals(state.stability)),
-            computed_internal_stability = memory_state
-                .map(|state| round_to_two_decimals(state.stability_internal)),
-            computed_difficulty = memory_state.map(|state| round_to_two_decimals(state.difficulty)),
-            "computed FSRS memory state"
-        );
+            infer_from_current_card_state,
+        )
+    }
 
-        Ok(ComputedMemoryState {
-            memory_state,
-            desired_retention,
-            decay,
-        })
+    /// `recompute_fsrs_data_for_card` for cards that were all just moved
+    /// into `deck_id`, a normal deck, while no add-on preset rule can give a
+    /// card another preset: the cards then share the deck's preset, so it,
+    /// its model and the review log of all the cards are read once instead
+    /// of once per card. Each card gets exactly what the per-card path gives
+    /// it. The cards are updated in the given order, each against its
+    /// original, with its stored S90 put back when one is given (spec
+    /// sched.rwkv-curve-s90-kept).
+    pub(crate) fn recompute_fsrs_data_for_cards_moved_into_deck(
+        &mut self,
+        deck_id: DeckId,
+        cards: Vec<(Card, Card, Option<f32>)>,
+        usn: Usn,
+    ) -> Result<()> {
+        let fsrs_preset = self.fsrs_preset_for_home_deck(deck_id)?;
+        let fsrs = FSRS::new(&fsrs_preset.params)?;
+        let mut reviewed: Vec<CardId> = cards
+            .iter()
+            .filter(|(card, _, _)| card.ctype != CardType::New)
+            .map(|(card, _, _)| card.id)
+            .collect();
+        reviewed.sort_unstable();
+        let mut revlog_by_card: HashMap<CardId, Vec<RevlogEntry>> = HashMap::new();
+        for entry in self
+            .storage
+            .get_revlog_entries_of_cards_in_card_order(&reviewed)?
+        {
+            revlog_by_card.entry(entry.cid).or_default().push(entry);
+        }
+        // each card's state depends on its own reviews only: computed in
+        // parallel, in card order
+        let revlogs: Vec<Option<Vec<RevlogEntry>>> = cards
+            .iter()
+            .map(|(card, _, _)| {
+                (card.ctype != CardType::New)
+                    .then(|| revlog_by_card.remove(&card.id).unwrap_or_default())
+            })
+            .collect();
+        let computed: Vec<Option<ComputedMemoryState>> = cards
+            .par_iter()
+            .zip(revlogs.into_par_iter())
+            .map(|((card, _, _), revlog)| {
+                revlog
+                    .map(|revlog| computed_memory_state(card, &fsrs_preset, &fsrs, revlog, true))
+                    .transpose()
+            })
+            .collect::<Result<_>>()?;
+        for ((mut card, original, stored_s90), computed) in cards.into_iter().zip(computed) {
+            if let Some(computed) = computed {
+                card.memory_state = computed.memory_state;
+                card.desired_retention = Some(computed.desired_retention);
+                card.decay = Some(computed.decay);
+                if let (Some(s90), Some(state)) = (stored_s90, card.memory_state.as_mut()) {
+                    state.stability = s90;
+                }
+            }
+            self.update_card_inner(&mut card, original, usn)?;
+        }
+        Ok(())
     }
 
     // Used for extra-ordinary circumstances where a memory state is needed but is
