@@ -168,20 +168,23 @@ def ensure_ready(mw: Any, *, force: bool = False) -> None:
         return
     with _lock:
         global _running, _waiting, _full_pass_requested
-        only_if_due = not force and _finished_today(mw, col)
-        if _running:
-            if not only_if_due:
-                _full_pass_requested = True
-            return
-        if rwkv_startup_busy(mw):
+        if not _running and rwkv_startup_busy(mw):
             # the RWKV state cache is loading: ask again rather than start
-            # behind it (spec ui.stats-fsrs-predictions-ready)
+            # behind it (spec ui.stats-fsrs-predictions-ready). Nothing is
+            # read from the collection here: the load holds it, and at every
+            # start the main thread waited 85-107 ms for the day number,
+            # which only the retry uses
             if _waiting:
                 return
             _waiting = True
             timer = threading.Timer(RWKV_RETRY_SECS, _retry, args=(mw, force))
             timer.daemon = True
             timer.start()
+            return
+        only_if_due = not force and _finished_today(mw, col)
+        if _running:
+            if not only_if_due:
+                _full_pass_requested = True
             return
         _running = True
     threading.Thread(
