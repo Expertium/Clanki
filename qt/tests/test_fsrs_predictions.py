@@ -175,6 +175,49 @@ def test_the_pass_waits_for_the_rwkv_state_cache() -> None:
     assert backend.calls == 1
 
 
+def test_a_request_while_the_rwkv_state_cache_loads_reads_no_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At start-up the main thread asks for the pass just as the RWKV state
+    cache begins to load. The load holds the collection, so reading the day
+    number there made the main thread wait for the load's first read (85-107
+    ms at every start). The request only sets up the retry; the retry, off
+    the calling thread, reads the day once the load is done."""
+    started, release = _quiet()
+    backend = _Backend(started, release)
+    mw = _mw(backend)
+    reads: list[str] = []
+
+    class Sched:
+        @property
+        def today(self) -> int:
+            reads.append(threading.current_thread().name)
+            return 3
+
+    mw.col.sched = Sched()
+    mw._rwkv_state_cache_loading = True
+    monkeypatch.setattr(predictions, "RWKV_RETRY_SECS", 0.05)
+
+    predictions.ensure_ready(mw)
+    # asked again while the retry waits: still nothing read
+    predictions.ensure_ready(mw)
+    assert reads == []
+    # the retries that find the load still running read nothing either
+    time.sleep(0.15)
+    assert reads == []
+    assert not predictions.is_running()
+
+    mw._rwkv_state_cache_loading = False
+    assert started.wait(5)
+    while predictions.is_running():
+        pass
+    assert backend.calls == 1
+    # the day was read for the pass, never by the thread that asked
+    assert reads
+    assert threading.current_thread().name not in reads
+    assert mw.pm.profile[predictions.LAST_PASS_DAY_KEY] == 3
+
+
 # Pins spec/ui.md#ui.stats-fsrs-predictions-ready
 def test_the_collection_is_free_between_presets() -> None:
     started, release = _quiet()
