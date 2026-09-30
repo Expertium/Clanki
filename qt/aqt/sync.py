@@ -396,7 +396,8 @@ def full_upload(
 
     def on_future_done(fut: Future) -> None:
         timer.stop()
-        mw.reopen(after_full_sync=True)
+        # the stored RWKV state's history-change mark stays too
+        mw.reopen(after_full_sync=True, full_upload=True)
         # the upload changed nothing the RWKV replay reads, whether it
         # succeeded or not: the resident state stays, and no post-sync
         # refresh runs (spec sync.full-upload-keeps-rwkv-state)

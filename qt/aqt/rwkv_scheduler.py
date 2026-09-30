@@ -1318,18 +1318,31 @@ def full_sync_reopened(mw: object) -> None:
     whose count is an old answer's would otherwise roll that card's RWKV
     state back to before the answer. Nothing given to the old open (queue
     scores and curves, Stats and card info scores) is in the new one, so
-    those caches go as well. The .colpkg export reopens the same way."""
+    those caches go as well. The .colpkg export reopens the same way.
+
+    A resident state that `keep_rwkv_state_through_reopen` kept while it
+    waited for its exact rebuild waits for it again: the rebuild is asked
+    for anew, as after a start-up restore that kept a stored state (spec
+    sync.full-upload-keeps-rwkv-state). It reads the history after the
+    reopen, and waits until the full sync gives the loading flag back."""
+    global _rwkv_exact_rebuild_resumes_after_reopen
+
     col = getattr(mw, "col", None)
     if col is not None:
         try:
             _closing_collections.discard(col)
         except TypeError:
             pass
+    resume_exact_rebuild = _rwkv_exact_rebuild_resumes_after_reopen
+    _rwkv_exact_rebuild_resumes_after_reopen = False
     _reset_rwkv_exact_rebuild()
     _forget_that_the_recordings_are_current()
     _forget_the_undo_entries_of_the_last_open()
     _invalidate_rwkv_review_input_caches(mw)
     forget_rwkv_stats_scores()
+    if resume_exact_rebuild:
+        logger.debug("RWKV exact rebuild asked for again after the reopen")
+        request_exact_rwkv_rebuild(mw, forced=True)
 
 
 def _forget_the_undo_entries_of_the_last_open() -> None:
@@ -1352,6 +1365,9 @@ def _forget_the_undo_entries_of_the_last_open() -> None:
 # through its reopen (`keep_rwkv_state_through_reopen`) until
 # `full_sync_finished`
 _rwkv_state_kept_through_reopen = False
+# True from a keep of a resident state that waits for its exact rebuild
+# until `full_sync_reopened` asks for that rebuild again
+_rwkv_exact_rebuild_resumes_after_reopen = False
 
 
 def keep_rwkv_state_through_reopen(mw: object) -> bool:
@@ -1370,9 +1386,13 @@ def keep_rwkv_state_through_reopen(mw: object) -> bool:
     close is the one the collection gives after the reopen, success or
     failure, as a cancel or a failed upload leaves the same file.
 
-    The state stays only when it is ready, waits for no exact rebuild, and
-    the replay semantics key it was built under still matches the
-    collection's (the rule of the other keeps). Live answers leave its
+    The state stays only when it is ready and the replay semantics key it
+    was built under still matches the collection's (the rule of the other
+    keeps). A state that waits for its exact rebuild after a delete or a
+    move of cards with reviews stays too: it was not exact before the close
+    either, and `full_sync_reopened` asks for the rebuild again. A preset
+    change moves the collection's key away from the state's, so that state
+    goes. Live answers leave its
     identity unknown but not its key (`_reviewer_backend_resident_replay_keys`),
     so a state that took answers stays too. The next study-queue change then
     keeps it, as after a sync that brought nothing
@@ -1380,20 +1400,23 @@ def keep_rwkv_state_through_reopen(mw: object) -> bool:
     the maintenance the post-sync refresh would have started. Returns
     whether it stays."""
     global _rwkv_state_kept_through_reopen
+    global _rwkv_exact_rebuild_resumes_after_reopen
 
     kept = _resident_state_survives_reopen(SimpleNamespace(mw=mw))
     _rwkv_state_kept_through_reopen = kept
+    _rwkv_exact_rebuild_resumes_after_reopen = kept and rwkv_exact_rebuild_pending()
     if kept:
         keep_rwkv_state_through_next_reset(mw)
-        logger.debug("RWKV resident state kept through the reopen")
+        logger.debug(
+            "RWKV resident state kept through the reopen: exact rebuild pending=%s",
+            _rwkv_exact_rebuild_resumes_after_reopen,
+        )
     return kept
 
 
 def _resident_state_survives_reopen(reviewer: object) -> bool:
-    # the reopen drops the exact rebuild's wants, so a state that waits for
-    # the rebuild cannot stay
-    if rwkv_exact_rebuild_pending():
-        return False
+    # a state that waits for its exact rebuild stays too:
+    # keep_rwkv_state_through_reopen asks for the rebuild again
     return _replay_semantics_still_match_resident_state(reviewer)
 
 
@@ -5662,11 +5685,11 @@ def _mark_rwkv_state_cache_history_changed(reviewer: object) -> None:
 
 
 def forget_rwkv_state_cache_history_change(mw: object, *, reason: str) -> None:
-    """Take the history-change mark off the stored cache: a sync brought
-    changes of the collection, or a full sync replaced it, and the mark did
-    not record them. The next restore that finds the stored state not exact
-    then builds the state from the whole history (spec
-    sched.rwkv-history-change-keeps-state). A sync never sets the mark."""
+    """Take the history-change mark off the stored cache: a full download
+    replaced the collection, and the stored state is of another file. The
+    next restore that finds the stored state not exact then builds the state
+    from the whole history (spec sched.rwkv-history-change-keeps-state). A
+    full upload and a normal sync leave the mark; a sync never sets it."""
     reviewer = SimpleNamespace(mw=mw)
     with _rwkv_state_cache_write_lock:
         try:
@@ -12346,7 +12369,13 @@ def _warm_up_reviewer_backend(
     progress: RwkvStateCacheProgressCallback | None = None,
     additional_ignored_review_ids: Sequence[int] = (),
     on_cache_persistence_error: Callable[[Exception], None] | None = None,
+    keep_after_history_change: bool = False,
 ) -> bool:
+    """Restore the stored state, or build it from the whole history. With
+    `keep_after_history_change`, a stored state saved before a delete or a
+    move of cards with reviews is kept as the start-up restore keeps it
+    (spec sched.rwkv-history-change-keeps-state), and the exact rebuild is
+    asked for."""
     context = _reviewer_backend_warmup_context(reviewer)
     if context is None:
         return True
@@ -12407,9 +12436,26 @@ def _warm_up_reviewer_backend(
                 record_retrievability_cache=record_retrievability_cache,
                 progress=progress,
                 additional_ignored_review_ids=additional_ignored_review_ids,
+                keep_after_history_change=keep_after_history_change,
             )
             restore_elapsed_ms = (time.monotonic() - restore_start) * 1000
             _require_reviewer_backend_warmup_current(is_current)
+            if isinstance(restored_identity, _RwkvKeptStateIdentity):
+                kept = _publish_kept_reviewer_backend_state(
+                    key,
+                    restored_identity,
+                    expected_generation=warmup_generation,
+                )
+                if kept:
+                    logger.debug(
+                        "restored the RWKV state saved before a history change: "
+                        "elapsed_ms=%.1f; exact rebuild pending",
+                        restore_elapsed_ms,
+                    )
+                    request_exact_rwkv_rebuild(
+                        getattr(reviewer, "mw", None), forced=True
+                    )
+                return kept
             if restored_identity is not None:
                 if _publish_reviewer_backend_state(
                     key,
@@ -15258,11 +15304,17 @@ def refresh_rwkv_state_after_sync(
     on_done: Callable[[], None],
     *,
     remote_review_ids: Sequence[int] = (),
+    keep_after_history_change: bool = True,
 ) -> None:
-    """Reconcile resident RWKV state with the merged review history."""
+    """Reconcile resident RWKV state with the merged review history.
 
-    # the changes the sync brought are not a change the mark recorded
-    forget_rwkv_state_cache_history_change(mw, reason="sync changed the collection")
+    The stored cache's history-change mark stays: a restore that keeps the
+    stored state checks it against the history as it is now, and the exact
+    rebuild reads that history, with what the sync brought (spec
+    sched.rwkv-history-change-keeps-state). `keep_after_history_change`
+    False (the sync at close) builds an exact state instead of keeping a
+    stored one saved before a delete or a move."""
+
     reviewer = SimpleNamespace(mw=mw)
     ignored_review_count_before = len(
         _rwkv_state_cache_ignored_review_ids(_read_rwkv_state_cache_metadata(reviewer))
@@ -15301,10 +15353,13 @@ def refresh_rwkv_state_after_sync(
         _run_on_main(mw, update)
 
     def refresh() -> bool:
+        # a stored state saved before a delete or a move is kept, checked
+        # against the history the sync left, as at start-up; not at close
         return _warm_up_reviewer_backend(
             reviewer,
             progress=progress,
             additional_ignored_review_ids=remote_review_ids,
+            keep_after_history_change=keep_after_history_change,
         )
 
     completion_lock = threading.Lock()
@@ -18308,6 +18363,25 @@ def _read_rwkv_state_cache_binary(
         if stored is not None:
             logger.debug("validated RWKV state cache from unchanged collection marker")
             return stored
+    if (
+        keep_after_history_change
+        and not changes_ignored_review_ids
+        and metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+    ):
+        # the mark first: the exact checks below took 15-28 s on a large
+        # collection (a checkpoint recovery replays much of the history)
+        # while the first card waited. The kept state's own checks decide;
+        # when they fail, the whole sequence below runs as before.
+        stored = _read_marked_rwkv_state_cache(
+            reviewer,
+            backend=backend,
+            cache_dir=cache_dir,
+            metadata=metadata,
+            ignored_review_ids=existing_ignored_review_ids,
+            dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        )
+        if stored is not None:
+            return stored
     if not changes_ignored_review_ids:
         stored = _read_rwkv_state_cache_from_rust_fingerprint(
             reviewer,
@@ -18374,6 +18448,49 @@ def _read_rwkv_state_cache_binary(
             current_history=current_history,
         )
     return stored
+
+
+def _read_marked_rwkv_state_cache(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    ignored_review_ids: tuple[int, ...],
+    dynamic_preset_replay_enabled: bool | None,
+) -> RwkvStoredStateCache | None:
+    """The stored state saved before a history change, read before any exact
+    check (spec sched.rwkv-history-change-keeps-state): the replay key, the
+    ignored reviews and the reviews up to its last review must be the same
+    as the collection's now. It then predicts until the exact rebuild swaps
+    in; the exact checks could only give the exact state sooner, never
+    another one. None when a check fails."""
+
+    try:
+        current_history = _historical_rwkv_review_inputs(
+            reviewer,
+            ignored_review_ids=frozenset(ignored_review_ids),
+            between_steps=_split_whole_history_query,
+        )
+    except Exception:
+        logger.exception("failed to read the RWKV replay history")
+        return None
+    if current_history.ignored_review_ids != ignored_review_ids:
+        return None
+    if not _rwkv_state_cache_metadata_compatible(
+        reviewer,
+        metadata,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+        replay_key=current_history.replay_key,
+    ):
+        return None
+    return _read_rwkv_state_cache_saved_before_history_change(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=metadata,
+        current_history=current_history,
+    )
 
 
 def _read_rwkv_state_cache_binary_for_history(  # noqa: PLR0911
@@ -18662,8 +18779,26 @@ def _read_rwkv_state_cache_saved_before_history_change(
     review_count = _int_value(metadata.get("reviewCount"))
     if not last_review_id or not review_count:
         return None
-    prefix = _rwkv_history_prefix_identity(current_history, last_review_id)
-    if prefix.last_review_id != last_review_id or prefix.review_count != review_count:
+    # The kept path must never be used without scheduling the exact rebuild.
+    # This check cannot see a swap before the saved state's last review (an
+    # old review deleted on one device and an older-dated one synced from
+    # another leave the count and the last id the same); only the forced
+    # exact rebuild that always follows a kept state makes it exact.
+    #
+    # Only the number of reviews up to the saved state's last review and the
+    # last of them count here, not their hash: `_rwkv_history_prefix_identity`
+    # hashes every review of that prefix in Python, which took 11.6 s on
+    # 868,309 reviews when a sync had brought one newer review. The review
+    # ids are in review order.
+    if last_review_id == current_history.last_review_id:
+        prefix_count = current_history.review_count
+        prefix_last_review_id = last_review_id
+    else:
+        prefix_count = bisect.bisect_right(current_history.review_ids, last_review_id)
+        prefix_last_review_id = (
+            current_history.review_ids[prefix_count - 1] if prefix_count else 0
+        )
+    if prefix_last_review_id != last_review_id or prefix_count != review_count:
         # the review log itself changed before the saved state's last review
         return None
     stored = _read_unchanged_rwkv_state_cache_binary(

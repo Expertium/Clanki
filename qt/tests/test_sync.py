@@ -242,7 +242,9 @@ def _full_sync_mw(order: list[str]) -> Any:
     mw.col.close_for_full_sync = lambda: order.append("close")
     mw.col.full_upload_or_download = lambda **_kwargs: order.append("transfer")
     mw.create_backup_now = lambda: order.append("backup")
-    mw.reopen = lambda after_full_sync: order.append("reopen")
+    mw.reopen = lambda after_full_sync, full_upload=False: order.append(
+        "reopen after an upload" if full_upload else "reopen"
+    )
     mw.reset = lambda: None
     mw.media_syncer = SimpleNamespace(start_monitoring=lambda: None)
     mw.tasks = tasks
@@ -295,7 +297,11 @@ def test_a_full_sync_stops_the_background_passes_first(monkeypatch) -> None:
             "wait for passes",
             *(["close"] if full_sync is aqt.sync.full_download else []),
             "transfer",
-            "reopen",
+            (
+                "reopen after an upload"
+                if full_sync is aqt.sync.full_upload
+                else "reopen"
+            ),
             "passes may run",
             "post-sync work",
             "flag back",
@@ -343,7 +349,9 @@ def test_a_full_upload_keeps_the_rwkv_state_through_its_reopen(
 ) -> None:
     """Pins spec/sync.md#sync.full-upload-keeps-rwkv-state: after a full
     upload, also a failed or cancelled one, the reset that follows the
-    reopen keeps the resident RWKV state when the keep is allowed."""
+    reopen keeps the resident RWKV state when the keep is allowed. The
+    reopen says it follows an upload, so the stored cache keeps its RWKV
+    history-change mark (spec sched.rwkv-history-change-keeps-state)."""
     order: list[str] = []
     _patch_full_sync_rwkv(monkeypatch, order, kept=kept)
     mw = _full_sync_mw(order)
@@ -358,8 +366,8 @@ def test_a_full_upload_keeps_the_rwkv_state_through_its_reopen(
     task()
     on_done(SimpleNamespace(result=result))
 
-    assert order[order.index("reopen") :] == [
-        "reopen",
+    assert order[order.index("reopen after an upload") :] == [
+        "reopen after an upload",
         "keep the state",
         "passes may run",
         "reset",

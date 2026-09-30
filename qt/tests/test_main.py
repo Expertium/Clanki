@@ -167,6 +167,7 @@ def test_startup_sync_can_defer_rwkv_refresh(
         after_sync: Callable[[], None],
         *,
         refresh_rwkv_state: bool = True,
+        at_close: bool = False,
     ) -> None:
         calls.append(("sync", refresh_rwkv_state))
         after_sync()
@@ -418,6 +419,7 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
         on_done: Callable[[], None],
         *,
         remote_review_ids: tuple[int, ...],
+        keep_after_history_change: bool,
     ) -> None:
         calls.append(f"rwkv refresh {remote_review_ids}")
         on_done()
@@ -511,13 +513,84 @@ def test_a_full_upload_that_kept_the_rwkv_state_skips_the_post_sync_refresh(
         assert calls == ["reset", "rwkv refresh", "done"]
 
 
-def test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off(
+@pytest.mark.parametrize("at_close", [False, True])
+def test_the_rwkv_refresh_keeps_a_marked_stored_state_except_at_close(
+    monkeypatch, at_close: bool
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    RWKV refresh after a sync that brought changes may keep a stored state
+    saved before a delete or a move. The refresh of the sync at close, after
+    which the state goes, builds and saves an exact state instead."""
+    calls: list[object] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(models=SimpleNamespace(_clear_cache=lambda: None))
+    mw.reset = lambda: None  # type: ignore[method-assign]
+    mw.can_auto_sync = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", lambda: None)
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_did_finish", lambda: None)
+
+    def sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(
+            aqt.sync.RemoteCollectionChanges(
+                collection_changed=True, normal_sync_finished=True
+            )
+        )
+        on_done()
+
+    def refresh(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        remote_review_ids: object = (),
+        keep_after_history_change: bool = True,
+    ) -> None:
+        calls.append(("refresh keeps", keep_after_history_change))
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", sync_collection)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "rwkv_state_kept_through_reopen", lambda: False
+    )
+    monkeypatch.setattr(aqt.rwkv_scheduler, "refresh_rwkv_state_after_sync", refresh)
+
+    mw.maybe_auto_sync_on_open_close(
+        lambda synced: calls.append(("done", synced)), at_close=at_close
+    )
+
+    assert calls == [("refresh keeps", not at_close), ("done", True)]
+
+
+def test_the_sync_at_close_says_it_is_at_close() -> None:
+    """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: the
+    profile close runs its sync as the sync at close."""
+    calls: list[object] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.setEnabled = lambda _enabled: None  # type: ignore[method-assign]
+    mw.closeAllWindows = lambda then: then()  # type: ignore[method-assign]
+    mw.maybe_auto_sync_on_open_close = (  # type: ignore[method-assign]
+        lambda _after_sync, **kwargs: calls.append(kwargs)
+    )
+
+    mw.unloadCollection(lambda: None)
+
+    assert calls == [{"at_close": True}]
+
+
+def test_only_a_full_download_takes_the_rwkv_mark_off(
     monkeypatch,
 ) -> None:
     """Pins spec/scheduling.md#sched.rwkv-history-change-keeps-state: a sync
-    that brought changes takes the RWKV history-change mark off, also the
-    sync at profile open, which leaves the RWKV refresh to the start-up
-    restore; a full sync does too."""
+    that brought changes leaves the RWKV history-change mark on the stored
+    cache, also the sync at profile open, which leaves the RWKV refresh to
+    the start-up restore. The reopen after a full upload leaves it too; the
+    reopen after any other full sync (a download) takes it off."""
     calls: list[str] = []
     mw = AnkiQt.__new__(AnkiQt)
     mw.col = SimpleNamespace(
@@ -554,12 +627,13 @@ def test_a_sync_that_changed_the_collection_takes_the_rwkv_mark_off(
     mw._sync_collection_and_media(
         lambda: calls.append("done"), refresh_rwkv_state=False
     )
+    mw.reopen(after_full_sync=True, full_upload=True)
     mw.reopen(after_full_sync=True)
     mw.reopen()
 
     assert calls == [
-        "mark off: sync changed the collection",
         "done",
+        "reopen True",
         "reopen True",
         "mark off: full sync",
         "reopen False",

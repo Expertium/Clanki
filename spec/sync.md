@@ -321,17 +321,22 @@ checks a pass made against a closed profile could not see it.
 ## sync.full-upload-keeps-rwkv-state
 
 Given a full upload (after the conflict question, or to an empty server)
-while the resident RWKV state is exact and its replay semantics key still
+while the resident RWKV state is ready and its replay semantics key still
 matches the collection's, the state stays through the reopen and through
 the reset after the sync, and no post-sync refresh runs: no "review history
 after sync" window opens, and the first answer after the upload waits for
 nothing. The same holds when the upload fails or is cancelled. The upload
 changes only sync bookkeeping in the local file (graves, pending sync
 numbers, the collection's sync number, schema time, last sync time and
-modification time), none of which the replay reads. A state that is not
-exact, or whose semantics key no longer matches, goes, and the post-sync
-refresh builds it as before. A full download always goes through the
-refresh. When the refresh does not run, the maintenance it starts when it
+modification time), none of which the replay reads. A state kept after a
+delete or a move of cards with reviews, which waits for its exact rebuild
+(`sched.rwkv-history-change-keeps-state`), stays too: the reopen drops the
+rebuild's plans with the rest of the old open, so the rebuild is asked for
+again, and it runs once the full sync has ended. The stored cache keeps its
+history-change mark, so a close before that rebuild saves still gives the
+quick open. A state whose semantics key no longer matches (after a preset
+change) goes, and the post-sync refresh builds it as before. A full download
+always goes through the refresh. When the refresh does not run, the maintenance it starts when it
 ends (the re-read of a history with skipped synced reviews) starts when the
 full sync ends.
 
@@ -354,7 +359,12 @@ state away and restored it behind a window for 1.8 s, although the
 collection held the same reviews. A .colpkg export during the start-up build
 showed "Your review history could not be read." and left no state; after an
 export with the state kept, undoing a flag change whose undo count was an
-earlier answer's rolled that answer out of the RWKV state.
+earlier answer's rolled that answer out of the RWKV state. With a note
+with reviews deleted just before the upload (the exact rebuild still
+running), the state went, and the refresh built the whole history behind the
+window for 99 s; kept, no window opens, the first answer is ready in 0.6 s,
+and the rebuild swaps in 96 s later, with values bit for bit the same as a
+build from the whole history.
 
 **Pinned by:** `test_a_full_upload_keeps_the_rwkv_state_through_its_reopen`,
 `test_a_full_download_does_not_keep_the_rwkv_state`
