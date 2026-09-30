@@ -184,3 +184,124 @@ impl OpChanges {
             || c.deck_config
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Every `Op`. The match does not compile while a variant is missing
+    /// from the list, so a new operation cannot stay out of the test below.
+    macro_rules! every_op {
+        ($($variant:ident),* $(,)?) => {{
+            let _every_variant_is_listed = |op: &Op| match op {
+                Op::Custom(_) => (),
+                $(Op::$variant => ()),*
+            };
+            vec![Op::Custom("an add-on's operation".into()), $(Op::$variant),*]
+        }};
+    }
+
+    fn every_op() -> Vec<Op> {
+        every_op![
+            AddDeck,
+            AddNote,
+            AddNotetype,
+            AdvanceCards,
+            AnswerCard,
+            BuildFilteredDeck,
+            Bury,
+            ChangeNotetype,
+            ClearUnusedTags,
+            CreateCustomStudy,
+            EmptyCards,
+            EmptyFilteredDeck,
+            FindAndReplace,
+            ImageOcclusion,
+            Import,
+            PostponeCards,
+            RebuildFilteredDeck,
+            RemoveDeck,
+            RemoveNote,
+            RemoveNotetype,
+            RemoveTag,
+            RenameDeck,
+            ReparentDeck,
+            RenameTag,
+            ReparentTag,
+            ScheduleAsNew,
+            SetCardDeck,
+            SetDueDate,
+            GradeNow,
+            SetFlag,
+            SortCards,
+            Suspend,
+            ToggleLoadBalancer,
+            UnburyUnsuspend,
+            UpdateCard,
+            UpdateConfig,
+            UpdateDeck,
+            UpdateDeckConfig,
+            UpdateNote,
+            UpdatePreferences,
+            UpdateTag,
+            UpdateNotetype,
+            SetCurrentDeck,
+            SkipUndo,
+        ]
+    }
+
+    /// The desktop keeps the resident RWKV state after an operation that
+    /// rebuilds the study queues and changed settings only (the config
+    /// flag and no other; `study_queues_did_change` in
+    /// qt/aqt/rwkv_scheduler.py, spec sched.rwkv-curve-buttons-wait). It can
+    /// tell what changed only from these flags, and a change of the review
+    /// log sets none of them (`UndoableChange::Revlog` in undo/mod.rs). So
+    /// the keep is safe only while every operation that reaches it writes
+    /// settings and nothing the RWKV replay reads: no review-log row, card,
+    /// note, deck or preset.
+    ///
+    /// When this test fails because an operation joined the list: make sure
+    /// that it cannot write a review-log row while its only flag is the
+    /// config flag, then add it here and to the comment in
+    /// `study_queues_did_change`.
+    #[test]
+    fn only_four_operations_rebuild_the_study_queues_after_a_settings_only_change() {
+        let settings_only = StateChanges {
+            config: true,
+            // the collection's modification time moves with every change
+            mtime: true,
+            ..Default::default()
+        };
+        let rebuilding: Vec<Op> = every_op()
+            .into_iter()
+            .filter(|op| {
+                OpChanges {
+                    op: op.clone(),
+                    changes: settings_only,
+                }
+                .requires_study_queue_rebuild()
+            })
+            .collect();
+        assert_eq!(
+            rebuilding,
+            vec![
+                Op::ToggleLoadBalancer,
+                Op::UpdateDeckConfig,
+                Op::UpdatePreferences,
+                Op::SetCurrentDeck,
+            ]
+        );
+
+        // a change without the config flag never counts as settings only
+        for op in every_op() {
+            let nothing = OpChanges {
+                op,
+                changes: StateChanges {
+                    mtime: true,
+                    ..Default::default()
+                },
+            };
+            assert!(!nothing.requires_study_queue_rebuild());
+        }
+    }
+}

@@ -110,6 +110,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     previous_model_cache_value = rwkv_scheduler._rwkv_model_cache_value
     rwkv_scheduler._reviewer_backend_warmup_states.clear()
     rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
+    rwkv_scheduler._reviewer_backend_resident_replay_days.clear()
     rwkv_scheduler._reviewer_backend_assignment_generation = 0
     rwkv_scheduler._reviewer_backend_warmup_generations.clear()
     rwkv_scheduler._reviewer_backend_warmup_pending_generations.clear()
@@ -142,6 +143,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
         rwkv_scheduler._reviewer_backend_warmup_states.clear()
         rwkv_scheduler._reviewer_backend_warmup_states.update(previous_warmup_states)
         rwkv_scheduler._reviewer_backend_resident_ignored_review_ids.clear()
+        rwkv_scheduler._reviewer_backend_resident_replay_days.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.clear()
         rwkv_scheduler._reviewer_backend_warmup_generations.update(
             previous_warmup_generations
@@ -22744,6 +22746,535 @@ def test_a_replay_key_that_cannot_be_read_discards_the_resident_state(
     assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
 
 
+# Soak session 2, 2026-09-30 (report B-048): a Preferences save that changed
+# any setting ("Show fuzz delta") made the next card wait 1.5-4.7 s on "Getting
+# this card ready...". The save reports `study_queues`, so `main.py` sends it
+# to study_queues_did_change, which threw the resident RWKV state away; the
+# keep of B-014 above sits in the branch for changes that leave the study
+# queues alone, which a real save never reaches.
+#
+# The tests below pin spec/scheduling.md#sched.rwkv-curve-buttons-wait ("A
+# collection change the replay does not depend on ...") and
+# #sched.rwkv-replay-day-boundary.
+
+
+def _scheduler_day(*, day_starts_at: int, days_elapsed: int = 42) -> SimpleNamespace:
+    """The scheduler's day on a machine in UTC whose day starts at the hour
+    `day_starts_at` ("Next day starts at")."""
+    return SimpleNamespace(
+        now=days_elapsed * 86_400 + day_starts_at * 3_600 + 100,
+        days_elapsed=days_elapsed,
+        next_day_at=(days_elapsed + 1) * 86_400 + day_starts_at * 3_600,
+    )
+
+
+def _resident_rwkv_state(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    took_answers: bool = False,
+    open_reviewer: bool = True,
+) -> tuple[SimpleNamespace, tuple[int, int]]:
+    """A collection whose RWKV state is resident, built while the day started
+    at 4, under the replay semantics the collection still has."""
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = SimpleNamespace()
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    if open_reviewer:
+        # the Study screen is open; the save comes from the Preferences window
+        reviewer.mw.reviewer = SimpleNamespace(mw=reviewer.mw)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_resident_replay_keys", {})
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "canonical-replay",
+    )
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    identity = replace(
+        _rwkv_resident_identity(replay_key="canonical-replay"),
+        replay_days=rwkv_scheduler._rwkv_replay_days(reviewer),
+    )
+    assert identity.replay_days == (4 * 3_600, -1)
+    assert rwkv_scheduler._publish_reviewer_backend_state(
+        warmup_key, identity, expected_generation=0
+    )
+    if took_answers:
+        rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+            reviewer, reason="review answered"
+        )
+    return reviewer, warmup_key
+
+
+def _preferences_saved(reviewer: SimpleNamespace) -> None:
+    """What `main.on_operation_did_execute` does with the changes of a
+    Preferences save (rslib/src/ops.rs: the config changed, and the operation
+    is UpdatePreferences, so `study_queues` is set)."""
+    rwkv_scheduler.study_queues_did_change(
+        reviewer.mw,
+        None,
+        collection_pb2.OpChanges(config=True, mtime=True, study_queues=True),
+    )
+
+
+@pytest.mark.parametrize("open_reviewer", [True, False], ids=["reviewer", "deck-list"])
+@pytest.mark.parametrize("took_answers", [False, True], ids=["fresh", "after-answers"])
+def test_a_preferences_save_the_replay_cannot_see_keeps_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+    open_reviewer: bool,
+    took_answers: bool,
+) -> None:
+    reviewer, warmup_key = _resident_rwkv_state(
+        monkeypatch, took_answers=took_answers, open_reviewer=open_reviewer
+    )
+    generation_before = rwkv_scheduler._reviewer_backend_warmup_generations.get(
+        warmup_key, 0
+    )
+    invalidations_before = rwkv_scheduler._reviewer_backend_invalidation_count
+    rwkv_scheduler._rwkv_review_queue_score_maps[100] = {1: 0.25}
+
+    _preferences_saved(reviewer)
+
+    # kept: the next card is predicted at once
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert (
+        rwkv_scheduler._reviewer_backend_warmup_generations.get(warmup_key, 0)
+        == generation_before
+    )
+    assert rwkv_scheduler._reviewer_backend_invalidation_count == invalidations_before
+    # the queue work is still thrown away, as after any study-queue change
+    assert rwkv_scheduler._rwkv_study_queue_generation == 1
+    assert rwkv_scheduler._rwkv_review_queue_score_maps == {}
+
+
+def test_a_preferences_save_during_an_exact_rebuild_keeps_the_state_and_the_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A state that waits for its exact rebuild (after a delete) is kept too,
+    and no invalidation is counted: the rebuild that runs is still of the
+    collection's history, so it goes on instead of starting again."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+    rwkv_scheduler._mark_reviewer_backend_identity_unknown(
+        reviewer, reason="cards deleted or moved; exact rebuild pending"
+    )
+    rwkv_scheduler.request_exact_rwkv_rebuild(reviewer.mw, forced=True)
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+    invalidations_before = rwkv_scheduler._reviewer_backend_invalidation_count
+    rebuild_generation_before = rwkv_scheduler._rwkv_exact_rebuild_generation
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_invalidation_count == invalidations_before
+    assert rwkv_scheduler._rwkv_exact_rebuild_generation == rebuild_generation_before
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_a_preferences_save_that_moves_the_day_boundary_discards_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "Next day starts at" from 4 to 9: the reviews made between 4 and 9 are
+    reviews of the day before now, so the state built under 4 is not the state
+    a build gives under 9. The replay semantics key is the same."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch, took_answers=True)
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 2
+
+
+def test_a_setting_that_moves_the_day_boundary_discards_the_state_in_every_keep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The keeps that ask whether the replay semantics still match (a setting
+    changed without the study queues, the FSRS-7 optimization's refresh, the
+    reopen after a full upload) all refuse when the day boundary moved."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+    assert rwkv_scheduler._replay_semantics_still_match_resident_state(reviewer)
+    assert rwkv_scheduler.keep_rwkv_state_through_fsrs_optimization(reviewer.mw)
+    rwkv_scheduler.drop_unused_rwkv_state_keep(reviewer.mw)
+
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+
+    assert not rwkv_scheduler._replay_semantics_still_match_resident_state(reviewer)
+    assert not rwkv_scheduler.keep_rwkv_state_through_fsrs_optimization(reviewer.mw)
+    assert not rwkv_scheduler._resident_state_survives_reopen(reviewer)
+    rwkv_scheduler.fsrs_preset_resolution_did_change(reviewer.mw)
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+def test_a_day_that_cannot_be_read_discards_the_resident_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+
+    def explode() -> SimpleNamespace:
+        raise RuntimeError("no scheduler")
+
+    reviewer.mw.col.sched._timing_today = explode
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+def test_a_new_day_does_not_move_the_day_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day boundary is the same on every day: a state built yesterday is
+    kept by a Preferences save today."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(
+        day_starts_at=4, days_elapsed=43
+    )
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        # a reschedule, an import, a bury from another window: cards changed
+        collection_pb2.OpChanges(card=True, config=True, study_queues=True),
+        # a deck moved or removed
+        collection_pb2.OpChanges(deck=True, config=True, study_queues=True),
+        # a preset changed (the deck-options save that nothing reconciled)
+        collection_pb2.OpChanges(deck_config=True, config=True, study_queues=True),
+        collection_pb2.OpChanges(note=True, config=True, study_queues=True),
+        collection_pb2.OpChanges(notetype=True, config=True, study_queues=True),
+        # legacy code called reset(): everything counts as changed
+        collection_pb2.OpChanges(
+            card=True,
+            note=True,
+            deck=True,
+            tag=True,
+            notetype=True,
+            config=True,
+            deck_config=True,
+            study_queues=True,
+        ),
+        # nothing said about what changed
+        None,
+    ],
+    ids=["cards", "decks", "presets", "notes", "notetypes", "reset", "unknown"],
+)
+def test_a_study_queue_change_that_can_change_replay_rows_still_discards_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+    changes: collection_pb2.OpChanges | None,
+) -> None:
+    """The keep is for operations that wrote settings only. One that changed
+    cards, notes, decks or presets can change the rows the replay reads with
+    the replay semantics key and the day boundary unchanged."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+
+    rwkv_scheduler.study_queues_did_change(reviewer.mw, None, changes)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+
+
+def test_a_settings_save_that_changes_the_replay_semantics_discards_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_replay_semantics_key",
+        lambda *_args, **_kwargs: "the-settings-the-replay-reads-changed",
+    )
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+
+
+def test_a_preferences_save_while_the_state_loads_discards_the_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No state is resident while a restore or build runs, so nothing says
+    what that work read: it is thrown away, as before."""
+    reviewer, warmup_key = _resident_rwkv_state(monkeypatch)
+    rwkv_scheduler._reviewer_backend_warmup_pending_generations[warmup_key] = 0
+
+    _preferences_saved(reviewer)
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_warmup_generations[warmup_key] == 1
+
+
+# Pins spec/scheduling.md#sched.rwkv-replay-day-boundary
+def test_the_replay_day_boundary_decides_the_day_of_every_review() -> None:
+    """Two scheduler days with the same boundary give every review the same
+    day; with another boundary some review gets another day."""
+
+    def days_of(timing: SimpleNamespace) -> list[int]:
+        # a review every 37 minutes over the last 50 days
+        return [
+            rwkv_scheduler._historical_review_day_offset(
+                review_secs * 1000,
+                days_elapsed=timing.days_elapsed,
+                next_day_at=timing.next_day_at,
+            )
+            for review_secs in range(
+                timing.next_day_at - 50 * 86_400, timing.next_day_at - 86_400, 37 * 60
+            )
+        ]
+
+    def shifted(timing: SimpleNamespace, days: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            days_elapsed=timing.days_elapsed + days,
+            next_day_at=timing.next_day_at + days * 86_400,
+        )
+
+    boundary = rwkv_scheduler._rwkv_replay_days_of_timing
+    at_4 = _scheduler_day(day_starts_at=4, days_elapsed=2_124)
+    # tomorrow, and in a month: the same boundary, the same days
+    for later in (1, 30):
+        assert boundary(shifted(at_4, later)) == boundary(at_4)
+    assert days_of(at_4) == [
+        rwkv_scheduler._historical_review_day_offset(
+            review_secs * 1000,
+            days_elapsed=at_4.days_elapsed + 30,
+            next_day_at=at_4.next_day_at + 30 * 86_400,
+        )
+        for review_secs in range(
+            at_4.next_day_at - 50 * 86_400, at_4.next_day_at - 86_400, 37 * 60
+        )
+    ]
+    # another hour, another timezone (the boundary an hour earlier), another
+    # creation day (every review one day later): other days
+    for other in (
+        _scheduler_day(day_starts_at=9, days_elapsed=2_124),
+        SimpleNamespace(
+            days_elapsed=at_4.days_elapsed, next_day_at=at_4.next_day_at - 3_600
+        ),
+        SimpleNamespace(
+            days_elapsed=at_4.days_elapsed + 1, next_day_at=at_4.next_day_at
+        ),
+    ):
+        assert boundary(other) != boundary(at_4)
+        assert [
+            rwkv_scheduler._historical_review_day_offset(
+                review_secs * 1000,
+                days_elapsed=other.days_elapsed,
+                next_day_at=other.next_day_at,
+            )
+            for review_secs in range(
+                at_4.next_day_at - 50 * 86_400, at_4.next_day_at - 86_400, 37 * 60
+            )
+        ] != days_of(at_4)
+    # a scheduler day that cannot be read has no boundary
+    assert boundary(None) is None
+    assert boundary(SimpleNamespace(days_elapsed=1, next_day_at=None)) is None
+
+
+def _review_days(runtime: _CacheRuntime) -> list[int | None]:
+    return [review_input.day_offset for review_input in runtime.answered_inputs]
+
+
+# Pins spec/scheduling.md#sched.rwkv-replay-day-boundary
+def test_a_moved_day_boundary_rebuilds_the_stored_state_as_a_cold_build_does(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The stored cache's marker said "the same collection" after a change of
+    the day boundary that left the modification time as it was (a timezone
+    change, a config write the scheduler reads on the next day): the state
+    built under the old boundary was restored as it was. With the boundary in
+    the marker the history is checked, and the state is built again."""
+    # 03:00 and 06:00 on day 40, 06:00 on day 41
+    rows: list[tuple[int, ...]] = [
+        ((40 * 86_400 + 3 * 3_600) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((40 * 86_400 + 6 * 3_600) * 1000, 2, 20, 100, 3, 1234, 1, 3, 2500),
+        ((41 * 86_400 + 6 * 3_600) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400),
+    ]
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"m": "t"})
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_collection_modified", lambda _r: 12345)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+
+    built = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(built))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert _review_days(built) == [39, 40, 41]
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["collectionDays"] == [4 * 3_600, -1]
+    # the built state knows its boundary
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    assert rwkv_scheduler._reviewer_backend_resident_replay_days[warmup_key] == (
+        4 * 3_600,
+        -1,
+    )
+
+    # nothing changed: the stored state is restored, nothing is replayed
+    restored = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert restored.reviewed == []
+
+    # the day starts at 9 now; the modification time, the review log and the
+    # cards are the same
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+    after_the_change = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(after_the_change))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    cold = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(cold))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer, force_rebuild=True)
+
+    # the reviews at 06:00 are reviews of the day before now
+    assert _review_days(cold) == [39, 39, 40]
+    assert _review_days(after_the_change) == _review_days(cold)
+    assert after_the_change.answered_inputs == cold.answered_inputs
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["collectionDays"] == [9 * 3_600, -1]
+
+    # and back to 4: built again, as a cold build under 4
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    back = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(back))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert _review_days(back) == [39, 40, 41]
+
+
+# Pins spec/scheduling.md#sched.rwkv-replay-day-boundary
+def test_a_stored_cache_without_the_day_boundary_is_still_restored(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The stored cache of a Clanki from before the marker had the day
+    boundary: the first start after the update restores it as before (no
+    build of the whole history). That restore checked nothing about the
+    boundary, so it writes none; the next save, which reads the history under
+    the boundary, records it."""
+    rows: list[tuple[int, ...]] = [
+        ((40 * 86_400 + 3 * 3_600) * 1000, 1, 10, 100, 2, 1234, 1, 3, 2500),
+        ((40 * 86_400 + 6 * 3_600) * 1000, 2, 20, 100, 3, 1234, 1, 3, 2500),
+    ]
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_model_cache_key", lambda: {"m": "t"})
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_collection_modified", lambda _r: 12345)
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=rows)
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    set_reviewer_backend(RwkvStatefulReviewerBackend(_CacheRuntime()))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    # the cache as the old Clanki wrote it
+    meta_path = (
+        tmp_path / "rwkv-state-cache" / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE
+    )
+    old = json.loads(meta_path.read_text(encoding="utf8"))
+    assert old.pop("collectionDays") == [4 * 3_600, -1]
+    assert old["collectionMod"] == 12345
+    meta_path.write_text(json.dumps(old), encoding="utf8")
+
+    history_reads: list[object] = []
+    real_inputs = rwkv_scheduler._historical_rwkv_review_inputs
+
+    def counted_inputs(*args: Any, **kwargs: Any) -> Any:
+        history_reads.append(kwargs.get("after_review_id"))
+        return real_inputs(*args, **kwargs)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_historical_rwkv_review_inputs", counted_inputs
+    )
+    restored = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(restored))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+
+    # restored from the file: no review replayed, the history not read
+    assert restored.reviewed == []
+    assert history_reads == []
+    warmup_key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert warmup_key is not None
+    assert rwkv_scheduler._reviewer_backend_resident_replay_days[warmup_key] == (
+        4 * 3_600,
+        -1,
+    )
+    # the restore wrote nothing
+    assert json.loads(meta_path.read_text(encoding="utf8")) == old
+
+    # a review later, the restore replays it and saves: the boundary is there
+    rows.append(((41 * 86_400 + 6 * 3_600) * 1000, 1, 10, 100, 3, 2345, 2, 5, 2400))
+    after_a_review = _CacheRuntime()
+    set_reviewer_backend(RwkvStatefulReviewerBackend(after_a_review))
+    assert rwkv_scheduler._warm_up_reviewer_backend(reviewer) is True
+    assert after_a_review.reviewed == [(1, 3)]
+    metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+    assert metadata is not None
+    assert metadata["collectionDays"] == [4 * 3_600, -1]
+    assert metadata["reviewCount"] == 3
+
+
+# Pins spec/scheduling.md#sched.rwkv-replay-day-boundary
+def test_the_stored_marker_does_not_follow_the_collection_over_a_moved_day_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """After a change the replay does not read, the stored marker moves to
+    the collection's new modification time. Not when the day boundary moved:
+    the next start would take the stored state for the collection's."""
+    collection_mod = 2
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_collection_modified", lambda _reviewer: collection_mod
+    )
+    reviewer = _rwkv_cache_reviewer(profile_folder=tmp_path, rows=[])
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    identity = _rwkv_resident_identity()
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+
+    def store(days: list[int] | None) -> None:
+        metadata: dict[str, object] = {
+            "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
+            "lastReviewId": identity.last_review_id,
+            "reviewCount": identity.review_count,
+            "historyHash": identity.history_hash,
+            "replayKey": identity.replay_key,
+            "collectionMod": 1,
+            "collectionContent": [0, 0, 0, 2, 0, 0],
+        }
+        if days is not None:
+            metadata["collectionDays"] = days
+        rwkv_scheduler._atomic_write(
+            cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE,
+            json.dumps(metadata).encode("utf8"),
+        )
+
+    def stored() -> dict[str, object]:
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(reviewer)
+        assert metadata is not None
+        return metadata
+
+    store([4 * 3_600, -1])
+    rwkv_scheduler._refresh_rwkv_state_cache_collection_mod(reviewer, identity)
+    assert stored()["collectionMod"] == collection_mod
+
+    store([4 * 3_600, -1])
+    reviewer.mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+    rwkv_scheduler._refresh_rwkv_state_cache_collection_mod(reviewer, identity)
+    assert stored()["collectionMod"] == 1
+    assert stored()["collectionDays"] == [4 * 3_600, -1]
+    # a sync that brought nothing does not carry it over either
+    rwkv_scheduler.carry_rwkv_state_cache_marker_through_sync(
+        reviewer.mw, before=1, after=collection_mod
+    )
+    assert stored()["collectionMod"] == 1
+
+    # a cache from before the marker had the boundary: moved as before. No
+    # boundary is written: nothing here read the history under one
+    store(None)
+    rwkv_scheduler._refresh_rwkv_state_cache_collection_mod(reviewer, identity)
+    assert stored()["collectionMod"] == collection_mod
+    assert "collectionDays" not in stored()
+
+
 # Pins spec/ui.md#ui.card-info-one-algorithm: RWKV-Curve's R in card info and
 # AnkiConnect counts from the review whose curve RWKV stored, the card's
 # newest review that the replay reads: not a newer preview (a Filtered row
@@ -23776,6 +24307,66 @@ def test_the_exact_rebuild_starts_again_when_the_history_moves(
     assert not old.released
     assert replayed and replayed[0].released
     assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_the_exact_rebuild_starts_again_when_the_day_boundary_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-day-boundary: the rebuild
+    replayed the reviews with the day numbers of the boundary it read. When
+    the collection has another boundary at the swap, the rebuilt runtime is
+    not the collection's state: it is released, and the rebuild starts again."""
+    mw, old, log = _rebuild_mw(monkeypatch)
+    mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+    replayed: list[_RebuildRuntime] = []
+
+    def new_runtime() -> _RebuildRuntime:
+        own = _RebuildRuntime(log)
+
+        def move() -> None:
+            mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+
+        own.during_replay = move
+        replayed.append(own)
+        return own
+
+    old.new_runtime = new_runtime  # type: ignore[method-assign]
+
+    with pytest.raises(rwkv_scheduler._RwkvExactRebuildStale):
+        rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    assert rwkv_scheduler._reviewer_backend is old
+    assert not old.released
+    assert replayed and replayed[0].released
+    assert "tail read" not in log
+    assert rwkv_scheduler.rwkv_exact_rebuild_pending()
+
+
+def test_the_exact_rebuild_records_the_day_boundary_of_its_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-day-boundary: the state the
+    rebuild swaps in knows the day boundary it was built under, so a later
+    change of "Next day starts at" discards it and another setting does not."""
+    mw, _old, _log = _rebuild_mw(monkeypatch)
+    mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=4)
+    rwkv_scheduler.request_exact_rwkv_rebuild(mw, forced=True)
+    generation = rwkv_scheduler._rwkv_exact_rebuild_generation
+
+    assert rwkv_scheduler._rebuild_exact_rwkv_state(mw, mw.col, generation)
+
+    reviewer = SimpleNamespace(mw=mw)
+    key = rwkv_scheduler._reviewer_backend_warmup_key(reviewer)
+    assert key is not None
+    assert rwkv_scheduler._reviewer_backend_resident_replay_days[key] == (
+        4 * 3_600,
+        -1,
+    )
+    assert not rwkv_scheduler._resident_day_boundary_moved(reviewer)
+    mw.col.sched._timing_today = lambda: _scheduler_day(day_starts_at=9)
+    assert rwkv_scheduler._resident_day_boundary_moved(reviewer)
 
 
 @pytest.mark.parametrize("redo", [False, True])

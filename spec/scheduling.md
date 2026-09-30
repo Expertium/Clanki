@@ -756,12 +756,25 @@ After an error no prediction is kept, so an answer stores no RWKV-Curve S90
 with states that are not RWKV-Curve's.
 
 **A collection change the replay does not depend on does not make the state
-cold, and so does not start a wait.** The resident state is kept whenever the
-replay semantics key is the one it was built under -- the same key the stored
-state cache carries, and the same one that decides whether a stored cache is
-restored rather than rebuilt. A change that moves that key, such as a deck
-sent to another preset, still discards the state. A key that cannot be read
-discards it too: a rebuild costs time, a stale state gives a wrong interval.
+cold, and so does not start a wait.** After an operation that changed settings
+only (no card, note, deck, preset, notetype or tag: a Preferences save, the
+load balancer switch, a deck-options save of collection-wide settings, a
+change of the current deck, and the undo or redo of one), the resident state
+is kept whenever the replay
+semantics key and the day boundary (`sched.rwkv-replay-day-boundary`) are the
+ones it was built under -- the same two the stored state cache carries, and
+the same ones that decide whether a stored cache is restored rather than
+rebuilt. This holds whether the operation rebuilds the study queues (a
+Preferences save does) or not, with the Study screen open or not, after
+answers in the session, and while the state waits for its exact rebuild,
+which then goes on. A change that moves the key, such as a deck sent to
+another preset, or the day boundary, such as another "Next day starts at",
+still discards the state. A key or a day that cannot be read discards it too:
+a rebuild costs time, a stale state gives a wrong interval. An operation that
+rebuilds the study queues and changed cards, notes, decks or presets discards
+the state unless another entry keeps it (`sched.rwkv-history-change-keeps-state`,
+`sync.full-upload-keeps-rwkv-state`): it can change the rows the replay reads
+with the key and the day boundary unchanged.
 
 The wait always ends. When RWKV-Curve gave a prediction for this showing of
 the card and that prediction has no interval for a button, asking again gives
@@ -793,7 +806,12 @@ mode gives me this", and it took ten seconds to clear. Every config, deck,
 deck-config and notetype change reaches one handler, so saving any Preferences
 setting read as "the preset routing may have changed" and threw away a state
 that took ten seconds to build again. The two-button mode is a collection
-config bool; the replay cannot see it. Found 2026-09-27 on a copy of his
+config bool; the replay cannot see it. Found 2026-09-30 in a soak session: a
+Preferences save that changed any setting ("Show fuzz delta") still made the
+next card wait 1.5-1.9 s on the measured copy (868,321 reviews; up to 4.7 s
+in the soak session), because the save rebuilds the study queues and that
+path threw the state away without asking what changed. Found 2026-09-27 on a
+copy of his
 collection: after a bury and its undo during the start-up build, the buttons
 waited for a build that could no longer make the state, stopped after 60 s,
 and nothing asked for the rebuild after that build ended; and a start-up
@@ -810,6 +828,11 @@ build longer than 60 s left the timed-out message until "Try again".
 `test_a_config_change_the_replay_cannot_see_keeps_the_resident_state`,
 `test_a_change_that_alters_the_replay_still_discards_the_resident_state`,
 `test_a_replay_key_that_cannot_be_read_discards_the_resident_state`,
+`test_a_preferences_save_the_replay_cannot_see_keeps_the_resident_state`,
+`test_a_preferences_save_during_an_exact_rebuild_keeps_the_state_and_the_rebuild`,
+`test_a_study_queue_change_that_can_change_replay_rows_still_discards_the_state`,
+`test_a_settings_save_that_changes_the_replay_semantics_discards_the_state`,
+`test_a_preferences_save_while_the_state_loads_discards_the_load`,
 `test_answer_intervals_pending_until_rwkv_curve_gives_the_intervals`,
 `test_answer_intervals_unavailable_only_when_rwkv_curve_answered`,
 `test_the_answer_button_wait_can_restore_the_resident_state`,
@@ -818,7 +841,9 @@ build longer than 60 s left the timed-out message until "Try again".
 `test_failed_rwkv_prediction_leaves_the_buttons_waiting`,
 `test_error_building_rwkv_curve_states_leaves_the_buttons_waiting`,
 `test_set_answer_rwkv_metadata_clears_the_prediction`
-(`qt/tests/test_rwkv_scheduler.py`).
+(`qt/tests/test_rwkv_scheduler.py`);
+`only_four_operations_rebuild_the_study_queues_after_a_settings_only_change`
+(`rslib/src/ops.rs`).
 
 ## sched.grade-now-rwkv-curve
 
@@ -992,6 +1017,73 @@ later prediction a state training never produced.
 (`qt/tests/test_rwkv_replay_inputs_backend.py`) and
 `test_the_backend_reads_the_same_whole_history_rows_as_the_query`
 (`qt/tests/test_rwkv_replay_sql_drift.py`).
+
+## sched.rwkv-replay-day-boundary
+
+The RWKV replay gives every review a day number, counted with the scheduler's
+day: the day starts at the hour "Next day starts at", in the computer's
+timezone, and day 0 is the day the collection was created. So a change of
+that hour, of the timezone (also a daylight-saving change) or of the
+collection's creation time or creation offset moves reviews from one day to
+the next, and changes the state a replay of the same review log gives. None
+of these is in the replay semantics key.
+
+The day boundary is the pair (the second of the UTC day at which the
+scheduler's day starts, the scheduler's day number minus the UTC day number
+of its next start). It is the same on every day, and two scheduler days with
+the same pair give every past review the same day number.
+
+- The resident RWKV state is kept after a change only while the collection's
+  day boundary is the one the state was built under
+  (`sched.rwkv-curve-buttons-wait`). A Preferences save that changes "Next
+  day starts at" discards the state; the state that is then built is the one
+  a build from nothing gives.
+- The stored state cache records the day boundary with its collection marker
+  (the collection's modification time, review log and cards when the stored
+  history was read). At a start, a stored cache whose marker and replay
+  semantics key are the collection's is restored without a check of the
+  history only when its day boundary is the collection's too. Otherwise the
+  history is checked (its fingerprint holds every review's day number), and
+  the stored state is used only when the check passes, as after any other
+  change.
+- A stored cache written before the marker had the day boundary is read as
+  before: the boundary is taken as unchanged and the cache is restored, so
+  an update of Clanki does not rebuild the state from the whole history.
+  That restore checked nothing about the boundary and writes none. The next
+  save of the state, which reads or checks the history under the boundary,
+  records it.
+- The stored marker follows the collection's modification time after a
+  change the replay does not read, and through a sync that brought nothing,
+  only while the day boundary is the recorded one; the move itself never
+  writes a boundary.
+- The exact rebuild (`sched.rwkv-history-change-keeps-state`) starts again
+  when the day boundary moved while it ran.
+
+**Why:** Found 2026-09-30 while the Preferences save was made to keep the
+state: the keep compared only the replay semantics key, so it would have kept
+a state built under another day start. The stored cache had the same gap
+where the modification time does not move with the day boundary: the
+scheduler reads a timezone change without changing it, and reads a
+"Next day starts at" that came from a sync, an undo or a plain config write
+only on the next day or at the next start. The stored state was then restored
+as the collection's, and differed from a build from nothing until the next
+change of the review log. The boundary is a separate field, not a part of the
+replay semantics key, because a changed key makes every stored cache miss:
+Andrew's rules are an instant start and no waiting window, and a miss costs a
+build of the whole history (2-3 minutes on 868,000 reviews) while the first
+card waits.
+
+**Pinned by:** `test_the_replay_day_boundary_decides_the_day_of_every_review`,
+`test_a_moved_day_boundary_rebuilds_the_stored_state_as_a_cold_build_does`,
+`test_a_stored_cache_without_the_day_boundary_is_still_restored`,
+`test_the_stored_marker_does_not_follow_the_collection_over_a_moved_day_boundary`,
+`test_a_preferences_save_that_moves_the_day_boundary_discards_the_resident_state`,
+`test_a_setting_that_moves_the_day_boundary_discards_the_state_in_every_keep`,
+`test_a_new_day_does_not_move_the_day_boundary`,
+`test_a_day_that_cannot_be_read_discards_the_resident_state`,
+`test_the_exact_rebuild_starts_again_when_the_day_boundary_moves`,
+`test_the_exact_rebuild_records_the_day_boundary_of_its_state`
+(`qt/tests/test_rwkv_scheduler.py`).
 
 ## sched.rwkv-history-change-keeps-state
 

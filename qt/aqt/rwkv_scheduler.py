@@ -125,6 +125,23 @@ class _RwkvCollectionMarker(NamedTuple):
     # the review log (count, newest id, id checksum) and the cards (count,
     # home-deck checksum, note checksum)
     content: tuple[int, ...]
+    # the day boundary the replay counts days with (`_rwkv_replay_days`);
+    # None when the scheduler's day could not be read, or for a stored cache
+    # written before the marker had it
+    days: tuple[int, int] | None = None
+
+    def names(self, current: _RwkvCollectionMarker | None) -> bool:
+        """Whether this marker, read from a stored cache, names the
+        collection `current` was read from. A stored marker without the day
+        boundary names any: a cache written before the marker had it is
+        taken as before, and the next save of the state records the
+        boundary."""
+        return (
+            current is not None
+            and self.mod == current.mod
+            and self.content == current.content
+            and (self.days is None or self.days == current.days)
+        )
 
 
 class _RwkvHistoricalReviewFingerprint(NamedTuple):
@@ -281,6 +298,27 @@ _RWKV_STATE_CACHE_COLLECTION_MOD_KEY = "collectionMod"
 # changeDeck moves cards that way. The modification time alone then says
 # "unchanged" for a history that changed.
 _RWKV_STATE_CACHE_COLLECTION_CONTENT_KEY = "collectionContent"
+# With the two keys above, the day boundary the stored history was read
+# under (`_rwkv_replay_days`). The replay gives every review a day number
+# from the scheduler's day, so "Next day starts at", the timezone and the
+# collection's creation time and offset all move reviews from one day to the
+# next, and none of them is in the replay semantics key. A change of the
+# hour through Preferences moves the modification time too. A config write
+# outside an operation does not: the scheduler writes a changed timezone
+# that way, and reads a "Next day starts at" that a sync, an undo or a plain
+# config write brought only on the next day or at the next start. The stored
+# marker then named a collection whose replay had changed, and the stored
+# state was restored as it was (measured 2026-09-30, day start 5 to 9: none of
+# 300 queued cards had the S90 of a build from nothing, up to 6.8 % apart).
+#
+# A separate key, not a part of "replayKey": a stored cache written before
+# it existed has none and is read as before (`_RwkvCollectionMarker.names`),
+# so an update of Clanki does not cost a build of the whole history. It is
+# written only by a save that read or checked the history under the boundary
+# (a build, the exact rebuild, a restore that ran the history checks, the
+# idle save), never by a restore that took the marker's word, nor by a move
+# of the marker (the RWKV session's condition, 2026-09-30).
+_RWKV_STATE_CACHE_COLLECTION_DAYS_KEY = "collectionDays"
 # One statement, so every part is read from the same collection: the
 # modification time, the review log's count, newest id and a checksum of its
 # ids (a review taken out and another put in), and the cards' count and
@@ -374,6 +412,12 @@ _reviewer_backend_resident_ignored_review_ids: dict[
 # exact rebuild. It counts only while its key is in
 # `_reviewer_backend_warmup_states`.
 _reviewer_backend_resident_replay_keys: dict[tuple[int, int], str] = {}
+# The day boundary each resident state was built under (`_rwkv_replay_days`),
+# set and kept as the replay semantics key above. None: not known, because
+# the scheduler's day could not be read when the state was published.
+_reviewer_backend_resident_replay_days: dict[
+    tuple[int, int], tuple[int, int] | None
+] = {}
 _resolved_preset_id_cache: dict[tuple[int, str | None], dict[int, str]] = {}
 _rwkv_review_queue_score_maps: dict[int, dict[int, float]] = {}
 _rwkv_review_queue_target_maps: dict[int, dict[int, float]] = {}
@@ -1038,6 +1082,11 @@ class RwkvResidentStateIdentity:
     # names the replayed rows, so two identities compare without them; the
     # set rides along to `_reviewer_backend_resident_ignored_review_ids`.
     ignored_review_ids: tuple[int, ...] = field(default=(), compare=False)
+    # The day boundary the state's history was read under
+    # (`_rwkv_replay_days`). The hash already holds every review's day, so
+    # two identities compare without it; it rides along to
+    # `_reviewer_backend_resident_replay_days`.
+    replay_days: tuple[int, int] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -1144,6 +1193,7 @@ class _ReviewerBackendTemporaryOperation:
     previous_identity: RwkvResidentStateIdentity | None
     previous_ignored_review_ids: tuple[int, ...] = ()
     previous_replay_key: str | None = None
+    previous_replay_days: tuple[int, int] | None = None
 
     def is_current(self) -> bool:
         return _reviewer_backend_warmup_is_current(
@@ -4360,6 +4410,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
     _reviewer_backend_warmup_states.clear()
     _reviewer_backend_resident_ignored_review_ids.clear()
     _reviewer_backend_resident_replay_keys.clear()
+    _reviewer_backend_resident_replay_days.clear()
     _reviewer_backend_warmup_pending_generations.clear()
     _reviewer_backend_cold_fallback_generations.clear()
     _rwkv_collection_mutation_undo_entries.clear()
@@ -4699,6 +4750,7 @@ def _claim_reviewer_backend_temporary_operation(
                 _reviewer_backend_resident_ignored_review_ids.pop(key, ())
             )
             previous_replay_key = _reviewer_backend_resident_replay_keys.pop(key, None)
+            previous_replay_days = _reviewer_backend_resident_replay_days.pop(key, None)
             _reviewer_backend_warmup_pending_generations[key] = generation
 
         claimed = True
@@ -4711,6 +4763,7 @@ def _claim_reviewer_backend_temporary_operation(
             previous_identity=previous_identity,
             previous_ignored_review_ids=previous_ignored_review_ids,
             previous_replay_key=previous_replay_key,
+            previous_replay_days=previous_replay_days,
         )
     finally:
         if not claimed:
@@ -4744,6 +4797,9 @@ def _finish_reviewer_backend_temporary_operation(
                 _reviewer_backend_resident_replay_keys[operation.key] = (
                     operation.previous_replay_key
                 )
+            _reviewer_backend_resident_replay_days[operation.key] = (
+                operation.previous_replay_days
+            )
         elif current:
             _reviewer_backend_warmup_states.pop(operation.key, None)
             _clear_rwkv_review_queue_score_cache()
@@ -6019,6 +6075,9 @@ def _rebuild_exact_rwkv_state(mw: object, col: object, generation: int) -> bool:
     _wait_for_a_pause_in_the_review(mw, require_current)
     started = time.monotonic()
     cache_dir_available = _rwkv_state_cache_dir(reviewer) is not None
+    # the day boundary the history is read under: the swap makes sure it is
+    # still the collection's
+    replay_days = _rwkv_replay_days(reviewer)
     # the save after the swap stores `history`, not the answers given while
     # the rebuild ran: it records the marker of this read, never a later one
     history, collection_marker = _rwkv_marked_collection_read(
@@ -6088,6 +6147,7 @@ def _rebuild_exact_rwkv_state(mw: object, col: object, generation: int) -> bool:
                 generation=generation,
                 invalidations=invalidations,
                 collection_marker=collection_marker,
+                replay_days=replay_days,
             )
         )
         if not swapped:
@@ -6133,10 +6193,12 @@ def _swap_in_exact_rwkv_state(
     generation: int,
     invalidations: int,
     collection_marker: _RwkvCollectionMarker | None = None,
+    replay_days: tuple[int, int] | None = None,
 ) -> bool | None:
     """Swap the rebuilt runtime in, on the collection worker, so that no
     answer is half recorded while it happens. True when it swapped in, None
-    when the profile closed first; raises _RwkvExactRebuildStale."""
+    when the profile closed first; raises _RwkvExactRebuildStale.
+    `replay_days`: the day boundary `history` was read under."""
 
     result: Future[bool] = Future()
 
@@ -6158,6 +6220,9 @@ def _swap_in_exact_rwkv_state(
                 )
             if moved or changed or _rwkv_exact_rebuild_collection_gone(mw, col):
                 raise _RwkvExactRebuildStale("the history moved before the swap")
+            if _rwkv_replay_days(reviewer) != replay_days:
+                # the reviews the rebuild replayed have other day numbers now
+                raise _RwkvExactRebuildStale("the day boundary moved")
             # the answers given while the rebuild ran, with the routing the
             # collection has now
             tail = _historical_rwkv_review_inputs(
@@ -6179,7 +6244,9 @@ def _swap_in_exact_rwkv_state(
             # from here on the rebuilt runtime is the shared one, whatever
             # happens next
             key = _reviewer_backend_warmup_key(reviewer)
-            identity = _resident_state_identity(tail if tail.reviews else history)
+            identity = _resident_state_identity(
+                tail if tail.reviews else history, replay_days
+            )
             if key is None or not _publish_reviewer_backend_state(
                 key,
                 identity,
@@ -12009,7 +12076,10 @@ def defer_reviewer_backend_cache_restore(
 
 def _resident_state_identity(
     history: RwkvHistoricalReviewInputs,
+    replay_days: tuple[int, int] | None = None,
 ) -> RwkvResidentStateIdentity:
+    """`replay_days`: the day boundary `history` was read, or validated,
+    under (`_rwkv_replay_days`)."""
     if not _rwkv_history_hash_is_valid(history.history_hash):
         raise ValueError("missing resident RWKV history identity")
     if not history.replay_key:
@@ -12020,6 +12090,7 @@ def _resident_state_identity(
         history_hash=history.history_hash,
         replay_key=history.replay_key,
         ignored_review_ids=tuple(history.ignored_review_ids),
+        replay_days=replay_days,
     )
 
 
@@ -12099,6 +12170,7 @@ def _publish_reviewer_backend_state(
                 identity.ignored_review_ids
             )
             _reviewer_backend_resident_replay_keys[key] = identity.replay_key
+            _reviewer_backend_resident_replay_days[key] = identity.replay_days
             _reviewer_backend_cold_fallback_generations.pop(key, None)
             _exact_rwkv_state_published()
             return True
@@ -12132,6 +12204,7 @@ def _publish_kept_reviewer_backend_state(
         _reviewer_backend_warmup_states[key] = None
         _reviewer_backend_resident_ignored_review_ids[key] = identity.ignored_review_ids
         _reviewer_backend_resident_replay_keys[key] = identity.replay_key
+        _reviewer_backend_resident_replay_days[key] = identity.replay_days
         _reviewer_backend_cold_fallback_generations.pop(key, None)
         return True
 
@@ -12478,6 +12551,10 @@ def _warm_up_reviewer_backend(
         )
         state_cache_available = _rwkv_state_cache_dir(reviewer) is not None
         history_start = time.monotonic()
+        # the day boundary the history is read under; an operation that moves
+        # it while the build runs throws the build away
+        # (`_replay_semantics_still_match_resident_state` finds no state)
+        replay_days = _rwkv_replay_days(reviewer)
         history, collection_marker = _rwkv_marked_collection_read(
             _collection(reviewer),
             lambda: _historical_rwkv_review_inputs(
@@ -12558,7 +12635,7 @@ def _warm_up_reviewer_backend(
         _require_reviewer_backend_warmup_current(is_current)
         if not _publish_reviewer_backend_state(
             key,
-            _resident_state_identity(history),
+            _resident_state_identity(history, replay_days),
             expected_generation=warmup_generation,
         ):
             return False
@@ -16458,6 +16535,9 @@ def _restore_reviewer_backend_cache(
     # check compares it, and every save below records it
     col = _collection(reviewer)
     marker_before = _rwkv_collection_marker(col)
+    replay_days = (
+        marker_before.days if marker_before is not None else _rwkv_replay_days(reviewer)
+    )
     marker_after: list[_RwkvCollectionMarker | None] = []
 
     def collection_marker() -> _RwkvCollectionMarker | None:
@@ -16788,7 +16868,9 @@ def _restore_reviewer_backend_cache(
             history.last_review_id,
             saved_before_history_change,
         )
-        identity = _resident_state_identity(history)
+        # every check of the stored state ran under the day boundary read
+        # before them
+        identity = _resident_state_identity(history, replay_days)
         if saved_before_history_change:
             return _RwkvKeptStateIdentity(
                 last_review_id=identity.last_review_id,
@@ -16796,6 +16878,7 @@ def _restore_reviewer_backend_cache(
                 history_hash=identity.history_hash,
                 replay_key=identity.replay_key,
                 ignored_review_ids=identity.ignored_review_ids,
+                replay_days=identity.replay_days,
             )
         return identity
     except _ReviewerBackendWarmupInvalidated:
@@ -17882,7 +17965,8 @@ def _save_rwkv_state_cache_tail(  # noqa: PLR0911
         # saved before a delete or a move: the next start keeps it as it is
         # and the exact rebuild saves the new state
         return outcome("the stored cache predates a history change", settle=True)
-    if _rwkv_metadata_collection_marker(metadata) == before:
+    stored_marker = _rwkv_metadata_collection_marker(metadata)
+    if stored_marker is not None and stored_marker.names(before):
         return outcome("the stored cache is current", settle=True)
     try:
         replay_key = _rwkv_replay_semantics_key(
@@ -18218,7 +18302,13 @@ def carry_rwkv_state_cache_marker_through_sync(
             ):
                 return
             current = _rwkv_collection_marker(col)
-            if current is None or current.content != stored.content:
+            if (
+                current is None
+                or current.content != stored.content
+                # the day boundary moved: the stored state is checked
+                # against the history at the next start
+                or (stored.days is not None and current.days != stored.days)
+            ):
                 return
 
             def write() -> None:
@@ -18226,7 +18316,8 @@ def carry_rwkv_state_cache_marker_through_sync(
                     reviewer,
                     metadata,
                     _with_rwkv_collection_marker(
-                        metadata, _RwkvCollectionMarker(after, stored.content)
+                        metadata,
+                        _RwkvCollectionMarker(after, stored.content, stored.days),
                     ),
                 ):
                     logger.debug(
@@ -19552,11 +19643,14 @@ def _rwkv_state_cache_metadata_base(
 
 
 def _rwkv_collection_marker(col: object) -> _RwkvCollectionMarker | None:
-    """The collection's marker now (`_RWKV_COLLECTION_MARKER_SQL`), or None
-    when it cannot be read."""
+    """The collection's marker now (`_RWKV_COLLECTION_MARKER_SQL` and the
+    day boundary), or None when it cannot be read."""
     first = getattr(getattr(col, "db", None), "first", None)
     if not callable(first):
         return None
+    # The day first: on the first read of a new day the scheduler unburies
+    # cards, which moves the modification time the statement below reads.
+    days = _rwkv_replay_days(SimpleNamespace(mw=SimpleNamespace(col=col)))
     try:
         row = first(_RWKV_COLLECTION_MARKER_SQL)
     except Exception:
@@ -19570,7 +19664,51 @@ def _rwkv_collection_marker(col: object) -> _RwkvCollectionMarker | None:
         )
     ):
         return None
-    return _RwkvCollectionMarker(mod=row[0], content=tuple(row[1:]))
+    return _RwkvCollectionMarker(mod=row[0], content=tuple(row[1:]), days=days)
+
+
+def _rwkv_replay_days(reviewer: object) -> tuple[int, int] | None:
+    """The day boundary the RWKV replay counts days with, or None when the
+    scheduler's day cannot be read.
+
+    The replay gives a review the day `days_elapsed - (next_day_at - 1 -
+    its time) // 86400` (`_historical_review_day_offset`). With `next_day_at
+    = 86400 * q + r` that is `(days_elapsed - q) - (r - 1 - its time) //
+    86400`: the pair `(r, days_elapsed - q)` decides the day of every review
+    made before `next_day_at`, and it is the same on every day, because a new
+    day adds 86400 to `next_day_at` and 1 to `days_elapsed`. The pair moves
+    exactly when reviews can move to another day: "Next day starts at", the
+    timezone (also a daylight-saving change), the collection's creation time
+    or creation offset, the scheduler version. None of these is in the replay
+    semantics key.
+
+    It is all the model reads of the scheduler's day. The published model (92
+    inputs, rslib/src/rwkv) takes every day-based input from a review's day
+    number (the day since the user's first day, its weekday, its periods, the
+    days since the card's last review); it has no hour-of-day and no timezone
+    input. It reads day numbers relative to the user's first day, so a shift
+    of every day by the same number (the second part of the pair alone)
+    changes no input; the pair counts that as moved all the same, and the
+    history check that follows decides. The next model (103 inputs) takes
+    its extra time features from the UTC time of the review, which neither
+    the timezone nor "Next day starts at" moves. CHECK THIS AGAIN WHEN A
+    MODEL WITH ANOTHER INPUT LAYOUT IS PORTED (the RWKV session, 2026-09-30):
+    an input that reads the local hour or the timezone another way needs its
+    own part here."""
+    return _rwkv_replay_days_of_timing(_timing_today(reviewer))
+
+
+def _rwkv_replay_days_of_timing(timing: object) -> tuple[int, int] | None:
+    days_elapsed = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if (
+        not isinstance(days_elapsed, int)
+        or isinstance(days_elapsed, bool)
+        or not isinstance(next_day_at, int)
+        or isinstance(next_day_at, bool)
+    ):
+        return None
+    return (next_day_at % 86_400, days_elapsed - next_day_at // 86_400)
 
 
 def _rwkv_marked_collection_read(
@@ -19603,7 +19741,20 @@ def _rwkv_metadata_collection_marker(
         )
     ):
         return None
-    return _RwkvCollectionMarker(mod=mod, content=tuple(content))
+    days = metadata.get(_RWKV_STATE_CACHE_COLLECTION_DAYS_KEY)
+    return _RwkvCollectionMarker(
+        mod=mod,
+        content=tuple(content),
+        days=(
+            (days[0], days[1])
+            if isinstance(days, list)
+            and len(days) == 2
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) for value in days
+            )
+            else None
+        ),
+    )
 
 
 def _with_rwkv_collection_marker(
@@ -19613,12 +19764,15 @@ def _with_rwkv_collection_marker(
     """`metadata` naming `marker`, or naming none: a stored cache without a
     marker is never taken as unchanged."""
     updated = dict(metadata)
+    updated.pop(_RWKV_STATE_CACHE_COLLECTION_DAYS_KEY, None)
     if marker is None:
         updated.pop(_RWKV_STATE_CACHE_COLLECTION_MOD_KEY, None)
         updated.pop(_RWKV_STATE_CACHE_COLLECTION_CONTENT_KEY, None)
     else:
         updated[_RWKV_STATE_CACHE_COLLECTION_MOD_KEY] = marker.mod
         updated[_RWKV_STATE_CACHE_COLLECTION_CONTENT_KEY] = list(marker.content)
+        if marker.days is not None:
+            updated[_RWKV_STATE_CACHE_COLLECTION_DAYS_KEY] = list(marker.days)
     return updated
 
 
@@ -19669,13 +19823,19 @@ def _refresh_rwkv_state_cache_collection_mod(
     def refresh() -> None:
         try:
             current = _rwkv_collection_marker(col)
-            if current is None or current.content != stored.content:
+            if (
+                current is None
+                or current.content != stored.content
+                # the day boundary moved: that is a change the replay reads
+                or (stored.days is not None and current.days != stored.days)
+            ):
                 return
             if _write_rwkv_state_cache_metadata_if_unchanged(
                 pinned,
                 metadata,
                 _with_rwkv_collection_marker(
-                    metadata, _RwkvCollectionMarker(current.mod, stored.content)
+                    metadata,
+                    _RwkvCollectionMarker(current.mod, stored.content, stored.days),
                 ),
             ):
                 logger.debug("updated RWKV state cache collection marker")
@@ -19697,15 +19857,21 @@ def _record_rwkv_state_cache_marker(
     """After a restore: the stored cache names `history`, the history the
     restore validated. It records the marker read before that validation
     (`collection_marker`, None when the collection changed since), unless it
-    names it already (the unchanged-collection path: nothing more is read)."""
+    names it already (the unchanged-collection path: nothing more is read).
+
+    A stored marker without the day boundary names it already too: that
+    restore checked nothing about the boundary, so it does not write one.
+    The boundary comes with the next save, which reads or checks the
+    history under it."""
     try:
         metadata = _read_rwkv_state_cache_metadata(reviewer)
+        stored = _rwkv_metadata_collection_marker(metadata) if metadata else None
         if (
             metadata is None
             or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
             or not _rwkv_state_cache_metadata_names_history(metadata, history)
             or metadata.get("replayKey") != history.replay_key
-            or _rwkv_metadata_collection_marker(metadata) == marker_before
+            or (stored is not None and stored.names(marker_before))
         ):
             return
         marker = collection_marker()
@@ -20040,7 +20206,7 @@ def _rwkv_state_cache_collection_unchanged(
     collection_marker: _RwkvCollectionMarker | None = None,
 ) -> bool:
     """Whether the collection is the one the stored cache's history was read
-    from: the same modification time, review log and cards
+    from: the same modification time, review log, cards and day boundary
     (`_RwkvCollectionMarker`), and the same replay semantics.
     `collection_marker`, when given, is the marker the caller read now."""
     stored = _rwkv_metadata_collection_marker(metadata)
@@ -20051,7 +20217,7 @@ def _rwkv_state_cache_collection_unchanged(
         if collection_marker is not None
         else _rwkv_collection_marker(_collection(reviewer))
     )
-    if current != stored:
+    if not stored.names(current):
         return False
     replay_key = metadata.get("replayKey")
     try:
@@ -23481,16 +23647,22 @@ where cid in {ids2str(card_ids)}
 
 def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
     """Whether the resident RWKV state was built under the replay semantics
-    the collection has now.
+    and the day boundary the collection has now.
 
     This is the rule the stored state cache already uses: its metadata carries
-    the same `replayKey`, and a cache whose key still matches is restored
-    rather than rebuilt. Anything the key does not cover cannot make the
-    resident state wrong without making every stored cache wrong too, so the
-    two follow one rule rather than two.
+    the same `replayKey` and, with its collection marker, the same day
+    boundary, and a cache for which both still match is restored rather than
+    rebuilt. Anything the two do not cover cannot make the resident state
+    wrong without making every stored cache wrong too, so the two follow one
+    rule rather than two.
+
+    The day boundary (`_rwkv_replay_days`) is not in the key: "Next day
+    starts at", the timezone and the collection's creation offset move
+    reviews from one day to the next, so a state built before such a change
+    is not the state a build gives after it.
 
     A state that took live answers counts too: an answer leaves the state's
-    identity unknown, not the key it was built under
+    identity unknown, not the key or the day boundary it was built under
     (`_resident_state_replay_key`). With the identity alone, any answer in
     the session made this refuse.
     """
@@ -23508,7 +23680,26 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
             exc_info=True,
         )
         return False
-    return current == replay_key
+    if current != replay_key:
+        return False
+    if _resident_day_boundary_moved(reviewer):
+        logger.debug("the day boundary moved; discarding the RWKV state")
+        return False
+    return True
+
+
+def _resident_day_boundary_moved(reviewer: object) -> bool:
+    """Whether the collection's day boundary is another one than the resident
+    RWKV state was built under. False when that boundary is not known (the
+    scheduler's day could not be read when the state was published): the
+    state is then taken as before. A boundary that cannot be read now counts
+    as moved, as an unreadable replay key does."""
+    key = _reviewer_backend_warmup_key(reviewer)
+    if key is None:
+        return False
+    with _reviewer_backend_state_lock:
+        built_under = _reviewer_backend_resident_replay_days.get(key)
+    return built_under is not None and _rwkv_replay_days(reviewer) != built_under
 
 
 def _resident_state_replay_key(reviewer: object) -> str | None:
@@ -23544,12 +23735,13 @@ def fsrs_preset_resolution_did_change(mw: object) -> None:
 
     if _replay_semantics_still_match_resident_state(reviewer):
         # A collection change the replay does not depend on. `main.py` routes
-        # every config, deck, deck-config and notetype change here, so saving
-        # Preferences arrived as a reason to throw the state away and build it
-        # again. That took Andrew ten seconds in the middle of a review, with
-        # the answer buttons showing "Getting this card ready..." after he
-        # switched the two-button mode (report B-014), a setting the replay
-        # cannot see.
+        # every config, deck, deck-config and notetype change that leaves the
+        # study queues alone here, so a setting arrived as a reason to throw
+        # the state away and build it again. That took Andrew ten seconds in
+        # the middle of a review, with the answer buttons showing "Getting
+        # this card ready..." after he switched the two-button mode (report
+        # B-014), a setting the replay cannot see. (A Preferences save itself
+        # comes through `study_queues_did_change`, which has the same keep.)
         _preserve_reconciled_non_queue_collection_change(
             reviewer,
             reason="a collection change the replay does not depend on",
@@ -23605,11 +23797,19 @@ def study_queues_did_change(
         reviewer or transient_reviewer
     )
     deck_browser = getattr(mw, "deckBrowser", None)
-    resident_state_preserved = mutation_reconciled or (
+    # The operation wrote settings and nothing else: no card, note, deck,
+    # preset, notetype or tag changed. A change of the review log sets none
+    # of these flags, so the flags alone do not say that no review was
+    # written. The operations do: only four reach this function with these
+    # flags (rslib/src/ops.rs `requires_study_queue_rebuild`), a Preferences
+    # save, the current deck, the load balancer switch, and a deck-options
+    # save that changed collection-wide settings only, and none of them
+    # writes a review. The test
+    # `only_four_operations_rebuild_the_study_queues_after_a_settings_only_change`
+    # there fails when a fifth joins them.
+    settings_only = (
         changes is not None
         and changes.config
-        and deck_browser is not None
-        and initiator is deck_browser
         and not any(
             (
                 changes.card,
@@ -23619,6 +23819,21 @@ def study_queues_did_change(
                 changes.notetype,
                 changes.deck_config,
             )
+        )
+    )
+    # Such an operation can change the replay only through a setting the
+    # replay reads: those in the replay semantics key, and the day boundary
+    # ("Next day starts at"). While both are what the resident state was built
+    # under, the state stays (spec sched.rwkv-curve-buttons-wait). Before,
+    # only the deck list's own change of the current deck kept it, and a
+    # Preferences save that changed any setting made the next card wait
+    # 1.5-4.7 s (report B-048): the save reports `study_queues`, so it never
+    # reached `fsrs_preset_resolution_did_change`, which had this keep.
+    resident_state_preserved = mutation_reconciled or (
+        settings_only
+        and (
+            (deck_browser is not None and initiator is deck_browser)
+            or _replay_semantics_still_match_resident_state(transient_reviewer)
         )
     )
     if resident_state_preserved:
