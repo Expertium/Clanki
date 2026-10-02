@@ -1,4 +1,4 @@
 # Clanki
 
-This is an unofficial Anki fork that aims to bring more and better spaced repetition algorithms
-and to simplify Anki's UI. It's not yet ready for a release.
+## I WILL NOT BE WORKING ON THIS PROJECT ANYMORE.
+Sadly, I am unable to continue working on Clanki. If anyone wants to, feel free to use the work done so far as a starting point for speeding up Anki (most of the work done so far is performance optimizations).
