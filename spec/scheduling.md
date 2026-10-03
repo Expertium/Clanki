@@ -1301,6 +1301,54 @@ are thousands of days long, on the flat tail of the curve.
 `test_a_full_upload_keeps_the_rwkv_state_through_its_reopen`
 (`qt/tests/test_sync.py`).
 
+## sched.rwkv-replay-key-follows-empty-decks
+
+The RWKV replay key (what the resident RWKV state and the stored state cache
+are matched on) lists every deck and its preset, but a review goes through
+its card's home deck only (the original deck of a card in a filtered deck),
+and a deleted card's review through no deck (`sched.rwkv-replay-deleted-cards`).
+
+Given a collection that runs RWKV-Curve or RWKV-Instant with its RWKV state
+loaded, when the user adds a deck, adds a filtered deck (also by Custom
+Study), or deletes a deck, and the change moves the replay key, and:
+
+- nothing else in the key changed,
+- no card was deleted, and
+- no card whose home deck is an added, deleted or changed deck has a row in
+  the review log (any row, not only rated ones),
+
+then no replayed review changed, and the state stays exact. The resident
+state and the stored state cache take the new key, so the next settings
+change (a Preferences save, for example) and the next start keep them. The
+stored cache's saved parts keep the key they were written with, and the
+cache records which key each of them now stands for; a save into a new store
+forgets that record. An undo of the change takes the old key back, a redo the
+new one. The stored cache takes the new key only when it was saved under the
+old one and holds no history change (`sched.rwkv-history-change-keeps-state`).
+
+A deck delete that fails a condition throws the state away as before (a
+delete of reviewed cards changes the replay). An added deck that fails one
+keeps the state under the old key, as before.
+
+**Why:** the key moved while no replayed review did, so the next settings
+change threw the state away and the next card waited for a whole rebuild
+(128 s measured after a new deck or a new filtered deck, 108 s after a
+deleted empty deck, on 868,000 reviews), and the next start rebuilt the
+state before the first card (163 s).
+
+**Pinned by:** `test_adding_an_empty_deck_moves_the_rwkv_replay_key_with_it`,
+`test_a_state_that_took_answers_takes_the_new_replay_key_too`,
+`test_deleting_an_empty_deck_keeps_the_rwkv_state`,
+`test_deleting_a_deck_with_reviewed_cards_still_discards_the_rwkv_state`,
+`test_a_new_deck_that_holds_reviewed_cards_keeps_the_old_replay_key`,
+`test_a_deck_change_that_moves_another_part_of_the_key_keeps_the_old_key`,
+`test_a_stored_cache_with_a_history_change_keeps_its_replay_key`,
+`test_the_stored_state_reads_under_the_key_its_segment_stands_for`,
+`test_undo_and_redo_of_an_empty_deck_move_the_replay_key_back_and_forth`,
+`test_replay_key_aliases_hold_for_their_store_generation_only`,
+`test_the_operations_that_add_or_remove_decks_move_the_replay_key`
+(`qt/tests/test_rwkv_scheduler.py`).
+
 ## sched.rwkv-id-codes
 
 Given a card, note, deck or preset id, the RWKV model's code for that entity

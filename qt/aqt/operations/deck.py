@@ -21,6 +21,8 @@ def _run_preserving_rwkv_state(
     mutation: Callable[[], _T],
     *,
     require_no_preset_overlay: bool = False,
+    changes_decks: bool = False,
+    keep_only_when_replay_unchanged: bool = False,
 ) -> _T:
     from aqt import rwkv_scheduler
 
@@ -28,6 +30,8 @@ def _run_preserving_rwkv_state(
         col,
         mutation,
         require_no_preset_overlay=require_no_preset_overlay,
+        changes_decks=changes_decks,
+        keep_only_when_replay_unchanged=keep_only_when_replay_unchanged,
     )
 
 
@@ -37,7 +41,16 @@ def remove_decks(
     deck_ids: Sequence[DeckId],
     deck_name: str,
 ) -> CollectionOp[OpChangesWithCount]:
-    return CollectionOp(parent, lambda col: col.decks.remove(deck_ids)).success(
+    # the RWKV state stays only when no reviewed card goes with the decks
+    return CollectionOp(
+        parent,
+        lambda col: _run_preserving_rwkv_state(
+            col,
+            lambda: col.decks.remove(deck_ids),
+            changes_decks=True,
+            keep_only_when_replay_unchanged=True,
+        ),
+    ).success(
         lambda out: tooltip(
             tr.browsing_cards_deleted_with_deckname(
                 count=out.count,
@@ -103,6 +116,7 @@ def add_deck(*, parent: QWidget, name: str) -> CollectionOp[OpChangesWithId]:
         lambda col: _run_preserving_rwkv_state(
             col,
             lambda: col.decks.add_normal_deck_with_name(name),
+            changes_decks=True,
         ),
     )
 

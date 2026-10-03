@@ -24098,6 +24098,489 @@ def test_the_move_and_preset_operations_keep_the_rwkv_state(
     assert ankiconnect.AnkiConnect.setDeckConfigId.preserve({}) == {"routing": True}
 
 
+class _DeckChangeCol:
+    """A collection of `_deletion_reviewer` whose decks come and go: deck 100
+    (preset 1) holds the reviewed cards, `routing` is every deck and its
+    preset, `cards` the number of cards, `reviewed_decks` the home decks of
+    the cards with a review-log row."""
+
+    def __init__(
+        self,
+        reviewer: SimpleNamespace,
+        counter: _UndoCounter,
+        tmp_path: Path,
+    ) -> None:
+        self.reviewer = reviewer
+        self.counter = counter
+        self.routing: dict[int, int] = {100: 1}
+        self.cards = 2
+        self.reviewed_decks = {100}
+        col = reviewer.mw.col
+        col.decks.all_names_and_ids = lambda: [
+            SimpleNamespace(id=deck_id) for deck_id in self.routing
+        ]
+        col.decks.config_dict_for_deck_id = lambda deck_id: {
+            "id": self.routing.get(deck_id, 1)
+        }
+        col.decks.add_normal_deck_with_name = lambda _name: self.add(200)
+        col.decks.remove = self.remove
+        col.db.scalar = self.scalar
+        self.configs: list[dict[str, object]] = []
+        col.decks.all_config = lambda: list(self.configs)
+        reviewer.mw.pm = SimpleNamespace(profileFolder=lambda: str(tmp_path))
+        self.cache_dir = tmp_path / rwkv_scheduler._RWKV_STATE_CACHE_DIR
+        self.cache_dir.mkdir()
+
+    def scalar(self, sql: str, *args: object) -> object:
+        if sql == "select max(id) from revlog":
+            return 5000
+        if sql == "select count() from cards":
+            return self.cards
+        if "exists (select 1 from revlog" in sql:
+            asked = {int(value) for value in re.findall(r"\d+", sql.split(" in ")[1])}
+            return 1 if asked & self.reviewed_decks else None
+        return 123
+
+    def key(self) -> str:
+        return rwkv_scheduler._rwkv_replay_semantics_key(
+            self.reviewer,
+            first_review_elapsed_source=(
+                rwkv_scheduler.RwkvFirstReviewElapsedSource.DECK_CONFIG
+            ),
+        )
+
+    def changes(self) -> collection_pb2.OpChanges:
+        return collection_pb2.OpChanges(deck=True, study_queues=True)
+
+    def add(self, deck_id: int) -> collection_pb2.OpChangesWithId:
+        self.routing[deck_id] = 1
+        self.counter.set(self.counter.value + 1)
+        return collection_pb2.OpChangesWithId(id=deck_id, changes=self.changes())
+
+    def remove(self, deck_ids: Sequence[int]) -> collection_pb2.OpChangesWithCount:
+        for deck_id in deck_ids:
+            del self.routing[deck_id]
+            if deck_id in self.reviewed_decks:
+                # the delete takes the deck's cards with it; their reviews
+                # stay, but no card has the deck as its home deck any more
+                self.cards -= 2
+                self.reviewed_decks.discard(deck_id)
+        self.counter.set(self.counter.value + 1)
+        return collection_pb2.OpChangesWithCount(count=0, changes=self.changes())
+
+    def store_metadata(self, replay_key: str, **extra: object) -> None:
+        (self.cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_META_FILE).write_text(
+            json.dumps(
+                {
+                    "version": rwkv_scheduler._RWKV_STATE_CACHE_VERSION,
+                    "storage": rwkv_scheduler._RWKV_STATE_CACHE_STORE_KIND,
+                    "storeGeneration": "g1",
+                    "replayKey": replay_key,
+                    **extra,
+                }
+            ),
+            encoding="utf8",
+        )
+
+    def metadata(self) -> dict[str, object]:
+        metadata = rwkv_scheduler._read_rwkv_state_cache_metadata(self.reviewer)
+        assert metadata is not None
+        return metadata
+
+
+def _deck_change_col(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[_DeckChangeCol, tuple[int, int]]:
+    reviewer, _db, warmup_key, counter = _deletion_reviewer(monkeypatch)
+    col = _DeckChangeCol(reviewer, counter, tmp_path)
+    key = col.key()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(replay_key=key)
+    )
+    col.store_metadata(key)
+    return col, warmup_key
+
+
+def _run_deck_op(op: Any, col: _DeckChangeCol) -> None:
+    result = op._op(cast(Any, col.reviewer.mw.col))
+    rwkv_scheduler.study_queues_did_change(col.reviewer.mw, None, result.changes)
+
+
+def _a_setting_changes(col: _DeckChangeCol) -> None:
+    rwkv_scheduler.study_queues_did_change(
+        col.reviewer.mw, None, collection_pb2.OpChanges(config=True, study_queues=True)
+    )
+
+
+def test_adding_an_empty_deck_moves_the_rwkv_replay_key_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    new deck enters the replay key, but no replayed row goes through it, so
+    the resident state and the stored cache take the new key. Before, both
+    kept the old one: the next settings change threw the state away (a
+    128 s wait for the next card) and the next start built it again."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+
+    _run_deck_op(deck_ops.add_deck(parent=cast(Any, None), name="new"), col)
+
+    new_key = col.key()
+    assert new_key != old_key
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity == _rwkv_resident_identity(replay_key=new_key)
+    metadata = col.metadata()
+    assert metadata["replayKey"] == new_key
+    assert rwkv_scheduler._rwkv_replay_key_aliases(metadata) == {old_key: new_key}
+    # a stored segment written under the old key reads as the new key
+    segment = replace(_rwkv_canonical_history(), replay_key=old_key)
+    assert (
+        rwkv_scheduler._rwkv_segment_under_current_key(segment, metadata).replay_key
+        == new_key
+    )
+
+    _a_setting_changes(col)
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == identity
+    assert no_exact_rebuild_thread == []
+
+
+def test_a_state_that_took_answers_takes_the_new_replay_key_too(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    state whose identity live answers made unknown keeps the key it was
+    built under beside it; that key moves too."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    rwkv_scheduler._reviewer_backend_resident_replay_keys[warmup_key] = col.key()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = None
+
+    _run_deck_op(deck_ops.add_deck(parent=cast(Any, None), name="new"), col)
+
+    assert rwkv_scheduler._resident_state_replay_key(col.reviewer) == col.key()
+    _a_setting_changes(col)
+    assert warmup_key in rwkv_scheduler._reviewer_backend_warmup_states
+    assert no_exact_rebuild_thread == []
+
+
+def test_deleting_an_empty_deck_keeps_the_rwkv_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks:
+    deleting a deck that no reviewed card is in keeps the state, under the
+    new key. Before, the state was thrown away and the next card waited for
+    a whole rebuild (108 s)."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    col.routing[300] = 2
+    key_with_deck = col.key()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(replay_key=key_with_deck)
+    )
+    col.store_metadata(key_with_deck)
+
+    _run_deck_op(
+        deck_ops.remove_decks(
+            parent=cast(Any, None), deck_ids=[DeckId(300)], deck_name="empty"
+        ),
+        col,
+    )
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[
+        warmup_key
+    ] == _rwkv_resident_identity(replay_key=col.key())
+    assert col.metadata()["replayKey"] == col.key()
+    assert no_exact_rebuild_thread == []
+
+
+def test_deleting_a_deck_with_reviewed_cards_still_discards_the_rwkv_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    delete that takes reviewed cards with it changes the replay, so the
+    state is thrown away as before, and the stored cache keeps its key."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+
+    _run_deck_op(
+        deck_ops.remove_decks(
+            parent=cast(Any, None), deck_ids=[DeckId(100)], deck_name="reviewed"
+        ),
+        col,
+    )
+
+    assert warmup_key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert col.metadata()["replayKey"] == old_key
+    assert no_exact_rebuild_thread == []
+
+
+def test_a_new_deck_that_holds_reviewed_cards_keeps_the_old_replay_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks:
+    when a reviewed card's home deck is among the changed decks, the key
+    does not move: the rows through that deck may change."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+    col.reviewed_decks.add(200)
+
+    deck_ops.add_deck(parent=cast(Any, None), name="new")._op(
+        cast(Any, col.reviewer.mw.col)
+    )
+
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity is not None and identity.replay_key == old_key
+    assert col.metadata()["replayKey"] == old_key
+
+
+def test_a_deck_change_that_moves_another_part_of_the_key_keeps_the_old_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks:
+    the key moves with the deck only when the preset routing is all that
+    changed in it."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+    add = col.add
+
+    def add_with_a_preset(deck_id: int) -> collection_pb2.OpChangesWithId:
+        col.configs.append({"id": 7})
+        return add(deck_id)
+
+    monkeypatch.setattr(col, "add", add_with_a_preset)
+
+    deck_ops.add_deck(parent=cast(Any, None), name="new")._op(
+        cast(Any, col.reviewer.mw.col)
+    )
+
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity is not None and identity.replay_key == old_key
+    assert col.metadata()["replayKey"] == old_key
+
+
+def test_a_stored_cache_with_a_history_change_keeps_its_replay_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    stored cache that holds a history change is not the resident state, so
+    it keeps its key; the resident state still takes the new one."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+    col.store_metadata(
+        old_key, **{rwkv_scheduler._RWKV_STATE_CACHE_HISTORY_CHANGED_KEY: True}
+    )
+
+    deck_ops.add_deck(parent=cast(Any, None), name="new")._op(
+        cast(Any, col.reviewer.mw.col)
+    )
+
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity is not None and identity.replay_key == col.key() != old_key
+    assert col.metadata()["replayKey"] == old_key
+
+
+def test_the_stored_state_reads_under_the_key_its_segment_stands_for(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    segment written under the old key restores as the state of the new one,
+    so the start after a new empty deck restores instead of building."""
+    history = replace(_rwkv_checkpoint_test_history(3), replay_key="new")
+    cache_dir = tmp_path / "rwkv-state-cache"
+    cache_dir.mkdir()
+    (cache_dir / rwkv_scheduler._RWKV_STATE_CACHE_DELTAS_FILE).write_bytes(
+        rwkv_scheduler._rwkv_empty_deltas_log()
+    )
+    metadata: dict[str, object] = {
+        "storage": rwkv_scheduler._RWKV_STATE_CACHE_STORE_KIND,
+        "storeGeneration": "generation",
+        "snapshotSegmentId": 2,
+        "snapshotReviewId": history.last_review_id,
+        "snapshotHistoryHash": history.history_hash,
+        "lastReviewId": history.last_review_id,
+        "reviewCount": history.review_count,
+        "historyHash": history.history_hash,
+        "replayKey": "new",
+        rwkv_scheduler._RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY: {
+            "storeGeneration": "generation",
+            "keys": {"old": "new"},
+        },
+    }
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_read_rwkv_state_cache_store_segment_history",
+        lambda _path, _generation, _segment_id: replace(
+            history, reviews=[], review_ids=[], replay_key="old"
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_state_cache_store_segment_chain",
+        lambda _path, _generation, _segment_id: [2],
+    )
+
+    def read() -> object:
+        return rwkv_scheduler._read_unchanged_rwkv_state_cache_store(
+            backend=cast(
+                Any,
+                SimpleNamespace(restore_state_cache_checkpoint=lambda *_args: None),
+            ),
+            cache_dir=cache_dir,
+            metadata=metadata,
+        )
+
+    stored = read()
+    assert isinstance(stored, rwkv_scheduler.RwkvStoredStateCache)
+    assert stored.history.replay_key == "new"
+
+    # without the alias, the old segment is no state of the new key
+    del metadata[rwkv_scheduler._RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY]
+    assert read() is None
+
+
+def test_undo_and_redo_of_an_empty_deck_move_the_replay_key_back_and_forth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: the
+    undo of the new deck takes the key back to the one before, the redo to
+    the new one again, for the resident state and the stored cache."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    old_key = col.key()
+    _run_deck_op(deck_ops.add_deck(parent=cast(Any, None), name="new"), col)
+    new_key = col.key()
+
+    del col.routing[200]
+    assert record_collection_undo(_undo_result(counter=5, next_counter=6)) == []
+    rwkv_scheduler.study_queues_did_change(col.reviewer.mw, None, col.changes())
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity is not None and identity.replay_key == old_key
+    assert col.metadata()["replayKey"] == old_key
+    assert rwkv_scheduler._rwkv_replay_key_aliases(col.metadata()) == {new_key: old_key}
+    _a_setting_changes(col)
+    assert rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] == identity
+
+    col.routing[200] = 1
+    assert record_collection_redo(_undo_result(counter=6, next_counter=7)) == []
+    identity = rwkv_scheduler._reviewer_backend_warmup_states[warmup_key]
+    assert identity is not None and identity.replay_key == new_key
+    assert col.metadata()["replayKey"] == new_key
+
+
+def test_replay_key_aliases_hold_for_their_store_generation_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: the
+    aliases name the segments of one store; a save into a new store drops
+    them, and a save under a key that has an alias drops that alias (the
+    segment written under it stands for itself)."""
+    aliases = {
+        rwkv_scheduler._RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY: {
+            "storeGeneration": "g1",
+            "keys": {"old": "new", "older": "new"},
+        }
+    }
+    history = replace(_rwkv_canonical_history(), replay_key="old")
+    reviewer = SimpleNamespace(mw=SimpleNamespace(col=None))
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_state_cache_metadata_base", lambda _reviewer: {}
+    )
+
+    def save(generation: str) -> dict[str, object]:
+        return rwkv_scheduler._rwkv_state_cache_metadata(
+            reviewer,
+            history,
+            snapshot_review_id=history.last_review_id,
+            base_metadata={**aliases, "storeGeneration": "g1"},
+            state_store_generation=generation,
+            snapshot_segment_id=1,
+        )
+
+    same_store = save("g1")
+    assert rwkv_scheduler._rwkv_replay_key_aliases(same_store) == {"older": "new"}
+    new_store = save("g2")
+    assert rwkv_scheduler._rwkv_replay_key_aliases(new_store) == {}
+    assert rwkv_scheduler._RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY not in new_store
+
+
+def test_the_operations_that_add_or_remove_decks_move_the_replay_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks: a
+    new deck, a deleted deck, a new filtered deck and Custom Study run
+    through the wrapper that moves the key; a delete keeps the state only
+    when no reviewed card goes with it."""
+    from aqt.operations import deck as deck_ops
+    from aqt.operations import scheduling as scheduling_ops
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "run_collection_mutation_preserving_rwkv_state",
+        lambda col, mutation, **kwargs: calls.append(kwargs) or mutation(),
+    )
+    monkeypatch.setattr(
+        scheduling_ops,
+        "_prepare_filtered_deck_retrievability_scores",
+        lambda _col, _config: None,
+    )
+    col = SimpleNamespace(
+        decks=SimpleNamespace(
+            add_normal_deck_with_name=lambda name: "added",
+            remove=lambda deck_ids: "removed",
+        ),
+        sched=SimpleNamespace(
+            add_or_update_filtered_deck=lambda deck: "filtered",
+            custom_study=lambda request: "custom",
+        ),
+    )
+
+    for op in (
+        deck_ops.add_deck(parent=cast(Any, None), name="new"),
+        deck_ops.remove_decks(
+            parent=cast(Any, None), deck_ids=[DeckId(1)], deck_name="x"
+        ),
+        scheduling_ops.add_or_update_filtered_deck(
+            parent=cast(Any, None), deck=cast(Any, SimpleNamespace(config=None))
+        ),
+        scheduling_ops.custom_study(parent=cast(Any, None), request=cast(Any, None)),
+    ):
+        op._op(cast(Any, col))
+    assert [call.get("changes_decks") for call in calls] == [True] * 4
+    assert [call.get("keep_only_when_replay_unchanged", False) for call in calls] == [
+        False,
+        True,
+        False,
+        False,
+    ]
+
+
 def test_undo_of_a_deletion_before_the_rebuild_needs_no_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -338,6 +338,12 @@ from col c
 # set on the stored cache when a history change keeps the resident state; the
 # exact rebuild's save writes metadata without it
 _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY = "historyChangedSinceSaved"
+# {"storeGeneration": ..., "keys": {segment replay key: the key it stands
+# for}}: the replay key moved with no replayed row (a new or deleted deck that
+# no reviewed card is in), and the stored segments, written under the old key,
+# are the state a build under the new one gives (spec
+# sched.rwkv-replay-key-follows-empty-decks)
+_RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY = "replayKeyAliases"
 # The deltas after this review id were appended by the idle save
 # (`_save_rwkv_state_cache_tail`), not replayed by a restore: the next restore
 # replays them as it replays the reviews it reads after the stored state, so
@@ -1152,6 +1158,11 @@ class RwkvCollectionMutationReconciliation:
     identities_by_card_id: dict[int, RwkvReviewIdentity]
     require_no_preset_overlay: bool
     previous_undo_counter: int | None
+    # (key before, key after) when the mutation moved the replay key without
+    # moving any replayed row (`_rwkv_replay_unchanged_by_routing_change`):
+    # an undo takes the resident state back to the key before, a redo to
+    # the key after
+    replay_rekey: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -3687,6 +3698,13 @@ def _record_collection_mutation_undo_or_redo(
         ),
     )
     _mark_collection_change_reconciled(reviewer)
+    if reconciliation.replay_rekey is not None:
+        # the deck the mutation added or removed is gone or back: so is
+        # the key it moved (`_rwkv_replay_unchanged_by_routing_change`)
+        key_before, key_after = reconciliation.replay_rekey
+        old_key, new_key = (key_before, key_after) if redo else (key_after, key_before)
+        if _rwkv_replay_key_or_none(reviewer) == new_key:
+            _rekey_rwkv_state(reviewer, old_key, new_key)
     for card_id in reconciliation.card_ids:
         try:
             _set_rwkv_card_info_score(
@@ -5223,8 +5241,21 @@ def run_collection_mutation_preserving_rwkv_state(
     note_ids: Sequence[int] = (),
     require_no_preset_overlay: bool = False,
     force_reconciliation: bool = False,
+    changes_decks: bool = False,
+    keep_only_when_replay_unchanged: bool = False,
 ) -> _T:
-    """Run a known non-review mutation and retain unchanged recurrent history."""
+    """Run a known non-review mutation and retain unchanged recurrent history.
+
+    `changes_decks`: the mutation can add or remove decks (a new deck, a new
+    filtered deck, a deleted one), which moves the replay key (its preset
+    routing lists every deck) although no replayed row may route through
+    such a deck. When none does, the resident state and the stored cache
+    take the new key (spec sched.rwkv-replay-key-follows-empty-decks);
+    before, they kept the old one, and the next settings change or start
+    found the key moved and rebuilt the state (107-165 s measured).
+    `keep_only_when_replay_unchanged` keeps the state only in that case
+    and otherwise leaves the change to the handlers that follow, which
+    throw the state away (a deck delete that deletes reviewed cards)."""
 
     import aqt
 
@@ -5248,18 +5279,224 @@ def run_collection_mutation_preserving_rwkv_state(
         if resolved_card_ids is not None
         else None
     )
+    routing_before = (
+        _rwkv_routing_snapshot(reviewer)
+        if changes_decks and reconciliation is not None
+        else None
+    )
     result = mutation()
     changes = (
         result
         if isinstance(result, collection_pb2.OpChanges)
         else getattr(result, "changes", None)
     )
+    rekey = None
+    if routing_before is not None:
+        routing_after = _rwkv_routing_snapshot(reviewer)
+        if (
+            routing_after is not None
+            and routing_after.key != routing_before.key
+            and _rwkv_replay_unchanged_by_routing_change(
+                reviewer, routing_before, routing_after
+            )
+        ):
+            rekey = (routing_before.key, routing_after.key)
+    if keep_only_when_replay_unchanged and rekey is None:
+        return result
+    if rekey is not None and reconciliation is not None:
+        reconciliation = replace(reconciliation, replay_rekey=rekey)
     if force_reconciliation or (
         isinstance(changes, collection_pb2.OpChanges)
         and _rwkv_operation_changes_require_reconciliation(changes)
     ):
-        record_collection_mutation_reconciliation(reconciliation)
+        if record_collection_mutation_reconciliation(reconciliation) and rekey:
+            _rekey_rwkv_state(reviewer, *rekey)
     return result
+
+
+@dataclass(frozen=True)
+class _RwkvRoutingSnapshot:
+    """The replay key, what it is the hash of, and the number of cards."""
+
+    key: str
+    payload: dict[str, object]
+    card_count: int
+
+
+def _rwkv_routing_snapshot(reviewer: object) -> _RwkvRoutingSnapshot | None:
+    try:
+        payload = _rwkv_replay_semantics_payload(
+            reviewer,
+            first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
+        )
+        card_count = getattr(_collection(reviewer), "db").scalar(
+            "select count() from cards"
+        )
+    except Exception:
+        logger.debug("failed to read the RWKV replay routing", exc_info=True)
+        return None
+    if not isinstance(card_count, int):
+        return None
+    return _RwkvRoutingSnapshot(
+        key=_rwkv_replay_key_of_payload(payload),
+        payload=payload,
+        card_count=card_count,
+    )
+
+
+def _rwkv_replay_unchanged_by_routing_change(
+    reviewer: object,
+    before: _RwkvRoutingSnapshot,
+    after: _RwkvRoutingSnapshot,
+) -> bool:
+    """Whether a mutation that moved the replay key left every replayed row
+    as it was: only the preset routing changed, no card was deleted, and
+    no card whose home deck is a changed deck (added, removed, or given
+    another preset) has a review-log row. A row routes through its card's
+    home deck (the original deck of a card in a filtered deck), and a row
+    of a deleted card through no deck at all, so no row can route through
+    such a deck. The RWKV state gives an id the same code whatever other
+    ids exist, so the state stays the one a build under the new key gives.
+    Any review-log row counts, not only rated ones: a manual row takes part
+    in choosing where a card's replay starts."""
+    if before.card_count != after.card_count:
+        return False
+    rest_before = {k: v for k, v in before.payload.items() if k != "presetRouting"}
+    rest_after = {k: v for k, v in after.payload.items() if k != "presetRouting"}
+    if rest_before != rest_after:
+        return False
+
+    def routing(snapshot: _RwkvRoutingSnapshot) -> dict[object, object]:
+        entries = snapshot.payload.get("presetRouting")
+        if not isinstance(entries, list):
+            return {}
+        return {entry[0]: entry[1] for entry in entries if len(entry) == 2}
+
+    routing_before = routing(before)
+    routing_after = routing(after)
+    missing = object()
+    changed = [
+        deck_id
+        for deck_id in routing_before.keys() | routing_after.keys()
+        if routing_before.get(deck_id, missing) != routing_after.get(deck_id, missing)
+    ]
+    deck_ids = [
+        deck_id
+        for deck_id in changed
+        if isinstance(deck_id, int) and not isinstance(deck_id, bool)
+    ]
+    if not deck_ids or len(deck_ids) != len(changed):
+        return False
+    try:
+        routed = getattr(_collection(reviewer), "db").scalar(
+            f"""
+select 1 from cards c
+where (case when c.odid != 0 then c.odid else c.did end) in {ids2str(deck_ids)}
+  and exists (select 1 from revlog r where r.cid = c.id)
+limit 1
+"""
+        )
+    except Exception:
+        logger.debug("failed to read the cards of the changed decks", exc_info=True)
+        return False
+    return routed is None
+
+
+def _rekey_rwkv_state(reviewer: object, old_key: str, new_key: str) -> None:
+    """The resident state and the stored cache, both built under `old_key`,
+    take `new_key`, a key under which a build gives the same state
+    (`_rwkv_replay_unchanged_by_routing_change`)."""
+    warmup_key = _reviewer_backend_warmup_key(reviewer)
+    resident = False
+    with _reviewer_backend_state_lock:
+        if (
+            warmup_key is not None
+            and warmup_key in _reviewer_backend_warmup_states
+            and warmup_key not in _reviewer_backend_warmup_pending_generations
+        ):
+            identity = _reviewer_backend_warmup_states[warmup_key]
+            built_under = (
+                identity.replay_key
+                if identity is not None
+                else _reviewer_backend_resident_replay_keys.get(warmup_key)
+            )
+            if built_under == old_key:
+                if identity is not None:
+                    _reviewer_backend_warmup_states[warmup_key] = replace(
+                        identity, replay_key=new_key
+                    )
+                _reviewer_backend_resident_replay_keys[warmup_key] = new_key
+                resident = True
+    stored = _rekey_stored_rwkv_state_cache(reviewer, old_key, new_key)
+    logger.debug(
+        "RWKV replay key moved with no replayed row: resident=%s stored=%s",
+        resident,
+        stored,
+    )
+
+
+def _rekey_stored_rwkv_state_cache(
+    reviewer: object, old_key: str, new_key: str
+) -> bool:
+    """The stored cache takes `new_key` when it was saved under `old_key`
+    and holds no history change. Its segments keep the key they were
+    written with; `replayKeyAliases` says which key each stands for, for
+    this store generation only."""
+    try:
+        metadata = _read_rwkv_state_cache_metadata(reviewer)
+        if (
+            metadata is None
+            or metadata.get("version") != _RWKV_STATE_CACHE_VERSION
+            or metadata.get("storage") != _RWKV_STATE_CACHE_STORE_KIND
+            or metadata.get("replayKey") != old_key
+            or metadata.get(_RWKV_STATE_CACHE_HISTORY_CHANGED_KEY) is True
+        ):
+            return False
+        aliases = {
+            source: new_key if target == old_key else target
+            for source, target in _rwkv_replay_key_aliases(metadata).items()
+        }
+        aliases[old_key] = new_key
+        aliases.pop(new_key, None)
+        updated = dict(metadata)
+        updated["replayKey"] = new_key
+        updated[_RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY] = {
+            "storeGeneration": metadata.get("storeGeneration"),
+            "keys": aliases,
+        }
+        return _write_rwkv_state_cache_metadata_if_unchanged(
+            reviewer, metadata, updated
+        )
+    except Exception:
+        logger.warning("failed to move the RWKV state cache replay key", exc_info=True)
+        return False
+
+
+def _rwkv_segment_under_current_key(
+    history: RwkvHistoricalReviewInputs, metadata: Mapping[str, object]
+) -> RwkvHistoricalReviewInputs:
+    """A stored segment's history with the key it stands for
+    (`_rwkv_replay_key_aliases`) instead of the key it was written with."""
+    key = _rwkv_replay_key_aliases(metadata).get(history.replay_key)
+    return history if key is None else replace(history, replay_key=key)
+
+
+def _rwkv_replay_key_aliases(metadata: Mapping[str, object]) -> dict[str, str]:
+    """The key each segment key of the stored store stands for
+    (`_rekey_stored_rwkv_state_cache`); none from another store generation."""
+    raw = metadata.get(_RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY)
+    if not isinstance(raw, dict) or raw.get("storeGeneration") != metadata.get(
+        "storeGeneration"
+    ):
+        return {}
+    keys = raw.get("keys")
+    if not isinstance(keys, dict):
+        return {}
+    return {
+        source: target
+        for source, target in keys.items()
+        if isinstance(source, str) and isinstance(target, str) and source and target
+    }
 
 
 def _rwkv_operation_changes_require_reconciliation(
@@ -19003,10 +19240,13 @@ def _read_rwkv_state_cache_store(
         return None
     store_path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
     try:
-        snapshot_history = _read_rwkv_state_cache_store_segment_history(
-            store_path,
-            store_generation,
-            snapshot_segment_id,
+        snapshot_history = _rwkv_segment_under_current_key(
+            _read_rwkv_state_cache_store_segment_history(
+                store_path,
+                store_generation,
+                snapshot_segment_id,
+            ),
+            metadata,
         )
         state_store_segment_chain = set(
             _rwkv_state_cache_store_segment_chain(
@@ -19104,10 +19344,13 @@ def _read_rwkv_state_cache_store(
         ):
             continue
         try:
-            checkpoint_history = _read_rwkv_state_cache_store_segment_history(
-                store_path,
-                store_generation,
-                segment_id,
+            checkpoint_history = _rwkv_segment_under_current_key(
+                _read_rwkv_state_cache_store_segment_history(
+                    store_path,
+                    store_generation,
+                    segment_id,
+                ),
+                metadata,
             )
             checkpoint_history = replace(
                 checkpoint_history,
@@ -19262,10 +19505,13 @@ def _read_unchanged_rwkv_state_cache_store(
         return None
 
     store_path = cache_dir / _RWKV_STATE_CACHE_STORE_FILE
-    snapshot_history = _read_rwkv_state_cache_store_segment_history(
-        store_path,
-        store_generation,
-        snapshot_segment_id,
+    snapshot_history = _rwkv_segment_under_current_key(
+        _read_rwkv_state_cache_store_segment_history(
+            store_path,
+            store_generation,
+            snapshot_segment_id,
+        ),
+        metadata,
     )
     _rwkv_state_cache_store_segment_chain(
         store_path,
@@ -19611,6 +19857,17 @@ def _rwkv_state_cache_metadata(
         )
     if entries:
         metadata["checkpoints"] = entries
+    # aliases of the segments this store generation already holds; a segment
+    # written under the saved key stands for itself
+    aliases = _rwkv_replay_key_aliases(metadata)
+    aliases.pop(history.replay_key, None)
+    if aliases:
+        metadata[_RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY] = {
+            "storeGeneration": metadata.get("storeGeneration"),
+            "keys": aliases,
+        }
+    else:
+        metadata.pop(_RWKV_STATE_CACHE_REPLAY_KEY_ALIASES_KEY, None)
     if history.ignored_review_ids:
         metadata[_RWKV_STATE_CACHE_IGNORED_REVIEW_IDS_KEY] = list(
             history.ignored_review_ids
@@ -23004,8 +23261,31 @@ def _rwkv_replay_semantics_key(
     *,
     first_review_elapsed_source: RwkvFirstReviewElapsedSource,
 ) -> str:
+    return _rwkv_replay_key_of_payload(
+        _rwkv_replay_semantics_payload(
+            reviewer, first_review_elapsed_source=first_review_elapsed_source
+        )
+    )
+
+
+def _rwkv_replay_key_of_payload(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _rwkv_replay_semantics_payload(
+    reviewer: object,
+    *,
+    first_review_elapsed_source: RwkvFirstReviewElapsedSource,
+) -> dict[str, object]:
+    """What `_rwkv_replay_semantics_key` is the hash of."""
     dynamic_preset_replay = _rwkv_dynamic_preset_replay_enabled_for_collection(reviewer)
-    payload: dict[str, object] = {
+    return {
         "version": _RWKV_PRESET_REPLAY_SEMANTICS_VERSION,
         "firstReviewElapsedSource": first_review_elapsed_source.value,
         "firstReviewElapsedConfig": (
@@ -23019,13 +23299,6 @@ def _rwkv_replay_semantics_key(
             _fsrs_preset_overlay_config(reviewer) if dynamic_preset_replay else None
         ),
     }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _rwkv_review_dynamic_preset_replay(deck_config: dict[str, object]) -> bool:
