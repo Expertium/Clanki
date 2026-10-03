@@ -1372,7 +1372,7 @@ dependencies = [
 [[package]]
 name = "fsrs"
 version = "6.6.2"
-source = "git+https://github.com/open-spaced-repetition/fsrs-rs.git?branch=main#c137ee6e096f9217632397a8fb2bdb6f6e1b92ae"
+source = "git+https://github.com/open-spaced-repetition/fsrs-rs.git?branch=main#4bc0a0979f95dd01cc653031b6f2a01429e4c32b"
 dependencies = [
  "bytemuck",
  "itertools 0.15.0",

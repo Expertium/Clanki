@@ -1954,7 +1954,13 @@ day (all over 360 days: float rounding), memory states differ by under 1e-4
 relative, and the new optimizer fits his reviews as well (review-weighted
 log loss 0.0003 lower over 9 presets). Measured (120 pairs, RELEASE builds):
 memory states from the history 9.6x faster, next states 15.6x faster,
-optimization unchanged. Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
+optimization unchanged. Andrew, 2026-10-01, moved it again, from c137ee6
+to 4bc0a09 ("FSRS optimizer is faster now"): FSRS-7 trains as srs-benchmark
+does (9 epochs, no pre-training, no outlier filter) and, on x86, on two
+threads. On the same copy, a 5-split time-series evaluation over 9 presets
+gives review-weighted log loss 0.44448 -> 0.44484 and RMSE(bins) 0.04423 ->
+0.04399; optimizing the largest preset takes 1.17 s instead of 1.88 s.
+Andrew, 2026-09-24, "fix FSRS-7 bugs", for the
 FSRS-7 review of that day: card info still drew the curve and solved the S90
 with a TypeScript copy, on the stored parameters rather than the ones the
 crate clips. Andrew, 2026-09-25: "Exact FSRS-7 curve", not points joined by

@@ -235,8 +235,23 @@ fn compute_params_batch_job_lanes(
         return Vec::new();
     }
 
-    let lane_count = rayon::current_num_threads().min(jobs.len());
+    let lane_count = (rayon::current_num_threads() / threads_per_training()).clamp(1, jobs.len());
     compute_params_batch_job_lanes_with_count(jobs, lane_count)
+}
+
+/// The threads one preset's FSRS-7 training keeps busy. fsrs-rs trains on
+/// two: the calling thread and a helper thread of its own (not a rayon
+/// one), which spins while it waits. It uses one with the NEON kernel on ARM
+/// and on a machine with one CPU. Each lane runs on a rayon thread, so the
+/// lanes share out the rayon threads two by two, and the optimization never
+/// keeps more threads busy than the machine has.
+fn threads_per_training() -> usize {
+    let one_cpu = thread::available_parallelism().map_or(true, |n| n.get() < 2);
+    if cfg!(all(target_arch = "aarch64", target_feature = "neon")) || one_cpu {
+        1
+    } else {
+        2
+    }
 }
 
 fn compute_params_batch_job_lanes_with_count(
@@ -315,6 +330,22 @@ mod test {
         assert_eq!(lane_totals, vec![140, 140]);
         assert_eq!(lanes[0].jobs[0].input.name, "largest");
         assert_eq!(lanes[1].jobs[0].input.name, "large");
+    }
+
+    // Each training keeps two threads busy (fsrs-rs's own helper thread), so
+    // the lanes may use only half of the rayon threads: with one lane per
+    // rayon thread, a 4-thread machine ran 8 busy threads, and a click waited
+    // up to 35 ms instead of 4 ms.
+    #[test]
+    fn optimizer_lanes_never_keep_more_threads_busy_than_rayon_has() {
+        let jobs = (0..64)
+            .map(|index| compute_params_batch_test_job("preset", 100 + index))
+            .collect();
+        let lanes = compute_params_batch_job_lanes(jobs);
+        let threads = rayon::current_num_threads();
+        assert!(!lanes.is_empty());
+        assert!(lanes.len() * threads_per_training() <= threads.max(threads_per_training()));
+        assert_eq!(lanes.iter().map(|lane| lane.jobs.len()).sum::<usize>(), 64);
     }
 
     fn batch_input(index: usize, name: &str, reviews: usize) -> ComputeParamsBatchInput {
