@@ -11,7 +11,8 @@ import aqt
 import aqt.fsrs_predictions
 import aqt.main
 from anki.cards import Card
-from anki.decks import DeckConfigsForUpdate, DeckDict, DeckId
+from anki.collection import Collection
+from anki.decks import DEFAULT_DECK_ID, DeckConfigsForUpdate, DeckDict, DeckId
 from anki.lang import without_unicode_isolation
 from anki.sync import SyncStatus
 from aqt import gui_hooks
@@ -177,9 +178,21 @@ class _DeckOptionsWebViews:
         # collection, and the window froze until they let go (425-1,041 ms
         # measured while Stats opened).
         mw.taskman.run_in_background(
-            lambda: DeckId(mw.col.decks.get_current_id()),
+            lambda: self._deck_to_warm(mw.col),
             lambda future: self._make_spare(profile, future),
         )
+
+    @staticmethod
+    def _deck_to_warm(col: Collection) -> DeckId:
+        """The current deck, or the Default deck when the current deck is
+        filtered: the page has no settings for a filtered deck, and the
+        backend's "deck not normal" error showed in a message box after a
+        filtered deck became the current deck. Any normal deck does, since
+        opening the window switches the page to the chosen deck."""
+        deck_id = DeckId(col.decks.get_current_id())
+        if col.decks.is_filtered(deck_id):
+            return DEFAULT_DECK_ID
+        return deck_id
 
     def _should_wait(self) -> bool:
         """Stay out of the way of start-up work and of reviewing: making the
