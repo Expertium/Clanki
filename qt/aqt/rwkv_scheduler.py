@@ -414,7 +414,10 @@ _reviewer_backend_resident_ignored_review_ids: dict[
 _reviewer_backend_resident_replay_keys: dict[tuple[int, int], str] = {}
 # The day boundary each resident state was built under (`_rwkv_replay_days`),
 # set and kept as the replay semantics key above. None: not known, because
-# the scheduler's day could not be read when the state was published.
+# the scheduler's day could not be read when the state was published. For a
+# state kept through a moved boundary (spec sched.rwkv-replay-day-boundary) it
+# is the boundary the collection moved to, the one the forced exact rebuild
+# builds under: the move is dealt with once, not at every later change.
 _reviewer_backend_resident_replay_days: dict[
     tuple[int, int], tuple[int, int] | None
 ] = {}
@@ -18483,6 +18486,20 @@ def _read_rwkv_state_cache_binary(
         )
         if stored is not None:
             return stored
+        if keep_after_history_change:
+            # the day boundary moved since the save, and the fingerprint says
+            # that reviews changed day: kept, as after a history change
+            stored = _read_rwkv_state_cache_saved_under_another_day_boundary(
+                reviewer,
+                backend=backend,
+                cache_dir=cache_dir,
+                metadata=metadata,
+                ignored_review_ids=existing_ignored_review_ids,
+                dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+                collection_marker=collection_marker,
+            )
+            if stored is not None:
+                return stored
         # an undo took out a review an idle save appended: the stored cache
         # as it was before those saves is still the start of the history
         if rolled := _roll_back_rwkv_idle_saves(reviewer, cache_dir, metadata):
@@ -18537,6 +18554,66 @@ def _read_rwkv_state_cache_binary(
             cache_dir=cache_dir,
             metadata=metadata,
             current_history=current_history,
+        )
+    return stored
+
+
+def _read_rwkv_state_cache_saved_under_another_day_boundary(
+    reviewer: object,
+    *,
+    backend: RwkvReviewerBackend | None,
+    cache_dir: Path,
+    metadata: dict[str, object],
+    ignored_review_ids: tuple[int, ...],
+    dynamic_preset_replay_enabled: bool | None,
+    collection_marker: _RwkvCollectionMarker | None,
+) -> RwkvStoredStateCache | None:
+    """The stored state, kept as an approximation, when the day boundary
+    moved since it was saved (a daylight-saving change, another timezone,
+    another "Next day starts at" while Clanki was closed) and the history
+    fingerprint has already said that the stored history is not the
+    collection's (spec sched.rwkv-replay-day-boundary). None when the
+    boundary did not move, when the stored cache does not say which boundary
+    it was saved under, or when a check of the kept path fails.
+
+    It puts the history-change mark on the stored cache and takes the path of
+    a marked cache (`_read_marked_rwkv_state_cache`): the same checks, and the
+    caller publishes the state as kept and ALWAYS asks for the forced exact
+    rebuild. A close before that rebuild's swap leaves the mark, so the next
+    start keeps the stored state again."""
+    stored_marker = _rwkv_metadata_collection_marker(metadata)
+    current = (
+        collection_marker
+        if collection_marker is not None
+        else _rwkv_collection_marker(_collection(reviewer))
+    )
+    if (
+        stored_marker is None
+        or stored_marker.days is None
+        or current is None
+        or current.days is None
+        or current.days == stored_marker.days
+    ):
+        return None
+    _mark_rwkv_state_cache_history_changed(reviewer)
+    marked = _read_rwkv_state_cache_metadata(reviewer)
+    if marked != {**metadata, _RWKV_STATE_CACHE_HISTORY_CHANGED_KEY: True}:
+        # the mark could not be written, or another save came in between
+        return None
+    stored = _read_marked_rwkv_state_cache(
+        reviewer,
+        backend=backend,
+        cache_dir=cache_dir,
+        metadata=marked,
+        ignored_review_ids=ignored_review_ids,
+        dynamic_preset_replay_enabled=dynamic_preset_replay_enabled,
+    )
+    if stored is not None:
+        logger.info(
+            "the day boundary moved since the RWKV state cache was saved "
+            "(%s -> %s): kept until the exact rebuild",
+            stored_marker.days,
+            current.days,
         )
     return stored
 
@@ -23647,7 +23724,8 @@ where cid in {ids2str(card_ids)}
 
 def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
     """Whether the resident RWKV state was built under the replay semantics
-    and the day boundary the collection has now.
+    and the day boundary the collection has now, or is kept through a move
+    of that boundary.
 
     This is the rule the stored state cache already uses: its metadata carries
     the same `replayKey` and, with its collection marker, the same day
@@ -23659,7 +23737,9 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
     The day boundary (`_rwkv_replay_days`) is not in the key: "Next day
     starts at", the timezone and the collection's creation offset move
     reviews from one day to the next, so a state built before such a change
-    is not the state a build gives after it.
+    is not the state a build gives after it. It is a close one, and the state
+    stays in use as one while the exact rebuild builds the right one
+    (`_keep_resident_state_through_a_day_boundary_move`): True then too.
 
     A state that took live answers counts too: an answer leaves the state's
     identity unknown, not the key or the day boundary it was built under
@@ -23682,9 +23762,14 @@ def _replay_semantics_still_match_resident_state(reviewer: object) -> bool:
         return False
     if current != replay_key:
         return False
-    if _resident_day_boundary_moved(reviewer):
-        logger.debug("the day boundary moved; discarding the RWKV state")
+    if not _resident_day_boundary_moved(reviewer):
+        return True
+    moved_to = _rwkv_replay_days(reviewer)
+    if moved_to is None:
+        # the rebuild could not read the scheduler's day either
+        logger.debug("the day boundary cannot be read; discarding the RWKV state")
         return False
+    _keep_resident_state_through_a_day_boundary_move(reviewer, moved_to)
     return True
 
 
@@ -23700,6 +23785,49 @@ def _resident_day_boundary_moved(reviewer: object) -> bool:
     with _reviewer_backend_state_lock:
         built_under = _reviewer_backend_resident_replay_days.get(key)
     return built_under is not None and _rwkv_replay_days(reviewer) != built_under
+
+
+def _keep_resident_state_through_a_day_boundary_move(
+    reviewer: object, moved_to: tuple[int, int]
+) -> None:
+    """The day boundary moved (a daylight-saving change, another timezone,
+    another "Next day starts at") and nothing else the replay reads changed:
+    the resident RWKV state stays in use, and the exact rebuild builds the
+    state of the new boundary and takes its place (spec
+    sched.rwkv-replay-day-boundary). The kept state gave the reviews near the
+    old day start the day numbers of the old boundary; every other input is
+    the same. It is the policy of a delete or a move of cards with reviews
+    (`_keep_resident_state_after_history_change`), with the same three parts:
+
+    - the state's identity goes unknown, so nothing saves it, or marks the
+      stored cache as current, under the new boundary;
+    - the stored cache gets the history-change mark, so a close before the
+      swap makes the next start keep the stored state the same way;
+    - THE FORCED EXACT REBUILD IS ALWAYS ASKED FOR. A kept state must never
+      stay without it: only the rebuild makes it exact.
+
+    Throwing the state away instead made the next card wait for a build of
+    the whole history: 115 s in a session and 199 s at a start on 868,000
+    reviews, and a daylight-saving change does that to every user twice a
+    year (the RWKV session, 2026-09-30).
+
+    The request does not say the history moved: a rebuild that runs already
+    (after a delete) notices at its swap that it read under another boundary,
+    and starts again by itself."""
+    mw = getattr(reviewer, "mw", None)
+    key = _reviewer_backend_warmup_key(reviewer)
+    _mark_reviewer_backend_identity_unknown(
+        reviewer, reason="the day boundary moved; exact rebuild pending"
+    )
+    if key is not None:
+        with _reviewer_backend_state_lock:
+            # dealt with: a later change does not find the move again
+            _reviewer_backend_resident_replay_days[key] = moved_to
+    _mark_rwkv_state_cache_history_changed(reviewer)
+    logger.debug(
+        "RWKV resident state kept after a day boundary move: moved_to=%s", moved_to
+    )
+    request_exact_rwkv_rebuild(mw, forced=True, history_moved=False)
 
 
 def _resident_state_replay_key(reviewer: object) -> str | None:
