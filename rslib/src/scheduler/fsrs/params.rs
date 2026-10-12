@@ -403,15 +403,15 @@ fn evaluate_from_training_to_external_targets(
     Ok(FSRS::new(&parameters)?.evaluate(evaluation_set, |_| true)?)
 }
 
-/// Below this many items fsrs-rs does not train: it returns the defaults
-/// (under 8) or its initial values (under 64) (`training.rs`).
+/// Below this many items fsrs-rs does not train FSRS-7: it returns the
+/// defaults (`training.rs`; FSRS-7 has no pre-training since fsrs-rs #462).
 const FSRS_MIN_TRAINED_ITEMS: usize = 64;
 
 /// Whether fsrs-rs returns values it did not train for these items: too few
-/// of them, or every one a card's first long-term review, which only the
-/// initial stabilities are fitted to. Before fsrs-rs drops outliers, so a
-/// set this says trains can still come back untrained; the log-loss check of
-/// `params_to_keep` covers that case.
+/// of them, or every one a card's first long-term review. fsrs-rs trains
+/// FSRS-7 on every item (no outlier filter since fsrs-rs #463), so this is
+/// the crate's own test; the log-loss check of `params_to_keep` stays as a
+/// guard.
 fn fsrs_leaves_untrained(items: &[FSRSItem]) -> bool {
     items.len() < FSRS_MIN_TRAINED_ITEMS
         || items.iter().all(|item| item.long_term_review_cnt() == 1)
