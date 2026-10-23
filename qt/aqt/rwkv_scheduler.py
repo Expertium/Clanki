@@ -5243,6 +5243,7 @@ def run_collection_mutation_preserving_rwkv_state(
     force_reconciliation: bool = False,
     changes_decks: bool = False,
     keep_only_when_replay_unchanged: bool = False,
+    deck_ids_that_may_be_deleted: Sequence[int] = (),
 ) -> _T:
     """Run a known non-review mutation and retain unchanged recurrent history.
 
@@ -5280,7 +5281,10 @@ def run_collection_mutation_preserving_rwkv_state(
         else None
     )
     routing_before = (
-        _rwkv_routing_snapshot(reviewer)
+        _rwkv_routing_snapshot(
+            reviewer,
+            deck_ids_that_may_be_deleted=deck_ids_that_may_be_deleted,
+        )
         if changes_decks and reconciliation is not None
         else None
     )
@@ -5292,7 +5296,10 @@ def run_collection_mutation_preserving_rwkv_state(
     )
     rekey = None
     if routing_before is not None:
-        routing_after = _rwkv_routing_snapshot(reviewer)
+        routing_after = _rwkv_routing_snapshot(
+            reviewer,
+            deck_ids_that_may_be_deleted=deck_ids_that_may_be_deleted,
+        )
         if (
             routing_after is not None
             and routing_after.key != routing_before.key
@@ -5316,22 +5323,33 @@ def run_collection_mutation_preserving_rwkv_state(
 
 @dataclass(frozen=True)
 class _RwkvRoutingSnapshot:
-    """The replay key, what it is the hash of, and orphaned review count."""
+    """The replay key, its payload, and whether a deleted deck has reviews."""
 
     key: str
     payload: dict[str, object]
-    orphaned_review_count: int
+    has_reviews_in_deleted_decks: bool
 
 
-def _rwkv_routing_snapshot(reviewer: object) -> _RwkvRoutingSnapshot | None:
+def _rwkv_routing_snapshot(
+    reviewer: object,
+    *,
+    deck_ids_that_may_be_deleted: Sequence[int] = (),
+) -> _RwkvRoutingSnapshot | None:
     try:
         payload = _rwkv_replay_semantics_payload(
             reviewer,
             first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
         )
-        orphaned_review_count = getattr(_collection(reviewer), "db").scalar(
-            "select count() from revlog r left join cards c on c.id = r.cid"
-            " where c.id is null"
+        has_reviews_in_deleted_decks = bool(
+            deck_ids_that_may_be_deleted
+            and getattr(_collection(reviewer), "db").scalar(
+                f"""
+select 1 from cards c
+where c.did in {ids2str(deck_ids_that_may_be_deleted)}
+  and exists (select 1 from revlog r where r.cid = c.id)
+limit 1
+"""
+            )
         )
     except Exception:
         logger.debug("failed to read the RWKV replay routing", exc_info=True)
@@ -5341,7 +5359,7 @@ def _rwkv_routing_snapshot(reviewer: object) -> _RwkvRoutingSnapshot | None:
     return _RwkvRoutingSnapshot(
         key=_rwkv_replay_key_of_payload(payload),
         payload=payload,
-        orphaned_review_count=orphaned_review_count,
+        has_reviews_in_deleted_decks=has_reviews_in_deleted_decks,
     )
 
 
@@ -5350,16 +5368,8 @@ def _rwkv_replay_unchanged_by_routing_change(
     before: _RwkvRoutingSnapshot,
     after: _RwkvRoutingSnapshot,
 ) -> bool:
-    """Whether a mutation that moved the replay key left every replayed row
-    as it was: only preset routing changed, no review-log rows became
-    orphaned, and no card whose home deck is a changed deck (added, removed,
-    or given another preset) has a review-log row. A row routes through its
-    card's home deck (the original deck of a card in a filtered deck), and a
-    row of a deleted card through no deck at all. The RWKV state gives an id
-    the same code whatever other ids exist, so the state stays the one a
-    build under the new key gives. Any review-log row counts, not only rated
-    ones: a manual row takes part in choosing where a card's replay starts."""
-    if after.orphaned_review_count != before.orphaned_review_count:
+    """Whether changing preset routing leaves the replayed rows unchanged."""
+    if before.has_reviews_in_deleted_decks or after.has_reviews_in_deleted_decks:
         return False
     rest_before = {k: v for k, v in before.payload.items() if k != "presetRouting"}
     rest_after = {k: v for k, v in after.payload.items() if k != "presetRouting"}

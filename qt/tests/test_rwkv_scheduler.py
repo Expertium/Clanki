@@ -24115,7 +24115,7 @@ class _DeckChangeCol:
         self.routing: dict[int, int] = {100: 1}
         self.cards = 2
         self.cards_by_deck = {100: 2}
-        self.orphaned_review_count = 0
+        self.has_reviews_in_deleted_decks = False
         self.reviewed_decks = {100}
         col = reviewer.mw.col
         col.decks.all_names_and_ids = lambda: [
@@ -24138,8 +24138,8 @@ class _DeckChangeCol:
             return 5000
         if sql == "select count() from cards":
             return self.cards
-        if "left join cards c on c.id = r.cid" in sql:
-            return self.orphaned_review_count
+        if "select 1 from cards c" in sql and "exists (select 1 from revlog" in sql:
+            return 1 if self.has_reviews_in_deleted_decks else None
         if "exists (select 1 from revlog" in sql:
             asked = {int(value) for value in re.findall(r"\d+", sql.split(" in ")[1])}
             return 1 if asked & self.reviewed_decks else None
