@@ -31,8 +31,8 @@ export const HelpPage = {
         desiredRetention: "https://docs.ankiweb.net/deck-options.html#desired-retention",
     },
     Leeches: {
-        leeches: "https://docs.ankiweb.net/manual/leeches",
-        waiting: "https://docs.ankiweb.net/manual/leeches#waiting",
+        leeches: "https://docs.ankiweb.net/leeches.html#leeches",
+        waiting: "https://docs.ankiweb.net/leeches.html#waiting",
     },
     Studying: {
         siblingsAndBurying: "https://docs.ankiweb.net/studying.html#siblings-and-burying",

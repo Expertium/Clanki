@@ -147,6 +147,7 @@ jobs:
         run: rm -rf out/coverage out/coverage-baseline
 
       - name: Restore coverage baseline
+        id: coverage-baseline
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
         with:
@@ -207,14 +208,20 @@ jobs:
             fi
           done
 
-          if [[ -d out/coverage-baseline ]] && \
-            [[ -f out/coverage-baseline/rust/coverage-summary.json ]] && \
-            [[ -f out/coverage-baseline/python-pylib/coverage-summary.json ]] && \
-            [[ -f out/coverage-baseline/python-qt/coverage-summary.json ]] && \
-            [[ -f out/coverage-baseline/typescript/coverage-summary.json ]]; then
-            python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
+          if [[ "${{ steps.coverage-baseline.outputs.cache-hit }}" != "true" ]]; then
+            echo "::warning::Coverage baseline cache miss; no comparison is available."
           else
-            echo "::warning::Coverage baseline cache is missing or incomplete; skipping comparison."
+            for summary in \
+              rust/coverage-summary.json \
+              python-pylib/coverage-summary.json \
+              python-qt/coverage-summary.json \
+              typescript/coverage-summary.json; do
+              if [[ ! -f "out/coverage-baseline/$summary" ]]; then
+                echo "::error::Coverage baseline summary missing: $summary"
+                exit 1
+              fi
+            done
+            python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
           fi
 
       - name: Run e2e tests
