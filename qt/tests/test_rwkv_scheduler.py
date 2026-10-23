@@ -24138,7 +24138,7 @@ class _DeckChangeCol:
             return 5000
         if sql == "select count() from cards":
             return self.cards
-        if "select 1 from cards c" in sql and "exists (select 1 from revlog" in sql:
+        if "select 1 from cards c" in sql and "where c.did in" in sql:
             return 1 if self.has_reviews_in_deleted_decks else None
         if "exists (select 1 from revlog" in sql:
             asked = {int(value) for value in re.findall(r"\d+", sql.split(" in ")[1])}
