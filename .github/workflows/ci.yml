@@ -142,6 +142,10 @@ jobs:
       - name: Symlink node_modules
         run: ln -sf out/node_modules .
 
+      - name: Clear cached coverage output
+        if: github.event_name == 'pull_request'
+        run: rm -rf out/coverage out/coverage-baseline
+
       - name: Restore coverage baseline
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
@@ -191,7 +195,16 @@ jobs:
 
       - name: Check coverage regression
         if: github.event_name == 'pull_request'
-        run: python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
+        run: |
+          if [[ -d out/coverage-baseline ]] && \
+            [[ -f out/coverage-baseline/rust/coverage-summary.json ]] && \
+            [[ -f out/coverage-baseline/python-pylib/coverage-summary.json ]] && \
+            [[ -f out/coverage-baseline/python-qt/coverage-summary.json ]] && \
+            [[ -f out/coverage-baseline/typescript/coverage-summary.json ]]; then
+            python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
+          else
+            echo "::warning::Coverage baseline cache is missing or incomplete; skipping regression check."
+          fi
 
       - name: Run e2e tests
         run: just test-e2e
