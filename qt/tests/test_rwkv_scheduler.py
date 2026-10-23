@@ -24114,6 +24114,8 @@ class _DeckChangeCol:
         self.counter = counter
         self.routing: dict[int, int] = {100: 1}
         self.cards = 2
+        self.cards_by_deck = {100: 2}
+        self.orphaned_review_count = 0
         self.reviewed_decks = {100}
         col = reviewer.mw.col
         col.decks.all_names_and_ids = lambda: [
@@ -24136,6 +24138,8 @@ class _DeckChangeCol:
             return 5000
         if sql == "select count() from cards":
             return self.cards
+        if "left join cards c on c.id = r.cid" in sql:
+            return self.orphaned_review_count
         if "exists (select 1 from revlog" in sql:
             asked = {int(value) for value in re.findall(r"\d+", sql.split(" in ")[1])}
             return 1 if asked & self.reviewed_decks else None
@@ -24160,10 +24164,11 @@ class _DeckChangeCol:
     def remove(self, deck_ids: Sequence[int]) -> collection_pb2.OpChangesWithCount:
         for deck_id in deck_ids:
             del self.routing[deck_id]
+            self.cards -= self.cards_by_deck.pop(deck_id, 0)
             if deck_id in self.reviewed_decks:
-                # the delete takes the deck's cards with it; their reviews
-                # stay, but no card has the deck as its home deck any more
-                self.cards -= 2
+                # The delete takes the cards with it; their reviews become
+                # orphaned and still affect the replay.
+                self.orphaned_review_count += 1
                 self.reviewed_decks.discard(deck_id)
         self.counter.set(self.counter.value + 1)
         return collection_pb2.OpChangesWithCount(count=0, changes=self.changes())
@@ -24276,13 +24281,14 @@ def test_deleting_an_empty_deck_keeps_the_rwkv_state(
     no_exact_rebuild_thread: list[object],
 ) -> None:
     """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks:
-    deleting a deck that no reviewed card is in keeps the state, under the
-    new key. Before, the state was thrown away and the next card waited for
-    a whole rebuild (108 s)."""
+    deleting a deck that has no cards keeps the state under the new key.
+    Before, the state was thrown away and the next card waited for a whole
+    rebuild (108 s)."""
     from aqt.operations import deck as deck_ops
 
     col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
     col.routing[300] = 2
+    col.cards_by_deck[300] = 0
     key_with_deck = col.key()
     rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
         _rwkv_resident_identity(replay_key=key_with_deck)
@@ -24292,6 +24298,39 @@ def test_deleting_an_empty_deck_keeps_the_rwkv_state(
     _run_deck_op(
         deck_ops.remove_decks(
             parent=cast(Any, None), deck_ids=[DeckId(300)], deck_name="empty"
+        ),
+        col,
+    )
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[
+        warmup_key
+    ] == _rwkv_resident_identity(replay_key=col.key())
+    assert col.metadata()["replayKey"] == col.key()
+    assert no_exact_rebuild_thread == []
+
+
+def test_deleting_a_deck_with_unreviewed_cards_keeps_the_rwkv_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_exact_rebuild_thread: list[object],
+) -> None:
+    """Pins spec/scheduling.md#sched.rwkv-replay-key-follows-empty-decks:
+    deleting a deck with unreviewed cards adds no replay rows, so the state
+    follows the replay key instead of waiting for a full rebuild."""
+    from aqt.operations import deck as deck_ops
+
+    col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    col.routing[300] = 2
+    col.cards_by_deck[300] = 2
+    key_with_deck = col.key()
+    rwkv_scheduler._reviewer_backend_warmup_states[warmup_key] = (
+        _rwkv_resident_identity(replay_key=key_with_deck)
+    )
+    col.store_metadata(key_with_deck)
+
+    _run_deck_op(
+        deck_ops.remove_decks(
+            parent=cast(Any, None), deck_ids=[DeckId(300)], deck_name="unreviewed"
         ),
         col,
     )
@@ -24314,6 +24353,7 @@ def test_deleting_a_deck_with_reviewed_cards_still_discards_the_rwkv_state(
     from aqt.operations import deck as deck_ops
 
     col, warmup_key = _deck_change_col(monkeypatch, tmp_path)
+    col.cards_by_deck[100] = 2
     old_key = col.key()
 
     _run_deck_op(

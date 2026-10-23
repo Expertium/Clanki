@@ -5316,11 +5316,11 @@ def run_collection_mutation_preserving_rwkv_state(
 
 @dataclass(frozen=True)
 class _RwkvRoutingSnapshot:
-    """The replay key, what it is the hash of, and the number of cards."""
+    """The replay key, what it is the hash of, and orphaned review count."""
 
     key: str
     payload: dict[str, object]
-    card_count: int
+    orphaned_review_count: int
 
 
 def _rwkv_routing_snapshot(reviewer: object) -> _RwkvRoutingSnapshot | None:
@@ -5329,18 +5329,19 @@ def _rwkv_routing_snapshot(reviewer: object) -> _RwkvRoutingSnapshot | None:
             reviewer,
             first_review_elapsed_source=RwkvFirstReviewElapsedSource.DECK_CONFIG,
         )
-        card_count = getattr(_collection(reviewer), "db").scalar(
-            "select count() from cards"
+        orphaned_review_count = getattr(_collection(reviewer), "db").scalar(
+            "select count() from revlog r left join cards c on c.id = r.cid"
+            " where c.id is null"
         )
     except Exception:
         logger.debug("failed to read the RWKV replay routing", exc_info=True)
         return None
-    if not isinstance(card_count, int):
+    if not isinstance(orphaned_review_count, int):
         return None
     return _RwkvRoutingSnapshot(
         key=_rwkv_replay_key_of_payload(payload),
         payload=payload,
-        card_count=card_count,
+        orphaned_review_count=orphaned_review_count,
     )
 
 
@@ -5350,16 +5351,15 @@ def _rwkv_replay_unchanged_by_routing_change(
     after: _RwkvRoutingSnapshot,
 ) -> bool:
     """Whether a mutation that moved the replay key left every replayed row
-    as it was: only the preset routing changed, no card was deleted, and
-    no card whose home deck is a changed deck (added, removed, or given
-    another preset) has a review-log row. A row routes through its card's
-    home deck (the original deck of a card in a filtered deck), and a row
-    of a deleted card through no deck at all, so no row can route through
-    such a deck. The RWKV state gives an id the same code whatever other
-    ids exist, so the state stays the one a build under the new key gives.
-    Any review-log row counts, not only rated ones: a manual row takes part
-    in choosing where a card's replay starts."""
-    if before.card_count != after.card_count:
+    as it was: only preset routing changed, no review-log rows became
+    orphaned, and no card whose home deck is a changed deck (added, removed,
+    or given another preset) has a review-log row. A row routes through its
+    card's home deck (the original deck of a card in a filtered deck), and a
+    row of a deleted card through no deck at all. The RWKV state gives an id
+    the same code whatever other ids exist, so the state stays the one a
+    build under the new key gives. Any review-log row counts, not only rated
+    ones: a manual row takes part in choosing where a card's replay starts."""
+    if after.orphaned_review_count != before.orphaned_review_count:
         return False
     rest_before = {k: v for k, v in before.payload.items() if k != "presetRouting"}
     rest_after = {k: v for k, v in after.payload.items() if k != "presetRouting"}
