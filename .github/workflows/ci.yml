@@ -142,12 +142,16 @@ jobs:
       - name: Symlink node_modules
         run: ln -sf out/node_modules .
 
+      - name: Clear cached coverage output
+        if: github.event_name == 'pull_request'
+        run: rm -rf out/coverage out/coverage-baseline
+
       - name: Restore coverage baseline
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 #v6.1.0
         with:
           path: out/coverage
-          key: coverage-baseline-linux-${{ github.sha }}
+          key: coverage-baseline-linux-${{ github.event.pull_request.base.sha }}
           restore-keys: coverage-baseline-linux-
 
       - name: Move restored baseline aside
@@ -188,10 +192,33 @@ jobs:
         with:
           path: out/coverage
           key: coverage-baseline-linux-${{ github.sha }}
+          enableCrossOsArchive: false
 
       - name: Check coverage regression
         if: github.event_name == 'pull_request'
-        run: python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
+        run: |
+          for summary in \
+            rust/coverage-summary.json \
+            python-pylib/coverage-summary.json \
+            python-qt/coverage-summary.json \
+            typescript/coverage-summary.json; do
+            if [[ ! -f "out/coverage/$summary" ]]; then
+              echo "::error::Current coverage summary missing: $summary"
+              exit 1
+            fi
+          done
+
+          for summary in \
+            rust/coverage-summary.json \
+            python-pylib/coverage-summary.json \
+            python-qt/coverage-summary.json \
+            typescript/coverage-summary.json; do
+            if [[ ! -f "out/coverage-baseline/$summary" ]]; then
+              echo "::error::Coverage baseline summary missing: $summary"
+              exit 1
+            fi
+          done
+          python3 tools/coverage/check-coverage-regression.py out/coverage-baseline out/coverage
 
       - name: Run e2e tests
         run: just test-e2e
