@@ -152,6 +152,7 @@ jobs:
         with:
           path: out/coverage
           key: coverage-baseline-linux-${{ github.event.pull_request.base.sha }}
+          restore-keys: coverage-baseline-linux-
 
       - name: Move restored baseline aside
         if: github.event_name == 'pull_request'
@@ -191,6 +192,7 @@ jobs:
         with:
           path: out/coverage
           key: coverage-baseline-linux-${{ github.sha }}
+          enableCrossOsArchive: false
 
       - name: Check coverage regression
         if: github.event_name == 'pull_request'
