@@ -24166,9 +24166,7 @@ class _DeckChangeCol:
             del self.routing[deck_id]
             self.cards -= self.cards_by_deck.pop(deck_id, 0)
             if deck_id in self.reviewed_decks:
-                # The delete takes the cards with it; their reviews become
-                # orphaned and still affect the replay.
-                self.orphaned_review_count += 1
+                self.has_reviews_in_deleted_decks = True
                 self.reviewed_decks.discard(deck_id)
         self.counter.set(self.counter.value + 1)
         return collection_pb2.OpChangesWithCount(count=0, changes=self.changes())

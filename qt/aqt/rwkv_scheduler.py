@@ -5354,7 +5354,7 @@ limit 1
     except Exception:
         logger.debug("failed to read the RWKV replay routing", exc_info=True)
         return None
-    if not isinstance(orphaned_review_count, int):
+    if not isinstance(has_reviews_in_deleted_decks, bool):
         return None
     return _RwkvRoutingSnapshot(
         key=_rwkv_replay_key_of_payload(payload),
