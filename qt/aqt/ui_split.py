@@ -4,10 +4,9 @@
 
 Every part of the interface that Simple mode may hide is one item of the
 registry below: a stable id, an English name, the area and group it belongs
-to, and whether Simple mode shows it by default. The defaults are the split
-the earlier, fixed rules made (spec ui.simple-mode-tools-hidden,
-ui.browser-simple-view, ui.reviewer-simple-view and the others), so nothing
-changes until a user edits the split in Preferences > UI split.
+to, and whether Simple mode shows it by default. The defaults are defined
+by the current behavior entries in spec/ui.md, so nothing changes until a
+user edits the split in Preferences > UI split.
 
 Advanced mode shows every item. Simple mode shows an item when the user's
 choice says so, else by the item's default. The collection config key
@@ -272,7 +271,7 @@ ITEMS: list[UiItem] = [
                 False,
             ),
             ("browser.cards.reset", _t(tr.qt_accel_forget), False),
-            ("browser.cards.reposition", tr.browsing_reposition, False),
+            ("browser.cards.reposition", tr.browsing_reposition, True),
             ("browser.cards.toggle_suspend", tr.browsing_toggle_suspend, True),
             ("browser.cards.toggle_bury", tr.browsing_toggle_bury, False),
             ("browser.cards.flag", tr.browsing_flag, False),
