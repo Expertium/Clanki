@@ -24,7 +24,6 @@ ADVANCED_ONLY = [
     ("menu_Cards", "action_set_due_date"),
     ("menu_Cards", "action_grade_now"),
     ("menu_Cards", "action_forget"),
-    ("menu_Cards", "actionReposition"),
     ("menu_Cards", "action_toggle_bury"),
     ("menuqt_accel_view", "action_toggle_mode"),
 ]
@@ -38,6 +37,7 @@ KEPT = [
     ("menu_Notes", "actionToggle_Mark"),
     ("menu_Notes", "actionDelete"),
     ("menu_Cards", "actionChange_Deck"),
+    ("menu_Cards", "actionReposition"),
     ("menu_Cards", "actionToggle_Suspend"),
     ("menu_Cards", "action_Info"),
     ("menuqt_accel_view", "actionFullScreen"),
