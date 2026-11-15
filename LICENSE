@@ -1,3 +1,16 @@
+Clanki is a fork of Anki, maintained separately at
+https://github.com/Expertium/Clanki. It is not official Anki, and it is not
+affiliated with, endorsed by, or supported by Anki Software, LLC or Damien
+Elmes. Everything below this notice is Anki's own licensing information and
+is kept unchanged, because the AGPL3 and the BSD-3 grants it records are what
+let Clanki exist and keep their force. Clanki's own code is licensed under
+the same GNU Affero General Public License, version 3 or later, except where
+a file says otherwise. An author may also offer their own contribution to
+Anki under the BSD-3 license, as an additional permission, so that Anki,
+AnkiWeb, AnkiMobile and AnkiDroid can reuse it. That offer covers only the
+work of the authors who made it, and no one else's; see
+CONTRIBUTORS-CLANKI.md.
+
 Anki is licensed under the GNU Affero General Public License, version 3 or
 later, with portions contributed by Anki users licensed under the BSD-3
 license (see CONTRIBUTORS).
