@@ -24,6 +24,8 @@ def test_about_window_states_it_is_not_official_anki() -> None:
     assert "not official anki" in lowered
     assert "not affiliated with" in lowered
     assert "damien elmes" in lowered
+    assert "anki software, llc" in lowered
+    assert "ankitects" not in lowered
     assert "agpl-3" in lowered or "agpl3" in lowered
 
 
