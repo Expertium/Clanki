@@ -36,4 +36,8 @@ of their work.
 Anki's own contributors are listed in `CONTRIBUTORS` and are not repeated
 here.
 
-********************
+---
+
+Authors who have granted the permission, and their work:
+
+_(none yet)_

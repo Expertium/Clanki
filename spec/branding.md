@@ -40,7 +40,7 @@ Clanki's own GitHub releases and is unaffected.
 Given Help > About Clanki, the first thing shown, before Clanki's own
 description of itself, is a bordered notice saying: Clanki is a fork of
 Anki, not official Anki, and not affiliated with, endorsed by, or supported
-by AnkiTects Pty Ltd or Damien Elmes; it is a derivative work distributed
+by Anki Software, LLC or Damien Elmes; it is a derivative work distributed
 under the same AGPL-3 license as Anki, and Anki's own copyright and
 contributors (listed further down, unchanged) keep their credit; a link to
 official Anki (`aqt.appWebsite`, `https://apps.ankiweb.net/`); and a link to
