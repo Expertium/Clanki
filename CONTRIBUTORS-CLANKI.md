@@ -36,7 +36,18 @@ here.
 
 ## Authors who have granted the permission, and their work
 
-_(none yet)_
+**Expertium (Andrew)** — BSD 3 clause, for his own work in Clanki: every
+change he wrote himself, including the speed work, and including his own
+changes to files that another author also touched. Anki, AnkiWeb,
+AnkiMobile and AnkiDroid may reuse that code. He can stop granting the
+permission for future work at any time; the grant already given for existing
+work stays, because a permission cannot be taken back.
+
+He cannot grant it for code he did not write, so this is **not** a statement
+that any file he touched is BSD-3 as a whole. Where a file holds work by two
+authors, only his part is offered, and the other author's part stays theirs.
+`git log --author="Expertium"` lists his commits, 1104 of them as of
+2026-11-15.
 
 ## Not covered
 
