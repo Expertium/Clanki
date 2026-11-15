@@ -94,9 +94,9 @@ visually apart from the other two (a horizontal rule, its own heading
 not a person), Andrew's Ethereum address for anyone who wants to support
 Clanki, plus a "Copy address" button that copies it to the clipboard.
 The address is a Python constant
-(`aqt.support.CLANKI_AUTHOR_ETHEREUM_ADDRESS`, EIP-55 checksummed —
-its mixed upper/lower-case letters are not to be normalised), never
-in an ftl file, so a translator cannot touch it. Its exact value:
+(`aqt.support.CLANKI_AUTHOR_ETHEREUM_ADDRESS`, EIP-55 checksummed — its
+mixed upper/lower-case letters are not to be normalised), never in an ftl
+file, so a translator cannot touch it. Its exact value:
 `0xf9c22186be4dbF21dE3E149C167Ed90DE0E37279`.
 
 **Why:** Andrew, 2026-09-18: "Idk what to do about Help->Support Anki.
@@ -114,3 +114,30 @@ support for Clanki's development, not for him by name.
 `test_support_window_ethereum_address_is_exact`,
 `test_support_window_ethereum_address_is_not_in_any_ftl_file`
 (`qt/tests/test_support.py`).
+
+## branding.logo
+
+Clanki keeps Anki's logo, unmodified, as the application icon and as the
+mark at the top of the About window: `qt/aqt/data/web/imgs/anki-logo-thin.png`
+(the About window), `qt/installer/app/resources/anki.ico` (Windows),
+`anki.icns` (macOS), `anki.png` (Linux) and `qt/aqt/data/qt/icons/anki.png`.
+The logo is not renamed, redrawn or recoloured. It stays Anki's mark, shown
+by a fork that says it is not Anki: the About window shows the fork notice
+above it, and the installer metadata names the product Clanki.
+
+The logo's terms are in `LICENSE`: it is under the AGPL3 like the rest of
+Anki's code, and the limited alternative license that allows use in books,
+blogs and videos without an AGPL3-compatible license applies only to work
+that refers to Anki, AnkiWeb, AnkiMobile or AnkiDroid. A fork showing the
+logo is not that use, so the AGPL3 is what covers it here, and the mark also
+remains Anki Software, LLC's trademark.
+
+**Why:** Andrew, 2026-11-15, asked about the license: "As for the logo, I'd
+like to keep it." The alternative, a mark of Clanki's own, would read more
+clearly next to the disclaimer, so this is a deliberate choice for
+continuity, not an oversight. The AGPL3 permits it; the disclaimer above the
+logo is what keeps the two from being confused.
+
+**Pinned by:** markup only: the paths above. `qt/tests/test_about.py`
+(`test_about_window_disclaimer_is_shown_before_clankis_own_description`) pins
+that the fork notice comes before anything else in the window.
