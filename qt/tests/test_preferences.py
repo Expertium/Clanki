@@ -233,3 +233,77 @@ def test_an_unopened_ankiconnect_tab_saves_nothing() -> None:
     dialog.mw.col._get_experiments_dirty.return_value = dialog.mw.col._experiments
     with patch.object(Preferences, "update_video_driver"):
         dialog.update_global()
+
+
+# Pins spec/reviewer.md#review.four-button-notice
+@patch("aqt.preferences.set_preferences")
+def test_turning_four_button_mode_on_asks_for_the_notice(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()
+    assert prefs.reviewing.two_button_mode is True
+    form = make_form(prefs)
+    form.twoButtonMode.isChecked.return_value = False
+    dialog = make_dialog(prefs, form)
+
+    dialog.update_collection(MagicMock())
+
+    assert dialog._four_button_notice_pending is True
+    mock_set_preferences.assert_called_once_with(
+        parent=dialog, preferences=dialog.prefs
+    )
+
+
+# Pins spec/reviewer.md#review.four-button-notice
+@patch("aqt.preferences.set_preferences")
+def test_turning_four_button_mode_off_asks_for_no_notice(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()
+    prefs.reviewing.two_button_mode = False  # the four buttons are already on
+    form = make_form(prefs)
+    form.twoButtonMode.isChecked.return_value = True
+    dialog = make_dialog(prefs, form)
+
+    dialog.update_collection(MagicMock())
+
+    assert dialog._four_button_notice_pending is False
+
+
+# Pins spec/reviewer.md#review.four-button-notice
+@patch("aqt.preferences.set_preferences")
+def test_leaving_four_button_mode_on_asks_for_no_notice(
+    mock_set_preferences: MagicMock,
+) -> None:
+    prefs = make_prefs()  # the two buttons are on, and stay on
+    form = make_form(prefs)
+    dialog = make_dialog(prefs, form)
+
+    dialog.update_collection(MagicMock())
+
+    assert dialog._four_button_notice_pending is False
+
+
+# Pins spec/reviewer.md#review.four-button-notice
+def test_the_pending_notice_is_shown_once_the_dialog_has_closed() -> None:
+    dialog = Preferences.__new__(Preferences)
+    dialog.mw = MagicMock()
+    dialog._four_button_notice_pending = True
+
+    with patch("aqt.preferences.four_button_notice.show") as mock_show:
+        dialog._show_four_button_notice_if_pending()
+
+    mock_show.assert_called_once_with(dialog.mw)
+    assert dialog._four_button_notice_pending is False
+
+
+# Pins spec/reviewer.md#review.four-button-notice
+def test_a_notice_that_is_not_pending_is_not_shown() -> None:
+    dialog = Preferences.__new__(Preferences)
+    dialog.mw = MagicMock()
+    dialog._four_button_notice_pending = False
+
+    with patch("aqt.preferences.four_button_notice.show") as mock_show:
+        dialog._show_four_button_notice_if_pending()
+
+    mock_show.assert_not_called()

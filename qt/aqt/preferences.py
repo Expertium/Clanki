@@ -14,7 +14,7 @@ import aqt.forms
 import aqt.operations
 from anki.collection import OpChanges
 from anki.utils import is_mac
-from aqt import AnkiQt
+from aqt import AnkiQt, four_button_notice
 from aqt.ankihub import ankihub_login, ankihub_logout
 from aqt.operations.collection import set_preferences
 from aqt.profiles import VideoDriver
@@ -143,6 +143,7 @@ class Preferences(QDialog):
             self.mw.pm.save()
             self.done(0)
             aqt.dialogs.markClosed("Preferences")
+            self._show_four_button_notice_if_pending()
 
             if callback:
                 callback()
@@ -231,6 +232,12 @@ class Preferences(QDialog):
         reviewing.show_intervals_on_buttons = form.showEstimates.isChecked()
         reviewing.show_colored_buttons = form.showColoredButtons.isChecked()
         reviewing.two_button_mode = form.twoButtonMode.isChecked()
+        # the user just asked for four answer buttons, i.e. turned the two
+        # buttons off: the notice is shown once the dialog has closed
+        # (spec review.four-button-notice)
+        self._four_button_notice_pending = (
+            self.old_prefs.reviewing.two_button_mode and not reviewing.two_button_mode
+        )
         reviewing.time_limit_secs = form.timeLimit.value() * 60
         reviewing.hide_audio_play_buttons = not self.form.showPlayButtons.isChecked()
         reviewing.interrupt_audio_when_answering = self.form.interrupt_audio.isChecked()
@@ -269,6 +276,14 @@ class Preferences(QDialog):
             set_preferences(parent=self, preferences=self.prefs).success(
                 after_prefs_update
             ).run_in_background()
+
+    def _show_four_button_notice_if_pending(self) -> None:
+        """Explain the four answer buttons once, when they were just turned
+        on (spec review.four-button-notice)."""
+        if not getattr(self, "_four_button_notice_pending", False):
+            return
+        self._four_button_notice_pending = False
+        four_button_notice.show(self.mw)
 
     # Preferences stored in the profile
     ######################################################################
