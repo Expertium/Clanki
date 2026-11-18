@@ -768,9 +768,11 @@ rebuilt. This holds whether the operation rebuilds the study queues (a
 Preferences save does) or not, with the Study screen open or not, after
 answers in the session, and while the state waits for its exact rebuild,
 which then goes on. A change that moves the key, such as a deck sent to
-another preset, or the day boundary, such as another "Next day starts at",
-still discards the state. A key or a day that cannot be read discards it too:
-a rebuild costs time, a stale state gives a wrong interval. An operation that
+another preset, still discards the state. A change that moves only the day
+boundary, such as another "Next day starts at", keeps the state as an
+approximation and starts the exact rebuild (`sched.rwkv-replay-day-boundary`).
+A key or a day that cannot be read discards the state: a rebuild costs time,
+a stale state gives a wrong interval. An operation that
 rebuilds the study queues and changed cards, notes, decks or presets discards
 the state unless another entry keeps it (`sched.rwkv-history-change-keeps-state`,
 `sync.full-upload-keeps-rwkv-state`): it can change the rows the replay reads
@@ -1033,19 +1035,42 @@ scheduler's day starts, the scheduler's day number minus the UTC day number
 of its next start). It is the same on every day, and two scheduler days with
 the same pair give every past review the same day number.
 
-- The resident RWKV state is kept after a change only while the collection's
-  day boundary is the one the state was built under
-  (`sched.rwkv-curve-buttons-wait`). A Preferences save that changes "Next
-  day starts at" discards the state; the state that is then built is the one
-  a build from nothing gives.
+- The resident RWKV state counts as the collection's after a change only
+  while the collection's day boundary is the one the state was built under
+  (`sched.rwkv-curve-buttons-wait`).
+- When a change that would keep the state finds the day boundary moved (a
+  Preferences save of "Next day starts at"; a daylight-saving change or
+  another timezone that the scheduler has read), the state stays in use as
+  an approximation, by the rules of `sched.rwkv-history-change-keeps-state`:
+  the next card's intervals are ready at once; the state is marked as no
+  longer matching the history, so it is never saved and never marks the
+  stored cache as current; the stored cache gets the mark of a history
+  change; and the exact rebuild is always asked for. The rebuild builds the
+  state of the new boundary and takes the kept one's place. Until then the
+  kept state holds the reviews near the old day start under the day numbers
+  of the old boundary; the answers given after the move are read under the
+  new one. It is one rule for every move of the boundary. A day that cannot
+  be read is no move: the state is thrown away.
 - The stored state cache records the day boundary with its collection marker
   (the collection's modification time, review log and cards when the stored
   history was read). At a start, a stored cache whose marker and replay
   semantics key are the collection's is restored without a check of the
   history only when its day boundary is the collection's too. Otherwise the
-  history is checked (its fingerprint holds every review's day number), and
-  the stored state is used only when the check passes, as after any other
-  change.
+  history is checked (its fingerprint holds every review's day number). When
+  no review changed day, the stored state is the collection's, as after any
+  other change that passes the check.
+- When the stored boundary is another one than the collection's and reviews
+  changed day (the boundary moved while Clanki was closed), a profile open
+  or a review-time restore puts the mark of a history change on the stored
+  cache and keeps the stored state the same way: the three checks of
+  `sched.rwkv-history-change-keeps-state` (replay key, ignored reviews, the
+  number of reviews up to the stored state's last review), the reviews after
+  the stored state replayed, the first card's buttons ready after that
+  restore, and the exact rebuild asked for. A close before the rebuild's swap
+  leaves the mark, and the next open keeps the stored state again. When a
+  check fails, or the restore is one that does not keep a stored state (the
+  refresh of the sync at profile close), the state is built from the whole
+  history as before.
 - A stored cache written before the marker had the day boundary is read as
   before: the boundary is taken as unchanged and the cache is restored, so
   an update of Clanki does not rebuild the state from the whole history.
@@ -1057,7 +1082,8 @@ the same pair give every past review the same day number.
   only while the day boundary is the recorded one; the move itself never
   writes a boundary.
 - The exact rebuild (`sched.rwkv-history-change-keeps-state`) starts again
-  when the day boundary moved while it ran.
+  when the day boundary moved while it ran. After its swap the state is the
+  one a build from nothing gives under the new boundary.
 
 **Why:** Found 2026-09-30 while the Preferences save was made to keep the
 state: the keep compared only the replay semantics key, so it would have kept
@@ -1071,14 +1097,29 @@ change of the review log. The boundary is a separate field, not a part of the
 replay semantics key, because a changed key makes every stored cache miss:
 Andrew's rules are an instant start and no waiting window, and a miss costs a
 build of the whole history (2-3 minutes on 868,000 reviews) while the first
-card waits.
+card waits. The state is kept through a move of the boundary for the same
+reason (the RWKV session, 2026-09-30): a daylight-saving change moves the
+boundary for every user twice a year, and travel does it too, so a move is
+not rare. Thrown away, the state cost the next card a build of the whole
+history: 115 s in a session and 190-199 s at a start
+on a copy of Andrew's collection (868,350 reviews), for a move of one hour
+as for one of four. Kept, the next card's buttons come in 0.05-0.08 s
+in a session and 2.2-2.4 s at a start. The price is the approximation
+until the rebuild swaps in, about two minutes later: over 300 queued cards
+the S90 of the kept state differed from the exact one by 0.3 % on
+average and 3.3 % at most after a move of one hour, and by
+0.8 % and 6.8 % after a move from 5 to 9. After the swap all
+300 were equal to a build from nothing, bit for bit.
 
 **Pinned by:** `test_the_replay_day_boundary_decides_the_day_of_every_review`,
 `test_a_moved_day_boundary_rebuilds_the_stored_state_as_a_cold_build_does`,
 `test_a_stored_cache_without_the_day_boundary_is_still_restored`,
 `test_the_stored_marker_does_not_follow_the_collection_over_a_moved_day_boundary`,
-`test_a_preferences_save_that_moves_the_day_boundary_discards_the_resident_state`,
-`test_a_setting_that_moves_the_day_boundary_discards_the_state_in_every_keep`,
+`test_a_moved_day_boundary_keeps_the_resident_state_and_asks_for_the_exact_rebuild`,
+`test_a_moved_day_boundary_keeps_the_state_in_every_keep`,
+`test_a_day_boundary_move_in_a_session_marks_the_stored_cache`,
+`test_a_start_after_a_moved_day_boundary_keeps_the_stored_state`,
+`test_a_moved_day_boundary_that_moves_no_review_restores_the_exact_state`,
 `test_a_new_day_does_not_move_the_day_boundary`,
 `test_a_day_that_cannot_be_read_discards_the_resident_state`,
 `test_the_exact_rebuild_starts_again_when_the_day_boundary_moves`,
