@@ -24,7 +24,7 @@ anki.lang.set_lang("en")
 
 from aqt import ui_split  # noqa: E402
 
-# Today's split, restated from the spec entries that set it
+# The default split, restated from the current spec entries
 # (ui.simple-mode-tools-hidden, ui.get-decks-and-get-addons, ui.mode-switch,
 # ui.advance-postpone, ui.simple-mode-deck-counts, ui.reviewer-simple-view,
 # ui.browser-simple-view): True = Simple mode shows the item.
@@ -100,7 +100,7 @@ TODAY: dict[str, bool] = {
     "browser.cards.grade_now": False,
     "browser.cards.advance_postpone": False,
     "browser.cards.reset": False,
-    "browser.cards.reposition": False,
+    "browser.cards.reposition": True,
     "browser.cards.toggle_suspend": True,
     "browser.cards.toggle_bury": False,
     "browser.cards.flag": False,

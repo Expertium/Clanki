@@ -92,8 +92,8 @@ part of the interface that Simple mode may hide is one item of a registry
 (`qt/aqt/ui_split.py`: a stable id, an English name, its area and group, and
 whether Simple mode shows it by default). Advanced mode shows every item,
 whatever the choices. Simple mode shows an item when the user's choice for
-it says so, else by its default. The defaults are the split the other
-entries of this file describe (`ui.simple-mode-tools-hidden`,
+it says so, else by its default. The defaults are specified by the other
+entries of this file (`ui.simple-mode-tools-hidden`,
 `ui.get-decks-and-get-addons`, `ui.mode-switch`'s deck menu,
 `ui.advance-postpone`, `ui.simple-mode-deck-counts`,
 `ui.reviewer-simple-view`, `ui.browser-simple-view`, `ui.editor-simple-view`,
@@ -283,8 +283,8 @@ needed to find a card, fix it, and choose whether it is studied:
   Clear Unused Tags, Toggle Tag); Create Copy, Export Notes, Change Note
   Type, Find Duplicates, Find and Replace and Manage Note Types are
   Advanced-only.
-- Cards keeps Change Deck, Toggle Suspend and Info; the Flag submenu, Set
-  Due Date, Grade Now, Reset, Reposition and Toggle Bury are Advanced-only
+- Cards keeps Change Deck, Reposition, Toggle Suspend and Info; the Flag
+  submenu, Set Due Date, Grade Now, Reset and Toggle Bury are Advanced-only
   (Advance and Postpone already are, `ui.advance-postpone`).
 - View keeps Full Screen, Toggle Sidebar and the zoom items; the Layout
   submenu and the Cards/Notes toggle are Advanced-only. The Go menu is
@@ -322,7 +322,8 @@ it showed the collection's own algorithm's value under RWKV too
 `test_hidden_items_keep_their_shortcuts`,
 `test_an_addon_menu_entry_stays_through_a_mode_switch`,
 `test_simple_mode_shows_fixed_columns_and_keeps_the_stored_choice`,
-`test_saved_searches_flags_and_note_types_are_advanced_only`).
+`test_saved_searches_flags_and_note_types_are_advanced_only`); Reposition
+also defaults to visible in `qt/tests/test_ui_split.py`.
 
 ## ui.browser-remove-leech-tag
 

@@ -1,0 +1,1 @@
+- Reposition is now available in the Browser's Cards menu in Simple mode.
