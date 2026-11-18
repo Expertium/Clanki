@@ -88,14 +88,6 @@
     "repository": "https://github.com/rust-fuzz/arbitrary/"
   },
   {
-    "authors": "David Roundy <roundyd@physics.oregonstate.edu>",
-    "description": "Macros to take array references of slices",
-    "license": "BSD-2-Clause",
-    "license_file": null,
-    "name": "arrayref",
-    "repository": "https://github.com/droundy/arrayref"
-  },
-  {
     "authors": "bluss",
     "description": "A vector with fixed capacity, backed by an array (it can be stored on the stack too). Implements fixed capacity ArrayVec and ArrayString.",
     "license": "Apache-2.0 OR MIT",
@@ -496,7 +488,7 @@
     "repository": "https://github.com/BurntSushi/rust-csv"
   },
   {
-    "authors": "Julien Cretin <git@ia0.eu>",
+    "authors": null,
     "description": "Efficient and customizable data-encoding functions like base64, base32, and hex",
     "license": "MIT",
     "license_file": null,
@@ -1232,14 +1224,6 @@
     "repository": "https://github.com/rust-itertools/itertools"
   },
   {
-    "authors": "bluss",
-    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "itertools",
-    "repository": "https://github.com/rust-itertools/itertools"
-  },
-  {
     "authors": "David Tolnay <dtolnay@gmail.com>",
     "description": "Fast integer primitive to string conversion",
     "license": "Apache-2.0 OR MIT",
@@ -1280,7 +1264,7 @@
     "repository": "https://github.com/bluk/leb128fmt"
   },
   {
-    "authors": "The Rust Project Developers",
+    "authors": null,
     "description": "Raw FFI bindings to platform libraries like libc.",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -2600,6 +2584,14 @@
     "repository": "https://github.com/dtolnay/syn"
   },
   {
+    "authors": "David Tolnay <dtolnay@gmail.com>",
+    "description": "Parser for Rust source code",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "syn",
+    "repository": "https://github.com/dtolnay/syn"
+  },
+  {
     "authors": "Actyx AG <developer@actyx.io>",
     "description": "A tool for enlisting the compiler's help in proving the absence of concurrency",
     "license": "Apache-2.0",
@@ -3273,14 +3265,6 @@
   },
   {
     "authors": null,
-    "description": "Core type support for COM and Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-core",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Windows async types",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -3344,23 +3328,7 @@
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
-    "authors": null,
-    "description": "Windows error handling",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-result",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
     "authors": "Microsoft",
-    "description": "Windows string types",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-strings",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": null,
     "description": "Windows string types",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
