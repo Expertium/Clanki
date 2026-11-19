@@ -23,6 +23,7 @@ def _run_preserving_rwkv_state(
     require_no_preset_overlay: bool = False,
     changes_decks: bool = False,
     keep_only_when_replay_unchanged: bool = False,
+    deck_ids_that_may_be_deleted: Sequence[DeckId] = (),
 ) -> _T:
     from aqt import rwkv_scheduler
 
@@ -32,6 +33,7 @@ def _run_preserving_rwkv_state(
         require_no_preset_overlay=require_no_preset_overlay,
         changes_decks=changes_decks,
         keep_only_when_replay_unchanged=keep_only_when_replay_unchanged,
+        deck_ids_that_may_be_deleted=deck_ids_that_may_be_deleted,
     )
 
 
@@ -49,6 +51,7 @@ def remove_decks(
             lambda: col.decks.remove(deck_ids),
             changes_decks=True,
             keep_only_when_replay_unchanged=True,
+            deck_ids_that_may_be_deleted=deck_ids,
         ),
     ).success(
         lambda out: tooltip(

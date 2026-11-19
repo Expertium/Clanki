@@ -1313,7 +1313,8 @@ loaded, when the user adds a deck, adds a filtered deck (also by Custom
 Study), or deletes a deck, and the change moves the replay key, and:
 
 - nothing else in the key changed,
-- no card was deleted, and
+- no existing review-log row became orphaned because its card was deleted,
+  and
 - no card whose home deck is an added, deleted or changed deck has a row in
   the review log (any row, not only rated ones),
 
@@ -1326,9 +1327,11 @@ forgets that record. An undo of the change takes the old key back, a redo the
 new one. The stored cache takes the new key only when it was saved under the
 old one and holds no history change (`sched.rwkv-history-change-keeps-state`).
 
-A deck delete that fails a condition throws the state away as before (a
-delete of reviewed cards changes the replay). An added deck that fails one
-keeps the state under the old key, as before.
+A deck delete that makes an existing review-log row orphaned fails a
+condition and throws the state away, because the orphaned row still takes
+part in replay. Deleting a deck that contains no reviewed cards preserves
+the state. An added deck that fails a condition keeps the state under the
+old key, as before.
 
 **Why:** the key moved while no replayed review did, so the next settings
 change threw the state away and the next card waited for a whole rebuild
@@ -1339,6 +1342,7 @@ state before the first card (163 s).
 **Pinned by:** `test_adding_an_empty_deck_moves_the_rwkv_replay_key_with_it`,
 `test_a_state_that_took_answers_takes_the_new_replay_key_too`,
 `test_deleting_an_empty_deck_keeps_the_rwkv_state`,
+`test_deleting_a_deck_with_unreviewed_cards_keeps_the_rwkv_state`,
 `test_deleting_a_deck_with_reviewed_cards_still_discards_the_rwkv_state`,
 `test_a_new_deck_that_holds_reviewed_cards_keeps_the_old_replay_key`,
 `test_a_deck_change_that_moves_another_part_of_the_key_keeps_the_old_key`,
