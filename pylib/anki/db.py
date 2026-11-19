@@ -122,7 +122,10 @@ class DB(DeprecatedNamesMixin):
         if autocommit:
             self._db.isolation_level = None
         else:
-            self._db.isolation_level = ""
+            # typeshed narrows isolation_level to the three named levels, but
+            # the sqlite3 module also accepts "" to mean "no implicit
+            # transactions"
+            self._db.isolation_level = ""  # type: ignore[assignment]
 
     # strip out invalid utf-8 when reading from db
     def _text_factory(self, data: bytes) -> str:

@@ -20,7 +20,7 @@ prefix = """\
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence, Literal, Type
+from typing import Any, Callable, Sequence, Literal, Type, TYPE_CHECKING
 
 import anki
 import aqt
@@ -33,6 +33,12 @@ from anki.collection import OpChangesAfterUndo
 from aqt.qt import QDialog, QEvent, QMenu, QModelIndex, QWidget, QMimeData
 from aqt.tagedit import TagEdit
 from aqt.undo import UndoActionsInfo
+
+if TYPE_CHECKING:
+    # The hook signatures below are string annotations, so type checkers need
+    # this module to be importable, but importing it at run time would make a
+    # cycle: aqt.import_export.exporting imports aqt.main and aqt.gui_hooks.
+    import aqt.import_export.exporting
 """
 
 # Hook list
