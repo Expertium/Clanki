@@ -66,7 +66,9 @@ def _reference_request(
             score.target_retention = target_retention
         intervening_reviews = intervening_reviews_by_card_id.get(card_id)
         if isinstance(intervening_reviews, int) and intervening_reviews >= 0:
-            score.intervening_reviews = intervening_reviews
+            # Both encodings hold a bool as its 0 or 1 value; the protobuf
+            # runtime itself refuses to assign one to the int field.
+            score.intervening_reviews = int(intervening_reviews)
         if card_id in curve_due_card_ids:
             score.curve_due = True
         curve_retrievability = curve_retrievabilities_by_card_id.get(card_id)
