@@ -11,15 +11,16 @@ the moment the switch happens, so nobody turns Hard into something it is not.
 
 Its second button, "I want to use Hard as fail", starts straight above the
 button that accepts the notice, flies away from the cursor whenever the cursor
-comes close, and does nothing when it is reached: it is a joke, and the only
-way back to two buttons is the checkbox that turned them off.
+comes close, around it rather than across it, and does nothing when it is
+reached: it is a joke, and the only way back to two buttons is the checkbox
+that turned them off.
 """
 
 from __future__ import annotations
 
 import os
 import random
-from typing import cast
+from math import hypot
 
 import aqt
 from anki.utils import dev_mode
@@ -35,12 +36,16 @@ DEV_RUN_ENV = "CLANKI_DEV_RUN"
 
 #: How close the cursor may come to the fleeing button, and how often it
 #: looks, in milliseconds.
-FLEE_GAP = 60
-FLEE_CHECK_MS = 50
+FLEE_GAP = 25
+FLEE_CHECK_MS = 25
 
 #: How long the fleeing button takes to reach its new spot, so that it flies
 #: there instead of jumping.
 FLEE_MS = 220
+
+#: How finely a flight is looked at when deciding whether it would carry the
+#: button across the cursor.
+FLIGHT_STEPS = 12
 
 #: Room for the fleeing button to move around in, and the narrowest the
 #: notice looks sensible at (the four paragraphs are long).
@@ -93,12 +98,38 @@ def _cursor_gap(rect: QRect, cursor: QPoint) -> int:
     return across * across + down * down
 
 
-def _flee_target(
-    area: QRect, size: QSize, cursor: QPoint, rng: random.Random
-) -> QPoint:
-    """A spot for a widget of `size` inside `area`, as far from `cursor` as
-    the room allows. Pure, so the rule that the button can never be reached
-    is pinned without a mouse (spec review.four-button-notice)."""
+def _flight_gap(start: QPoint, target: QPoint, size: QSize, cursor: QPoint) -> int:
+    """The closest the cursor comes to a button of `size` while it moves from
+    `start` to `target`, squared: the smallest gap anywhere along the way,
+    looked at step by step. Pure, so the rule that the button flies around
+    the cursor instead of across it is pinned without a mouse
+    (spec review.four-button-notice)."""
+    worst = _cursor_gap(QRect(start, size), cursor)
+    for step in range(1, FLIGHT_STEPS + 1):
+        moved = QPoint(
+            start.x() + (target.x() - start.x()) * step // FLIGHT_STEPS,
+            start.y() + (target.y() - start.y()) * step // FLIGHT_STEPS,
+        )
+        worst = min(worst, _cursor_gap(QRect(moved, size), cursor))
+    return worst
+
+
+def _route_gap(
+    start: QPoint, way: QPoint, target: QPoint, size: QSize, cursor: QPoint
+) -> int:
+    """The same for a flight that goes by `way`: for a straight flight `way`
+    is `target`."""
+    worst = _flight_gap(start, way, size, cursor)
+    if way != target:
+        worst = min(worst, _flight_gap(way, target, size, cursor))
+    return worst
+
+
+def _far_corners(area: QRect, size: QSize, cursor: QPoint) -> list[QPoint]:
+    """The spots for a widget of `size` inside `area` that leave the cursor
+    as far off as the room allows. Pure, so the rule that the button can
+    never be reached is pinned without a mouse
+    (spec review.four-button-notice)."""
     last_x = area.left() + max(area.width() - size.width(), 0)
     last_y = area.top() + max(area.height() - size.height(), 0)
     corners = [
@@ -108,8 +139,78 @@ def _flee_target(
     farthest = max(gaps)
     # any corner nearly as far away as the farthest one, so that the button
     # does not always land in the same spot
-    best = [spot for spot, gap in zip(corners, gaps) if gap * 10 >= farthest * 9]
-    return rng.choice(best)
+    return [spot for spot, gap in zip(corners, gaps) if gap * 10 >= farthest * 9]
+
+
+def _flee_route(
+    area: QRect, start: QPoint, size: QSize, cursor: QPoint, rng: random.Random
+) -> tuple[QPoint, QPoint]:
+    """Where the button goes when the cursor comes close: a far spot inside
+    `area` for a button of `size` that is at `start`, and the spot to go by on
+    the way, which is the far spot itself when flying straight there is the
+    clearest route. The button takes a flight that keeps the cursor at least
+    as far off along the way as it stands now, and where every flight would
+    come closer -- that is, carry the button across the cursor -- it stays
+    where it is, the spot it is at being returned twice, so that it never
+    moves towards the cursor. Pure, so the rule that the button can never be
+    reached is pinned without a mouse (spec review.four-button-notice)."""
+    last_x = area.left() + max(area.width() - size.width(), 0)
+    last_y = area.top() + max(area.height() - size.height(), 0)
+    corners = [
+        QPoint(x, y) for x in (area.left(), last_x) for y in (area.top(), last_y)
+    ]
+    standing = _cursor_gap(QRect(start, size), cursor)
+    # staying where it is stands as one of the routes, so a flight that would
+    # carry the button closer to the cursor than it stands already is never
+    # taken: only a flight that keeps the cursor at least as far off is, and
+    # where none does, the button stays put
+    routes: list[tuple[int, QPoint, QPoint]] = [(standing, start, start)]
+    for target in _far_corners(area, size, cursor):
+        # a straight flight is one of the routes weighed up for each spot
+        way, room = target, _route_gap(start, target, target, size, cursor)
+        for corner in corners:
+            if corner == target:
+                continue
+            by_corner = _route_gap(start, corner, target, size, cursor)
+            if by_corner > room:
+                way, room = corner, by_corner
+        routes.append((room, target, way))
+
+    clearest = max(room for room, _, _ in routes)
+    even = [(target, way) for room, target, way in routes if room * 10 >= clearest * 9]
+    # among routes that are as clear as each other, a flight is worth more
+    # than standing still, which is what is left when every flight would come
+    # closer to the cursor
+    moves = [route for route in even if route != (start, start)]
+    return rng.choice(moves or even)
+
+
+def _length(start: QPoint, end: QPoint) -> float:
+    """How far `start` is from `end`."""
+    return hypot(end.x() - start.x(), end.y() - start.y())
+
+
+def _along(start: QPoint, end: QPoint, part: float) -> QPoint:
+    """The spot `part` of the way from `start` to `end`."""
+    return QPoint(
+        round(start.x() + (end.x() - start.x()) * part),
+        round(start.y() + (end.y() - start.y()) * part),
+    )
+
+
+def _point_on_path(start: QPoint, way: QPoint, target: QPoint, part: float) -> QPoint:
+    """The spot a flight from `start` to `target` by way of `way` has reached
+    after `part` of the distance, which is 0 at the start and 1 at the
+    target. Pure, so the shape of the flight is pinned without a mouse
+    (spec review.four-button-notice)."""
+    first = _length(start, way)
+    second = _length(way, target)
+    walked = part * (first + second)
+    if walked <= first:
+        # still on the first leg, which is no leg at all where the button
+        # already stands where it is going by
+        return _along(start, way, walked / first) if first else QPoint(start)
+    return _along(way, target, (walked - first) / second)
 
 
 class _FleeingButton(QPushButton):
@@ -126,17 +227,33 @@ class _FleeingButton(QPushButton):
         # and Enter cannot press it either
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.resize(self.sizeHint())
-        self._flight = QPropertyAnimation(self, cast(QByteArray, b"pos"), self)
+        # the flight is animated as the share of the way covered, and the
+        # button is put wherever that share is, so that the flight can bend
+        # round the cursor instead of going straight over it
+        self._flight = QVariantAnimation(self)
         self._flight.setDuration(FLEE_MS)
+        self._flight.setStartValue(0.0)
+        self._flight.setEndValue(1.0)
         self._flight.setEasingCurve(QEasingCurve.Type.OutCubic)
+        qconnect(self._flight.valueChanged, self._follow_path)
+        self._from = QPoint()
+        self._by = QPoint()
+        self._to = QPoint()
 
-    def fly_to(self, target: QPoint) -> None:
-        """Head for `target` from wherever the button is now, taking FLEE_MS
-        over it, so that it flies instead of jumping there."""
+    def fly_to(self, way: QPoint, target: QPoint) -> None:
+        """Head for `target` from wherever the button is now, by way of `way`
+        when the way there bends round the cursor, taking FLEE_MS over it, so
+        that it flies instead of jumping there."""
+        self._from = self.pos()
+        self._by = way
+        self._to = target
         self._flight.stop()
-        self._flight.setStartValue(self.pos())
-        self._flight.setEndValue(target)
         self._flight.start()
+
+    def _follow_path(self, part: float) -> None:
+        """The animation's slot: put the button where `part` of the way along
+        its path is."""
+        self.move(_point_on_path(self._from, self._by, self._to, part))
 
     def is_flying(self) -> bool:
         return self._flight.state() == QAbstractAnimation.State.Running
@@ -210,12 +327,18 @@ class _FleeArea(QWidget):
 
     def flee_from_cursor(self, cursor: QPoint, force: bool = False) -> bool:
         """Send the button out of `cursor`'s reach, `cursor` being in this
-        strip's own coordinates. Returns whether the button was sent off."""
+        strip's own coordinates. Returns whether the button was sent off:
+        where every flight would carry it across the cursor, it stays where
+        it is."""
         button = QRect(self.button.pos(), self.button.size())
         if not force and _cursor_gap(button, cursor) > FLEE_GAP**2:
             return False
-        target = _flee_target(self.rect(), self.button.size(), cursor, _random)
-        self.button.fly_to(target)
+        target, way = _flee_route(
+            self.rect(), self.button.pos(), self.button.size(), cursor, _random
+        )
+        if target == way == self.button.pos():
+            return False
+        self.button.fly_to(way, target)
         return True
 
     def _kept_inside(self, x: int, y: int) -> QPoint:

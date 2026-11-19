@@ -232,23 +232,158 @@ AREA = QRect(0, 0, 500, notice.STRIP_HEIGHT)
 BUTTON = QSize(170, 30)
 
 
+def starts_in(area: QRect, size: QSize) -> list[QPoint]:
+    """Where the button can be when the cursor comes close: above the button
+    that accepts the notice, which is where it starts, and any corner it has
+    flown to."""
+    last_x = area.left() + max(area.width() - size.width(), 0)
+    last_y = area.top() + max(area.height() - size.height(), 0)
+    middle = area.left() + (area.width() - size.width()) // 2
+    return [
+        QPoint(middle, last_y),
+        QPoint(area.left(), area.top()),
+        QPoint(last_x, area.top()),
+        QPoint(area.left(), last_y),
+        QPoint(last_x, last_y),
+    ]
+
+
+def every_route(
+    area: QRect, start: QPoint, size: QSize, cursor: QPoint
+) -> list[tuple[QPoint, QPoint]]:
+    """Every flight the button could take when the cursor comes close: to a
+    spot as far off as the room allows, straight there or by any corner on
+    the way. A flight that would leave the button where it already is is no
+    flight, so it is not one of them."""
+    corners = [
+        QPoint(x, y)
+        for x in (area.left(), area.left() + max(area.width() - size.width(), 0))
+        for y in (area.top(), area.top() + max(area.height() - size.height(), 0))
+    ]
+    return [
+        (target, way)
+        for target in notice._far_corners(area, size, cursor)
+        for way in corners
+        if (target, way) != (start, start)
+    ]
+
+
 @pytest.mark.parametrize("x", [0, 90, 250, 410, 499])
 @pytest.mark.parametrize("y", [0, 47, 95])
 def test_the_button_hides_farther_than_the_cursor_can_reach(x: int, y: int) -> None:
     cursor = QPoint(x, y)
-    for seed in range(20):
-        spot = notice._flee_target(AREA, BUTTON, cursor, random.Random(seed))
-        rect = QRect(spot, BUTTON)
-        assert AREA.contains(rect)
-        assert not rect.contains(cursor)
-        assert notice._cursor_gap(rect, cursor) > notice.FLEE_GAP**2
+    for start in starts_in(AREA, BUTTON):
+        for seed in range(20):
+            target, way = notice._flee_route(
+                AREA, start, BUTTON, cursor, random.Random(seed)
+            )
+            for spot in (target, way):
+                assert AREA.contains(QRect(spot, BUTTON)), (start, spot)
+            if (target, way) == (start, start):
+                continue  # it stays put; the test below says when that is
+            assert not QRect(target, BUTTON).contains(cursor), start
+            assert (
+                notice._cursor_gap(QRect(target, BUTTON), cursor) > notice.FLEE_GAP**2
+            )
+
+
+@pytest.mark.parametrize("x", [0, 90, 250, 410, 499])
+@pytest.mark.parametrize("y", [0, 47, 95])
+def test_the_button_never_moves_towards_the_cursor(x: int, y: int) -> None:
+    """The button flies the route that keeps the cursor clearest of all the
+    routes it has, and it stays where it is rather than fly one that would
+    come closer to the cursor than it already is (spec
+    review.four-button-notice)."""
+    cursor = QPoint(x, y)
+    for start in starts_in(AREA, BUTTON):
+        gap_at_start = notice._cursor_gap(QRect(start, BUTTON), cursor)
+        for seed in range(5):
+            target, way = notice._flee_route(
+                AREA, start, BUTTON, cursor, random.Random(seed)
+            )
+            room = notice._route_gap(start, way, target, BUTTON, cursor)
+            rooms = [
+                notice._route_gap(start, way_, target_, BUTTON, cursor)
+                for target_, way_ in every_route(AREA, start, BUTTON, cursor)
+            ]
+
+            # staying put is worth the gap it already has, so the route taken
+            # is as clear as that or as the clearest flight, whichever is more
+            best = max([gap_at_start, *rooms])
+            assert room * 10 >= best * 9, (start, cursor, seed)
+            if gap_at_start > 0:
+                # the cursor is clear of the button, and it stays clear: the
+                # button never flies the cursor over itself
+                assert room > 0, (start, cursor, seed)
+            if max(rooms, default=-1) == gap_at_start and gap_at_start > 0:
+                # a flight that never comes closer is on offer, so it is
+                # taken rather than standing still
+                assert (target, way) != (start, start), (start, cursor, seed)
+
+
+def test_the_button_will_not_slide_across_a_cursor_beside_it() -> None:
+    """The case the straight flight got wrong: the button at the left end of
+    the strip, the cursor just off its right-hand edge. Flying straight at
+    the far corner would carry the button over the cursor; going up first and
+    across after does not, and that is the route it takes."""
+    start = QPoint(AREA.left(), AREA.top() + AREA.height() - BUTTON.height())
+    cursor = QPoint(start.x() + BUTTON.width() + 10, start.y())
+    far_corner = QPoint(AREA.left() + AREA.width() - BUTTON.width(), AREA.top())
+    straight_at_the_far_corner = notice._route_gap(
+        start, far_corner, far_corner, BUTTON, cursor
+    )
+
+    assert straight_at_the_far_corner == 0  # it goes right over the cursor
+    for seed in range(5):
+        target, way = notice._flee_route(
+            AREA, start, BUTTON, cursor, random.Random(seed)
+        )
+        room = notice._route_gap(start, way, target, BUTTON, cursor)
+
+        assert room == notice._cursor_gap(QRect(start, BUTTON), cursor), (seed, target)
+        assert room > straight_at_the_far_corner, (seed, target)
+        assert not QRect(target, BUTTON).contains(cursor), (seed, target)
 
 
 def test_a_strip_too_small_to_flee_from_keeps_the_button_in_it() -> None:
     area = QRect(0, 0, 80, 20)
-    spot = notice._flee_target(area, BUTTON, QPoint(40, 10), random.Random(0))
-    assert spot.x() >= area.left()
-    assert spot.y() >= area.top()
+    start = QPoint(0, 0)
+    target, way = notice._flee_route(
+        area, start, BUTTON, QPoint(40, 10), random.Random(0)
+    )
+    for spot in (target, way):
+        assert spot.x() >= area.left()
+        assert spot.y() >= area.top()
+        assert spot.x() <= area.left() + area.width()
+        assert spot.y() <= area.top() + area.height()
+
+
+def test_the_button_keeps_a_steady_pace_along_the_whole_route() -> None:
+    """The flight is animated as the share of the way covered, so a route
+    that bends round the cursor is flown the same way a straight one is: at a
+    steady pace rather than in two bites, and a straight route still walks
+    the straight line."""
+    start, way, target = QPoint(0, 96), QPoint(0, 0), QPoint(400, 0)
+    first_leg, second_leg = 96.0, 400.0
+    whole = first_leg + second_leg
+    bend = first_leg / whole
+
+    assert notice._point_on_path(start, way, way, 0.0) == start
+    assert notice._point_on_path(start, way, way, 1.0) == way
+    # the bend is where the distance covered says it is, not halfway in time
+    assert notice._point_on_path(start, way, target, bend) == way
+    assert notice._point_on_path(
+        start, way, target, (first_leg + 100) / whole
+    ) == QPoint(100, 0)
+    for part in (0.05, 0.25, 0.75, 0.95):
+        point = notice._point_on_path(start, way, target, part)
+        if part <= bend:
+            walked = notice._length(start, point)
+        else:
+            walked = first_leg + notice._length(way, point)
+        assert abs(walked - part * whole) < 1.0, part
+    # a straight route walks the straight line, as it did before it could bend
+    assert notice._point_on_path(start, target, target, 0.5) == QPoint(200, 48)
 
 
 def test_the_button_moves_off_a_cursor_that_reaches_it(
@@ -332,6 +467,55 @@ def test_the_button_stays_put_while_the_cursor_is_far_away(
     assert area.flee_from_cursor(QPoint(-1000, -1000)) is False
 
     assert area.button.pos() == before
+
+
+def test_the_button_only_flees_once_the_cursor_is_close(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    """The button used to be off at twice this distance; now the cursor has
+    to come right up to it before it moves (spec review.four-button-notice)."""
+    dialog = shown_notice(mw, qapp)
+    area = strip_of(dialog)
+    area._timer.stop()  # the test moves the cursor; the real one must not
+    button = QRect(area.button.pos(), area.button.size())
+    beside, middle = button.right(), button.center().y()
+
+    assert notice.FLEE_GAP <= 25
+    # where it used to take off, and a hair further out, it stays put
+    assert area.flee_from_cursor(QPoint(beside + notice.FLEE_GAP * 2, middle)) is False
+    assert area.flee_from_cursor(QPoint(beside + notice.FLEE_GAP + 1, middle)) is False
+    assert area.flee_from_cursor(QPoint(beside + notice.FLEE_GAP, middle)) is True
+
+
+def test_the_flight_follows_the_route_it_was_given(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    """The button flies the route the strip picked out for it, bend and all,
+    and comes to rest at the far end of it."""
+    from PyQt6.QtTest import QTest
+
+    dialog = shown_notice(mw, qapp)
+    area = strip_of(dialog)
+    area._timer.stop()  # the test places the button; the real cursor must not
+    start = area.button.pos()
+    cursor = QRect(start, area.button.size()).center()
+    target, way = notice._flee_route(
+        area.rect(), start, area.button.size(), cursor, random.Random(0)
+    )
+
+    area.button.fly_to(way, target)
+
+    assert area.button.is_flying()
+    # the flight walks the route: where the bend lies along it is where the
+    # button is when that much of the way has been covered
+    bend = notice._length(start, way) / (
+        notice._length(start, way) + notice._length(way, target)
+    )
+    area.button._follow_path(bend)
+    assert area.button.pos() == way
+    QTest.qWait(notice.FLEE_MS + 100)  # type: ignore[call-arg, arg-type]
+    assert not area.button.is_flying()
+    assert area.button.pos() == target
 
 
 def test_pressing_the_fleeing_button_does_nothing(
