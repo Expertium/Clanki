@@ -32,14 +32,16 @@ buttons the way the manual does -- what Again, Hard, Good and Easy mean, each
 with its keyboard shortcut (1, 2, 3/Space/Enter, 4) -- and asks the user to
 accept it with "I understand that Hard is a passing grade".
 
-The notice's second button, "I want to use Hard as fail", starts straight
-above the button that accepts the notice. Whenever the cursor comes within 60
-pixels of it, it flies to a far corner of its strip over 220 ms instead of
+Both of the notice's buttons sit in the middle of it, one above the other: the
+button that accepts the notice, which a button box would otherwise line up
+with the window's right-hand edge, and the second button, "I want to use Hard
+as fail", straight above it. Whenever the cursor comes within 60 pixels of the
+second one, it flies to a far corner of its strip over 220 ms instead of
 jumping there, and a press that does land does nothing: no answer is changed,
 no setting is written and the notice stays open. The notice cannot be
-dismissed at all -- there is no close button in its title bar, and Esc and
-Alt+F4 do nothing -- so accepting it is the only way out. The only way back to
-two buttons is the checkbox.
+dismissed at all: the close button in its title bar is disabled and does
+nothing, and Esc and Alt+F4 do nothing either, so accepting it is the only way
+out. The only way back to two buttons is the checkbox.
 
 The notice appears the first time and never again: a flag in the profile
 (`fourButtonNoticeShown`) is written when it is shown. In a developer's build
@@ -60,7 +62,8 @@ the local build the pop-up should appear every time I switch, for testing
 purposes." Andrew, 2026-11-19: "1) The 'I want to use Hard as \"fail\"' text
 button be straight above the other button at first 2) Make it more animated.
 Right now the button teleports instead of smoothly flying 3) Make sure the
-pop-up window cannot be closed by clicking the cross icon".
+pop-up window cannot be closed by clicking the cross icon". Andrew, 2026-11-19:
+"They are offset to the right. Make them centered".
 
 **Pinned by:** `test_four_button_notice.py` (the manual's words,
 `test_the_notice_is_shown_once_and_remembered`,
@@ -68,6 +71,7 @@ pop-up window cannot be closed by clicking the cross icon".
 `test_a_run_started_by_the_source_launcher_shows_the_notice_every_time`,
 `test_the_source_launcher_marks_its_run`,
 `test_the_button_hides_farther_than_the_cursor_can_reach`,
+`test_the_two_buttons_sit_in_the_middle_of_the_notice`,
 `test_the_button_starts_straight_above_the_understand_button`,
 `test_the_button_flies_to_its_new_spot_instead_of_jumping`,
 `test_the_notice_cannot_be_closed_with_the_cross_or_escape`,

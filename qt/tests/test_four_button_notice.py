@@ -18,7 +18,16 @@ anki.lang.set_lang("en")
 
 import aqt.four_button_notice as notice  # noqa: E402
 from aqt import AnkiQt  # noqa: E402
-from aqt.qt import QDialog, QPoint, QRect, QSize, Qt, QWidget, qconnect  # noqa: E402
+from aqt.qt import (  # noqa: E402
+    QDialog,
+    QPoint,
+    QPushButton,
+    QRect,
+    QSize,
+    Qt,
+    QWidget,
+    qconnect,
+)
 from aqt.utils import tr  # noqa: E402
 
 
@@ -84,6 +93,17 @@ def strip_of(dialog: QDialog) -> notice._FleeArea:
     return area
 
 
+def accepting_button(dialog: QDialog) -> QPushButton:
+    """The notice's button that accepts it, "I understand that Hard is a
+    passing grade"."""
+    button = next(
+        button
+        for button in dialog.findChildren(QPushButton)
+        if button.text() == tr.preferences_four_button_notice_understand()
+    )
+    return button
+
+
 def test_the_notice_repeats_the_manuals_own_words_for_the_four_buttons(
     mw: FakeMainWindow, qapp: Any
 ) -> None:
@@ -123,11 +143,7 @@ def test_the_notice_has_the_two_buttons_at_the_bottom(
     # the one that runs away lives in its own strip
     box = dialog.findChild(QDialogButtonBox)
     assert box is not None
-    understand = next(
-        button
-        for button in dialog.findChildren(QPushButton)
-        if button.text() == tr.preferences_four_button_notice_understand()
-    )
+    understand = accepting_button(dialog)
     assert understand.parent() is box
     assert (
         strip_of(dialog).button.text()
@@ -135,16 +151,33 @@ def test_the_notice_has_the_two_buttons_at_the_bottom(
     )
 
 
-def test_the_understand_button_closes_the_notice(mw: FakeMainWindow, qapp: Any) -> None:
-    from aqt.qt import QPushButton
-
+def test_the_two_buttons_sit_in_the_middle_of_the_notice(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    """Qt lines a button box up with the right-hand edge on Windows, which is
+    why the notice asks for centred buttons: the accepting button and the one
+    above it belong in the middle, not over on the right."""
     dialog = shown_notice(mw, qapp)
-    understand = next(
-        button
-        for button in dialog.findChildren(QPushButton)
-        if button.text() == tr.preferences_four_button_notice_understand()
-    )
-    understand.click()
+    area = strip_of(dialog)
+    area._timer.stop()  # the test places the button; the real cursor must not
+    # room to spare: with the text as wide as its box, centring cannot be seen
+    dialog.resize(900, dialog.height())
+    layout = dialog.layout()
+    assert layout is not None
+    layout.activate()
+    qapp.processEvents()
+    area.start_above(accepting_button(dialog))
+    qapp.processEvents()
+
+    middle = dialog.rect().center().x()
+    accept = accepting_button(dialog)
+    assert abs(accept.mapTo(dialog, accept.rect().center()).x() - middle) <= 2
+    assert abs(area.button.mapTo(dialog, area.button.rect().center()).x() - middle) <= 2
+
+
+def test_the_understand_button_closes_the_notice(mw: FakeMainWindow, qapp: Any) -> None:
+    dialog = shown_notice(mw, qapp)
+    accepting_button(dialog).click()
     qapp.processEvents()
     assert not dialog.isVisible()
 
@@ -236,15 +269,9 @@ def test_the_button_moves_off_a_cursor_that_reaches_it(
 def test_the_button_starts_straight_above_the_understand_button(
     mw: FakeMainWindow, qapp: Any
 ) -> None:
-    from aqt.qt import QPushButton
-
     dialog = shown_notice(mw, qapp)
     area = strip_of(dialog)
-    understand = next(
-        button
-        for button in dialog.findChildren(QPushButton)
-        if button.text() == tr.preferences_four_button_notice_understand()
-    )
+    understand = accepting_button(dialog)
 
     fleeing_centre = area.button.mapToGlobal(area.button.rect().center())
     accepting_centre = understand.mapToGlobal(understand.rect().center())

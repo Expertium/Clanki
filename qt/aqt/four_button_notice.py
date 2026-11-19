@@ -301,6 +301,9 @@ def show(mw: aqt.AnkiQt) -> QDialog | None:
     understand = QPushButton(tr.preferences_four_button_notice_understand())
     understand.setDefault(True)
     button_box.addButton(understand, QDialogButtonBox.ButtonRole.AcceptRole)
+    # Qt lines a button box up with the right-hand edge on Windows; the
+    # notice's two buttons belong in the middle, one above the other
+    button_box.setCenterButtons(True)
     qconnect(button_box.accepted, dialog.accept)
     layout.addWidget(button_box)
 
