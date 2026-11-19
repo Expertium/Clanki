@@ -10,6 +10,13 @@ import sys
 
 sys.path.extend(["pylib", "qt", "out/pylib", "out/qt"])
 
+# A source run is a developer's build, so mark it: run.bat and ./run set
+# ANKIDEV, but a shortcut that starts this file directly does not set it, and
+# ANKIDEV would also turn the web-asset cache and the automatic backups off.
+# What repeats for testing only, like the four-button notice
+# (spec review.four-button-notice), reads the marker.
+os.environ.setdefault("CLANKI_DEV_RUN", "1")
+
 import aqt
 
 # A source run has no launcher, so aqt never sets a Windows AppUserModelID and

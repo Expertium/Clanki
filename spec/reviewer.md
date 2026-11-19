@@ -23,6 +23,79 @@ and Easy shortcuts must be ignored (key 2 used to answer Good).
 `test_two_button_mode_maps_answer_keys` (`qt/tests/test_reviewer.py`),
 `answer_button_options_default_to_on` (`rslib/src/config/bool.rs`).
 
+## review.four-button-notice
+
+Given the user turns "Show only Again and Good answer buttons" off in
+Preferences > Review, and so turns the four answer buttons on, Clanki shows a
+notice once the Preferences window has closed. The notice explains the four
+buttons the way the manual does -- what Again, Hard, Good and Easy mean, each
+with its keyboard shortcut (1, 2, 3/Space/Enter, 4) -- and asks the user to
+accept it with "I understand that Hard is a passing grade".
+
+Both of the notice's buttons sit in the middle of it, one above the other: the
+button that accepts the notice, which a button box would otherwise line up
+with the window's right-hand edge, and the second button, "I want to use Hard
+as fail", straight above it. Whenever the cursor comes within 25 pixels of the
+second one, it takes to a far spot in its strip over 220 ms instead of jumping
+there: to a corner, or to a corner by way of another corner where flying
+straight at it would carry the button across the cursor. It flies no route
+that brings the cursor closer to it than where it stands, and where every
+route it has would, it stays where it is, so it never moves towards the
+cursor; a cursor that comes right up to it makes it fly, since then every
+route is as clear as any other. The flight is paced by the distance it
+covers, so a route that bends is flown as evenly as a straight one. A press
+that does land on the button does nothing: no answer is changed, no setting is
+written and the notice stays open. The notice cannot be dismissed at all: the
+close button in its title bar is disabled and does nothing, and Esc and Alt+F4
+do nothing either, so accepting it is the only way out. The only way back to
+two buttons is the checkbox.
+
+The notice appears the first time and never again: a flag in the profile
+(`fourButtonNoticeShown`) is written when it is shown. In a developer's build
+-- one started with `ANKIDEV` set, or by the source launcher `tools/run.py`,
+which marks its run -- it is shown on every switch instead, which is how it is
+tested by hand. The notice changes no preference of its own.
+
+**Why:** Andrew, 2026-11-15: "When the user switches to 4 button mode for the
+first time, display a pop-up with the following text from the manual" -- the
+manual's four button descriptions and their shortcuts -- "And the the pop-up
+should have 2 buttons at the bottom: 1) I understand that Hard is a passing
+grade 2) I want to use Hard as 'fail'. Except here's the fun part: the second
+button flies away from the cursor. When the cursor is close enough to it, it
+moves to a different spot on the pop-up, so the user can never catch it (and
+even if he does, it would do nothing)". Andrew, 2026-11-15: "in the PR this
+should only work once - the first time the user enables the 4-button mode. In
+the local build the pop-up should appear every time I switch, for testing
+purposes." Andrew, 2026-11-19: "1) The 'I want to use Hard as \"fail\"' text
+button be straight above the other button at first 2) Make it more animated.
+Right now the button teleports instead of smoothly flying 3) Make sure the
+pop-up window cannot be closed by clicking the cross icon". Andrew, 2026-11-19:
+"They are offset to the right. Make them centered". Andrew, 2026-11-19:
+"1) Reduce the distance from the cursor to the fleeing button when fleeing
+activates. For example, if right now activates when the cursor is, say, 50
+pixels away, reduce it to 25 2) Work on pathing so that the direction in which
+the button flees never intercepts with the cursor".
+
+**Pinned by:** `test_four_button_notice.py` (the manual's words,
+`test_the_notice_is_shown_once_and_remembered`,
+`test_an_ankidev_build_shows_the_notice_every_time`,
+`test_a_run_started_by_the_source_launcher_shows_the_notice_every_time`,
+`test_the_source_launcher_marks_its_run`,
+`test_the_button_hides_farther_than_the_cursor_can_reach`,
+`test_the_button_never_moves_towards_the_cursor`,
+`test_the_button_will_not_slide_across_a_cursor_beside_it`,
+`test_the_button_only_flees_once_the_cursor_is_close`,
+`test_the_button_keeps_a_steady_pace_along_the_whole_route`,
+`test_the_flight_follows_the_route_it_was_given`,
+`test_the_two_buttons_sit_in_the_middle_of_the_notice`,
+`test_the_button_starts_straight_above_the_understand_button`,
+`test_the_button_flies_to_its_new_spot_instead_of_jumping`,
+`test_the_notice_cannot_be_closed_with_the_cross_or_escape`,
+`test_pressing_the_fleeing_button_does_nothing`);
+`test_preferences.py`
+(`test_turning_four_button_mode_on_asks_for_the_notice`,
+`test_the_pending_notice_is_shown_once_the_dialog_has_closed`).
+
 ## review.card-style-with-content
 
 Given a card on the Study screen (or in the card preview), its body classes
