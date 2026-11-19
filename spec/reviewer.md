@@ -32,15 +32,20 @@ buttons the way the manual does -- what Again, Hard, Good and Easy mean, each
 with its keyboard shortcut (1, 2, 3/Space/Enter, 4) -- and asks the user to
 accept it with "I understand that Hard is a passing grade".
 
-The notice's second button, "I want to use Hard as fail", moves away from the
-cursor whenever the cursor comes within 60 pixels of it, and a press that
-does land does nothing: no answer is changed, no setting is written and the
-notice stays open. The only way back to two buttons is the checkbox.
+The notice's second button, "I want to use Hard as fail", starts straight
+above the button that accepts the notice. Whenever the cursor comes within 60
+pixels of it, it flies to a far corner of its strip over 220 ms instead of
+jumping there, and a press that does land does nothing: no answer is changed,
+no setting is written and the notice stays open. The notice cannot be
+dismissed at all -- there is no close button in its title bar, and Esc and
+Alt+F4 do nothing -- so accepting it is the only way out. The only way back to
+two buttons is the checkbox.
 
 The notice appears the first time and never again: a flag in the profile
-(`fourButtonNoticeShown`) is written when it is shown. In a development build
-it is shown on every switch instead, which is how it is tested by hand. The
-notice changes no preference of its own.
+(`fourButtonNoticeShown`) is written when it is shown. In a developer's build
+-- one started with `ANKIDEV` set, or by the source launcher `tools/run.py`,
+which marks its run -- it is shown on every switch instead, which is how it is
+tested by hand. The notice changes no preference of its own.
 
 **Why:** Andrew, 2026-11-15: "When the user switches to 4 button mode for the
 first time, display a pop-up with the following text from the manual" -- the
@@ -52,12 +57,20 @@ moves to a different spot on the pop-up, so the user can never catch it (and
 even if he does, it would do nothing)". Andrew, 2026-11-15: "in the PR this
 should only work once - the first time the user enables the 4-button mode. In
 the local build the pop-up should appear every time I switch, for testing
-purposes."
+purposes." Andrew, 2026-11-19: "1) The 'I want to use Hard as \"fail\"' text
+button be straight above the other button at first 2) Make it more animated.
+Right now the button teleports instead of smoothly flying 3) Make sure the
+pop-up window cannot be closed by clicking the cross icon".
 
 **Pinned by:** `test_four_button_notice.py` (the manual's words,
 `test_the_notice_is_shown_once_and_remembered`,
-`test_a_development_build_shows_the_notice_every_time`,
+`test_an_ankidev_build_shows_the_notice_every_time`,
+`test_a_run_started_by_the_source_launcher_shows_the_notice_every_time`,
+`test_the_source_launcher_marks_its_run`,
 `test_the_button_hides_farther_than_the_cursor_can_reach`,
+`test_the_button_starts_straight_above_the_understand_button`,
+`test_the_button_flies_to_its_new_spot_instead_of_jumping`,
+`test_the_notice_cannot_be_closed_with_the_cross_or_escape`,
 `test_pressing_the_fleeing_button_does_nothing`);
 `test_preferences.py`
 (`test_turning_four_button_mode_on_asks_for_the_notice`,

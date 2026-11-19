@@ -9,14 +9,17 @@ four buttons in the manual, where Hard is a passing grade with its own
 interval. This notice repeats what the manual says about the four buttons at
 the moment the switch happens, so nobody turns Hard into something it is not.
 
-Its second button, "I want to use Hard as fail", runs away from the cursor
-and does nothing when it is reached: it is a joke, and the only way back to
-two buttons is the checkbox that turned them off.
+Its second button, "I want to use Hard as fail", starts straight above the
+button that accepts the notice, flies away from the cursor whenever the cursor
+comes close, and does nothing when it is reached: it is a joke, and the only
+way back to two buttons is the checkbox that turned them off.
 """
 
 from __future__ import annotations
 
+import os
 import random
+from typing import cast
 
 import aqt
 from anki.utils import dev_mode
@@ -26,10 +29,18 @@ from aqt.utils import disable_help_button, tr
 #: pm.meta flag: the notice has been shown once (spec review.four-button-notice)
 SHOWN_KEY = "fourButtonNoticeShown"
 
+#: set by tools/run.py: a run started by the source launcher is a developer's
+#: build even when ANKIDEV is not set
+DEV_RUN_ENV = "CLANKI_DEV_RUN"
+
 #: How close the cursor may come to the fleeing button, and how often it
 #: looks, in milliseconds.
 FLEE_GAP = 60
 FLEE_CHECK_MS = 50
+
+#: How long the fleeing button takes to reach its new spot, so that it flies
+#: there instead of jumping.
+FLEE_MS = 220
 
 #: Room for the fleeing button to move around in, and the narrowest the
 #: notice looks sensible at (the four paragraphs are long).
@@ -102,8 +113,8 @@ def _flee_target(
 
 
 class _FleeingButton(QPushButton):
-    """The button that can never be clicked: it is moved out of the way
-    before a click can land on it, and a click that does land is swallowed
+    """The button that can never be clicked: it flies out of the way before a
+    click can land on it, and a click that does land is swallowed
     (spec review.four-button-notice)."""
 
     def __init__(self, area: _FleeArea, text: str) -> None:
@@ -115,6 +126,20 @@ class _FleeingButton(QPushButton):
         # and Enter cannot press it either
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.resize(self.sizeHint())
+        self._flight = QPropertyAnimation(self, cast(QByteArray, b"pos"), self)
+        self._flight.setDuration(FLEE_MS)
+        self._flight.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def fly_to(self, target: QPoint) -> None:
+        """Head for `target` from wherever the button is now, taking FLEE_MS
+        over it, so that it flies instead of jumping there."""
+        self._flight.stop()
+        self._flight.setStartValue(self.pos())
+        self._flight.setEndValue(target)
+        self._flight.start()
+
+    def is_flying(self) -> bool:
+        return self._flight.state() == QAbstractAnimation.State.Running
 
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
         # no super() call: nothing is emitted, so the button does nothing
@@ -123,21 +148,48 @@ class _FleeingButton(QPushButton):
 
 
 class _FleeArea(QWidget):
-    """The strip the fleeing button lives in. It keeps the button inside
-    itself and moves it whenever the cursor comes close
-    (spec review.four-button-notice)."""
+    """The strip the fleeing button lives in. It starts the button above the
+    button that accepts the notice, keeps it inside itself and sends it off
+    whenever the cursor comes close (spec review.four-button-notice)."""
 
     def __init__(self, button_text: str) -> None:
         super().__init__()
         self.setMinimumHeight(STRIP_HEIGHT)
         self.button = _FleeingButton(self, button_text)
+        self._anchor: QWidget | None = None
+        self._placed = False
         self._timer = QTimer(self)
         self._timer.setInterval(FLEE_CHECK_MS)
         qconnect(self._timer.timeout, self.flee_from_the_real_cursor)
 
+    def start_above(self, widget: QWidget) -> None:
+        """Put the button straight above `widget`, the button that accepts the
+        notice, and leave it there until the cursor comes close."""
+        self._anchor = widget
+        self.place_above_anchor()
+
+    def place_above_anchor(self) -> None:
+        """Move the button to the middle of the anchor's column, as low in
+        the strip as it goes, which puts it straight above the anchor."""
+        if self._anchor is None:
+            return
+        anchor = self._anchor
+        middle = self.mapFromGlobal(anchor.mapToGlobal(anchor.rect().center()))
+        self.button.move(
+            self._kept_inside(
+                middle.x() - self.button.width() // 2,
+                self.height() - self.button.height(),
+            )
+        )
+        self.button.raise_()
+        self._placed = True
+
     def showEvent(self, event: QShowEvent | None) -> None:
         self._timer.start()
-        self.flee_from_cursor(self._cursor_in_area(), force=True)
+        if self._placed:
+            self.flee_from_cursor(self._cursor_in_area())
+        else:
+            self.place_above_anchor()
         super().showEvent(event)
 
     def hideEvent(self, event: QHideEvent | None) -> None:
@@ -145,33 +197,66 @@ class _FleeArea(QWidget):
         super().hideEvent(event)
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:
-        self.flee_from_cursor(self._cursor_in_area(), force=True)
+        if not self._placed:
+            self.place_above_anchor()
+        elif not self.rect().contains(QRect(self.button.pos(), self.button.size())):
+            # the strip shrank under the button: bring it back in
+            self.flee_from_cursor(self._cursor_in_area(), force=True)
         super().resizeEvent(event)
 
     def flee_from_the_real_cursor(self) -> None:
-        """The timer's slot: move the button away from the mouse."""
+        """The timer's slot: send the button away from the mouse."""
         self.flee_from_cursor(self._cursor_in_area())
 
     def flee_from_cursor(self, cursor: QPoint, force: bool = False) -> bool:
-        """Move the button out of `cursor`'s reach, `cursor` being in this
-        strip's own coordinates. Returns whether the button moved."""
+        """Send the button out of `cursor`'s reach, `cursor` being in this
+        strip's own coordinates. Returns whether the button was sent off."""
         button = QRect(self.button.pos(), self.button.size())
         if not force and _cursor_gap(button, cursor) > FLEE_GAP**2:
             return False
         target = _flee_target(self.rect(), self.button.size(), cursor, _random)
-        self.button.move(target)
-        self.button.raise_()
+        self.button.fly_to(target)
         return True
+
+    def _kept_inside(self, x: int, y: int) -> QPoint:
+        """`(x, y)` with the button kept inside the strip."""
+        room = self.rect().adjusted(0, 0, -self.button.width(), -self.button.height())
+        return QPoint(
+            max(room.left(), min(x, room.right())),
+            max(room.top(), min(y, room.bottom())),
+        )
 
     def _cursor_in_area(self) -> QPoint:
         return self.mapFromGlobal(QCursor.pos())
+
+
+class _NoticeDialog(QDialog):
+    """The notice cannot be dismissed: it has no close button in its title bar
+    and Esc and Alt+F4 do nothing, so accepting it is the only way out
+    (spec review.four-button-notice)."""
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        if event is not None:
+            event.ignore()
+
+    def reject(self) -> None:
+        pass
+
+
+def _development_build() -> bool:
+    """True in a developer's build: one started with ANKIDEV set (`run.bat`
+    and `./run` set it), or by the source launcher, which marks its run so
+    that a shortcut starting `tools/run.py` directly counts too. The notice
+    repeats there, so that a developer sees it on every switch
+    (spec review.four-button-notice)."""
+    return bool(dev_mode) or os.environ.get(DEV_RUN_ENV) == "1"
 
 
 def should_show(mw: aqt.AnkiQt) -> bool:
     """True the first time, and always in a development build, where the
     notice comes back on every switch for testing
     (spec review.four-button-notice)."""
-    if dev_mode:
+    if _development_build():
         return True
     return not mw.pm.meta.get(SHOWN_KEY, False)
 
@@ -187,11 +272,13 @@ def show(mw: aqt.AnkiQt) -> QDialog | None:
     """Show the notice, or return None when it was shown before."""
     if not should_show(mw):
         return None
-    if not dev_mode:
+    if not _development_build():
         mark_shown(mw)
 
-    dialog = QDialog(mw, Qt.WindowType.Window)
+    dialog = _NoticeDialog(mw, Qt.WindowType.Window)
     dialog.setWindowTitle(tr.preferences_four_button_notice_title())
+    # no cross to click: the notice is accepted, not dismissed
+    dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
     disable_help_button(dialog)
     mw.garbage_collect_on_dialog_finish(dialog)
 
@@ -220,4 +307,6 @@ def show(mw: aqt.AnkiQt) -> QDialog | None:
     dialog.setLayout(layout)
     dialog.setMinimumWidth(MINIMUM_WIDTH)
     dialog.show()
+    layout.activate()
+    area.start_above(understand)
     return dialog

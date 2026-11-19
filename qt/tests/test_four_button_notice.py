@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -16,6 +17,7 @@ import anki.lang
 anki.lang.set_lang("en")
 
 import aqt.four_button_notice as notice  # noqa: E402
+from aqt import AnkiQt  # noqa: E402
 from aqt.qt import QDialog, QPoint, QRect, QSize, Qt, QWidget, qconnect  # noqa: E402
 from aqt.utils import tr  # noqa: E402
 
@@ -41,6 +43,10 @@ class FakeMainWindow(QWidget):
     def garbage_collect_on_dialog_finish(self, dialog: QDialog) -> None:
         self.deleted_later.append(dialog)
 
+    def as_anki_qt(self) -> AnkiQt:
+        """Itself, as the parameter the notice declares."""
+        return cast(AnkiQt, self)
+
 
 @pytest.fixture(scope="module")
 def qapp() -> Any:
@@ -58,12 +64,14 @@ def mw(qapp: Any) -> FakeMainWindow:
 @pytest.fixture(autouse=True)
 def shipped_build(monkeypatch: pytest.MonkeyPatch) -> None:
     """The tests that are not about the development build behave like a
-    shipped one, whatever ANKIDEV says on the machine running them."""
+    shipped one, whatever ANKIDEV or the source launcher say on the machine
+    running them."""
     monkeypatch.setattr(notice, "dev_mode", "")
+    monkeypatch.delenv(notice.DEV_RUN_ENV, raising=False)
 
 
 def shown_notice(mw: FakeMainWindow, qapp: Any) -> QDialog:
-    dialog = notice.show(mw)
+    dialog = notice.show(mw.as_anki_qt())
     assert dialog is not None
     dialog.show()
     qapp.processEvents()
@@ -145,27 +153,46 @@ def test_the_notice_is_shown_once_and_remembered(
     mw: FakeMainWindow, qapp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(notice, "dev_mode", "")
-    assert notice.should_show(mw) is True
+    assert notice.should_show(mw.as_anki_qt()) is True
 
-    assert notice.show(mw) is not None
+    assert notice.show(mw.as_anki_qt()) is not None
 
     assert mw.pm.meta[notice.SHOWN_KEY] is True
     assert mw.pm.saves == 1
-    assert notice.should_show(mw) is False
+    assert notice.should_show(mw.as_anki_qt()) is False
     # and it does not come back on a later switch
-    assert notice.show(mw) is None
+    assert notice.show(mw.as_anki_qt()) is None
 
 
-def test_a_development_build_shows_the_notice_every_time(
+def test_an_ankidev_build_shows_the_notice_every_time(
     mw: FakeMainWindow, qapp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(notice, "dev_mode", "1")
 
-    assert notice.show(mw) is not None
-    assert notice.show(mw) is not None
+    assert notice.show(mw.as_anki_qt()) is not None
+    assert notice.show(mw.as_anki_qt()) is not None
 
     # nothing is written down, so the shipped build still shows it once
     assert notice.SHOWN_KEY not in mw.pm.meta
+
+
+def test_a_run_started_by_the_source_launcher_shows_the_notice_every_time(
+    mw: FakeMainWindow, qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(notice.DEV_RUN_ENV, "1")
+
+    assert notice.show(mw.as_anki_qt()) is not None
+    assert notice.show(mw.as_anki_qt()) is not None
+
+    assert notice.SHOWN_KEY not in mw.pm.meta
+
+
+def test_the_source_launcher_marks_its_run() -> None:
+    """A shortcut starting `tools/run.py` is a developer's build too
+    (spec review.four-button-notice), which is what the marker is for."""
+    launcher = Path(__file__).resolve().parents[2] / "tools" / "run.py"
+
+    assert f'"{notice.DEV_RUN_ENV}"' in launcher.read_text(encoding="utf-8")
 
 
 AREA = QRect(0, 0, 500, notice.STRIP_HEIGHT)
@@ -194,13 +221,78 @@ def test_a_strip_too_small_to_flee_from_keeps_the_button_in_it() -> None:
 def test_the_button_moves_off_a_cursor_that_reaches_it(
     mw: FakeMainWindow, qapp: Any
 ) -> None:
+    from PyQt6.QtTest import QTest
+
     dialog = shown_notice(mw, qapp)
     area = strip_of(dialog)
     on_the_button = QRect(area.button.pos(), area.button.size()).center()
 
     assert area.flee_from_cursor(on_the_button) is True
+    QTest.qWait(notice.FLEE_MS + 100)  # type: ignore[call-arg, arg-type]
 
     assert not QRect(area.button.pos(), area.button.size()).contains(on_the_button)
+
+
+def test_the_button_starts_straight_above_the_understand_button(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    from aqt.qt import QPushButton
+
+    dialog = shown_notice(mw, qapp)
+    area = strip_of(dialog)
+    understand = next(
+        button
+        for button in dialog.findChildren(QPushButton)
+        if button.text() == tr.preferences_four_button_notice_understand()
+    )
+
+    fleeing_centre = area.button.mapToGlobal(area.button.rect().center())
+    accepting_centre = understand.mapToGlobal(understand.rect().center())
+
+    # the same column, one row up: the joke button starts where a second
+    # button would sit, not in a corner
+    assert abs(fleeing_centre.x() - accepting_centre.x()) <= 1
+    assert fleeing_centre.y() < accepting_centre.y()
+
+
+def test_the_button_flies_to_its_new_spot_instead_of_jumping(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    from PyQt6.QtTest import QTest
+
+    dialog = shown_notice(mw, qapp)
+    area = strip_of(dialog)
+    before = area.button.pos()
+    on_the_button = QRect(before, area.button.size()).center()
+
+    assert area.flee_from_cursor(on_the_button) is True
+
+    # it did not jump: it is on its way, and it is still moving partway there
+    assert area.button.is_flying()
+    QTest.qWait(notice.FLEE_MS // 3)  # type: ignore[call-arg, arg-type]
+    partway = area.button.pos()
+    assert partway != before
+    QTest.qWait(notice.FLEE_MS)  # type: ignore[call-arg, arg-type]
+    assert area.button.pos() != partway
+    assert not QRect(area.button.pos(), area.button.size()).contains(on_the_button)
+
+
+def test_the_notice_cannot_be_closed_with_the_cross_or_escape(
+    mw: FakeMainWindow, qapp: Any
+) -> None:
+    dialog = shown_notice(mw, qapp)
+
+    # no cross in the title bar to click
+    assert not dialog.windowFlags() & Qt.WindowType.WindowCloseButtonHint
+
+    # and neither the window's close event nor Esc gets rid of it: accepting
+    # it is the only way out
+    assert dialog.close() is False
+    qapp.processEvents()
+    assert dialog.isVisible()
+    dialog.reject()
+    qapp.processEvents()
+    assert dialog.isVisible()
 
 
 def test_the_button_stays_put_while_the_cursor_is_far_away(
@@ -225,7 +317,7 @@ def test_pressing_the_fleeing_button_does_nothing(
     presses: list[bool] = []
     qconnect(area.button.clicked, lambda: presses.append(True))
 
-    QTest.mouseClick(area.button, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(area.button, Qt.MouseButton.LeftButton)  # type: ignore[call-overload]
     qapp.processEvents()
 
     assert presses == []
