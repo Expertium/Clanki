@@ -341,6 +341,20 @@ change hides. The scheduler is deterministic given (collection state, review
 log, clock), so golden tests (simulate N reviews, snapshot the resulting
 intervals and queue) plus property tests are a genuinely strong behavior lock.
 
+# Tests
+
+- **Tests are for code, never for documentation** (Andrew, 2026-11-19): "Tests
+  should never run on docs. Tests are for code only." A test exists to guard
+  code, so:
+  1. A change that touches only documentation -- `.md` and `.mdx` files,
+     `docs/`, `docs-site/`, their images -- must not run the test suite. A
+     documentation edit must not be able to fail a code test, and must not pay
+     for a run of one.
+  2. Do not add a test whose subject is documentation: no test that reads the
+     manual, `docs/`, `docs-site/` or the release notes and asserts something
+     about their content. Documentation is checked by its own tools (the Docs
+     Site workflow) and by reading.
+
 # Spec (`spec/` directory)
 
 - `spec/` holds the **current intended behavior** in natural language, organized
