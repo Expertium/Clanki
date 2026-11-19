@@ -8,7 +8,7 @@ classifiers = ["Private :: Do Not Upload"]
 [dependency-groups]
 dev = [
   "pre-commit",
-  "mypy",
+  "mypy<2.0",
   "mypy-protobuf",
   "ruff",
   "pytest",
